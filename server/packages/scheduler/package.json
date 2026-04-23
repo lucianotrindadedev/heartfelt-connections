@@ -1,0 +1,17 @@
+{
+  "name": "@sarai/scheduler",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "SVC_NAME=scheduler bun --watch src/index.ts",
+    "start": "SVC_NAME=scheduler bun src/index.ts"
+  },
+  "dependencies": {
+    "@sarai/shared": "workspace:*",
+    "cron": "^3.1.7",
+    "luxon": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/luxon": "^3.4.2"
+  }
+}
