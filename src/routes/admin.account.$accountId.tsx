@@ -64,6 +64,7 @@ function AdminAccountDetail() {
         <Link
           to="/embed/account/$accountId/overview"
           params={{ accountId }}
+          search={{}}
           className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm hover:bg-accent"
         >
           <ExternalLink className="h-3.5 w-3.5" /> Abrir painel da conta

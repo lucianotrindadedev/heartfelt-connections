@@ -30,6 +30,7 @@ function EmbedEntrypoint() {
       navigate({
         to: "/embed/account/$accountId",
         params: { accountId: search.accountId },
+        search: {},
       });
       return;
     }
@@ -44,13 +45,15 @@ function EmbedEntrypoint() {
   }, [search, accountId, status, signIn, navigate]);
 
   useEffect(() => {
-    if (status === "authenticated" && accountId) {
+    if (status === "authenticated" && accountId && accountId === search.accountId) {
       navigate({
         to: "/embed/account/$accountId",
         params: { accountId },
+        search: {},
       });
     }
-  }, [status, accountId, navigate]);
+  }, [status, accountId, search.accountId, navigate]);
+
 
   if (!search.accountId) {
     return (

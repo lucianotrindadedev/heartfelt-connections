@@ -7,17 +7,17 @@ export const Route = createFileRoute("/embed/account/$accountId")({
   component: AccountLayout,
 });
 
-const TABS: Array<{ to: string; label: string }> = [
-  { to: "overview", label: "Visão geral" },
-  { to: "main-agent", label: "Agente Principal" },
-  { to: "followup", label: "Follow-up" },
-  { to: "warmup", label: "Warm-up" },
-  { to: "integrations", label: "Integrações" },
-  { to: "media", label: "Mídias" },
-  { to: "automations", label: "Automações" },
-  { to: "conversations", label: "Conversas" },
-  { to: "logs", label: "Logs" },
-];
+const TABS = [
+  { to: "/embed/account/$accountId/overview", label: "Visão geral" },
+  { to: "/embed/account/$accountId/main-agent", label: "Agente Principal" },
+  { to: "/embed/account/$accountId/followup", label: "Follow-up" },
+  { to: "/embed/account/$accountId/warmup", label: "Warm-up" },
+  { to: "/embed/account/$accountId/integrations", label: "Integrações" },
+  { to: "/embed/account/$accountId/media", label: "Mídias" },
+  { to: "/embed/account/$accountId/automations", label: "Automações" },
+  { to: "/embed/account/$accountId/conversations", label: "Conversas" },
+  { to: "/embed/account/$accountId/logs", label: "Logs" },
+] as const;
 
 function AccountLayout() {
   const { accountId: paramAccountId } = Route.useParams();
@@ -26,8 +26,10 @@ function AccountLayout() {
 
   useEffect(() => {
     if (status === "idle" || (status !== "loading" && accountId !== paramAccountId)) {
-      // Sessão não corresponde — volta para o entrypoint /embed.
-      navigate({ to: "/embed", search: { accountId: paramAccountId } });
+      navigate({
+        to: "/embed",
+        search: { accountId: paramAccountId },
+      });
     }
   }, [status, accountId, paramAccountId, navigate]);
 
@@ -58,8 +60,9 @@ function AccountLayout() {
             <Link
               key={tab.to}
               to={tab.to}
-              from={Route.fullPath}
-              className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground data-[status=active]:bg-secondary data-[status=active]:text-secondary-foreground"
+              params={{ accountId: paramAccountId }}
+              search={{}}
+              className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               activeProps={{ className: "bg-secondary text-secondary-foreground" }}
             >
               {tab.label}

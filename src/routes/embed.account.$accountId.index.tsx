@@ -7,7 +7,9 @@ export const Route = createFileRoute("/embed/account/$accountId/")({
       <Navigate
         to="/embed/account/$accountId/overview"
         params={{ accountId }}
+        search={{}}
       />
     );
   },
 });
+
