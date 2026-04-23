@@ -22,11 +22,10 @@ import type {
   WarmupConfig,
 } from "./types";
 
+// Mock só é ativado quando VITE_MOCK_API=true explicitamente.
+// Por padrão, mesmo em DEV, consumimos o backend real (panel-api).
 export const MOCK_API_ENABLED =
-  (import.meta.env.VITE_MOCK_API as string | undefined) === "false"
-    ? false
-    : ((import.meta.env.VITE_MOCK_API as string | undefined) === "true" ||
-        import.meta.env.DEV);
+  (import.meta.env.VITE_MOCK_API as string | undefined) === "true";
 
 // ─── Estado em memória ────────────────────────────────────────────────────
 
