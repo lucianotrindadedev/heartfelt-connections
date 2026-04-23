@@ -1,0 +1,83 @@
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { useSession } from "@/lib/session";
+
+export const Route = createFileRoute("/embed")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    accountId: (search.accountId as string | undefined) ?? null,
+    userId: (search.userId as string | undefined) ?? null,
+    sig: (search.sig as string | undefined) ?? null,
+    ts: (search.ts as string | undefined) ?? null,
+  }),
+  component: EmbedEntrypoint,
+});
+
+function EmbedEntrypoint() {
+  const search = Route.useSearch();
+  const navigate = useNavigate();
+  const { accountId, status, error, signIn } = useSession();
+
+  useEffect(() => {
+    if (!search.accountId) return;
+    if (status === "authenticated" && accountId === search.accountId) {
+      navigate({
+        to: "/embed/account/$accountId",
+        params: { accountId: search.accountId },
+      });
+      return;
+    }
+    if (status === "idle" || (status === "authenticated" && accountId !== search.accountId)) {
+      signIn({
+        accountId: search.accountId,
+        userId: search.userId,
+        sig: search.sig,
+        ts: search.ts,
+      });
+    }
+  }, [search, accountId, status, signIn, navigate]);
+
+  useEffect(() => {
+    if (status === "authenticated" && accountId) {
+      navigate({
+        to: "/embed/account/$accountId",
+        params: { accountId },
+      });
+    }
+  }, [status, accountId, navigate]);
+
+  if (!search.accountId) {
+    return (
+      <CenteredCard
+        title="Parâmetro accountId ausente"
+        body="Este painel só pode ser aberto a partir do CRM Helena. Verifique a configuração do menu personalizado."
+      />
+    );
+  }
+
+  if (status === "error") {
+    return (
+      <CenteredCard
+        title="Falha ao autenticar"
+        body={error ?? "Não foi possível validar a sessão."}
+      />
+    );
+  }
+
+  return (
+    <CenteredCard
+      title="Carregando painel…"
+      body="Validando assinatura HMAC com o backend."
+    />
+  );
+}
+
+function CenteredCard({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="w-full max-w-sm rounded-lg border border-border bg-card p-6 text-center">
+        <h1 className="text-base font-semibold">{title}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{body}</p>
+      </div>
+    </div>
+  );
+}
