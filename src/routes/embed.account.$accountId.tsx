@@ -36,7 +36,7 @@ function AccountLayout() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {import.meta.env.DEV && (
-        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-1.5 text-center text-[11px] text-amber-700 dark:text-amber-300">
+        <div className="border-b border-border bg-muted px-4 py-1.5 text-center text-[11px] text-muted-foreground">
           Modo preview — dados mockados, backend não está conectado.
         </div>
       )}
