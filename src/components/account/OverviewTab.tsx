@@ -323,7 +323,6 @@ function PrimaryActionCard({
           <p className="text-sm text-muted-foreground">{description}</p>
         </div>
         <Link
-          // @ts-expect-error dynamic route param
           to={to}
           params={{ accountId }}
           search={{}}
@@ -391,14 +390,13 @@ function ChannelCard({
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
         <Link
-          // @ts-expect-error dynamic route param
           to={to}
           params={{ accountId }}
           search={{}}
           className={
             "inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-xs font-medium " +
             (cta.variant === "primary"
-              ? "bg-emerald-500 text-white hover:bg-emerald-600"
+              ? "bg-success text-success-foreground hover:opacity-90"
               : "border border-border bg-background hover:bg-accent")
           }
         >
