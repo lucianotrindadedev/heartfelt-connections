@@ -2,12 +2,19 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useSession } from "@/lib/session";
 
+interface EmbedSearch {
+  accountId?: string;
+  userId?: string;
+  sig?: string;
+  ts?: string;
+}
+
 export const Route = createFileRoute("/embed")({
-  validateSearch: (search: Record<string, unknown>) => ({
-    accountId: (search.accountId as string | undefined) ?? null,
-    userId: (search.userId as string | undefined) ?? null,
-    sig: (search.sig as string | undefined) ?? null,
-    ts: (search.ts as string | undefined) ?? null,
+  validateSearch: (search: Record<string, unknown>): EmbedSearch => ({
+    accountId: (search.accountId as string | undefined) ?? undefined,
+    userId: (search.userId as string | undefined) ?? undefined,
+    sig: (search.sig as string | undefined) ?? undefined,
+    ts: (search.ts as string | undefined) ?? undefined,
   }),
   component: EmbedEntrypoint,
 });
