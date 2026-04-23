@@ -2,11 +2,18 @@
  * Cliente HTTP para o backend (Node/Hono na sua VPS).
  * Configure VITE_API_BASE_URL no ambiente para apontar para sua API
  * (ex.: https://api.suaplataforma.com).
+ *
+ * Quando VITE_MOCK_API=true (ou estamos em DEV sem backend),
+ * as requisições são interceptadas por src/lib/mockApi.ts.
  */
+
+import { handleMock, MOCK_API_ENABLED } from "./mockApi";
 
 export const API_BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
   "http://localhost:8787";
+
+export const IS_MOCK = MOCK_API_ENABLED;
 
 const TOKEN_STORAGE_KEY = "helena_agent_jwt";
 const ADMIN_TOKEN_STORAGE_KEY = "helena_admin_token";
@@ -76,6 +83,14 @@ export async function api<T = unknown>(
   }
 
   const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
+
+  if (IS_MOCK && !path.startsWith("http")) {
+    const result = await handleMock(path, {
+      method: (options.method as string | undefined) ?? "GET",
+      body: options.json,
+    });
+    return result as T;
+  }
 
   const res = await fetch(url, {
     ...options,

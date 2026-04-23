@@ -35,6 +35,11 @@ function AccountLayout() {
 
   return (
     <div className="min-h-screen bg-background text-foreground">
+      {import.meta.env.DEV && (
+        <div className="border-b border-border bg-muted px-4 py-1.5 text-center text-[11px] text-muted-foreground">
+          Modo preview — dados mockados, backend não está conectado.
+        </div>
+      )}
       <header className="border-b border-border bg-card">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3">
           <div className="flex items-center gap-2">
