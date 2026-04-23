@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { SignJWT } from "jose";
-import { env } from "@sarai/shared";
+import { eq } from "drizzle-orm";
+import { env, db, accounts } from "@sarai/shared";
 
 export const authRoute = new Hono();
 
 const ExchangeBody = z.object({
   accountId: z.string().min(1),
+  accountName: z.string().nullish(),
   userId: z.string().nullish(),
   sig: z.string().nullish(),
   ts: z.string().nullish(),
@@ -30,8 +32,7 @@ async function verifyHmac(accountId: string, ts: string, sig: string) {
 
 authRoute.post("/exchange", async (c) => {
   const body = ExchangeBody.parse(await c.req.json());
-  const { accountId, ts, sig } = body;
-  // Em produção, exigir sig + ts (com janela de 5 min). Em dev, aceita sem.
+  const { accountId, accountName, ts, sig } = body;
   if (env.NODE_ENV === "production") {
     if (!sig || !ts) return c.json({ error: "missing signature" }, 401);
     const skew = Math.abs(Date.now() / 1000 - Number(ts));
@@ -39,6 +40,18 @@ authRoute.post("/exchange", async (c) => {
     const ok = await verifyHmac(accountId, ts, sig);
     if (!ok) return c.json({ error: "bad signature" }, 401);
   }
+
+  // Garante que a conta existe (auto-provisiona no primeiro embed)
+  const name = accountName ?? accountId;
+  const [row] = await db
+    .insert(accounts)
+    .values({ id: accountId, name })
+    .onConflictDoNothing()
+    .returning();
+
+  const account =
+    row ??
+    (await db.select().from(accounts).where(eq(accounts.id, accountId)).limit(1))[0];
 
   const jwt = await new SignJWT({ accountId })
     .setProtectedHeader({ alg: "HS256" })
@@ -48,6 +61,9 @@ authRoute.post("/exchange", async (c) => {
 
   return c.json({
     token: jwt,
-    account: { id: accountId, name: accountId },
+    account: {
+      id: account?.id ?? accountId,
+      name: account?.name ?? name,
+    },
   });
 });
