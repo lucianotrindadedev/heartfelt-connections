@@ -1,0 +1,20 @@
+{
+  "name": "sarai-platform",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev:panel": "bun --filter @sarai/panel-api dev",
+    "dev:engine": "bun --filter @sarai/engine dev",
+    "dev:scheduler": "bun --filter @sarai/scheduler dev",
+    "db:generate": "bun --filter @sarai/shared db:generate",
+    "db:migrate": "bun --filter @sarai/shared db:migrate",
+    "db:seed": "bun --filter @sarai/shared db:seed",
+    "build": "bun --filter '*' build",
+    "lint": "bun --filter '*' lint"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.3"
+  }
+}

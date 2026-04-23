@@ -1,0 +1,66 @@
+services:
+  db:
+    image: supabase/postgres:15.1.0.117
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: sarai
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports: ["5432:5432"]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    ports: ["6379:6379"]
+
+  panel-api:
+    build:
+      context: .
+      dockerfile: ./packages/panel-api/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [db, redis]
+    ports: ["8787:8787"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8787/health"]
+      interval: 30s
+      retries: 3
+
+  engine:
+    build:
+      context: .
+      dockerfile: ./packages/engine/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [db, redis]
+    ports: ["8788:8788"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8788/health"]
+      interval: 30s
+      retries: 3
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: ./packages/scheduler/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    depends_on: [db, redis, engine]
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - certs:/etc/letsencrypt
+    depends_on: [panel-api, engine]
+
+volumes:
+  pgdata: {}
+  redisdata: {}
+  certs: {}

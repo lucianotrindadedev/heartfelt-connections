@@ -1,232 +1,166 @@
-# Backend Sarai Platform — Node + Hono + Postgres
+# Backend Sarai Platform — Bun Monorepo (engine + scheduler + panel-api)
 
-Este diretório é onde vai o backend que roda na **sua VPS** (Lovable não roda este processo). O frontend (em `src/`) consome esta API através de `VITE_API_BASE_URL`.
+Este diretório contém o backend que roda na **sua VPS** (Lovable não executa este processo). O frontend (em `src/`) consome a API através de `VITE_API_BASE_URL`.
 
 ## Stack
 
-- Node 20+
-- Hono (HTTP)
-- postgres (driver pg)
-- Vercel AI SDK (`ai` + `@ai-sdk/openai`/openrouter compat) para o agente
-- Zod para validação
-- jose para JWT
-- pg_cron no Supabase self-hosted para follow-up/warm-up
+- **Bun 1.x** (runtime + package manager + bundler) — startup ~50ms, ~80MB RAM
+- **Hono** (HTTP)
+- **Drizzle ORM** + driver `postgres` (typesafe, migrations versionadas)
+- **BullMQ + Redis 7** (filas resilientes com retries / dead-letter / métricas)
+- **Vercel AI SDK** (`ai` + `@ai-sdk/openai` compat OpenRouter) — `generateText` no agente, `generateObject` na quebra de mensagens
+- **Zod** (validação + tools tipadas)
+- **jose** (JWT da sessão Helena)
+- **pgcrypto** (encriptação de credenciais no Postgres)
+- **Luxon** (timezones America/Sao_Paulo)
+- **pino** (logs estruturados)
 
-## Estrutura sugerida
+## Topologia (3 processos)
+
+Cada serviço escala independentemente. Em produção, todos rodam em containers Docker atrás de Nginx.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  CRM Helena ──(iframe)──▶ Painel Lovable ──(REST/JWT)──▶     │
+│                                                               │
+│  ┌─────────────┐   ┌──────────────┐   ┌──────────────────┐  │
+│  │ panel-api   │   │ agent-engine │   │ scheduler        │  │
+│  │ (Hono+Bun)  │   │ (Bun+BullMQ) │   │ (Bun+setInterval)│  │
+│  │ CRUD/auth   │   │ webhook+LLM  │   │ followup/warmup  │  │
+│  └──────┬──────┘   └──────┬───────┘   └────────┬─────────┘  │
+│         │                 │                    │             │
+│         └────────┬────────┴────────────────────┘             │
+│                  ▼                                            │
+│         ┌─────────────────┐    ┌──────────┐                  │
+│         │ Postgres        │    │  Redis 7 │                  │
+│         │ (Supabase self) │    │  BullMQ  │                  │
+│         │ + pgcrypto      │    │  + cache │                  │
+│         └─────────────────┘    └──────────┘                  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+## Estrutura do monorepo
 
 ```
 server/
-├── package.json
-├── tsconfig.json
+├── package.json              # workspaces: bun
+├── bun.lockb
+├── docker-compose.yml        # supabase + redis + 3 services + nginx
 ├── .env.example
-├── db/
-│   ├── schema.sql              # tabelas + RLS + pg_cron jobs
-│   ├── seed_clinicorp.sql      # template clinicorp_dental
-│   └── client.ts               # pg pool com SET app.account_id
-├── src/
-│   ├── index.ts                # server Hono
-│   ├── auth/
-│   │   ├── hmac.ts             # validação assinatura Helena
-│   │   └── jwt.ts              # emite/valida JWT da sessão
-│   ├── routes/
-│   │   ├── auth.ts             # POST /api/auth/exchange
-│   │   ├── accounts.ts         # CRUD admin
-│   │   ├── agents.ts           # CRUD agente, followup, warmup, media, automations
-│   │   ├── integrations.ts     # CRUD com pgcrypto
-│   │   ├── conversations.ts
-│   │   ├── runs.ts
-│   │   ├── stats.ts
-│   │   ├── tests.ts            # POST /api/test/<integration>
-│   │   └── webhooks.ts         # /webhook/inbound /clinicorp /helena-tags
-│   ├── worker/
-│   │   ├── queue.ts            # consume message_queue + advisory_lock
-│   │   ├── agent.ts            # generateText + tools
-│   │   ├── splitter.ts         # quebra de mensagens (fluxo 02)
-│   │   └── tools/
-│   │       ├── escalar_humano.ts
-│   │       ├── enviar_midia.ts
-│   │       ├── buscar_contato_helena.ts
-│   │       ├── clinicorp.ts
-│   │       └── refletir.ts
-│   ├── crons/
-│   │   ├── followup.ts         # endpoint POST /cron/followup chamado por pg_cron
-│   │   └── warmup.ts           # endpoint POST /cron/warmup
-│   ├── integrations/
-│   │   ├── helena.ts           # cliente do CRM Helena
-│   │   ├── openrouter.ts
-│   │   ├── elevenlabs.ts
-│   │   ├── groq.ts
-│   │   ├── clinicorp.ts
-│   │   └── evolution.ts
-│   └── templates/
-│       ├── index.ts
-│       └── clinicorp_dental.ts # prompt + tools + defaults
-└── README.md (este arquivo)
+├── packages/
+│   ├── shared/               # código compartilhado pelos 3 serviços
+│   │   ├── package.json
+│   │   ├── tsconfig.json
+│   │   ├── src/
+│   │   │   ├── db/
+│   │   │   │   ├── schema.ts        # tabelas Drizzle (substitui schema.sql)
+│   │   │   │   ├── client.ts        # pg pool com SET app.account_id
+│   │   │   │   └── migrations/      # geradas por drizzle-kit
+│   │   │   ├── crypto.ts            # wrapper pgp_sym_encrypt
+│   │   │   ├── helena.ts            # cliente CRM Helena
+│   │   │   ├── redis.ts             # ioredis singleton
+│   │   │   ├── logger.ts            # pino
+│   │   │   ├── env.ts               # env vars validadas com Zod
+│   │   │   └── templates/
+│   │   │       ├── index.ts
+│   │   │       └── clinicorp_dental.ts
+│   │   └── drizzle.config.ts
+│   ├── engine/               # SERVIÇO 1 — webhook inbound + worker do agente
+│   │   ├── package.json
+│   │   ├── Dockerfile
+│   │   ├── src/
+│   │   │   ├── server.ts            # Bun.serve (Hono)
+│   │   │   ├── webhook.ts           # POST /webhook/:agent_id → enqueue
+│   │   │   ├── queue.ts             # BullMQ worker (concorrência 1 por agent:phone)
+│   │   │   ├── agent.ts             # runAgent() — generateText + tools
+│   │   │   ├── sender.ts            # splitAndSend() — generateObject
+│   │   │   ├── cache.ts             # Redis: config do agente (TTL 60s)
+│   │   │   ├── stt.ts               # Groq Whisper
+│   │   │   ├── tts.ts               # ElevenLabs
+│   │   │   └── tools/
+│   │   │       ├── escalate.ts          # fluxo 05
+│   │   │       ├── send_media.ts        # fluxo 03
+│   │   │       ├── helena_contact.ts    # fluxo 04
+│   │   │       ├── reflect.ts
+│   │   │       └── clinicorp/
+│   │   │           ├── list_appointments.ts
+│   │   │           ├── create_appointment.ts
+│   │   │           └── cancel_appointment.ts
+│   ├── scheduler/            # SERVIÇO 2 — crons (followup, warmup, automações)
+│   │   ├── package.json
+│   │   ├── Dockerfile
+│   │   ├── src/
+│   │   │   ├── index.ts             # setInterval orchestrator
+│   │   │   ├── followup.ts          # fluxo 06
+│   │   │   ├── warmup.ts            # fluxo 07
+│   │   │   └── automations.ts       # fluxo 08 — webhook clinicorp + helena tags
+│   └── panel-api/            # SERVIÇO 3 — REST consumido pelo painel Lovable
+│       ├── package.json
+│       ├── Dockerfile
+│       ├── src/
+│       │   ├── server.ts            # Hono em Bun
+│       │   ├── middleware/
+│       │   │   ├── auth.ts          # HMAC + JWT
+│       │   │   ├── admin.ts         # X-Admin-Token
+│       │   │   └── tenant.ts        # SET app.account_id por request
+│       │   └── routes/
+│       │       ├── auth.ts          # POST /api/auth/exchange
+│       │       ├── accounts.ts
+│       │       ├── agents.ts        # CRUD + followup + warmup + media + automations
+│       │       ├── integrations.ts
+│       │       ├── conversations.ts
+│       │       ├── runs.ts
+│       │       ├── stats.ts
+│       │       ├── tests.ts         # POST /api/test/<integration>
+│       │       └── admin.ts
+└── scripts/
+    ├── migrate-from-n8n.ts          # copia n8n_historico_mensagens etc.
+    └── seed-clinicorp.ts            # template de exemplo
 ```
 
-## Variáveis de ambiente (.env.example)
+## Schema (Drizzle — `packages/shared/src/db/schema.ts`)
 
-```
-PORT=8787
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/sarai
-HELENA_HMAC_SECRET=<string compartilhada com o Menu Personalizado do Helena>
-JWT_SECRET=<32+ bytes>
-ADMIN_API_KEY=<chave do painel /admin>
-PGCRYPTO_KEY=<chave para encriptar credenciais nas integrations>
-PUBLIC_BASE_URL=https://api.suaplataforma.com
-```
+Resumo das tabelas (todas com RLS por `app.account_id`):
 
-## Schema (db/schema.sql) — resumo
+- **accounts** — `id (helena account_id)`, `name`, `crm_base_api`, `crm_token_enc`, `created_at`
+- **integrations** — `account_id`, `type`, `config_enc bytea` (pgp_sym_encrypt), `config_preview jsonb`, `updated_at`. UNIQUE `(account_id, type)`.
+- **agents** — `id`, `account_id`, `name`, `kind` (main/followup/warmup), `template`, `enabled`, `llm_provider`, `llm_model`, `system_prompt`, `voice_settings jsonb`, `tools jsonb`, `webhook_secret` *(consolidado do agent_webhooks)*, `created_at`
+- **agent_followup_config** — `agent_id`, `enabled`, `cron_expression`, `max_followups`, `prompts jsonb`
+- **agent_warmup_config** — `agent_id`, `enabled`, `tempo_wu1..wu5` (horas), `prompts jsonb`, `subscriber_id`, `business_id`
+- **agent_automation_rules** — `agent_id`, `trigger`, `conditions jsonb`, `actions jsonb`, `enabled`
+- **media_assets** — `agent_id`, `name`, `description`, `source`, `external_id`, `mime_type`
+- **conversations** — `agent_id`, `phone`, `helena_session_id`, `helena_contact_id`, `status`, `meta jsonb`, UNIQUE `(agent_id, phone)`
+- **messages** — `conversation_id`, `role`, `content`, `tool_calls jsonb`, `created_at`
+- **conversation_state** — `conversation_id PK`, `lock_conversa`, `aguardando_followup`, `numero_followup`, `last_user_message_at`. **Índice parcial** `WHERE aguardando_followup = TRUE`.
+- **warmup_sent** — PK `(account_id, appointment_id, reminder_type)` para dedupe
+- **agent_runs** — `agent_id`, `conversation_id`, `phone`, `status`, `latency_ms`, `tokens_in`, `tokens_out`, `cost_usd numeric`, `tools_called jsonb`, `error`, `created_at`
 
-Crie estas tabelas (todas com RLS via `app.account_id`):
+Campos `*_enc bytea` armazenam credenciais com `pgp_sym_encrypt(jsonb_text, env.PGCRYPTO_KEY)`. Nunca em texto puro.
 
-```sql
-create extension if not exists pgcrypto;
-create extension if not exists pg_cron;
+## Fila + encavalamento (BullMQ)
 
-create table accounts (
-  id text primary key,            -- helena account_id
-  name text not null,
-  crm_base_api text,
-  crm_token_enc bytea,
-  created_at timestamptz default now()
-);
+Substitui o `wait 20s + select` do n8n por:
 
-create type integration_type as enum (
-  'helena_crm','clinicorp','google_calendar','google_drive','clinup',
-  'elevenlabs','openrouter','evolution_api','central360','groq'
-);
+1. `POST /webhook/:agent_id` → `queue.add("inbound", { agent_id, phone, payload }, { jobId: ${agent_id}:${phone}:${nanoid()} })`.
+2. **Worker** com `concurrency: N`, mas usando `Worker` group por `agent_id:phone` (lock distribuído via `redis SETNX agent:phone TTL=120s`).
+3. Worker faz `await sleep(20_000)`. Se chegou outro job para o mesmo `agent:phone` durante o sleep (verificado via `queue.getJobs(['waiting'])`), o job atual é marcado como skipped e o último vence — replica o "encavalamento".
+4. Concatena payloads, carrega histórico, chama LLM, divide mensagens (`generateObject`), envia via Helena com delay por palavras.
+5. Retries automáticos com backoff exponencial. Falhas finais vão para `failed` queue → alerta no Slack/Discord.
 
-create table integrations (
-  id uuid primary key default gen_random_uuid(),
-  account_id text references accounts(id) on delete cascade,
-  type integration_type not null,
-  config_enc bytea not null,      -- pgp_sym_encrypt(jsonb_text, key)
-  config_preview jsonb default '{}'::jsonb,
-  updated_at timestamptz default now(),
-  unique(account_id, type)
-);
+## Cache de config (Redis, TTL 60s)
 
-create type agent_kind as enum ('main','followup','warmup');
+`getAgentConfig(agentId)`:
+- `GET agent:cfg:<id>` → se hit, retorna.
+- Senão `SELECT` com Drizzle, `SET agent:cfg:<id> EX 60` e retorna.
+- Invalidação no `PATCH /api/agents/:id` (`DEL agent:cfg:<id>`).
 
-create table agents (
-  id uuid primary key default gen_random_uuid(),
-  account_id text references accounts(id) on delete cascade,
-  name text not null,
-  kind agent_kind not null,
-  template text not null,
-  enabled boolean default true,
-  llm_provider text default 'openrouter',
-  llm_model text default 'x-ai/grok-4-fast',
-  system_prompt text not null,
-  voice_settings jsonb,
-  tools jsonb default '[]'::jsonb,
-  created_at timestamptz default now()
-);
+Reduz queries massivamente (1 query a cada 60s por agente em vez de 1 por mensagem).
 
-create table agent_webhooks (
-  agent_id uuid primary key references agents(id) on delete cascade,
-  inbound_token text unique not null default encode(gen_random_bytes(24),'hex'),
-  secret text not null default encode(gen_random_bytes(16),'hex')
-);
+## Endpoints (consumidos pelo frontend)
 
-create table agent_followup_config (
-  agent_id uuid primary key references agents(id) on delete cascade,
-  enabled boolean default true,
-  cron_expression text default '0 */10 8-21 * * *',
-  max_followups int default 3,
-  prompts jsonb default '[]'::jsonb
-);
-
-create table agent_warmup_config (
-  agent_id uuid primary key references agents(id) on delete cascade,
-  enabled boolean default true,
-  tempo_wu1 int default 96, tempo_wu2 int default 72,
-  tempo_wu3 int default 48, tempo_wu4 int default 24, tempo_wu5 int default 2,
-  prompts jsonb default '{}'::jsonb,
-  subscriber_id text, business_id text
-);
-
-create table agent_automation_rules (
-  id uuid primary key default gen_random_uuid(),
-  agent_id uuid references agents(id) on delete cascade,
-  trigger text not null, conditions jsonb, actions jsonb,
-  enabled boolean default true
-);
-
-create table media_assets (
-  id uuid primary key default gen_random_uuid(),
-  agent_id uuid references agents(id) on delete cascade,
-  name text, description text, source text,
-  external_id text, mime_type text
-);
-
-create table conversations (
-  id uuid primary key default gen_random_uuid(),
-  agent_id uuid references agents(id) on delete cascade,
-  phone text not null,
-  helena_session_id text, helena_contact_id text,
-  status text default 'active',
-  meta jsonb default '{}'::jsonb,
-  updated_at timestamptz default now(),
-  unique(agent_id, phone)
-);
-
-create table messages (
-  id bigserial primary key,
-  conversation_id uuid references conversations(id) on delete cascade,
-  role text, content text, tool_calls jsonb,
-  created_at timestamptz default now()
-);
-
-create table message_queue (
-  id bigserial primary key,
-  agent_id uuid references agents(id) on delete cascade,
-  phone text, payload jsonb,
-  enqueued_at timestamptz default now(),
-  consumed_at timestamptz
-);
-
-create table conversation_state (
-  conversation_id uuid primary key references conversations(id) on delete cascade,
-  lock_conversa boolean default false,
-  aguardando_followup boolean default false,
-  numero_followup int default 0,
-  last_user_message_at timestamptz,
-  updated_at timestamptz default now()
-);
-
-create table warmup_sent (
-  account_id text, appointment_id text, reminder_type text,
-  sent_at timestamptz default now(),
-  primary key (account_id, appointment_id, reminder_type)
-);
-
-create table agent_runs (
-  id uuid primary key default gen_random_uuid(),
-  agent_id uuid references agents(id) on delete cascade,
-  conversation_id uuid, phone text,
-  status text, latency_ms int,
-  cost_usd numeric default 0, tokens_in int, tokens_out int,
-  tools_called jsonb default '[]'::jsonb,
-  error text, created_at timestamptz default now()
-);
-
--- pg_cron — chama endpoints HTTP do worker
-select cron.schedule('followup-tick', '*/10 * * * *',
-  $$ select net.http_post(url:='https://api.suaplataforma.com/cron/followup',
-       headers:='{"x-cron-secret":"<segredo>"}'::jsonb) $$);
-select cron.schedule('warmup-tick', '*/10 * * * *',
-  $$ select net.http_post(url:='https://api.suaplataforma.com/cron/warmup',
-       headers:='{"x-cron-secret":"<segredo>"}'::jsonb) $$);
-```
-
-## Endpoints obrigatórios (consumidos pelo frontend)
-
-Coincidem 1:1 com `src/lib/api.ts` e os componentes em `src/components/account/*`:
+Mantém compatibilidade 1:1 com `src/lib/api.ts`. **Mudança importante**: webhook URL agora é `/webhook/<agent_id>` autenticado por header `x-webhook-secret`.
 
 - `POST /api/auth/exchange` `{ accountId, userId?, sig?, ts? }` → `{ token, account }`
-  - Valida HMAC: `hmac_sha256(HELENA_HMAC_SECRET, "${accountId}.${ts}") === sig`, com janela de 5 min.
 - `GET  /api/accounts/:id/stats`
 - `GET  /api/accounts/:id/agents`
 - `GET  /api/accounts/:id/integrations`
@@ -239,102 +173,168 @@ Coincidem 1:1 com `src/lib/api.ts` e os componentes em `src/components/account/*
 - `GET/PATCH /api/agents/:id/warmup`
 - `GET/POST/DELETE /api/agents/:id/media[/...]`
 - `GET/POST/DELETE /api/agents/:id/automations[/...]`
-- `GET  /api/agents/:id/webhook` → `{ inbound_url, inbound_token }`
+- `GET  /api/agents/:id/webhook` → `{ inbound_url: "<base>/webhook/<id>", webhook_secret }`
 - `POST /api/test/:integration` `{ account_id }`
 - `POST /api/admin/accounts` (header `X-Admin-Token`)
 - `GET  /api/admin/accounts`
 - `GET/POST /api/admin/accounts/:id/agents`
 
-Webhooks externos:
-- `POST /webhook/inbound/:token` (Helena → enfileira em `message_queue`)
-- `POST /webhook/clinicorp/:token` (status agendamento)
-- `POST /webhook/helena-tags/:token` (mudança de etiqueta)
+Webhooks externos (no `engine`):
+- `POST /webhook/:agent_id` (header `x-webhook-secret`) — Helena → enfileira no BullMQ
+- `POST /webhook/clinicorp/:agent_id` (header `x-webhook-secret`)
+- `POST /webhook/helena-tags/:agent_id` (header `x-webhook-secret`)
 
-Cron internos (chamados por pg_cron, autenticação via `x-cron-secret`):
-- `POST /cron/followup`
-- `POST /cron/warmup`
+Health-checks:
+- `GET /health` em cada serviço (panel-api, engine, scheduler)
 
-## Loop do worker (substitui fluxo 01 + 02)
+## Variáveis de ambiente (.env.example)
+
+```
+# Comum
+NODE_ENV=production
+LOG_LEVEL=info
+DATABASE_URL=postgres://postgres:postgres@db:5432/sarai
+REDIS_URL=redis://redis:6379
+PGCRYPTO_KEY=<32 bytes>
+JWT_SECRET=<32+ bytes>
+HELENA_HMAC_SECRET=<segredo do Menu Personalizado Helena>
+ADMIN_API_KEY=<chave do painel /admin>
+PUBLIC_BASE_URL=https://api.suaplataforma.com
+
+# panel-api
+PANEL_PORT=8787
+
+# engine
+ENGINE_PORT=8788
+WEBHOOK_DEBOUNCE_MS=20000
+
+# scheduler
+SCHEDULER_TICK_MS=60000
+
+# integrações default (sobrescritas por conta)
+OPENROUTER_DEFAULT_MODEL=x-ai/grok-4-fast
+SPLITTER_MODEL=x-ai/grok-4-fast
+```
+
+## Loop do agente (substitui fluxos 01 + 02)
 
 ```ts
-// Pseudocódigo
-async function processQueue(agentId, phone) {
-  await pg.query("SELECT pg_advisory_lock(hashtext($1))", [agentId+phone]);
+// packages/engine/src/queue.ts (pseudocódigo)
+const worker = new Worker("inbound", async (job) => {
+  const { agent_id, phone } = job.data;
+  const lockKey = `lock:${agent_id}:${phone}`;
+  const acquired = await redis.set(lockKey, "1", "EX", 120, "NX");
+  if (!acquired) return; // outro worker está cuidando
+
   try {
-    await sleep(20_000); // mesmo debounce do n8n
-    const newer = await pg.query(
-      "SELECT 1 FROM message_queue WHERE agent_id=$1 AND phone=$2 AND consumed_at IS NULL AND enqueued_at > $3",
-      [agentId, phone, startTime]
-    );
-    if (newer.rowCount) return; // outra mensagem chegou, deixa o próximo job processar
-    const msgs = await fetchAndConsumeQueue(agentId, phone);
-    const concatenated = msgs.map(m => m.payload.text).join("\n");
+    await sleep(WEBHOOK_DEBOUNCE_MS);
+    const newer = await queue.getJobs(["waiting", "active"])
+      .then(js => js.some(j => j.data.agent_id === agent_id && j.data.phone === phone && j.id !== job.id));
+    if (newer) return; // o próximo job processa tudo
+
+    const msgs = await drainPending(agent_id, phone);
+    const cfg = await getAgentConfig(agent_id);
     const history = await loadHistory(conversationId);
     const result = await generateText({
-      model: openrouter(agent.llm_model),
-      system: agent.system_prompt,
-      messages: [...history, { role: "user", content: concatenated }],
-      tools: buildTools(agent.tools, ctx),
+      model: openrouter(cfg.llm_model),
+      system: cfg.system_prompt,
+      messages: [...history, { role: "user", content: msgs.map(m => m.text).join("\n") }],
+      tools: buildTools(cfg.tools, ctx),
       maxSteps: 5,
     });
-    const parts = await splitMessage(result.text); // chama LLM secundário
+    const { parts } = await generateObject({
+      model: openrouter(env.SPLITTER_MODEL),
+      schema: z.object({ parts: z.array(z.object({ text: z.string(), delayMs: z.number() })).max(5) }),
+      prompt: SPLITTER_PROMPT(result.text),
+    });
     for (const part of parts) {
       await sleep(part.delayMs);
       await helena.postMessage(conversationId, part.text);
     }
     await saveHistory(conversationId, result);
-    await logRun({ status: "ok", ... });
+    await logRun({ status: "ok", latency_ms, tokens_in, tokens_out, cost_usd });
   } finally {
-    await pg.query("SELECT pg_advisory_unlock(hashtext($1))", [agentId+phone]);
+    await redis.del(lockKey);
   }
-}
+}, { connection: redis, concurrency: 10 });
 ```
 
-## Template clinicorp_dental
-
-Extraído do nó *Agent* do fluxo `01. Agente Sarai`:
+## Scheduler (substitui fluxos 06 + 07 + 08)
 
 ```ts
-export const clinicorpDental = {
-  required_integrations: ["helena_crm", "clinicorp", "evolution_api"],
-  optional_integrations: ["google_drive", "elevenlabs", "central360", "groq"],
-  default_tools: [
-    "escalar_humano", "enviar_midia", "buscar_ou_criar_contato",
-    "buscar_agendamentos", "criar_agendamento", "cancelar_agendamento",
-    "listar_arquivos", "refletir",
-  ],
-  default_prompt: `Você é a Sarai, atendente virtual...`, // copiar do fluxo 01
-  followup_defaults: { cron: "0 */10 8-21 * * *", max: 3, prompts: [/* ... */] },
-  warmup_defaults: { wu1: 96, wu2: 72, wu3: 48, wu4: 24, wu5: 2, prompts: { /* ... */ } },
-  automations: [
-    { trigger: "tag_changed", conditions: { tag: "FUF Financeiro" }, actions: [{ type: "pause_ai" }] },
-  ],
-};
+// packages/scheduler/src/index.ts
+import { CronJob } from "cron";
+new CronJob("*/10 8-21 * * *", runFollowupTick, null, true, "America/Sao_Paulo");
+new CronJob("*/10 * * * *", runWarmupTick, null, true, "America/Sao_Paulo");
 ```
+
+`runFollowupTick`: query no índice parcial → para cada conversa, chama o agente `followup` com prompt da sequência → envia → incrementa contador.
+
+`runWarmupTick`: para cada agente `warmup` ativo, busca `appointment/list` no Clinicorp dos próximos 4 dias, calcula janela com `tempo_wu1..5`, evita duplicatas via `warmup_sent`, executa prompt da WU correspondente.
+
+## docker-compose.yml (esqueleto)
+
+```yaml
+services:
+  db:
+    image: supabase/postgres:15
+    environment: { POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} }
+    volumes: [pgdata:/var/lib/postgresql/data]
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redisdata:/data]
+  panel-api:
+    build: ./packages/panel-api
+    env_file: .env
+    depends_on: [db, redis]
+    healthcheck: { test: ["CMD", "wget", "-qO-", "http://localhost:8787/health"] }
+  engine:
+    build: ./packages/engine
+    env_file: .env
+    depends_on: [db, redis]
+  scheduler:
+    build: ./packages/scheduler
+    env_file: .env
+    depends_on: [db, redis, engine]
+  nginx:
+    image: nginx:alpine
+    ports: ["443:443", "80:80"]
+    volumes: [./nginx.conf:/etc/nginx/nginx.conf, certs:/etc/letsencrypt]
+    depends_on: [panel-api, engine]
+volumes: { pgdata: {}, redisdata: {}, certs: {} }
+```
+
+Nginx adiciona `Content-Security-Policy: frame-ancestors https://*.helena.app` no `panel-api` e `/embed/*` para permitir o iframe.
 
 ## Subindo na VPS
 
 ```bash
-# Postgres (Supabase self-hosted já vem com)
-psql $DATABASE_URL -f db/schema.sql
-psql $DATABASE_URL -f db/seed_clinicorp.sql
-
-# Backend
 cd server
-npm install
-npm run build
-pm2 start dist/index.js --name sarai-api
-# ou systemd unit
-
-# Caddy/Nginx com TLS apontando api.suaplataforma.com -> :8787
+cp .env.example .env && vim .env
+bun install
+bun run --filter shared db:migrate     # drizzle-kit push
+bun run --filter shared db:seed        # template clinicorp
+docker compose up -d --build
 ```
 
-No CRM Helena, crie um Menu Personalizado:
-- Tipo: **Página interna**
-- URL: `https://seuapp.lovable.app/embed?accountId={{id_da_conta}}&userId={{id_do_usuario}}&ts={{timestamp}}&sig={{hmac_sha256(HELENA_HMAC_SECRET, "{{id_da_conta}}.{{timestamp}}")}}`
+## Ordem de implementação
 
-Em cada agente criado, cole a URL `inbound_url` (vista na aba **Integrações > CRM Helena**) no webhook de mensagens do CRM.
+1. **shared**: `db/schema.ts` (Drizzle), `crypto.ts`, `redis.ts`, `helena.ts`, `templates/clinicorp_dental.ts`.
+2. **panel-api**: HMAC/JWT + CRUD que o Lovable já consome (frontend funciona ponta-a-ponta sem worker).
+3. **engine**: webhook → BullMQ → `runAgent` + tools Clinicorp + sender (`generateObject`).
+4. **scheduler**: followup + warmup + automações.
+5. `scripts/migrate-from-n8n.ts`.
+6. `docker-compose.yml` + `nginx.conf` com TLS automático (Caddy ou Certbot).
 
 ## Migração dos dados do n8n
 
-Script one-shot que lê `n8n_historico_mensagens`, `n8n_status_atendimento`, `n8n_fila_mensagens` do Supabase atual e copia para o novo schema preservando `session_id` (telefone). Sugerido: `server/scripts/migrate-n8n.ts`.
+Script one-shot (`scripts/migrate-from-n8n.ts`) lê `n8n_historico_mensagens`, `n8n_status_atendimento`, `n8n_fila_mensagens` do Supabase atual e copia para `messages`, `conversation_state`, `message_queue` preservando `session_id` (telefone). Tabelas antigas ficam intactas durante o paralelo.
+
+## Configuração no Helena
+
+Menu Personalizado:
+- Tipo: **Página interna**
+- URL: `https://seuapp.lovable.app/embed?accountId={{id_da_conta}}&userId={{id_do_usuario}}&ts={{timestamp}}&sig={{hmac_sha256(HELENA_HMAC_SECRET, "{{id_da_conta}}.{{timestamp}}")}}`
+
+Em cada agente criado, copie a URL `inbound_url` (aba **Integrações > CRM Helena**) + o `webhook_secret` (header `x-webhook-secret`) no webhook de mensagens do CRM.
