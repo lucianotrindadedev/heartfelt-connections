@@ -257,7 +257,7 @@ function StatusPill({
       className={
         "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium " +
         (online
-          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+          ? "border-success/30 bg-success/10 text-success"
           : "border-border bg-muted text-muted-foreground") +
         (uppercase ? " tracking-wider" : "")
       }
@@ -265,7 +265,7 @@ function StatusPill({
       <span
         className={
           "h-1.5 w-1.5 rounded-full " +
-          (online ? "bg-emerald-500" : "bg-muted-foreground/50")
+          (online ? "bg-success" : "bg-muted-foreground/50")
         }
       />
       {label}
@@ -274,9 +274,9 @@ function StatusPill({
 }
 
 const ACCENT_BAR: Record<string, string> = {
-  warning: "bg-amber-400",
-  success: "bg-emerald-500",
-  info: "bg-sky-500",
+  warning: "bg-warning",
+  success: "bg-success",
+  info: "bg-info",
   muted: "bg-muted-foreground/40",
 };
 
@@ -374,12 +374,12 @@ function ChannelCard({
             className={
               "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium " +
               (badge.tone === "success"
-                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                ? "bg-success/10 text-success"
                 : "bg-muted text-muted-foreground")
             }
           >
             {badge.dot && (
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              <span className="h-1.5 w-1.5 rounded-full bg-success" />
             )}
             {BadgeIcon && <BadgeIcon className="h-3 w-3" />}
             {badge.label}
