@@ -11,6 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as EmbedRouteImport } from './routes/embed'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
+import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 
 const EmbedRoute = EmbedRouteImport.update({
   id: '/embed',
@@ -22,31 +24,56 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EmbedAccountAccountIdRoute = EmbedAccountAccountIdRouteImport.update({
+  id: '/account/$accountId',
+  path: '/account/$accountId',
+  getParentRoute: () => EmbedRoute,
+} as any)
+const EmbedAccountAccountIdIndexRoute =
+  EmbedAccountAccountIdIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => EmbedAccountAccountIdRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/embed': typeof EmbedRoute
+  '/embed': typeof EmbedRouteWithChildren
+  '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
+  '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/embed': typeof EmbedRoute
+  '/embed': typeof EmbedRouteWithChildren
+  '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/embed': typeof EmbedRoute
+  '/embed': typeof EmbedRouteWithChildren
+  '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
+  '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/embed'
+  fullPaths:
+    | '/'
+    | '/embed'
+    | '/embed/account/$accountId'
+    | '/embed/account/$accountId/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/embed'
-  id: '__root__' | '/' | '/embed'
+  to: '/' | '/embed' | '/embed/account/$accountId'
+  id:
+    | '__root__'
+    | '/'
+    | '/embed'
+    | '/embed/account/$accountId'
+    | '/embed/account/$accountId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  EmbedRoute: typeof EmbedRoute
+  EmbedRoute: typeof EmbedRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +92,49 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/embed/account/$accountId': {
+      id: '/embed/account/$accountId'
+      path: '/account/$accountId'
+      fullPath: '/embed/account/$accountId'
+      preLoaderRoute: typeof EmbedAccountAccountIdRouteImport
+      parentRoute: typeof EmbedRoute
+    }
+    '/embed/account/$accountId/': {
+      id: '/embed/account/$accountId/'
+      path: '/'
+      fullPath: '/embed/account/$accountId/'
+      preLoaderRoute: typeof EmbedAccountAccountIdIndexRouteImport
+      parentRoute: typeof EmbedAccountAccountIdRoute
+    }
   }
 }
 
+interface EmbedAccountAccountIdRouteChildren {
+  EmbedAccountAccountIdIndexRoute: typeof EmbedAccountAccountIdIndexRoute
+}
+
+const EmbedAccountAccountIdRouteChildren: EmbedAccountAccountIdRouteChildren = {
+  EmbedAccountAccountIdIndexRoute: EmbedAccountAccountIdIndexRoute,
+}
+
+const EmbedAccountAccountIdRouteWithChildren =
+  EmbedAccountAccountIdRoute._addFileChildren(
+    EmbedAccountAccountIdRouteChildren,
+  )
+
+interface EmbedRouteChildren {
+  EmbedAccountAccountIdRoute: typeof EmbedAccountAccountIdRouteWithChildren
+}
+
+const EmbedRouteChildren: EmbedRouteChildren = {
+  EmbedAccountAccountIdRoute: EmbedAccountAccountIdRouteWithChildren,
+}
+
+const EmbedRouteWithChildren = EmbedRoute._addFileChildren(EmbedRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  EmbedRoute: EmbedRoute,
+  EmbedRoute: EmbedRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
