@@ -1,5 +1,7 @@
-# ---------- Stage 1: build (Bun) ----------
-FROM oven/bun:1.1-alpine AS builder
+# ---------- Stage 1: build (Bun + Node 22 LTS) ----------
+# Usamos a imagem oficial do Bun baseada em Debian, fixada em uma versão
+# recente cujo Node embutido satisfaz o requisito do Vite (>= 22.12).
+FROM oven/bun:1.2.21-debian AS builder
 
 WORKDIR /app
 
