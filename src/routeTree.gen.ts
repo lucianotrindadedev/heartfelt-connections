@@ -10,8 +10,11 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as EmbedRouteImport } from './routes/embed'
+import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
+import { Route as AdminAccountAccountIdRouteImport } from './routes/admin.account.$accountId'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as EmbedAccountAccountIdWarmupRouteImport } from './routes/embed.account.$accountId.warmup'
 import { Route as EmbedAccountAccountIdOverviewRouteImport } from './routes/embed.account.$accountId.overview'
@@ -28,15 +31,30 @@ const EmbedRoute = EmbedRouteImport.update({
   path: '/embed',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminIndexRoute = AdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AdminRoute,
+} as any)
 const EmbedAccountAccountIdRoute = EmbedAccountAccountIdRouteImport.update({
   id: '/account/$accountId',
   path: '/account/$accountId',
   getParentRoute: () => EmbedRoute,
+} as any)
+const AdminAccountAccountIdRoute = AdminAccountAccountIdRouteImport.update({
+  id: '/account/$accountId',
+  path: '/account/$accountId',
+  getParentRoute: () => AdminRoute,
 } as any)
 const EmbedAccountAccountIdIndexRoute =
   EmbedAccountAccountIdIndexRouteImport.update({
@@ -101,7 +119,10 @@ const EmbedAccountAccountIdAutomationsRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/embed': typeof EmbedRouteWithChildren
+  '/admin/': typeof AdminIndexRoute
+  '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
   '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
@@ -117,6 +138,8 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/embed': typeof EmbedRouteWithChildren
+  '/admin': typeof AdminIndexRoute
+  '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
   '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
   '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
   '/embed/account/$accountId/followup': typeof EmbedAccountAccountIdFollowupRoute
@@ -131,7 +154,10 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/admin': typeof AdminRouteWithChildren
   '/embed': typeof EmbedRouteWithChildren
+  '/admin/': typeof AdminIndexRoute
+  '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
   '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
@@ -148,7 +174,10 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/admin'
     | '/embed'
+    | '/admin/'
+    | '/admin/account/$accountId'
     | '/embed/account/$accountId'
     | '/embed/account/$accountId/automations'
     | '/embed/account/$accountId/conversations'
@@ -164,6 +193,8 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/embed'
+    | '/admin'
+    | '/admin/account/$accountId'
     | '/embed/account/$accountId/automations'
     | '/embed/account/$accountId/conversations'
     | '/embed/account/$accountId/followup'
@@ -177,7 +208,10 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/admin'
     | '/embed'
+    | '/admin/'
+    | '/admin/account/$accountId'
     | '/embed/account/$accountId'
     | '/embed/account/$accountId/automations'
     | '/embed/account/$accountId/conversations'
@@ -193,6 +227,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AdminRoute: typeof AdminRouteWithChildren
   EmbedRoute: typeof EmbedRouteWithChildren
 }
 
@@ -205,6 +240,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -212,12 +254,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin/': {
+      id: '/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AdminIndexRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/embed/account/$accountId': {
       id: '/embed/account/$accountId'
       path: '/account/$accountId'
       fullPath: '/embed/account/$accountId'
       preLoaderRoute: typeof EmbedAccountAccountIdRouteImport
       parentRoute: typeof EmbedRoute
+    }
+    '/admin/account/$accountId': {
+      id: '/admin/account/$accountId'
+      path: '/account/$accountId'
+      fullPath: '/admin/account/$accountId'
+      preLoaderRoute: typeof AdminAccountAccountIdRouteImport
+      parentRoute: typeof AdminRoute
     }
     '/embed/account/$accountId/': {
       id: '/embed/account/$accountId/'
@@ -292,6 +348,18 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AdminRouteChildren {
+  AdminIndexRoute: typeof AdminIndexRoute
+  AdminAccountAccountIdRoute: typeof AdminAccountAccountIdRoute
+}
+
+const AdminRouteChildren: AdminRouteChildren = {
+  AdminIndexRoute: AdminIndexRoute,
+  AdminAccountAccountIdRoute: AdminAccountAccountIdRoute,
+}
+
+const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
+
 interface EmbedAccountAccountIdRouteChildren {
   EmbedAccountAccountIdAutomationsRoute: typeof EmbedAccountAccountIdAutomationsRoute
   EmbedAccountAccountIdConversationsRoute: typeof EmbedAccountAccountIdConversationsRoute
@@ -337,6 +405,7 @@ const EmbedRouteWithChildren = EmbedRoute._addFileChildren(EmbedRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AdminRoute: AdminRouteWithChildren,
   EmbedRoute: EmbedRouteWithChildren,
 }
 export const routeTree = rootRouteImport
