@@ -1,13 +1,12 @@
-# ---------- Stage 1: build ----------
+# ---------- Stage 1: build (Bun) ----------
 FROM oven/bun:1.1-alpine AS builder
 
 WORKDIR /app
 
-# Instala dependências usando o lockfile do Bun (consistente no repo)
+# Lockfile do Bun fica consistente com o package.json
 COPY package.json bun.lock* bun.lockb* ./
 RUN bun install --frozen-lockfile || bun install
 
-# Copia o restante do projeto e faz o build estático (SPA)
 COPY . .
 
 # A URL da API é injetada no bundle em build-time via VITE_API_URL
@@ -18,16 +17,15 @@ ENV NODE_ENV=production
 
 RUN bun run build
 
-# ---------- Stage 2: runtime ----------
+# TanStack Start (target=static) gera o shell SPA em dist/client/_shell.html.
+# Renomeia para index.html para o Nginx servir como fallback de SPA.
+RUN cp /app/dist/client/_shell.html /app/dist/client/index.html
+
+# ---------- Stage 2: runtime (Nginx) ----------
 FROM nginx:1.27-alpine AS runtime
 
-# Configuração com fallback de SPA para o index.html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-# Saída do build (TanStack Start static => .output/public)
-# Fallback para dist caso o output mude.
-COPY --from=builder /app/.output/public /usr/share/nginx/html
+COPY --from=builder /app/dist/client /usr/share/nginx/html
 
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]
