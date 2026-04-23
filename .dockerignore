@@ -1,0 +1,15 @@
+node_modules
+.output
+dist
+.cache
+.git
+.github
+.vscode
+.idea
+.lovable
+server
+*.log
+.env
+.env.*
+!.env.example
+README.md

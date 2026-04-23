@@ -1,9 +1,22 @@
-// @lovable.dev/vite-tanstack-config already includes the following — do NOT add them manually
-// or the app will break with duplicate plugins:
+// @lovable.dev/vite-tanstack-config já inclui:
 //   - tanstackStart, viteReact, tailwindcss, tsConfigPaths, cloudflare (build-only),
-//     componentTagger (dev-only), VITE_* env injection, @ path alias, React/TanStack dedupe,
-//     error logger plugins, and sandbox detection (port/host/strictPort).
-// You can pass additional config via defineConfig({ vite: { ... } }) if needed.
+//     componentTagger (dev-only), VITE_* env injection, @ alias, React/TanStack dedupe,
+//     error logger plugins, sandbox detection.
+//
+// Para deploy no Coolify (Docker + Nginx) precisamos desabilitar o plugin Cloudflare
+// e gerar um build SPA estático que o Nginx serve com fallback para index.html.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
-export default defineConfig();
+const isStaticBuild = process.env.BUILD_TARGET === "static";
+
+export default defineConfig(
+  isStaticBuild
+    ? {
+        cloudflare: false,
+        tanstackStart: {
+          target: "static",
+          spa: { enabled: true },
+        },
+      }
+    : {},
+);
