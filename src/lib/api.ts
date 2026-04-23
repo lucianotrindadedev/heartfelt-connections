@@ -12,7 +12,7 @@ import { handleMock, MOCK_API_ENABLED } from "./mockApi";
 export const API_BASE_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ??
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
-  "http://yyggvih3qzox0cl5jbftnvf2.72.62.104.184.sslip.io";
+  "https://yyggvih3qzox0cl5jbftnvf2.72.62.104.184.sslip.io";
 
 export const IS_MOCK = MOCK_API_ENABLED;
 
