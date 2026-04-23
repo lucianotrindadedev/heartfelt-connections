@@ -49,7 +49,7 @@ export interface Agent {
 export interface AgentWebhook {
   agent_id: string;
   inbound_url: string;
-  inbound_token: string;
+  webhook_secret: string;
 }
 
 export interface Integration {

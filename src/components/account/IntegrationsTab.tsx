@@ -75,10 +75,12 @@ export function IntegrationsTab({ accountId }: { accountId: string }) {
   const integrations = useQuery({
     queryKey: ["integrations", accountId],
     queryFn: () => api<Integration[]>(`/api/accounts/${accountId}/integrations`),
+    staleTime: 60_000,
   });
   const agents = useQuery({
     queryKey: ["agents", accountId],
     queryFn: () => api<Agent[]>(`/api/accounts/${accountId}/agents`),
+    staleTime: 60_000,
   });
 
   const types = Object.keys(INTEGRATION_FIELDS) as IntegrationType[];
@@ -218,22 +220,38 @@ function WebhookRow({ agent }: { agent: Agent }) {
   const wh = useQuery({
     queryKey: ["webhook", agent.id],
     queryFn: () => api<AgentWebhook>(`/api/agents/${agent.id}/webhook`),
+    staleTime: 60_000,
   });
-  const url =
-    wh.data?.inbound_url ??
-    `${API_BASE_URL}/webhook/inbound/${wh.data?.inbound_token ?? "…"}`;
+  const url = wh.data?.inbound_url ?? `${API_BASE_URL}/webhook/${agent.id}`;
+  const secret = wh.data?.webhook_secret ?? "…";
   return (
-    <div className="flex items-center gap-2 rounded border border-border bg-background p-2 text-xs">
-      <span className="w-32 truncate font-medium">{agent.name}</span>
-      <code className="flex-1 truncate text-muted-foreground">{url}</code>
-      <button
-        type="button"
-        onClick={() => navigator.clipboard.writeText(url)}
-        className="rounded p-1 hover:bg-accent"
-        title="Copiar"
-      >
-        <Copy className="h-3.5 w-3.5" />
-      </button>
+    <div className="space-y-1 rounded border border-border bg-background p-2 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="w-32 truncate font-medium">{agent.name}</span>
+        <code className="flex-1 truncate text-muted-foreground">{url}</code>
+        <button
+          type="button"
+          onClick={() => navigator.clipboard.writeText(url)}
+          className="rounded p-1 hover:bg-accent"
+          title="Copiar URL"
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <div className="flex items-center gap-2 pl-32">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          x-webhook-secret
+        </span>
+        <code className="flex-1 truncate text-muted-foreground">{secret}</code>
+        <button
+          type="button"
+          onClick={() => navigator.clipboard.writeText(secret)}
+          className="rounded p-1 hover:bg-accent"
+          title="Copiar secret"
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }
