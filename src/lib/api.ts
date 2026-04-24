@@ -19,34 +19,90 @@ export const IS_MOCK = MOCK_API_ENABLED;
 const TOKEN_STORAGE_KEY = "helena_agent_jwt";
 const ADMIN_TOKEN_STORAGE_KEY = "helena_admin_token";
 
+// Em-memory fallback para quando sessionStorage/localStorage está bloqueado (ex: iframe sandbox)
+let _jwtMemory: string | null = null;
+let _adminTokenMemory: string | null = null;
+
+function safeSessionGet(key: string): string | null {
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSessionSet(key: string, value: string) {
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    // silently ignore
+  }
+}
+
+function safeSessionRemove(key: string) {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // silently ignore
+  }
+}
+
+function safeLocalGet(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalSet(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // silently ignore
+  }
+}
+
+function safeLocalRemove(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // silently ignore
+  }
+}
+
 export function getJwt(): string | null {
   if (typeof window === "undefined") return null;
-  return window.sessionStorage.getItem(TOKEN_STORAGE_KEY);
+  return _jwtMemory ?? safeSessionGet(TOKEN_STORAGE_KEY);
 }
 
 export function setJwt(token: string) {
+  _jwtMemory = token;
   if (typeof window === "undefined") return;
-  window.sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+  safeSessionSet(TOKEN_STORAGE_KEY, token);
 }
 
 export function clearJwt() {
+  _jwtMemory = null;
   if (typeof window === "undefined") return;
-  window.sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  safeSessionRemove(TOKEN_STORAGE_KEY);
 }
 
 export function getAdminToken(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY);
+  return _adminTokenMemory ?? safeLocalGet(ADMIN_TOKEN_STORAGE_KEY);
 }
 
 export function setAdminToken(token: string) {
+  _adminTokenMemory = token;
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+  safeLocalSet(ADMIN_TOKEN_STORAGE_KEY, token);
 }
 
 export function clearAdminToken() {
+  _adminTokenMemory = null;
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+  safeLocalRemove(ADMIN_TOKEN_STORAGE_KEY);
 }
 
 export class ApiError extends Error {
@@ -82,8 +138,6 @@ export async function api<T = unknown>(
     const jwt = getJwt();
     if (jwt) {
       headers.set("Authorization", `Bearer ${jwt}`);
-    } else {
-      console.warn("[api] No JWT found for request:", path);
     }
   }
 

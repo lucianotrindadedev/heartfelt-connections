@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useRef, type ReactNode } from "react";
 import {
   clearJwt,
   exchangeAccountToken,
@@ -19,17 +19,28 @@ interface SessionContextValue {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
+function safeSessionGet(key: string): string | null {
+  try { return window.sessionStorage.getItem(key); } catch { return null; }
+}
+function safeSessionSet(key: string, value: string) {
+  try { window.sessionStorage.setItem(key, value); } catch { /* ignore */ }
+}
+function safeSessionRemove(key: string) {
+  try { window.sessionStorage.removeItem(key); } catch { /* ignore */ }
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [accountId, setAccountId] = useState<string | null>(null);
   const [accountName, setAccountName] = useState<string | null>(null);
   const [status, setStatus] = useState<SessionContextValue["status"]>("idle");
   const [error, setError] = useState<string | null>(null);
+  const signingIn = useRef(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (getJwt()) {
-      const cachedId = window.sessionStorage.getItem("helena_account_id");
-      const cachedName = window.sessionStorage.getItem("helena_account_name");
+      const cachedId = safeSessionGet("helena_account_id");
+      const cachedName = safeSessionGet("helena_account_name");
       if (cachedId) {
         setAccountId(cachedId);
         setAccountName(cachedName);
@@ -39,32 +50,30 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn: SessionContextValue["signIn"] = async (params) => {
+    if (signingIn.current) return;
+    signingIn.current = true;
     setStatus("loading");
     setError(null);
     try {
-      console.log("[session] signIn called with accountId:", params.accountId);
       const result = await exchangeAccountToken(params);
-      console.log("[session] exchange OK, token length:", result.token?.length, "account:", result.account?.id);
       setJwt(result.token);
       setAccountId(result.account.id);
       setAccountName(result.account.name);
-      window.sessionStorage.setItem("helena_account_id", result.account.id);
-      window.sessionStorage.setItem("helena_account_name", result.account.name);
+      safeSessionSet("helena_account_id", result.account.id);
+      safeSessionSet("helena_account_name", result.account.name);
       setStatus("authenticated");
-      console.log("[session] status set to authenticated, jwt stored:", !!getJwt());
     } catch (e) {
-      console.error("[session] signIn failed:", e);
       setStatus("error");
       setError(e instanceof Error ? e.message : "Falha ao autenticar");
+    } finally {
+      signingIn.current = false;
     }
   };
 
   const signOut = () => {
     clearJwt();
-    if (typeof window !== "undefined") {
-      window.sessionStorage.removeItem("helena_account_id");
-      window.sessionStorage.removeItem("helena_account_name");
-    }
+    safeSessionRemove("helena_account_id");
+    safeSessionRemove("helena_account_name");
     setAccountId(null);
     setAccountName(null);
     setStatus("idle");
