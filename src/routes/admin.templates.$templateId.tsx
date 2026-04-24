@@ -102,6 +102,30 @@ function AdminTemplateDetail() {
             <span className="mb-1 block text-xs font-medium text-muted-foreground">Descricao</span>
             <input value={form.description || ""} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input" />
           </label>
+          <div>
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Imagem destaque (URL)</span>
+            <div className="flex items-start gap-3">
+              {form.imageUrl ? (
+                <img
+                  src={form.imageUrl}
+                  alt="Preview"
+                  className="h-20 w-20 shrink-0 rounded-md border border-border object-cover bg-muted"
+                  onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.3"; }}
+                />
+              ) : (
+                <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-muted/30 text-[10px] text-muted-foreground">
+                  Sem imagem
+                </div>
+              )}
+              <input
+                type="url"
+                value={form.imageUrl || ""}
+                onChange={(e) => setForm({ ...form, imageUrl: e.target.value })}
+                className="input"
+                placeholder="https://exemplo.com/imagem.png"
+              />
+            </div>
+          </div>
           <label className="inline-flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.enabled ?? true} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />
             Template ativo
