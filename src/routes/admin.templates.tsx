@@ -139,6 +139,7 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
     required_integrations: ["helena_crm", "openrouter"] as string[],
     optional_integrations: [] as string[],
     default_prompt: "",
+    image_url: "",
   });
 
   // Auto-gerar key a partir do label
@@ -148,7 +149,11 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
 
   const create = useMutation({
     mutationFn: () =>
-      api("/api/admin/templates", { method: "POST", admin: true, json: form }),
+      api("/api/admin/templates", {
+        method: "POST",
+        admin: true,
+        json: { ...form, image_url: form.image_url || null },
+      }),
     onSuccess: onCreated,
   });
 
