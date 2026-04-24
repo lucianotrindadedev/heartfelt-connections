@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import type { Template } from "@/lib/types";
 import { Plus, Pencil, Trash2, CheckCircle, XCircle } from "lucide-react";
 
-export const Route = createFileRoute("/admin/templates")({
+export const Route = createFileRoute("/admin/templates/")({
   component: AdminTemplates,
 });
 
