@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useParams } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useSession } from "@/lib/session";
 import { IS_MOCK } from "@/lib/api";
@@ -23,11 +23,12 @@ export const Route = createFileRoute("/embed")({
 
 function EmbedEntrypoint() {
   const search = Route.useSearch();
+  const params = Route.useParams({ from: "/embed" });
   const navigate = useNavigate();
   const { accountId, status, error, signIn } = useSession();
 
-  // Em modo mock, usamos accountId padrão se não vier nenhum
-  const effectiveAccountId = search.accountId ?? (IS_MOCK ? "demo-account" : undefined);
+  // Aceita accountId via query string ou path (/embed/:accountId)
+  const effectiveAccountId = search.accountId ?? (params.accountId as string | undefined) ?? (IS_MOCK ? "demo-account" : undefined);
 
   useEffect(() => {
     if (!effectiveAccountId) return;
