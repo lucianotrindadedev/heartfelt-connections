@@ -13,9 +13,6 @@ interface SessionContextValue {
   error: string | null;
   signIn: (params: {
     accountId: string;
-    userId?: string | null;
-    sig?: string | null;
-    ts?: string | null;
   }) => Promise<void>;
   signOut: () => void;
 }

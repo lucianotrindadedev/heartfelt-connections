@@ -93,8 +93,7 @@ function Index() {
             <li>
               2. Aponte para{" "}
               <code className="rounded bg-muted px-1.5 py-0.5 text-foreground">
-                /embed?accountId={"{{id_da_conta}}"}&amp;userId=
-                {"{{id_do_usuario}}"}&amp;sig=…
+                https://p13ytugkupz1n7naq5x7xtaj.72.62.104.184.sslip.io/embed?accountId={"{{id_da_conta}}"}
               </code>
             </li>
             <li>

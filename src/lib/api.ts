@@ -122,9 +122,6 @@ export async function api<T = unknown>(
 
 export async function exchangeAccountToken(params: {
   accountId: string;
-  userId?: string | null;
-  sig?: string | null;
-  ts?: string | null;
 }): Promise<{ token: string; account: { id: string; name: string } }> {
   const adminToken = getAdminToken();
   return api("/api/auth/exchange", {

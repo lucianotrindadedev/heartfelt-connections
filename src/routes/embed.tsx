@@ -5,17 +5,11 @@ import { IS_MOCK } from "@/lib/api";
 
 interface EmbedSearch {
   accountId?: string;
-  userId?: string;
-  sig?: string;
-  ts?: string;
 }
 
 export const Route = createFileRoute("/embed")({
   validateSearch: (search: Record<string, unknown>): EmbedSearch => ({
     accountId: (search.accountId as string | undefined) ?? (search.accountid as string | undefined) ?? undefined,
-    userId: (search.userId as string | undefined) ?? (search.userid as string | undefined) ?? undefined,
-    sig: (search.sig as string | undefined) ?? undefined,
-    ts: (search.ts as string | undefined) ?? undefined,
   }),
   component: EmbedEntrypoint,
 });
@@ -41,9 +35,6 @@ function EmbedEntrypoint() {
     if (status === "idle" || (status === "authenticated" && accountId !== effectiveAccountId)) {
       signIn({
         accountId: effectiveAccountId,
-        userId: search.userId ?? (IS_MOCK ? "demo-user" : undefined),
-        sig: search.sig ?? (IS_MOCK ? "mock" : undefined),
-        ts: search.ts ?? (IS_MOCK ? String(Date.now()) : undefined),
       });
     }
   }, [search, accountId, status, signIn, navigate, effectiveAccountId]);
