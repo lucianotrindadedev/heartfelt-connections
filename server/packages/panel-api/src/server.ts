@@ -11,6 +11,7 @@ import { runsRoute } from "./routes/runs";
 import { statsRoute } from "./routes/stats";
 import { testsRoute } from "./routes/tests";
 import { adminRoute } from "./routes/admin";
+import { oauthRoute } from "./routes/oauth";
 
 const app = new Hono();
 
@@ -31,6 +32,7 @@ app.route("/api/agents", agentsRoute);
 app.route("/api/conversations", conversationsRoute);
 app.route("/api/test", testsRoute);
 app.route("/api/admin", adminRoute);
+app.route("/api/oauth", oauthRoute);
 
 // Public templates list (accessible with session auth)
 app.get("/api/templates", async (c) => {

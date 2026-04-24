@@ -8,3 +8,4 @@ export { db, withTenant } from "./db/client";
 export * from "./llm";
 export * from "./evolution";
 export * from "./helena";
+export * from "./google-oauth";

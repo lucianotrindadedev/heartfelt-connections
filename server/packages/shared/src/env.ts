@@ -22,6 +22,8 @@ const schema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),  // For temp file storage
   FORMATTER_MODEL: z.string().default("x-ai/grok-4.1-fast"),  // For WhatsApp formatting
   MONITOR_MODEL: z.string().default("x-ai/grok-4.1-fast"),  // For notification agent
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
 });
 
 export const env = schema.parse(process.env);

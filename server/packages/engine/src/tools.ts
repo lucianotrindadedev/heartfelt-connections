@@ -5,7 +5,8 @@
 
 import type { LlmToolDef } from "@sarai/shared";
 import type { HelenaClient } from "@sarai/shared";
-import { logger } from "@sarai/shared";
+import { logger, getValidGoogleToken, db, integrations, env } from "@sarai/shared";
+import { eq, and, sql } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // ToolContext – passed by the worker for every tool invocation
@@ -153,6 +154,40 @@ async function clinupRequest(
 // ---------------------------------------------------------------------------
 // Google Calendar helper – centralised HTTP calls with Bearer auth
 // ---------------------------------------------------------------------------
+
+/**
+ * Get a valid Google access token, auto-refreshing if expired.
+ * Updates the encrypted config in DB when refreshed.
+ */
+async function getGoogleAccessToken(gcConfig: any, accountId: string): Promise<string> {
+  if (!gcConfig?.access_token || !gcConfig?.refresh_token) {
+    throw new Error("Google Calendar não configurado (tokens ausentes)");
+  }
+
+  const result = await getValidGoogleToken({
+    access_token: gcConfig.access_token,
+    refresh_token: gcConfig.refresh_token,
+    expires_at: gcConfig.expires_at || 0,
+  });
+
+  // If token was refreshed, update it in DB
+  if (result.refreshed && result.newConfig) {
+    const updatedConfig = { ...gcConfig, ...result.newConfig };
+    const configJson = JSON.stringify(updatedConfig);
+    try {
+      await db.execute(
+        sql`UPDATE integrations 
+            SET config_enc = pgp_sym_encrypt(${configJson}::text, ${env.PGCRYPTO_KEY}),
+                updated_at = now()
+            WHERE account_id = ${accountId} AND type = 'google_calendar'`
+      );
+    } catch (e) {
+      logger.warn({ err: (e as Error).message }, "failed to persist refreshed google token");
+    }
+  }
+
+  return result.access_token;
+}
 
 async function googleCalendarRequest(
   method: string,
@@ -1371,15 +1406,16 @@ registerTool(
   },
   async (args, ctx) => {
     const gcConfig = ctx.agentConfig.integrations?.google_calendar;
-    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+    if (!gcConfig?.calendar_id) {
       return { error: "Google Calendar não configurado" };
     }
 
     try {
+      const accessToken = await getGoogleAccessToken(gcConfig, ctx.agentConfig.accountId);
       return await googleCalendarRequest(
         "GET",
         `/calendars/${encodeURIComponent(gcConfig.calendar_id)}/events`,
-        gcConfig.access_token,
+        accessToken,
         undefined,
         {
           timeMin: args.data_inicio,
@@ -1429,7 +1465,7 @@ registerTool(
   },
   async (args, ctx) => {
     const gcConfig = ctx.agentConfig.integrations?.google_calendar;
-    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+    if (!gcConfig?.calendar_id) {
       return { error: "Google Calendar não configurado" };
     }
 
@@ -1444,10 +1480,11 @@ registerTool(
     }
 
     try {
+      const accessToken = await getGoogleAccessToken(gcConfig, ctx.agentConfig.accountId);
       return await googleCalendarRequest(
         "POST",
         `/calendars/${encodeURIComponent(gcConfig.calendar_id)}/events`,
-        gcConfig.access_token,
+        accessToken,
         body,
       );
     } catch (e: any) {
@@ -1475,15 +1512,16 @@ registerTool(
   },
   async (args, ctx) => {
     const gcConfig = ctx.agentConfig.integrations?.google_calendar;
-    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+    if (!gcConfig?.calendar_id) {
       return { error: "Google Calendar não configurado" };
     }
 
     try {
+      const accessToken = await getGoogleAccessToken(gcConfig, ctx.agentConfig.accountId);
       return await googleCalendarRequest(
         "DELETE",
         `/calendars/${encodeURIComponent(gcConfig.calendar_id)}/events/${encodeURIComponent(args.evento_id)}`,
-        gcConfig.access_token,
+        accessToken,
       );
     } catch (e: any) {
       return { error: e.message };
@@ -1514,15 +1552,16 @@ registerTool(
   },
   async (args, ctx) => {
     const gcConfig = ctx.agentConfig.integrations?.google_calendar;
-    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+    if (!gcConfig?.calendar_id) {
       return { error: "Google Calendar não configurado" };
     }
 
     try {
+      const accessToken = await getGoogleAccessToken(gcConfig, ctx.agentConfig.accountId);
       return await googleCalendarRequest(
         "POST",
         "/freeBusy",
-        gcConfig.access_token,
+        accessToken,
         {
           timeMin: args.data_inicio,
           timeMax: args.data_fim,
