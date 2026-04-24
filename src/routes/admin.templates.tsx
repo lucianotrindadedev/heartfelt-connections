@@ -122,6 +122,14 @@ const ALL_INTEGRATIONS = [
   "clinup", "elevenlabs", "openrouter", "evolution_api", "central360", "groq",
 ];
 
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
 function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [form, setForm] = useState({
     key: "",
@@ -130,7 +138,13 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
     integration_key: "clinicorp",
     required_integrations: ["helena_crm", "openrouter"] as string[],
     optional_integrations: [] as string[],
+    default_prompt: "",
   });
+
+  // Auto-gerar key a partir do label
+  const handleLabelChange = (label: string) => {
+    setForm((f) => ({ ...f, label, key: slugify(label) }));
+  };
 
   const create = useMutation({
     mutationFn: () =>
@@ -143,45 +157,58 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
       <h2 className="text-sm font-semibold">Novo Template</h2>
       <form
         onSubmit={(e) => { e.preventDefault(); create.mutate(); }}
-        className="grid gap-3 md:grid-cols-2"
+        className="space-y-3"
       >
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Label (nome exibido)</span>
+            <input required value={form.label} onChange={(e) => handleLabelChange(e.target.value)} className="input" placeholder="Ex: Clinica Odontologica [Clinicorp]" />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Key (gerada automaticamente)</span>
+            <input value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} className="input bg-muted/50" placeholder="clinica_odontologica_clinicorp" />
+          </label>
+        </div>
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-muted-foreground">Key (identificador unico)</span>
-          <input required value={form.key} onChange={(e) => setForm({ ...form, key: e.target.value })} className="input" placeholder="Ex: clinicorp_dental" />
-        </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-muted-foreground">Label (nome exibido)</span>
-          <input required value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} className="input" placeholder="Ex: Clínica [Clinicorp]" />
-        </label>
-        <label className="block md:col-span-2">
           <span className="mb-1 block text-xs font-medium text-muted-foreground">Descricao</span>
           <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input" placeholder="Descricao do template..." />
         </label>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Software de Agenda</span>
+            <select value={form.integration_key} onChange={(e) => setForm({ ...form, integration_key: e.target.value })} className="input">
+              {INTEGRATION_KEYS.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Integracoes obrigatorias</span>
+            <div className="flex flex-wrap gap-2 rounded-md border border-border p-2">
+              {ALL_INTEGRATIONS.map((i) => (
+                <label key={i} className="inline-flex items-center gap-1 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={form.required_integrations.includes(i)}
+                    onChange={(e) => {
+                      if (e.target.checked) setForm({ ...form, required_integrations: [...form.required_integrations, i] });
+                      else setForm({ ...form, required_integrations: form.required_integrations.filter((x) => x !== i) });
+                    }}
+                  />
+                  {i}
+                </label>
+              ))}
+            </div>
+          </label>
+        </div>
         <label className="block">
-          <span className="mb-1 block text-xs font-medium text-muted-foreground">Software de Agenda</span>
-          <select value={form.integration_key} onChange={(e) => setForm({ ...form, integration_key: e.target.value })} className="input">
-            {INTEGRATION_KEYS.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
-          </select>
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">Prompt base do template</span>
+          <textarea
+            value={form.default_prompt}
+            onChange={(e) => setForm({ ...form, default_prompt: e.target.value })}
+            className="input min-h-[200px] font-mono text-xs"
+            placeholder="Cole aqui o prompt base que sera usado como default ao criar agentes com este template..."
+          />
         </label>
-        <label className="block">
-          <span className="mb-1 block text-xs font-medium text-muted-foreground">Integracoes obrigatorias</span>
-          <div className="flex flex-wrap gap-1">
-            {ALL_INTEGRATIONS.map((i) => (
-              <label key={i} className="inline-flex items-center gap-1 text-xs">
-                <input
-                  type="checkbox"
-                  checked={form.required_integrations.includes(i)}
-                  onChange={(e) => {
-                    if (e.target.checked) setForm({ ...form, required_integrations: [...form.required_integrations, i] });
-                    else setForm({ ...form, required_integrations: form.required_integrations.filter((x) => x !== i) });
-                  }}
-                />
-                {i}
-              </label>
-            ))}
-          </div>
-        </label>
-        <div className="md:col-span-2 flex gap-2">
+        <div className="flex gap-2">
           <button type="submit" disabled={create.isPending} className="rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50">
             Criar
           </button>

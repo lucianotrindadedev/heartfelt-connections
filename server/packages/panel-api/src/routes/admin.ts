@@ -143,23 +143,36 @@ const NewTemplate = z.object({
 });
 
 adminRoute.post("/templates", async (c) => {
-  const body = NewTemplate.parse(await c.req.json());
-  const [row] = await db.insert(agentTemplates).values({
-    key: body.key,
-    label: body.label,
-    description: body.description,
-    integrationKey: body.integration_key,
-    requiredIntegrations: body.required_integrations,
-    optionalIntegrations: body.optional_integrations,
-    defaultTools: body.default_tools,
-    defaultPrompt: body.default_prompt,
-    toolInstructions: body.tool_instructions,
-    followupDefaults: body.followup_defaults,
-    warmupDefaults: body.warmup_defaults,
-    credentialFields: body.credential_fields,
-    enabled: body.enabled,
-  }).returning();
-  return c.json(row, 201);
+  try {
+    const body = NewTemplate.parse(await c.req.json());
+    // Sanitize key: lowercase, replace spaces/special chars with underscores
+    const sanitizedKey = body.key
+      .toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_|_$/g, "");
+
+    const [row] = await db.insert(agentTemplates).values({
+      key: sanitizedKey,
+      label: body.label,
+      description: body.description,
+      integrationKey: body.integration_key,
+      requiredIntegrations: body.required_integrations,
+      optionalIntegrations: body.optional_integrations,
+      defaultTools: body.default_tools,
+      defaultPrompt: body.default_prompt,
+      toolInstructions: body.tool_instructions,
+      followupDefaults: body.followup_defaults,
+      warmupDefaults: body.warmup_defaults,
+      credentialFields: body.credential_fields,
+      enabled: body.enabled,
+    }).returning();
+    return c.json(row, 201);
+  } catch (e: any) {
+    console.error("[admin] create template error:", e);
+    if (e.code === "23505") return c.json({ error: "Template com esta key já existe" }, 409);
+    return c.json({ error: e.message || "Erro interno ao criar template" }, 500);
+  }
 });
 
 adminRoute.patch("/templates/:id", async (c) => {
