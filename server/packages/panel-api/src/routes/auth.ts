@@ -38,8 +38,8 @@ authRoute.post("/exchange", async (c) => {
   if (env.NODE_ENV === "production") {
     const isAdmin = adminToken === env.ADMIN_API_KEY;
 
-    if (!isAdmin) {
-      if (!sig || !ts) return c.json({ error: "missing signature" }, 401);
+    // Se houver assinatura, validamos. Se não houver, permitimos (Opção B - Helena CRM)
+    if (!isAdmin && sig && ts) {
       const skew = Math.abs(Date.now() / 1000 - Number(ts));
       if (skew > 300) return c.json({ error: "expired" }, 401);
       const ok = await verifyHmac(accountId, ts, sig);
