@@ -9,4 +9,4 @@ COPY packages/panel-api packages/panel-api
 ENV NODE_ENV=production SVC_NAME=panel-api
 EXPOSE 8787
 # Roda migrations automaticamente se RUN_MIGRATIONS=true (default true)
-CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS:-true}\" = \"true\" ]; then bun packages/shared/src/db/migrate.ts; fi && bun packages/panel-api/src/server.ts"]
+CMD ["sh", "-c", "if [ \"${RUN_MIGRATIONS:-true}\" = \"true\" ]; then echo '--- Running Migrations ---' && bun packages/shared/src/db/migrate.ts || echo '--- Migration FAILED, starting server anyway ---'; else echo '--- Skipping Migrations ---'; fi && bun packages/panel-api/src/server.ts"]

@@ -3,9 +3,12 @@ import postgres from "postgres";
 import { env } from "../env";
 import * as schema from "./schema";
 
+console.log(`[db] Inicializando cliente para ${env.DATABASE_URL.split("@")[1]?.split("/")[0] || "unknown host"}`);
+
 const queryClient = postgres(env.DATABASE_URL, {
   max: 20,
   prepare: false,
+  onnotice: (notice) => console.log("[db] Notice:", notice.message),
 });
 
 export const db = drizzle(queryClient, { schema });
