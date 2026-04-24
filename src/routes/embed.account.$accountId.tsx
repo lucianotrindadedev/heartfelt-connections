@@ -10,6 +10,7 @@ export const Route = createFileRoute("/embed/account/$accountId")({
 const TABS = [
   { to: "/embed/account/$accountId/overview", label: "Visão geral" },
   { to: "/embed/account/$accountId/main-agent", label: "Agente Principal" },
+  { to: "/embed/account/$accountId/training", label: "Treinamento" },
   { to: "/embed/account/$accountId/followup", label: "Follow-up" },
   { to: "/embed/account/$accountId/warmup", label: "Warm-up" },
   { to: "/embed/account/$accountId/integrations", label: "Integrações" },
