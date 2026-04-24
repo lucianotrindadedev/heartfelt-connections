@@ -126,8 +126,10 @@ export async function exchangeAccountToken(params: {
   sig?: string | null;
   ts?: string | null;
 }): Promise<{ token: string; account: { id: string; name: string } }> {
+  const adminToken = getAdminToken();
   return api("/api/auth/exchange", {
     method: "POST",
     json: params,
+    admin: !!adminToken, // Envia X-Admin-Token se existir localmente
   });
 }
