@@ -5,11 +5,18 @@ import { IS_MOCK } from "@/lib/api";
 
 interface EmbedSearch {
   accountId?: string;
+  account_id?: string;
+  account?: string;
 }
 
 export const Route = createFileRoute("/embed")({
   validateSearch: (search: Record<string, unknown>): EmbedSearch => ({
-    accountId: (search.accountId as string | undefined) ?? (search.accountid as string | undefined) ?? undefined,
+    accountId: 
+      (search.accountId as string | undefined) ?? 
+      (search.accountid as string | undefined) ?? 
+      (search.account_id as string | undefined) ?? 
+      (search.account as string | undefined) ?? 
+      undefined,
   }),
   component: EmbedEntrypoint,
 });
@@ -51,10 +58,11 @@ function EmbedEntrypoint() {
 
 
   if (!effectiveAccountId) {
+    const currentUrl = typeof window !== "undefined" ? window.location.href : "";
     return (
       <CenteredCard
         title="Parâmetro accountId ausente"
-        body="Este painel só pode ser aberto a partir do CRM Helena. Verifique a configuração do menu personalizado."
+        body={`Este painel só pode ser aberto a partir do CRM Helena. Verifique a configuração do menu personalizado. URL detectada: ${currentUrl}`}
       />
     );
   }
