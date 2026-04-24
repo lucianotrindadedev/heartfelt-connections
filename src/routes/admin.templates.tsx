@@ -178,6 +178,33 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
           <span className="mb-1 block text-xs font-medium text-muted-foreground">Descricao</span>
           <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input" placeholder="Descricao do template..." />
         </label>
+        <div className="grid gap-3 md:grid-cols-[120px_1fr] items-start">
+          {form.image_url ? (
+            <img
+              src={form.image_url}
+              alt="Preview"
+              className="h-[120px] w-[120px] rounded-md border border-border object-cover bg-muted"
+              onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.3"; }}
+            />
+          ) : (
+            <div className="flex h-[120px] w-[120px] items-center justify-center rounded-md border border-dashed border-border bg-muted/30 text-[10px] text-muted-foreground text-center px-2">
+              Sem imagem
+            </div>
+          )}
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Imagem destaque (URL)</span>
+            <input
+              type="url"
+              value={form.image_url}
+              onChange={(e) => setForm({ ...form, image_url: e.target.value })}
+              className="input"
+              placeholder="https://exemplo.com/imagem.png"
+            />
+            <span className="mt-1 block text-[11px] text-muted-foreground">
+              Cole a URL pública de uma imagem (PNG/JPG/SVG) que representará este template.
+            </span>
+          </label>
+        </div>
         <div className="grid gap-3 md:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-muted-foreground">Software de Agenda</span>
