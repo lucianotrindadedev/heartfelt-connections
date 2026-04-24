@@ -139,6 +139,7 @@ const NewTemplate = z.object({
   followup_defaults: z.any().default({}),
   warmup_defaults: z.any().default({}),
   credential_fields: z.array(z.any()).default([]),
+  image_url: z.string().url().nullish(),
   enabled: z.boolean().default(true),
 });
 
@@ -165,6 +166,7 @@ adminRoute.post("/templates", async (c) => {
       followupDefaults: body.followup_defaults,
       warmupDefaults: body.warmup_defaults,
       credentialFields: body.credential_fields,
+      imageUrl: body.image_url ?? null,
       enabled: body.enabled,
     }).returning();
     return c.json(row, 201);
@@ -191,6 +193,7 @@ adminRoute.patch("/templates/:id", async (c) => {
   if (body.followup_defaults !== undefined) updates.followupDefaults = body.followup_defaults;
   if (body.warmup_defaults !== undefined) updates.warmupDefaults = body.warmup_defaults;
   if (body.credential_fields !== undefined) updates.credentialFields = body.credential_fields;
+  if (body.image_url !== undefined) updates.imageUrl = body.image_url;
   if (body.enabled !== undefined) updates.enabled = body.enabled;
 
   if (Object.keys(updates).length === 0) return c.json({ error: "no fields" }, 400);

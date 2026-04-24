@@ -34,6 +34,7 @@ export interface Template {
   followupDefaults: Record<string, unknown>;
   warmupDefaults: Record<string, unknown>;
   credentialFields: CredentialField[];
+  imageUrl: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

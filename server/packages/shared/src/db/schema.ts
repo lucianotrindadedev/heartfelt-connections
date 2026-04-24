@@ -50,6 +50,7 @@ export const agentTemplates = pgTable("agent_templates", {
   followupDefaults: jsonb("followup_defaults").default({}).notNull(),
   warmupDefaults: jsonb("warmup_defaults").default({}).notNull(),
   credentialFields: jsonb("credential_fields").default([]).notNull(),
+  imageUrl: text("image_url"),
   enabled: boolean("enabled").default(true).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

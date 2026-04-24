@@ -59,31 +59,42 @@ function AdminTemplates() {
         <ul className="divide-y divide-border">
           {templates.data?.map((t) => (
             <li key={t.id} className="flex items-center justify-between p-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <p className="font-medium">{t.label}</p>
-                  {t.enabled ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
-                      <CheckCircle className="h-3 w-3" /> Ativo
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                      <XCircle className="h-3 w-3" /> Inativo
-                    </span>
+              <div className="flex items-center gap-3">
+                {t.imageUrl ? (
+                  <img
+                    src={t.imageUrl}
+                    alt={t.label}
+                    className="h-12 w-12 shrink-0 rounded-md border border-border object-cover bg-muted"
+                  />
+                ) : (
+                  <div className="h-12 w-12 shrink-0 rounded-md border border-dashed border-border bg-muted/30" />
+                )}
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium">{t.label}</p>
+                    {t.enabled ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                        <CheckCircle className="h-3 w-3" /> Ativo
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                        <XCircle className="h-3 w-3" /> Inativo
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    <code className="rounded bg-muted px-1">{t.key}</code>
+                    {" · "}
+                    Integração: <strong>{t.integrationKey}</strong>
+                    {" · "}
+                    {t.requiredIntegrations.length} obrigatórias, {t.optionalIntegrations.length} opcionais
+                    {" · "}
+                    {t.credentialFields.length} campos de credencial
+                  </p>
+                  {t.description && (
+                    <p className="text-xs text-muted-foreground">{t.description}</p>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  <code className="rounded bg-muted px-1">{t.key}</code>
-                  {" · "}
-                  Integração: <strong>{t.integrationKey}</strong>
-                  {" · "}
-                  {t.requiredIntegrations.length} obrigatórias, {t.optionalIntegrations.length} opcionais
-                  {" · "}
-                  {t.credentialFields.length} campos de credencial
-                </p>
-                {t.description && (
-                  <p className="text-xs text-muted-foreground">{t.description}</p>
-                )}
               </div>
               <div className="flex items-center gap-2">
                 <Link
@@ -139,6 +150,7 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
     required_integrations: ["helena_crm", "openrouter"] as string[],
     optional_integrations: [] as string[],
     default_prompt: "",
+    image_url: "",
   });
 
   // Auto-gerar key a partir do label
@@ -148,7 +160,11 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
 
   const create = useMutation({
     mutationFn: () =>
-      api("/api/admin/templates", { method: "POST", admin: true, json: form }),
+      api("/api/admin/templates", {
+        method: "POST",
+        admin: true,
+        json: { ...form, image_url: form.image_url || null },
+      }),
     onSuccess: onCreated,
   });
 
@@ -173,6 +189,33 @@ function CreateTemplateForm({ onClose, onCreated }: { onClose: () => void; onCre
           <span className="mb-1 block text-xs font-medium text-muted-foreground">Descricao</span>
           <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="input" placeholder="Descricao do template..." />
         </label>
+        <div className="grid gap-3 md:grid-cols-[120px_1fr] items-start">
+          {form.image_url ? (
+            <img
+              src={form.image_url}
+              alt="Preview"
+              className="h-[120px] w-[120px] rounded-md border border-border object-cover bg-muted"
+              onError={(e) => { (e.target as HTMLImageElement).style.opacity = "0.3"; }}
+            />
+          ) : (
+            <div className="flex h-[120px] w-[120px] items-center justify-center rounded-md border border-dashed border-border bg-muted/30 text-[10px] text-muted-foreground text-center px-2">
+              Sem imagem
+            </div>
+          )}
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">Imagem destaque (URL)</span>
+            <input
+              type="url"
+              value={form.image_url}
+              onChange={(e) => setForm({ ...form, image_url: e.target.value })}
+              className="input"
+              placeholder="https://exemplo.com/imagem.png"
+            />
+            <span className="mt-1 block text-[11px] text-muted-foreground">
+              Cole a URL pública de uma imagem (PNG/JPG/SVG) que representará este template.
+            </span>
+          </label>
+        </div>
         <div className="grid gap-3 md:grid-cols-2">
           <label className="block">
             <span className="mb-1 block text-xs font-medium text-muted-foreground">Software de Agenda</span>
