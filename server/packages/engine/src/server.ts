@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { env, logger } from "@sarai/shared";
 import { webhookRoute } from "./webhook";
-import "./queue"; // boot worker
+import "./queue"; // boot inbound worker
+import "./automations"; // boot clinicorp + tag event workers
 
 const app = new Hono();
 

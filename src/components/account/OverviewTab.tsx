@@ -115,7 +115,7 @@ export function OverviewTab({ accountId }: OverviewProps) {
         <div className="grid gap-4 md:grid-cols-2">
           <PrimaryActionCard
             accountId={accountId}
-            to="/embed/account/$accountId/main-agent"
+            to="/embed/account/$accountId/training"
             accent="warning"
             eyebrow="Base de conhecimento"
             title="Treinamentos avançados"

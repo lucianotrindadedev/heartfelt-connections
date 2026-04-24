@@ -109,7 +109,7 @@ export function TrainingTab({
       {/* Top action bar */}
       <div className="flex flex-wrap items-center gap-2">
         <Link
-          to="/embed/account/$accountId/main-agent"
+          to="/embed/account/$accountId/overview"
           params={{ accountId }}
           className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-accent"
         >

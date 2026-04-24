@@ -5,3 +5,6 @@ export * from "./crypto";
 export * from "./db/schema";
 export * as schema from "./db/schema";
 export { db, withTenant } from "./db/client";
+export * from "./llm";
+export * from "./evolution";
+export * from "./helena";

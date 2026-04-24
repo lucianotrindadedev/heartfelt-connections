@@ -16,6 +16,12 @@ const schema = z.object({
   SCHEDULER_TZ: z.string().default("America/Sao_Paulo"),
   OPENROUTER_DEFAULT_MODEL: z.string().default("x-ai/grok-4-fast"),
   SPLITTER_MODEL: z.string().default("x-ai/grok-4-fast"),
+  GROQ_API_KEY: z.string().optional(),  // For audio transcription (Whisper)
+  OPENAI_API_KEY: z.string().optional(),  // For image analysis (GPT-4o-mini)
+  SUPABASE_URL: z.string().optional(),  // For temp file storage
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),  // For temp file storage
+  FORMATTER_MODEL: z.string().default("x-ai/grok-4.1-fast"),  // For WhatsApp formatting
+  MONITOR_MODEL: z.string().default("x-ai/grok-4.1-fast"),  // For notification agent
 });
 
 export const env = schema.parse(process.env);
