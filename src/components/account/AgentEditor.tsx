@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { GraduationCap } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Agent, AgentKind } from "@/lib/types";
 
