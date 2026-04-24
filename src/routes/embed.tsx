@@ -1,12 +1,10 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useNavigate, useMatches } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { useSession } from "@/lib/session";
 import { IS_MOCK } from "@/lib/api";
 
 interface EmbedSearch {
   accountId?: string;
-  account_id?: string;
-  account?: string;
 }
 
 export const Route = createFileRoute("/embed")({
@@ -18,8 +16,26 @@ export const Route = createFileRoute("/embed")({
       (search.account as string | undefined) ?? 
       undefined,
   }),
-  component: EmbedEntrypoint,
+  component: EmbedLayout,
 });
+
+/**
+ * Layout route para /embed.
+ * - Se a URL for /embed/account/$accountId (child route), renderiza <Outlet />
+ * - Se a URL for /embed?accountId=UUID, autentica e redireciona
+ * - Se a URL for /embed sem params, mostra erro
+ */
+function EmbedLayout() {
+  const matches = useMatches();
+  // Se há uma child route ativa (ex: /embed/account/$accountId), renderiza ela
+  const hasChildRoute = matches.some(m => m.id !== "/embed" && m.id.startsWith("/embed/"));
+
+  if (hasChildRoute) {
+    return <Outlet />;
+  }
+
+  return <EmbedEntrypoint />;
+}
 
 function EmbedEntrypoint() {
   const search = Route.useSearch();
@@ -55,13 +71,11 @@ function EmbedEntrypoint() {
     }
   }, [status, accountId, effectiveAccountId, navigate]);
 
-
   if (!effectiveAccountId) {
-    const currentUrl = typeof window !== "undefined" ? window.location.href : "";
     return (
       <CenteredCard
         title="Parâmetro accountId ausente"
-        body={`Este painel só pode ser aberto a partir do CRM Helena. Verifique a configuração do menu personalizado. URL detectada: ${currentUrl}`}
+        body="Este painel só pode ser aberto a partir do CRM Helena. Verifique a configuração do menu personalizado."
       />
     );
   }
@@ -77,8 +91,8 @@ function EmbedEntrypoint() {
 
   return (
     <CenteredCard
-      title={IS_MOCK ? "Carregando preview…" : "Carregando painel…"}
-      body={IS_MOCK ? "Modo mock ativo — usando dados de demonstração." : "Validando assinatura HMAC com o backend."}
+      title="Carregando painel…"
+      body="Validando sessão com o backend."
     />
   );
 }
