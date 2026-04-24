@@ -42,14 +42,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setStatus("loading");
     setError(null);
     try {
+      console.log("[session] signIn called with accountId:", params.accountId);
       const result = await exchangeAccountToken(params);
+      console.log("[session] exchange OK, token length:", result.token?.length, "account:", result.account?.id);
       setJwt(result.token);
       setAccountId(result.account.id);
       setAccountName(result.account.name);
       window.sessionStorage.setItem("helena_account_id", result.account.id);
       window.sessionStorage.setItem("helena_account_name", result.account.name);
       setStatus("authenticated");
+      console.log("[session] status set to authenticated, jwt stored:", !!getJwt());
     } catch (e) {
+      console.error("[session] signIn failed:", e);
       setStatus("error");
       setError(e instanceof Error ? e.message : "Falha ao autenticar");
     }

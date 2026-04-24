@@ -80,7 +80,11 @@ export async function api<T = unknown>(
     if (adminToken) headers.set("X-Admin-Token", adminToken);
   } else {
     const jwt = getJwt();
-    if (jwt) headers.set("Authorization", `Bearer ${jwt}`);
+    if (jwt) {
+      headers.set("Authorization", `Bearer ${jwt}`);
+    } else {
+      console.warn("[api] No JWT found for request:", path);
+    }
   }
 
   const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
