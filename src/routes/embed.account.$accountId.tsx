@@ -1,4 +1,4 @@
-import { createFileRoute, Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { Bot, LogOut } from "lucide-react";
 import { useSession } from "@/lib/session";
@@ -22,16 +22,12 @@ const TABS = [
 function AccountLayout() {
   const { accountId: paramAccountId } = Route.useParams();
   const { accountId, accountName, status, signOut } = useSession();
-  const navigate = useNavigate();
 
   useEffect(() => {
-    if (status === "idle" || (status !== "loading" && accountId !== paramAccountId)) {
-      navigate({
-        to: "/embed",
-        search: { accountId: paramAccountId },
-      });
+    if (status === "idle" || (status === "authenticated" && accountId !== paramAccountId)) {
+      signIn({ accountId: paramAccountId });
     }
-  }, [status, accountId, paramAccountId, navigate]);
+  }, [status, accountId, paramAccountId, signIn]);
 
   return (
     <div className="min-h-screen bg-background text-foreground">
