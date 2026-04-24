@@ -12,8 +12,8 @@ interface EmbedSearch {
 
 export const Route = createFileRoute("/embed")({
   validateSearch: (search: Record<string, unknown>): EmbedSearch => ({
-    accountId: (search.accountId as string | undefined) ?? undefined,
-    userId: (search.userId as string | undefined) ?? undefined,
+    accountId: (search.accountId as string | undefined) ?? (search.accountid as string | undefined) ?? undefined,
+    userId: (search.userId as string | undefined) ?? (search.userid as string | undefined) ?? undefined,
     sig: (search.sig as string | undefined) ?? undefined,
     ts: (search.ts as string | undefined) ?? undefined,
   }),
