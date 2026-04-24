@@ -14,7 +14,9 @@ import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as EmbedAccountIdRouteImport } from './routes/embed.$accountId'
+import { Route as AdminTemplatesRouteImport } from './routes/admin.templates'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
+import { Route as AdminTemplatesTemplateIdRouteImport } from './routes/admin.templates.$templateId'
 import { Route as AdminAccountAccountIdRouteImport } from './routes/admin.account.$accountId'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as EmbedAccountAccountIdWarmupRouteImport } from './routes/embed.account.$accountId.warmup'
@@ -53,11 +55,22 @@ const EmbedAccountIdRoute = EmbedAccountIdRouteImport.update({
   path: '/$accountId',
   getParentRoute: () => EmbedRoute,
 } as any)
+const AdminTemplatesRoute = AdminTemplatesRouteImport.update({
+  id: '/templates',
+  path: '/templates',
+  getParentRoute: () => AdminRoute,
+} as any)
 const EmbedAccountAccountIdRoute = EmbedAccountAccountIdRouteImport.update({
   id: '/account/$accountId',
   path: '/account/$accountId',
   getParentRoute: () => EmbedRoute,
 } as any)
+const AdminTemplatesTemplateIdRoute =
+  AdminTemplatesTemplateIdRouteImport.update({
+    id: '/$templateId',
+    path: '/$templateId',
+    getParentRoute: () => AdminTemplatesRoute,
+  } as any)
 const AdminAccountAccountIdRoute = AdminAccountAccountIdRouteImport.update({
   id: '/account/$accountId',
   path: '/account/$accountId',
@@ -134,9 +147,11 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteWithChildren
   '/embed': typeof EmbedRouteWithChildren
+  '/admin/templates': typeof AdminTemplatesRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/admin/': typeof AdminIndexRoute
   '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
+  '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
   '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
@@ -153,9 +168,11 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/embed': typeof EmbedRouteWithChildren
+  '/admin/templates': typeof AdminTemplatesRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/admin': typeof AdminIndexRoute
   '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
+  '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
   '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
   '/embed/account/$accountId/followup': typeof EmbedAccountAccountIdFollowupRoute
@@ -173,9 +190,11 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/admin': typeof AdminRouteWithChildren
   '/embed': typeof EmbedRouteWithChildren
+  '/admin/templates': typeof AdminTemplatesRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/admin/': typeof AdminIndexRoute
   '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
+  '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
   '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
@@ -195,9 +214,11 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/embed'
+    | '/admin/templates'
     | '/embed/$accountId'
     | '/admin/'
     | '/admin/account/$accountId'
+    | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
     | '/embed/account/$accountId/automations'
     | '/embed/account/$accountId/conversations'
@@ -214,9 +235,11 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/embed'
+    | '/admin/templates'
     | '/embed/$accountId'
     | '/admin'
     | '/admin/account/$accountId'
+    | '/admin/templates/$templateId'
     | '/embed/account/$accountId/automations'
     | '/embed/account/$accountId/conversations'
     | '/embed/account/$accountId/followup'
@@ -233,9 +256,11 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/embed'
+    | '/admin/templates'
     | '/embed/$accountId'
     | '/admin/'
     | '/admin/account/$accountId'
+    | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
     | '/embed/account/$accountId/automations'
     | '/embed/account/$accountId/conversations'
@@ -293,12 +318,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedAccountIdRouteImport
       parentRoute: typeof EmbedRoute
     }
+    '/admin/templates': {
+      id: '/admin/templates'
+      path: '/templates'
+      fullPath: '/admin/templates'
+      preLoaderRoute: typeof AdminTemplatesRouteImport
+      parentRoute: typeof AdminRoute
+    }
     '/embed/account/$accountId': {
       id: '/embed/account/$accountId'
       path: '/account/$accountId'
       fullPath: '/embed/account/$accountId'
       preLoaderRoute: typeof EmbedAccountAccountIdRouteImport
       parentRoute: typeof EmbedRoute
+    }
+    '/admin/templates/$templateId': {
+      id: '/admin/templates/$templateId'
+      path: '/$templateId'
+      fullPath: '/admin/templates/$templateId'
+      preLoaderRoute: typeof AdminTemplatesTemplateIdRouteImport
+      parentRoute: typeof AdminTemplatesRoute
     }
     '/admin/account/$accountId': {
       id: '/admin/account/$accountId'
@@ -387,12 +426,26 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AdminTemplatesRouteChildren {
+  AdminTemplatesTemplateIdRoute: typeof AdminTemplatesTemplateIdRoute
+}
+
+const AdminTemplatesRouteChildren: AdminTemplatesRouteChildren = {
+  AdminTemplatesTemplateIdRoute: AdminTemplatesTemplateIdRoute,
+}
+
+const AdminTemplatesRouteWithChildren = AdminTemplatesRoute._addFileChildren(
+  AdminTemplatesRouteChildren,
+)
+
 interface AdminRouteChildren {
+  AdminTemplatesRoute: typeof AdminTemplatesRouteWithChildren
   AdminIndexRoute: typeof AdminIndexRoute
   AdminAccountAccountIdRoute: typeof AdminAccountAccountIdRoute
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
+  AdminTemplatesRoute: AdminTemplatesRouteWithChildren,
   AdminIndexRoute: AdminIndexRoute,
   AdminAccountAccountIdRoute: AdminAccountAccountIdRoute,
 }
@@ -454,12 +507,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

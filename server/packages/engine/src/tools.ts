@@ -90,6 +90,96 @@ async function clinicorpRequest(
   return res.json();
 }
 
+// ---------------------------------------------------------------------------
+// ClinicExpress helper – centralised HTTP calls with Bearer auth
+// ---------------------------------------------------------------------------
+
+async function clinicExpressRequest(
+  method: string,
+  path: string,
+  token: string,
+  body?: any,
+  queryParams?: Record<string, string>,
+): Promise<any> {
+  const url = new URL(`https://api.clinicaexperts.com.br/api/v1${path}`);
+  if (queryParams) {
+    for (const [k, v] of Object.entries(queryParams)) {
+      if (v) url.searchParams.set(k, v);
+    }
+  }
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      accept: "application/json",
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) throw new Error(`ClinicExpress ${res.status}: ${await res.text().catch(() => "")}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Clinup helper – centralised HTTP calls with plain token auth
+// ---------------------------------------------------------------------------
+
+async function clinupRequest(
+  method: string,
+  path: string,
+  apiToken: string,
+  body?: any,
+  queryParams?: Record<string, string>,
+): Promise<any> {
+  const url = new URL(`https://app.sistemaclinup.com.br/api/open${path}`);
+  if (queryParams) {
+    for (const [k, v] of Object.entries(queryParams)) {
+      if (v) url.searchParams.set(k, v);
+    }
+  }
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      Authorization: apiToken,
+      "Content-Type": "application/json",
+      accept: "application/json",
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) throw new Error(`Clinup ${res.status}: ${await res.text().catch(() => "")}`);
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Google Calendar helper – centralised HTTP calls with Bearer auth
+// ---------------------------------------------------------------------------
+
+async function googleCalendarRequest(
+  method: string,
+  path: string,
+  accessToken: string,
+  body?: any,
+  queryParams?: Record<string, string>,
+): Promise<any> {
+  const url = new URL(`https://www.googleapis.com/calendar/v3${path}`);
+  if (queryParams) {
+    for (const [k, v] of Object.entries(queryParams)) {
+      if (v) url.searchParams.set(k, v);
+    }
+  }
+  const res = await fetch(url.toString(), {
+    method,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (!res.ok) throw new Error(`Google Calendar ${res.status}: ${await res.text().catch(() => "")}`);
+  if (method === "DELETE") return { ok: true };
+  return res.json();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. refletir – internal reasoning (not sent to client)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -698,6 +788,747 @@ registerTool(
     try {
       const result = await ctx.helena.sendFile(sessionId, fileUrl, args.texto || "");
       return { success: true, messageId: result.id };
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 15. ce_buscar_paciente – search patient in ClinicExpress by phone
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "ce_buscar_paciente",
+  "Busca paciente no ClinicExpress pelo telefone.",
+  {
+    type: "object",
+    properties: {
+      telefone: {
+        type: "string",
+        description: "Telefone do paciente (opcional, usa o da conversa se não informado)",
+      },
+    },
+  },
+  async (args, ctx) => {
+    const token = ctx.agentConfig.integrations?.clinicexpress?.token;
+    if (!token) return { error: "ClinicExpress não configurado" };
+
+    const phone = args.telefone || ctx.phone;
+    try {
+      return await clinicExpressRequest("GET", "/patients", token, { phone });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 16. ce_criar_paciente – create patient in ClinicExpress
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "ce_criar_paciente",
+  "Cria um novo paciente no ClinicExpress.",
+  {
+    type: "object",
+    properties: {
+      nome: {
+        type: "string",
+        description: "Nome completo do paciente",
+      },
+      telefone: {
+        type: "string",
+        description: "Telefone do paciente (opcional, usa o da conversa se não informado)",
+      },
+    },
+    required: ["nome"],
+  },
+  async (args, ctx) => {
+    const token = ctx.agentConfig.integrations?.clinicexpress?.token;
+    if (!token) return { error: "ClinicExpress não configurado" };
+
+    const phone = args.telefone || ctx.phone;
+    try {
+      return await clinicExpressRequest("POST", "/patients", token, {
+        name: args.nome,
+        phone,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 17. ce_buscar_horarios – search available hours in ClinicExpress
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "ce_buscar_horarios",
+  "Busca horários disponíveis para agendamento no ClinicExpress.",
+  {
+    type: "object",
+    properties: {
+      professional_uuid: {
+        type: "string",
+        description: "UUID do profissional",
+      },
+      data: {
+        type: "string",
+        description: "Data para buscar horários (formato YYYY-MM-DD)",
+      },
+    },
+    required: ["professional_uuid", "data"],
+  },
+  async (args, ctx) => {
+    const token = ctx.agentConfig.integrations?.clinicexpress?.token;
+    if (!token) return { error: "ClinicExpress não configurado" };
+
+    try {
+      return await clinicExpressRequest("GET", "/available-hours", token, undefined, {
+        professional_uuid: args.professional_uuid,
+        date: args.data,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 18. ce_criar_agendamento – create booking in ClinicExpress
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "ce_criar_agendamento",
+  "Cria um novo agendamento/consulta no ClinicExpress.",
+  {
+    type: "object",
+    properties: {
+      starts_at: {
+        type: "string",
+        description: "Data/hora de início (ISO datetime)",
+      },
+      ends_at: {
+        type: "string",
+        description: "Data/hora de término (ISO datetime)",
+      },
+      patient_uuid: {
+        type: "string",
+        description: "UUID do paciente",
+      },
+      professional_uuid: {
+        type: "string",
+        description: "UUID do profissional",
+      },
+      procedures: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            uuid: { type: "string" },
+          },
+        },
+        description: "Lista de procedimentos (cada um com uuid)",
+      },
+    },
+    required: ["starts_at", "ends_at", "patient_uuid", "professional_uuid", "procedures"],
+  },
+  async (args, ctx) => {
+    const token = ctx.agentConfig.integrations?.clinicexpress?.token;
+    if (!token) return { error: "ClinicExpress não configurado" };
+
+    try {
+      return await clinicExpressRequest("POST", "/bookings", token, {
+        starts_at: args.starts_at,
+        ends_at: args.ends_at,
+        patient_uuid: args.patient_uuid,
+        professional_uuid: args.professional_uuid,
+        procedures: args.procedures,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 19. ce_buscar_agendamentos – list bookings in ClinicExpress
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "ce_buscar_agendamentos",
+  "Lista agendamentos/consultas no ClinicExpress por período.",
+  {
+    type: "object",
+    properties: {
+      data_inicio: {
+        type: "string",
+        description: "Data/hora início (ISO datetime)",
+      },
+      data_fim: {
+        type: "string",
+        description: "Data/hora fim (ISO datetime)",
+      },
+    },
+    required: ["data_inicio", "data_fim"],
+  },
+  async (args, ctx) => {
+    const token = ctx.agentConfig.integrations?.clinicexpress?.token;
+    if (!token) return { error: "ClinicExpress não configurado" };
+
+    try {
+      return await clinicExpressRequest("GET", "/bookings", token, undefined, {
+        starts_at: args.data_inicio,
+        ends_at: args.data_fim,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 20. ce_remarcar – reschedule booking in ClinicExpress
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "ce_remarcar",
+  "Remarca um agendamento existente no ClinicExpress.",
+  {
+    type: "object",
+    properties: {
+      booking_uuid: {
+        type: "string",
+        description: "UUID do agendamento",
+      },
+      starts_at: {
+        type: "string",
+        description: "Nova data/hora de início (ISO datetime)",
+      },
+      ends_at: {
+        type: "string",
+        description: "Nova data/hora de término (ISO datetime)",
+      },
+    },
+    required: ["booking_uuid", "starts_at", "ends_at"],
+  },
+  async (args, ctx) => {
+    const token = ctx.agentConfig.integrations?.clinicexpress?.token;
+    if (!token) return { error: "ClinicExpress não configurado" };
+
+    try {
+      return await clinicExpressRequest(
+        "PATCH",
+        `/bookings/${args.booking_uuid}/reschedule`,
+        token,
+        {
+          starts_at: args.starts_at,
+          ends_at: args.ends_at,
+        },
+      );
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 21. ce_cancelar – cancel booking in ClinicExpress
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "ce_cancelar",
+  "Cancela um agendamento existente no ClinicExpress.",
+  {
+    type: "object",
+    properties: {
+      booking_uuid: {
+        type: "string",
+        description: "UUID do agendamento",
+      },
+      motivo: {
+        type: "string",
+        description: "Motivo do cancelamento",
+      },
+    },
+    required: ["booking_uuid", "motivo"],
+  },
+  async (args, ctx) => {
+    const token = ctx.agentConfig.integrations?.clinicexpress?.token;
+    if (!token) return { error: "ClinicExpress não configurado" };
+
+    try {
+      return await clinicExpressRequest(
+        "PATCH",
+        `/bookings/${args.booking_uuid}/reschedule`,
+        token,
+        {
+          cancelled: true,
+          cancellation_reason: args.motivo,
+        },
+      );
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 22. cu_buscar_paciente – search patient in Clinup by phone
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "cu_buscar_paciente",
+  "Busca paciente no Clinup pelo celular.",
+  {
+    type: "object",
+    properties: {
+      celular: {
+        type: "string",
+        description: "Celular do paciente (opcional, usa o da conversa se não informado)",
+      },
+    },
+  },
+  async (args, ctx) => {
+    const apiToken = ctx.agentConfig.integrations?.clinup?.api_token;
+    if (!apiToken) return { error: "Clinup não configurado" };
+
+    const phone = args.celular || ctx.phone;
+    try {
+      return await clinupRequest("GET", "/paciente", apiToken, undefined, {
+        celular: phone,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 23. cu_criar_paciente – create patient in Clinup
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "cu_criar_paciente",
+  "Cria um novo paciente no Clinup.",
+  {
+    type: "object",
+    properties: {
+      nome: {
+        type: "string",
+        description: "Nome completo do paciente",
+      },
+      celular: {
+        type: "string",
+        description: "Celular do paciente (opcional, usa o da conversa se não informado)",
+      },
+    },
+    required: ["nome"],
+  },
+  async (args, ctx) => {
+    const apiToken = ctx.agentConfig.integrations?.clinup?.api_token;
+    if (!apiToken) return { error: "Clinup não configurado" };
+
+    const phone = args.celular || ctx.phone;
+    try {
+      return await clinupRequest("POST", "/paciente", apiToken, {
+        nome: args.nome,
+        celular: phone,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 24. cu_buscar_datas – search available dates in Clinup
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "cu_buscar_datas",
+  "Busca datas disponíveis para um profissional no Clinup.",
+  {
+    type: "object",
+    properties: {
+      profissional_id: {
+        type: "string",
+        description: "ID do profissional",
+      },
+      data: {
+        type: "string",
+        description: "Data de referência (formato YYYY-MM-DD)",
+      },
+    },
+    required: ["profissional_id", "data"],
+  },
+  async (args, ctx) => {
+    const apiToken = ctx.agentConfig.integrations?.clinup?.api_token;
+    if (!apiToken) return { error: "Clinup não configurado" };
+
+    try {
+      return await clinupRequest("GET", "/datas", apiToken, undefined, {
+        profissionalId: args.profissional_id,
+        data: args.data,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 25. cu_buscar_horarios – search available hours in Clinup
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "cu_buscar_horarios",
+  "Busca horários disponíveis para um profissional em uma data no Clinup.",
+  {
+    type: "object",
+    properties: {
+      profissional_id: {
+        type: "string",
+        description: "ID do profissional",
+      },
+      data: {
+        type: "string",
+        description: "Data para buscar horários (formato YYYY-MM-DD)",
+      },
+    },
+    required: ["profissional_id", "data"],
+  },
+  async (args, ctx) => {
+    const apiToken = ctx.agentConfig.integrations?.clinup?.api_token;
+    if (!apiToken) return { error: "Clinup não configurado" };
+
+    try {
+      return await clinupRequest("GET", "/horas", apiToken, undefined, {
+        profissionalId: args.profissional_id,
+        data: args.data,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 26. cu_criar_consulta – create appointment in Clinup
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "cu_criar_consulta",
+  "Cria uma nova consulta/agendamento no Clinup.",
+  {
+    type: "object",
+    properties: {
+      profissional_id: {
+        type: "string",
+        description: "ID do profissional",
+      },
+      paciente_id: {
+        type: "string",
+        description: "ID do paciente",
+      },
+      data: {
+        type: "string",
+        description: "Data da consulta (formato YYYY-MM-DD)",
+      },
+      hora: {
+        type: "string",
+        description: "Horário da consulta (formato HH:mm)",
+      },
+      observacao: {
+        type: "string",
+        description: "Observação sobre a consulta (opcional)",
+      },
+    },
+    required: ["profissional_id", "paciente_id", "data", "hora"],
+  },
+  async (args, ctx) => {
+    const apiToken = ctx.agentConfig.integrations?.clinup?.api_token;
+    if (!apiToken) return { error: "Clinup não configurado" };
+
+    try {
+      return await clinupRequest("POST", "/consultas", apiToken, {
+        profissionalId: args.profissional_id,
+        pacienteId: args.paciente_id,
+        data: args.data,
+        hora: args.hora,
+        Observacao: args.observacao || "",
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 27. cu_buscar_consultas – list appointments in Clinup
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "cu_buscar_consultas",
+  "Lista consultas de um paciente no Clinup.",
+  {
+    type: "object",
+    properties: {
+      paciente_id: {
+        type: "string",
+        description: "ID do paciente",
+      },
+    },
+    required: ["paciente_id"],
+  },
+  async (args, ctx) => {
+    const apiToken = ctx.agentConfig.integrations?.clinup?.api_token;
+    if (!apiToken) return { error: "Clinup não configurado" };
+
+    try {
+      return await clinupRequest("GET", "/consultas", apiToken, undefined, {
+        pacienteId: args.paciente_id,
+      });
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 28. cu_gerir_consultas – reschedule or cancel appointment in Clinup
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "cu_gerir_consultas",
+  "Remarca ou cancela uma consulta no Clinup.",
+  {
+    type: "object",
+    properties: {
+      consulta_id: {
+        type: "string",
+        description: "ID da consulta",
+      },
+      data: {
+        type: "string",
+        description: "Nova data (formato YYYY-MM-DD, opcional para cancelamento)",
+      },
+      hora: {
+        type: "string",
+        description: "Novo horário (formato HH:mm, opcional para cancelamento)",
+      },
+      confirmada: {
+        type: "boolean",
+        description: "Se a consulta está confirmada (false para cancelar)",
+      },
+      motivo: {
+        type: "string",
+        description: "Motivo da alteração/cancelamento",
+      },
+    },
+    required: ["consulta_id"],
+  },
+  async (args, ctx) => {
+    const apiToken = ctx.agentConfig.integrations?.clinup?.api_token;
+    if (!apiToken) return { error: "Clinup não configurado" };
+
+    const body: Record<string, any> = { id: args.consulta_id };
+    if (args.data) body.data = args.data;
+    if (args.hora) body.hora = args.hora;
+    if (args.confirmada !== undefined) body.confirmada = args.confirmada;
+    if (args.motivo) body.motivo = args.motivo;
+
+    try {
+      return await clinupRequest("PUT", "/consultas", apiToken, body);
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 29. gc_buscar_eventos – list events from Google Calendar
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "gc_buscar_eventos",
+  "Lista eventos do Google Calendar em um período.",
+  {
+    type: "object",
+    properties: {
+      data_inicio: {
+        type: "string",
+        description: "Data/hora início (ISO datetime)",
+      },
+      data_fim: {
+        type: "string",
+        description: "Data/hora fim (ISO datetime)",
+      },
+    },
+    required: ["data_inicio", "data_fim"],
+  },
+  async (args, ctx) => {
+    const gcConfig = ctx.agentConfig.integrations?.google_calendar;
+    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+      return { error: "Google Calendar não configurado" };
+    }
+
+    try {
+      return await googleCalendarRequest(
+        "GET",
+        `/calendars/${encodeURIComponent(gcConfig.calendar_id)}/events`,
+        gcConfig.access_token,
+        undefined,
+        {
+          timeMin: args.data_inicio,
+          timeMax: args.data_fim,
+          singleEvents: "true",
+          orderBy: "startTime",
+        },
+      );
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 30. gc_criar_evento – create event in Google Calendar
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "gc_criar_evento",
+  "Cria um novo evento no Google Calendar.",
+  {
+    type: "object",
+    properties: {
+      titulo: {
+        type: "string",
+        description: "Título do evento (ex: 'Consulta - Nome Paciente')",
+      },
+      descricao: {
+        type: "string",
+        description: "Descrição do evento",
+      },
+      inicio: {
+        type: "string",
+        description: "Data/hora de início (ISO datetime)",
+      },
+      fim: {
+        type: "string",
+        description: "Data/hora de término (ISO datetime)",
+      },
+      email_paciente: {
+        type: "string",
+        description: "E-mail do paciente para convite (opcional)",
+      },
+    },
+    required: ["titulo", "descricao", "inicio", "fim"],
+  },
+  async (args, ctx) => {
+    const gcConfig = ctx.agentConfig.integrations?.google_calendar;
+    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+      return { error: "Google Calendar não configurado" };
+    }
+
+    const body: Record<string, any> = {
+      summary: args.titulo,
+      description: args.descricao,
+      start: { dateTime: args.inicio, timeZone: "America/Sao_Paulo" },
+      end: { dateTime: args.fim, timeZone: "America/Sao_Paulo" },
+    };
+    if (args.email_paciente) {
+      body.attendees = [{ email: args.email_paciente }];
+    }
+
+    try {
+      return await googleCalendarRequest(
+        "POST",
+        `/calendars/${encodeURIComponent(gcConfig.calendar_id)}/events`,
+        gcConfig.access_token,
+        body,
+      );
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 31. gc_cancelar_evento – delete event from Google Calendar
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "gc_cancelar_evento",
+  "Cancela/remove um evento do Google Calendar.",
+  {
+    type: "object",
+    properties: {
+      evento_id: {
+        type: "string",
+        description: "ID do evento no Google Calendar",
+      },
+    },
+    required: ["evento_id"],
+  },
+  async (args, ctx) => {
+    const gcConfig = ctx.agentConfig.integrations?.google_calendar;
+    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+      return { error: "Google Calendar não configurado" };
+    }
+
+    try {
+      return await googleCalendarRequest(
+        "DELETE",
+        `/calendars/${encodeURIComponent(gcConfig.calendar_id)}/events/${encodeURIComponent(args.evento_id)}`,
+        gcConfig.access_token,
+      );
+    } catch (e: any) {
+      return { error: e.message };
+    }
+  },
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 32. gc_buscar_horarios_livres – check free/busy in Google Calendar
+// ═══════════════════════════════════════════════════════════════════════════
+
+registerTool(
+  "gc_buscar_horarios_livres",
+  "Consulta períodos ocupados no Google Calendar para inferir horários livres.",
+  {
+    type: "object",
+    properties: {
+      data_inicio: {
+        type: "string",
+        description: "Data/hora início (ISO datetime)",
+      },
+      data_fim: {
+        type: "string",
+        description: "Data/hora fim (ISO datetime)",
+      },
+    },
+    required: ["data_inicio", "data_fim"],
+  },
+  async (args, ctx) => {
+    const gcConfig = ctx.agentConfig.integrations?.google_calendar;
+    if (!gcConfig?.access_token || !gcConfig?.calendar_id) {
+      return { error: "Google Calendar não configurado" };
+    }
+
+    try {
+      return await googleCalendarRequest(
+        "POST",
+        "/freeBusy",
+        gcConfig.access_token,
+        {
+          timeMin: args.data_inicio,
+          timeMax: args.data_fim,
+          items: [{ id: gcConfig.calendar_id }],
+        },
+      );
     } catch (e: any) {
       return { error: e.message };
     }

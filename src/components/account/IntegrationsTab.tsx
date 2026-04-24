@@ -23,6 +23,12 @@ const INTEGRATION_FIELDS: Record<
       { name: "api_token", label: "API Token", secret: true },
     ],
   },
+  clinicexpress: {
+    label: "Clinic Express",
+    fields: [
+      { name: "token", label: "Token API", secret: true },
+    ],
+  },
   google_calendar: {
     label: "Google Agenda",
     fields: [

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { env, logger } from "@sarai/shared";
+import { env, logger, db, agentTemplates } from "@sarai/shared";
+import { eq } from "drizzle-orm";
 import { authRoute } from "./routes/auth";
 import { accountsRoute } from "./routes/accounts";
 import { agentsRoute } from "./routes/agents";
@@ -30,6 +31,23 @@ app.route("/api/agents", agentsRoute);
 app.route("/api/conversations", conversationsRoute);
 app.route("/api/test", testsRoute);
 app.route("/api/admin", adminRoute);
+
+// Public templates list (accessible with session auth)
+app.get("/api/templates", async (c) => {
+  const rows = await db.select({
+    id: agentTemplates.id,
+    key: agentTemplates.key,
+    label: agentTemplates.label,
+    description: agentTemplates.description,
+    integrationKey: agentTemplates.integrationKey,
+    requiredIntegrations: agentTemplates.requiredIntegrations,
+    optionalIntegrations: agentTemplates.optionalIntegrations,
+    credentialFields: agentTemplates.credentialFields,
+    enabled: agentTemplates.enabled,
+  }).from(agentTemplates).where(eq(agentTemplates.enabled, true));
+  return c.json(rows);
+});
+
 // /api/accounts/:id/integrations e runs são montados dentro de accountsRoute
 void integrationsRoute;
 void runsRoute;

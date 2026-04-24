@@ -66,6 +66,13 @@ function AdminLayout() {
             >
               Contas
             </Link>
+            <Link
+              to="/admin/templates"
+              className="rounded-md px-2.5 py-1 hover:bg-accent"
+              activeProps={{ className: "bg-secondary" }}
+            >
+              Templates
+            </Link>
             <button
               onClick={() => {
                 clearAdminToken();

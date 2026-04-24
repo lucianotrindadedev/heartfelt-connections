@@ -1,8 +1,7 @@
-import { clinicorpDental } from "./clinicorp_dental";
+// Templates are now stored in the database (agent_templates table).
+// This module provides a fallback for code that still references static templates.
 
-export const templates = {
-  clinicorp_dental: clinicorpDental,
-} as const;
+export { agentTemplates } from "../db/schema";
 
-export type TemplateKey = keyof typeof templates;
-export { clinicorpDental };
+// Legacy compatibility - will be removed once all code uses DB templates
+export const templates = {} as Record<string, any>;

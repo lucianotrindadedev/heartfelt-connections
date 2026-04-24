@@ -2,19 +2,12 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { Agent, AgentKind, AgentTemplate } from "@/lib/types";
+import type { Agent, AgentKind, Template } from "@/lib/types";
 import { Plus, ExternalLink } from "lucide-react";
 
 export const Route = createFileRoute("/admin/account/$accountId")({
   component: AdminAccountDetail,
 });
-
-const TEMPLATES: AgentTemplate[] = [
-  "clinicorp_dental",
-  "google_calendar_generic",
-  "clinup",
-  "custom",
-];
 
 const KINDS: AgentKind[] = ["main", "followup", "warmup"];
 
@@ -24,14 +17,19 @@ function AdminAccountDetail() {
 
   const agents = useQuery({
     queryKey: ["admin", "agents", accountId],
-    queryFn: () =>
-      api<Agent[]>(`/api/admin/accounts/${accountId}/agents`, { admin: true }),
+    queryFn: () => api<Agent[]>(`/api/admin/accounts/${accountId}/agents`, { admin: true }),
+  });
+
+  // Load templates from DB
+  const templates = useQuery({
+    queryKey: ["admin", "templates"],
+    queryFn: () => api<Template[]>("/api/admin/templates", { admin: true }),
   });
 
   const [form, setForm] = useState({
     name: "",
     kind: "main" as AgentKind,
-    template: "clinicorp_dental" as AgentTemplate,
+    template: "",
   });
 
   const create = useMutation({
@@ -43,20 +41,20 @@ function AdminAccountDetail() {
       }),
     onSuccess: () => {
       setForm({ ...form, name: "" });
-      queryClient.invalidateQueries({
-        queryKey: ["admin", "agents", accountId],
-      });
+      queryClient.invalidateQueries({ queryKey: ["admin", "agents", accountId] });
     },
   });
+
+  // Set default template when templates load
+  if (templates.data?.length && !form.template) {
+    setForm((f) => ({ ...f, template: templates.data![0].key }));
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <Link
-            to="/admin"
-            className="text-xs text-muted-foreground hover:underline"
-          >
+          <Link to="/admin" className="text-xs text-muted-foreground hover:underline">
             ← Contas
           </Link>
           <h1 className="mt-1 text-xl font-semibold">{accountId}</h1>
@@ -90,37 +88,30 @@ function AdminAccountDetail() {
         <Field label="Tipo">
           <select
             value={form.kind}
-            onChange={(e) =>
-              setForm({ ...form, kind: e.target.value as AgentKind })
-            }
+            onChange={(e) => setForm({ ...form, kind: e.target.value as AgentKind })}
             className="input"
           >
             {KINDS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
+              <option key={k} value={k}>{k}</option>
             ))}
           </select>
         </Field>
         <Field label="Template">
           <select
             value={form.template}
-            onChange={(e) =>
-              setForm({ ...form, template: e.target.value as AgentTemplate })
-            }
+            onChange={(e) => setForm({ ...form, template: e.target.value })}
             className="input"
           >
-            {TEMPLATES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
+            {templates.isLoading && <option>Carregando...</option>}
+            {templates.data?.map((t) => (
+              <option key={t.key} value={t.key}>{t.label}</option>
             ))}
           </select>
         </Field>
         <div className="self-end">
           <button
             type="submit"
-            disabled={create.isPending}
+            disabled={create.isPending || !form.template}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
           >
             <Plus className="h-4 w-4" /> Criar agente
@@ -129,7 +120,7 @@ function AdminAccountDetail() {
       </form>
 
       <div className="rounded-lg border border-border bg-card">
-        {agents.isLoading && <p className="p-4 text-sm">Carregando…</p>}
+        {agents.isLoading && <p className="p-4 text-sm">Carregando...</p>}
         {agents.data?.length === 0 && (
           <p className="p-4 text-sm text-muted-foreground">
             Nenhum agente nesta conta.
@@ -137,10 +128,7 @@ function AdminAccountDetail() {
         )}
         <ul className="divide-y divide-border">
           {agents.data?.map((a) => (
-            <li
-              key={a.id}
-              className="flex items-center justify-between p-3 text-sm"
-            >
+            <li key={a.id} className="flex items-center justify-between p-3 text-sm">
               <div>
                 <p className="font-medium">{a.name}</p>
                 <p className="text-xs text-muted-foreground">
@@ -164,13 +152,7 @@ function AdminAccountDetail() {
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-muted-foreground">

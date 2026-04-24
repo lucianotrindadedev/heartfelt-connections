@@ -23,6 +23,7 @@ const bytea = customType<{ data: Buffer; default: false }>({
 export const integrationType = pgEnum("integration_type", [
   "helena_crm",
   "clinicorp",
+  "clinicexpress",
   "google_calendar",
   "google_drive",
   "clinup",
@@ -34,6 +35,25 @@ export const integrationType = pgEnum("integration_type", [
 ]);
 
 export const agentKind = pgEnum("agent_kind", ["main", "followup", "warmup"]);
+
+export const agentTemplates = pgTable("agent_templates", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  key: text("key").notNull().unique(),
+  label: text("label").notNull(),
+  description: text("description"),
+  integrationKey: text("integration_key").notNull(),
+  requiredIntegrations: jsonb("required_integrations").default([]).notNull(),
+  optionalIntegrations: jsonb("optional_integrations").default([]).notNull(),
+  defaultTools: jsonb("default_tools").default([]).notNull(),
+  defaultPrompt: text("default_prompt").default("").notNull(),
+  toolInstructions: text("tool_instructions").default("").notNull(),
+  followupDefaults: jsonb("followup_defaults").default({}).notNull(),
+  warmupDefaults: jsonb("warmup_defaults").default({}).notNull(),
+  credentialFields: jsonb("credential_fields").default([]).notNull(),
+  enabled: boolean("enabled").default(true).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
 
 export const accounts = pgTable("accounts", {
   id: text("id").primaryKey(), // helena account_id

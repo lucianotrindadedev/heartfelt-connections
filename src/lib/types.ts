@@ -5,15 +5,12 @@
 
 export type AgentKind = "main" | "followup" | "warmup";
 
-export type AgentTemplate =
-  | "clinicorp_dental"
-  | "google_calendar_generic"
-  | "clinup"
-  | "custom";
+export type AgentTemplate = string; // Now dynamic from DB
 
 export type IntegrationType =
   | "helena_crm"
   | "clinicorp"
+  | "clinicexpress"
   | "google_calendar"
   | "google_drive"
   | "clinup"
@@ -22,6 +19,34 @@ export type IntegrationType =
   | "evolution_api"
   | "central360"
   | "groq";
+
+export interface Template {
+  id: string;
+  key: string;
+  label: string;
+  description: string | null;
+  integrationKey: string; // "clinicorp" | "clinicexpress" | "clinup" | "google_calendar"
+  requiredIntegrations: string[];
+  optionalIntegrations: string[];
+  defaultTools: string[];
+  defaultPrompt: string;
+  toolInstructions: string;
+  followupDefaults: Record<string, unknown>;
+  warmupDefaults: Record<string, unknown>;
+  credentialFields: CredentialField[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CredentialField {
+  key: string;
+  label: string;
+  type: "text" | "password" | "google_oauth";
+  required: boolean;
+  placeholder?: string;
+  description?: string;
+}
 
 export interface Account {
   id: string;
