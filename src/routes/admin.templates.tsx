@@ -59,31 +59,42 @@ function AdminTemplates() {
         <ul className="divide-y divide-border">
           {templates.data?.map((t) => (
             <li key={t.id} className="flex items-center justify-between p-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <p className="font-medium">{t.label}</p>
-                  {t.enabled ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
-                      <CheckCircle className="h-3 w-3" /> Ativo
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-                      <XCircle className="h-3 w-3" /> Inativo
-                    </span>
+              <div className="flex items-center gap-3">
+                {t.imageUrl ? (
+                  <img
+                    src={t.imageUrl}
+                    alt={t.label}
+                    className="h-12 w-12 shrink-0 rounded-md border border-border object-cover bg-muted"
+                  />
+                ) : (
+                  <div className="h-12 w-12 shrink-0 rounded-md border border-dashed border-border bg-muted/30" />
+                )}
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium">{t.label}</p>
+                    {t.enabled ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">
+                        <CheckCircle className="h-3 w-3" /> Ativo
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                        <XCircle className="h-3 w-3" /> Inativo
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    <code className="rounded bg-muted px-1">{t.key}</code>
+                    {" · "}
+                    Integração: <strong>{t.integrationKey}</strong>
+                    {" · "}
+                    {t.requiredIntegrations.length} obrigatórias, {t.optionalIntegrations.length} opcionais
+                    {" · "}
+                    {t.credentialFields.length} campos de credencial
+                  </p>
+                  {t.description && (
+                    <p className="text-xs text-muted-foreground">{t.description}</p>
                   )}
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  <code className="rounded bg-muted px-1">{t.key}</code>
-                  {" · "}
-                  Integração: <strong>{t.integrationKey}</strong>
-                  {" · "}
-                  {t.requiredIntegrations.length} obrigatórias, {t.optionalIntegrations.length} opcionais
-                  {" · "}
-                  {t.credentialFields.length} campos de credencial
-                </p>
-                {t.description && (
-                  <p className="text-xs text-muted-foreground">{t.description}</p>
-                )}
               </div>
               <div className="flex items-center gap-2">
                 <Link
