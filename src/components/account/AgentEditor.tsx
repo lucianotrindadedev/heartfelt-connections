@@ -90,6 +90,15 @@ export function AgentEditor({
         });
       }}
     >
+      <div className="flex justify-end">
+        <Link
+          to="/embed/account/$accountId/training"
+          params={{ accountId }}
+          className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600"
+        >
+          <GraduationCap className="h-3.5 w-3.5" /> Treinamento
+        </Link>
+      </div>
       <div className="grid gap-4 md:grid-cols-2">
         <Field label="Nome do agente">
           <input
