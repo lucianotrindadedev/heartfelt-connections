@@ -1,6 +1,7 @@
 import { createRouter, useRouter } from "@tanstack/react-router";
 import { QueryClient } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
+import { ApiError } from "@/lib/api";
 
 function DefaultErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   const router = useRouter();
@@ -34,7 +35,16 @@ function DefaultErrorComponent({ error, reset }: { error: Error; reset: () => vo
 export const getRouter = () => {
   const queryClient = new QueryClient({
     defaultOptions: {
-      queries: { staleTime: 30_000, retry: 1 },
+      queries: {
+        staleTime: 30_000,
+        retry: (failureCount, error) => {
+          // Não dar retry em erros de autenticação
+          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+            return false;
+          }
+          return failureCount < 2;
+        },
+      },
     },
   });
 

@@ -37,7 +37,7 @@ authRoute.post("/exchange", async (c) => {
   const jwt = await new SignJWT({ accountId })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
-    .setExpirationTime("15m")
+    .setExpirationTime("8h")
     .sign(new TextEncoder().encode(env.JWT_SECRET));
 
   return c.json({
