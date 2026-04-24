@@ -33,6 +33,7 @@ function AdminTemplateDetail() {
         defaultTools: template.defaultTools,
         defaultPrompt: template.defaultPrompt,
         toolInstructions: template.toolInstructions,
+        imageUrl: template.imageUrl,
         enabled: template.enabled,
       });
       setCredFields(template.credentialFields || []);
@@ -54,6 +55,7 @@ function AdminTemplateDetail() {
           default_prompt: form.defaultPrompt,
           tool_instructions: form.toolInstructions,
           credential_fields: credFields,
+          image_url: form.imageUrl ?? null,
           enabled: form.enabled,
         },
       }),
