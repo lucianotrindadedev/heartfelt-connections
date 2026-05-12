@@ -311,3 +311,19 @@ returns text language sql stable as $$
               else pgp_sym_decrypt(cipher, current_setting('app.pgcrypto_key'))
          end
 $$;
+
+-- ============================================================
+-- RPCs DE CRIPTOGRAFIA (chave passada como parâmetro)
+-- O servidor TanStack chama via supabase.rpc() passando PGCRYPTO_KEY.
+-- ============================================================
+create or replace function public.pgp_sym_encrypt_b64(plain text, key text)
+returns text language sql stable as $$
+  select encode(pgp_sym_encrypt(plain, key), 'base64')
+$$;
+
+create or replace function public.pgp_sym_decrypt_b64(cipher_b64 text, key text)
+returns text language sql stable as $$
+  select case when cipher_b64 is null or cipher_b64 = '' then null
+              else pgp_sym_decrypt(decode(cipher_b64,'base64'), key)
+         end
+$$;
