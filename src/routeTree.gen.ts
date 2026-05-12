@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as EmbedRouteImport } from './routes/embed'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as EmbedIndexRouteImport } from './routes/embed.index'
 import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as EmbedAccountIdRouteImport } from './routes/embed.$accountId'
 import { Route as AdminTemplatesIndexRouteImport } from './routes/admin.templates.index'
@@ -34,6 +35,11 @@ const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const EmbedIndexRoute = EmbedIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => EmbedRoute,
 } as any)
 const AdminIndexRoute = AdminIndexRouteImport.update({
   id: '/',
@@ -79,6 +85,7 @@ export interface FileRoutesByFullPath {
   '/embed': typeof EmbedRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/admin/': typeof AdminIndexRoute
+  '/embed/': typeof EmbedIndexRoute
   '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
   '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
@@ -87,9 +94,9 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/embed': typeof EmbedRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/admin': typeof AdminIndexRoute
+  '/embed': typeof EmbedIndexRoute
   '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
   '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/admin/templates': typeof AdminTemplatesIndexRoute
@@ -102,6 +109,7 @@ export interface FileRoutesById {
   '/embed': typeof EmbedRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/admin/': typeof AdminIndexRoute
+  '/embed/': typeof EmbedIndexRoute
   '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
   '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
@@ -116,6 +124,7 @@ export interface FileRouteTypes {
     | '/embed'
     | '/embed/$accountId'
     | '/admin/'
+    | '/embed/'
     | '/admin/account/$accountId'
     | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
@@ -124,9 +133,9 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/embed'
     | '/embed/$accountId'
     | '/admin'
+    | '/embed'
     | '/admin/account/$accountId'
     | '/admin/templates/$templateId'
     | '/admin/templates'
@@ -138,6 +147,7 @@ export interface FileRouteTypes {
     | '/embed'
     | '/embed/$accountId'
     | '/admin/'
+    | '/embed/'
     | '/admin/account/$accountId'
     | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
@@ -173,6 +183,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/embed/': {
+      id: '/embed/'
+      path: '/'
+      fullPath: '/embed/'
+      preLoaderRoute: typeof EmbedIndexRouteImport
+      parentRoute: typeof EmbedRoute
     }
     '/admin/': {
       id: '/admin/'
@@ -257,11 +274,13 @@ const EmbedAccountAccountIdRouteWithChildren =
 
 interface EmbedRouteChildren {
   EmbedAccountIdRoute: typeof EmbedAccountIdRoute
+  EmbedIndexRoute: typeof EmbedIndexRoute
   EmbedAccountAccountIdRoute: typeof EmbedAccountAccountIdRouteWithChildren
 }
 
 const EmbedRouteChildren: EmbedRouteChildren = {
   EmbedAccountIdRoute: EmbedAccountIdRoute,
+  EmbedIndexRoute: EmbedIndexRoute,
   EmbedAccountAccountIdRoute: EmbedAccountAccountIdRouteWithChildren,
 }
 
@@ -275,3 +294,12 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}
