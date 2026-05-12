@@ -19,16 +19,6 @@ import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.accoun
 import { Route as AdminTemplatesTemplateIdRouteImport } from './routes/admin.templates.$templateId'
 import { Route as AdminAccountAccountIdRouteImport } from './routes/admin.account.$accountId'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
-import { Route as EmbedAccountAccountIdWarmupRouteImport } from './routes/embed.account.$accountId.warmup'
-import { Route as EmbedAccountAccountIdTrainingRouteImport } from './routes/embed.account.$accountId.training'
-import { Route as EmbedAccountAccountIdOverviewRouteImport } from './routes/embed.account.$accountId.overview'
-import { Route as EmbedAccountAccountIdMediaRouteImport } from './routes/embed.account.$accountId.media'
-import { Route as EmbedAccountAccountIdMainAgentRouteImport } from './routes/embed.account.$accountId.main-agent'
-import { Route as EmbedAccountAccountIdLogsRouteImport } from './routes/embed.account.$accountId.logs'
-import { Route as EmbedAccountAccountIdIntegrationsRouteImport } from './routes/embed.account.$accountId.integrations'
-import { Route as EmbedAccountAccountIdFollowupRouteImport } from './routes/embed.account.$accountId.followup'
-import { Route as EmbedAccountAccountIdConversationsRouteImport } from './routes/embed.account.$accountId.conversations'
-import { Route as EmbedAccountAccountIdAutomationsRouteImport } from './routes/embed.account.$accountId.automations'
 
 const EmbedRoute = EmbedRouteImport.update({
   id: '/embed',
@@ -82,66 +72,6 @@ const EmbedAccountAccountIdIndexRoute =
     path: '/',
     getParentRoute: () => EmbedAccountAccountIdRoute,
   } as any)
-const EmbedAccountAccountIdWarmupRoute =
-  EmbedAccountAccountIdWarmupRouteImport.update({
-    id: '/warmup',
-    path: '/warmup',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdTrainingRoute =
-  EmbedAccountAccountIdTrainingRouteImport.update({
-    id: '/training',
-    path: '/training',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdOverviewRoute =
-  EmbedAccountAccountIdOverviewRouteImport.update({
-    id: '/overview',
-    path: '/overview',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdMediaRoute =
-  EmbedAccountAccountIdMediaRouteImport.update({
-    id: '/media',
-    path: '/media',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdMainAgentRoute =
-  EmbedAccountAccountIdMainAgentRouteImport.update({
-    id: '/main-agent',
-    path: '/main-agent',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdLogsRoute =
-  EmbedAccountAccountIdLogsRouteImport.update({
-    id: '/logs',
-    path: '/logs',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdIntegrationsRoute =
-  EmbedAccountAccountIdIntegrationsRouteImport.update({
-    id: '/integrations',
-    path: '/integrations',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdFollowupRoute =
-  EmbedAccountAccountIdFollowupRouteImport.update({
-    id: '/followup',
-    path: '/followup',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdConversationsRoute =
-  EmbedAccountAccountIdConversationsRouteImport.update({
-    id: '/conversations',
-    path: '/conversations',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
-const EmbedAccountAccountIdAutomationsRoute =
-  EmbedAccountAccountIdAutomationsRouteImport.update({
-    id: '/automations',
-    path: '/automations',
-    getParentRoute: () => EmbedAccountAccountIdRoute,
-  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -153,16 +83,6 @@ export interface FileRoutesByFullPath {
   '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/admin/templates/': typeof AdminTemplatesIndexRoute
-  '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
-  '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
-  '/embed/account/$accountId/followup': typeof EmbedAccountAccountIdFollowupRoute
-  '/embed/account/$accountId/integrations': typeof EmbedAccountAccountIdIntegrationsRoute
-  '/embed/account/$accountId/logs': typeof EmbedAccountAccountIdLogsRoute
-  '/embed/account/$accountId/main-agent': typeof EmbedAccountAccountIdMainAgentRoute
-  '/embed/account/$accountId/media': typeof EmbedAccountAccountIdMediaRoute
-  '/embed/account/$accountId/overview': typeof EmbedAccountAccountIdOverviewRoute
-  '/embed/account/$accountId/training': typeof EmbedAccountAccountIdTrainingRoute
-  '/embed/account/$accountId/warmup': typeof EmbedAccountAccountIdWarmupRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRoutesByTo {
@@ -173,16 +93,6 @@ export interface FileRoutesByTo {
   '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
   '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/admin/templates': typeof AdminTemplatesIndexRoute
-  '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
-  '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
-  '/embed/account/$accountId/followup': typeof EmbedAccountAccountIdFollowupRoute
-  '/embed/account/$accountId/integrations': typeof EmbedAccountAccountIdIntegrationsRoute
-  '/embed/account/$accountId/logs': typeof EmbedAccountAccountIdLogsRoute
-  '/embed/account/$accountId/main-agent': typeof EmbedAccountAccountIdMainAgentRoute
-  '/embed/account/$accountId/media': typeof EmbedAccountAccountIdMediaRoute
-  '/embed/account/$accountId/overview': typeof EmbedAccountAccountIdOverviewRoute
-  '/embed/account/$accountId/training': typeof EmbedAccountAccountIdTrainingRoute
-  '/embed/account/$accountId/warmup': typeof EmbedAccountAccountIdWarmupRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRoutesById {
@@ -196,16 +106,6 @@ export interface FileRoutesById {
   '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/admin/templates/': typeof AdminTemplatesIndexRoute
-  '/embed/account/$accountId/automations': typeof EmbedAccountAccountIdAutomationsRoute
-  '/embed/account/$accountId/conversations': typeof EmbedAccountAccountIdConversationsRoute
-  '/embed/account/$accountId/followup': typeof EmbedAccountAccountIdFollowupRoute
-  '/embed/account/$accountId/integrations': typeof EmbedAccountAccountIdIntegrationsRoute
-  '/embed/account/$accountId/logs': typeof EmbedAccountAccountIdLogsRoute
-  '/embed/account/$accountId/main-agent': typeof EmbedAccountAccountIdMainAgentRoute
-  '/embed/account/$accountId/media': typeof EmbedAccountAccountIdMediaRoute
-  '/embed/account/$accountId/overview': typeof EmbedAccountAccountIdOverviewRoute
-  '/embed/account/$accountId/training': typeof EmbedAccountAccountIdTrainingRoute
-  '/embed/account/$accountId/warmup': typeof EmbedAccountAccountIdWarmupRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRouteTypes {
@@ -220,16 +120,6 @@ export interface FileRouteTypes {
     | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
     | '/admin/templates/'
-    | '/embed/account/$accountId/automations'
-    | '/embed/account/$accountId/conversations'
-    | '/embed/account/$accountId/followup'
-    | '/embed/account/$accountId/integrations'
-    | '/embed/account/$accountId/logs'
-    | '/embed/account/$accountId/main-agent'
-    | '/embed/account/$accountId/media'
-    | '/embed/account/$accountId/overview'
-    | '/embed/account/$accountId/training'
-    | '/embed/account/$accountId/warmup'
     | '/embed/account/$accountId/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -240,16 +130,6 @@ export interface FileRouteTypes {
     | '/admin/account/$accountId'
     | '/admin/templates/$templateId'
     | '/admin/templates'
-    | '/embed/account/$accountId/automations'
-    | '/embed/account/$accountId/conversations'
-    | '/embed/account/$accountId/followup'
-    | '/embed/account/$accountId/integrations'
-    | '/embed/account/$accountId/logs'
-    | '/embed/account/$accountId/main-agent'
-    | '/embed/account/$accountId/media'
-    | '/embed/account/$accountId/overview'
-    | '/embed/account/$accountId/training'
-    | '/embed/account/$accountId/warmup'
     | '/embed/account/$accountId'
   id:
     | '__root__'
@@ -262,16 +142,6 @@ export interface FileRouteTypes {
     | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
     | '/admin/templates/'
-    | '/embed/account/$accountId/automations'
-    | '/embed/account/$accountId/conversations'
-    | '/embed/account/$accountId/followup'
-    | '/embed/account/$accountId/integrations'
-    | '/embed/account/$accountId/logs'
-    | '/embed/account/$accountId/main-agent'
-    | '/embed/account/$accountId/media'
-    | '/embed/account/$accountId/overview'
-    | '/embed/account/$accountId/training'
-    | '/embed/account/$accountId/warmup'
     | '/embed/account/$accountId/'
   fileRoutesById: FileRoutesById
 }
@@ -353,76 +223,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedAccountAccountIdIndexRouteImport
       parentRoute: typeof EmbedAccountAccountIdRoute
     }
-    '/embed/account/$accountId/warmup': {
-      id: '/embed/account/$accountId/warmup'
-      path: '/warmup'
-      fullPath: '/embed/account/$accountId/warmup'
-      preLoaderRoute: typeof EmbedAccountAccountIdWarmupRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/training': {
-      id: '/embed/account/$accountId/training'
-      path: '/training'
-      fullPath: '/embed/account/$accountId/training'
-      preLoaderRoute: typeof EmbedAccountAccountIdTrainingRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/overview': {
-      id: '/embed/account/$accountId/overview'
-      path: '/overview'
-      fullPath: '/embed/account/$accountId/overview'
-      preLoaderRoute: typeof EmbedAccountAccountIdOverviewRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/media': {
-      id: '/embed/account/$accountId/media'
-      path: '/media'
-      fullPath: '/embed/account/$accountId/media'
-      preLoaderRoute: typeof EmbedAccountAccountIdMediaRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/main-agent': {
-      id: '/embed/account/$accountId/main-agent'
-      path: '/main-agent'
-      fullPath: '/embed/account/$accountId/main-agent'
-      preLoaderRoute: typeof EmbedAccountAccountIdMainAgentRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/logs': {
-      id: '/embed/account/$accountId/logs'
-      path: '/logs'
-      fullPath: '/embed/account/$accountId/logs'
-      preLoaderRoute: typeof EmbedAccountAccountIdLogsRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/integrations': {
-      id: '/embed/account/$accountId/integrations'
-      path: '/integrations'
-      fullPath: '/embed/account/$accountId/integrations'
-      preLoaderRoute: typeof EmbedAccountAccountIdIntegrationsRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/followup': {
-      id: '/embed/account/$accountId/followup'
-      path: '/followup'
-      fullPath: '/embed/account/$accountId/followup'
-      preLoaderRoute: typeof EmbedAccountAccountIdFollowupRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/conversations': {
-      id: '/embed/account/$accountId/conversations'
-      path: '/conversations'
-      fullPath: '/embed/account/$accountId/conversations'
-      preLoaderRoute: typeof EmbedAccountAccountIdConversationsRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
-    '/embed/account/$accountId/automations': {
-      id: '/embed/account/$accountId/automations'
-      path: '/automations'
-      fullPath: '/embed/account/$accountId/automations'
-      preLoaderRoute: typeof EmbedAccountAccountIdAutomationsRouteImport
-      parentRoute: typeof EmbedAccountAccountIdRoute
-    }
   }
 }
 
@@ -443,32 +243,10 @@ const AdminRouteChildren: AdminRouteChildren = {
 const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
 
 interface EmbedAccountAccountIdRouteChildren {
-  EmbedAccountAccountIdAutomationsRoute: typeof EmbedAccountAccountIdAutomationsRoute
-  EmbedAccountAccountIdConversationsRoute: typeof EmbedAccountAccountIdConversationsRoute
-  EmbedAccountAccountIdFollowupRoute: typeof EmbedAccountAccountIdFollowupRoute
-  EmbedAccountAccountIdIntegrationsRoute: typeof EmbedAccountAccountIdIntegrationsRoute
-  EmbedAccountAccountIdLogsRoute: typeof EmbedAccountAccountIdLogsRoute
-  EmbedAccountAccountIdMainAgentRoute: typeof EmbedAccountAccountIdMainAgentRoute
-  EmbedAccountAccountIdMediaRoute: typeof EmbedAccountAccountIdMediaRoute
-  EmbedAccountAccountIdOverviewRoute: typeof EmbedAccountAccountIdOverviewRoute
-  EmbedAccountAccountIdTrainingRoute: typeof EmbedAccountAccountIdTrainingRoute
-  EmbedAccountAccountIdWarmupRoute: typeof EmbedAccountAccountIdWarmupRoute
   EmbedAccountAccountIdIndexRoute: typeof EmbedAccountAccountIdIndexRoute
 }
 
 const EmbedAccountAccountIdRouteChildren: EmbedAccountAccountIdRouteChildren = {
-  EmbedAccountAccountIdAutomationsRoute: EmbedAccountAccountIdAutomationsRoute,
-  EmbedAccountAccountIdConversationsRoute:
-    EmbedAccountAccountIdConversationsRoute,
-  EmbedAccountAccountIdFollowupRoute: EmbedAccountAccountIdFollowupRoute,
-  EmbedAccountAccountIdIntegrationsRoute:
-    EmbedAccountAccountIdIntegrationsRoute,
-  EmbedAccountAccountIdLogsRoute: EmbedAccountAccountIdLogsRoute,
-  EmbedAccountAccountIdMainAgentRoute: EmbedAccountAccountIdMainAgentRoute,
-  EmbedAccountAccountIdMediaRoute: EmbedAccountAccountIdMediaRoute,
-  EmbedAccountAccountIdOverviewRoute: EmbedAccountAccountIdOverviewRoute,
-  EmbedAccountAccountIdTrainingRoute: EmbedAccountAccountIdTrainingRoute,
-  EmbedAccountAccountIdWarmupRoute: EmbedAccountAccountIdWarmupRoute,
   EmbedAccountAccountIdIndexRoute: EmbedAccountAccountIdIndexRoute,
 }
 
@@ -497,3 +275,12 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}
