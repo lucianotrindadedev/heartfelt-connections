@@ -1,103 +1,209 @@
+## Visão geral
 
+Reconstrução do sistema com arquitetura **muito mais simples**:
 
-# Análise: plano Claude Code vs. arquitetura atual
-
-## TL;DR
-
-Os dois documentos estão **alinhados em 90%** com o que já planejamos e iniciamos. Eles confirmam as decisões (Supabase self-hosted, AI SDK, Helena via iframe, templates por integração, multi-tenant por `account_id`, criptografia com pgcrypto, fila por telefone, divisor de mensagens 02). O que vale **incorporar** são 4 escolhas técnicas que aumentam performance e operabilidade no backend, e **2 ajustes** no que já existe no frontend.
-
-## Comparação rápida
-
-| Tema | Plano atual (já em código) | Claude Code | Decisão |
-|---|---|---|---|
-| Frontend | TanStack Start + Lovable | React + Vite embarcado | **Manter Lovable** (já feito, idêntico em capacidade) |
-| Auth Helena | HMAC + JWT na URL | `conta_id` direto, validação por token Helena | **Manter HMAC** (mais seguro contra troca de URL) |
-| Backend runtime | Node 20 + Hono | **Bun + Bun.serve** | **Adotar Bun** (startup ~50ms, ~80MB RAM, http nativo) |
-| Banco | Supabase self-host + pg | Supabase self-host + **Drizzle ORM** | **Adotar Drizzle** (typesafe, migrations versionadas) |
-| Fila/encavalamento | `pg_advisory_lock` + `message_queue` | **Redis + BullMQ** | **Adotar BullMQ** (resiliente, retries, dead-letter, métricas) |
-| Cron follow-up/warm-up | `pg_cron` chamando endpoint | **Bun setInterval** num serviço `scheduler` separado | **Adotar scheduler dedicado** (mais simples de debugar; mantém pg_cron como fallback de health-check) |
-| Topologia | 1 processo Hono | **3 processos**: `agent-engine`, `scheduler`, `panel-api` | **Adotar separação** (escala independente, deploy isolado) |
-| Cache de config do agente | Buscar a cada request | Cache 60s no Redis | **Adotar** (reduz queries massivamente) |
-| Templates | JSON em código | JSON em código + tools tipadas Zod | **Já alinhado** |
-| Quebra de mensagens (02) | LLM secundário barato | `generateObject` + Zod schema | **Adotar `generateObject`** (saída garantida em JSON) |
-| Encavalamento | lock_conversa flag | Mesma lógica + Redis lock por `agente:telefone` | **Combinar** (Redis primário, flag DB como auditoria) |
-
-## O que muda no código
-
-### Backend (`server/`) — refator antes de implementar
-
-Reorganizar em **monorepo Bun com 3 packages** já no scaffold inicial:
-
-```text
-server/
-├── package.json (workspaces)
-├── docker-compose.yml         # supabase + redis + 3 services + nginx
-├── packages/
-│   ├── shared/                # db schema (drizzle), tipos, helena client, crypto
-│   │   ├── db/schema.ts       # tabelas em Drizzle
-│   │   ├── db/migrations/     # geradas por drizzle-kit
-│   │   ├── crypto.ts          # pgp_sym_encrypt wrapper
-│   │   └── helena.ts          # cliente CRM Helena
-│   ├── engine/                # SERVIÇO 1 — webhook + agente
-│   │   ├── server.ts          # Bun.serve
-│   │   ├── webhook.ts         # /webhook/:agente_id → enqueue BullMQ
-│   │   ├── queue.ts           # worker BullMQ (concorrência 1 por agente:telefone)
-│   │   ├── agent.ts           # runAgent() com generateText + tools
-│   │   ├── sender.ts          # splitAndSend() com generateObject
-│   │   ├── cache.ts           # config do agente em Redis (TTL 60s)
-│   │   └── tools/
-│   │       ├── escalate.ts    (fluxo 05)
-│   │       ├── media.ts       (fluxo 03)
-│   │       └── templates/clinicorp.ts  (10 tools fluxo 01)
-│   ├── scheduler/             # SERVIÇO 2 — crons
-│   │   ├── index.ts           # setInterval 60s e 10min
-│   │   ├── followup.ts        (fluxo 06)
-│   │   ├── warmup.ts          (fluxo 07)
-│   │   └── automacoes.ts      (fluxo 08 — webhook Clinicorp)
-│   └── panel-api/             # SERVIÇO 3 — REST do painel Lovable
-│       ├── server.ts          # Hono em Bun
-│       ├── routes/auth, accounts, agents, integrations, conversations, runs, tests
-│       └── middleware/auth.ts # HMAC + JWT (mantido)
-└── README.md (atualizado)
+```
+[CRM Helena] ──webhook──▶ [TanStack Server Routes (Lovable)] ──▶ [Supabase self-hosted]
+       ▲                          │                                      │
+       └──── resposta ────────────┘                                  pg_cron
+                                                                        │
+                                                            (chama /api/public/cron)
 ```
 
-**Stack final:** Bun 1.x · Hono · Drizzle ORM · Vercel AI SDK + OpenRouter · BullMQ + Redis · Zod · jose · pgcrypto · Luxon (para timezones America/Sao_Paulo).
+- Sem `panel-api`, `engine`, `scheduler`, Redis, BullMQ, Docker próprio.
+- Toda a lógica vive em **TanStack Server Functions/Routes** hospedadas pela Lovable.
+- Todo estado vive no **seu Supabase self-hosted** (Postgres + Storage).
+- Cron via **pg_cron** dentro do próprio Supabase, chamando `/api/public/*`.
+- **LLM e TTS por conta**: cada conta cadastra sua própria chave OpenRouter e ElevenLabs (controle de gasto isolado).
 
-**Docker Compose** com: Supabase self-host (db/auth/storage/studio), Redis 7, agent-engine, scheduler, panel-api, Nginx + Certbot. Health-check em cada serviço. Logs estruturados (pino) prontos para Grafana/Loki depois.
+---
 
-### Frontend (já existe, ajustes pequenos)
+## 1. Conexão com o Supabase self-hosted
 
-1. **Webhook URL com formato novo** (`/webhook/<agente_id>` em vez de `/webhook/inbound/<token>`), e adicionar campo `webhook_secret` no painel "Integrações > Helena CRM" (header `x-webhook-secret`).
-2. **Cache do React Query**: revisar `staleTime` para 60s nas queries de agente/integrações para casar com o cache do backend.
-3. Sem mudança no shell, rotas, ou OverviewTab que acabamos de redesenhar.
+`Promptfy` (Lovable Cloud) continua conectado por requisito da plataforma — **não vamos usar suas tabelas**. Todo o app aponta para o seu self-hosted via cliente paralelo.
 
-### Banco — adições/ajustes
+Variáveis novas:
+- `SELFHOST_SUPABASE_URL` + `VITE_SELFHOST_SUPABASE_URL`
+- `SELFHOST_SUPABASE_ANON_KEY` + `VITE_SELFHOST_SUPABASE_ANON_KEY`
+- `SELFHOST_SUPABASE_SERVICE_ROLE_KEY` (server-only)
 
-Adicionar ao `db/schema.sql`:
-- Coluna `webhook_secret` em `agents` (já existia em `agent_webhooks`, vamos consolidar).
-- Índice parcial `WHERE aguardando_followup = TRUE` em `conversation_state` (otimiza o cron).
-- Tabela `agent_runs` ganha colunas `latency_ms`, `tokens_in`, `tokens_out`, `cost_usd` (para o painel de custo).
-- Manter nomes em **inglês** (já adotado) — divergência com o doc, que usa pt-BR (`agentes`, `contas`). Mais consistente com o frontend que já está em inglês para schema.
+Arquivos: `src/integrations/selfhost/{client.ts, client.server.ts}`.
 
-## O que NÃO vamos adotar do doc
+**Sem secrets globais de OpenRouter / ElevenLabs** — ficam por conta.
 
-- **React + Vite separado**: já temos o painel em TanStack Start no Lovable; muda nada funcional.
-- **`conta_id` puro na URL sem assinatura**: deixa porta aberta para troca de URL no DOM do CRM. Mantemos HMAC + JWT.
-- **Nomes em pt-BR no schema**: misturar idiomas piora DX — manter inglês.
-- **Migrar tabelas n8n existentes** com sufixo `n8n_`: vamos rodar o **script de migração** que copia para o schema novo limpo (`messages`, `conversation_state`, `message_queue`), preservando `session_id`. As tabelas antigas ficam intactas no Supabase atual durante o paralelo.
+---
 
-## Plano de execução (revisado)
+## 2. Schema (cole no SQL Editor do seu self-hosted)
 
-1. **Reescrever `server/README.md`** com estrutura monorepo Bun + Drizzle + BullMQ + 3 serviços + docker-compose.yml de exemplo.
-2. **Criar scaffold real** dos 3 packages (`shared`, `engine`, `scheduler`, `panel-api`) com `package.json`, `tsconfig.json`, `Dockerfile`, e schema Drizzle em `shared/db/schema.ts` (substitui o `schema.sql` solto).
-3. **Implementar `panel-api` primeiro** (CRUD que o Lovable já consome) para o frontend continuar funcional ponta-a-ponta sem worker.
-4. **Implementar `engine`** (webhook → BullMQ → runAgent + tools Clinicorp + sender) — fluxos 01/02/03/04/05.
-5. **Implementar `scheduler`** — fluxos 06/07/08.
-6. **Ajustar 2 pontos no frontend** (webhook URL + secret na aba Integrações; staleTime 60s).
-7. Script de migração `scripts/migrate-from-n8n.ts` lendo Supabase legado.
-8. `docker-compose.yml` final + Nginx com `frame-ancestors` para o iframe Helena.
+Tabelas principais:
 
-## Resultado
+- **accounts** — id (= account_id Helena), nome, helena_base_url, helena_token_enc, criado_em
+- **account_secrets** — account_id (PK), openrouter_api_key_enc, elevenlabs_api_key_enc, groq_api_key_enc (opcional), atualizado_em
+  - Criptografia com `pgcrypto` (`pgp_sym_encrypt`) usando `PGCRYPTO_KEY` (env server-only). Nunca expostas ao browser; o painel só mostra `••••••• últimos 4`.
+- **account_llm_config** — account_id (PK), default_model (ex: `x-ai/grok-4-fast`), splitter_model, formatter_model, max_tokens, temperature
+- **account_voice_config** — account_id (PK), elevenlabs_voice_id, model_id (ex: `eleven_turbo_v2_5`), stability, similarity, style, speaker_boost
+- **agents** — 1 por conta, nome, ativo, system_prompt, llm_model_override (opcional, sobrepõe account_llm_config), webhook_secret
+- **agent_followup** — config + array de prompts
+- **agent_warmup** — config WU1..WU5 + prompts
+- **agent_audio** — habilitado, transcrever_in (Groq Whisper), responder_out (TTS ElevenLabs)
+- **channels_whatsapp** — status, evolution_url, instance_name, evolution_api_key_enc (também por conta)
+- **queues** — filas de transferência
+- **webchat_config** — token público, cores
+- **media_assets** — id, agent_id, nome, url
+- **conversations** — agent_id, phone, helena_session_id, status, meta
+- **messages** — conversation_id, role, content, audio_url
+- **conversation_state** — lock_conversa, aguardando_followup, numero_followup, last_user_message_at
+- **warmup_sent** — controle idempotência (account_id, appointment_id, reminder_type)
+- **agent_runs** — log: latency_ms, tokens_in, tokens_out, cost_usd_estimate, provider (`openrouter`/`elevenlabs`/`groq`), error
+- **llm_usage_daily** (view materializada ou agregação) — account_id, dia, tokens, requests, custo estimado — base do painel de gastos por conta
 
-A arquitetura fica **idêntica em capacidade** ao que já desenhamos, mas com 4 ganhos concretos: (1) startup/RAM muito menor (Bun), (2) typesafety end-to-end (Drizzle), (3) fila resiliente com retries e métricas (BullMQ), (4) escala independente por serviço (Docker). O frontend Lovable continua sendo a interface única e o que já está construído permanece válido — só precisa ajustar o formato do webhook quando o backend for ao ar.
+Sem `auth.users`. Auth do painel = `account_id` do Helena (HMAC + JWT atual). RLS desligado nas tabelas; tudo via service_role nos server routes.
 
+---
+
+## 3. Server routes (TanStack Start)
+
+**Webhooks públicos** (`src/routes/api/public/`):
+- `webhook.helena.$agentId.ts` — POST: valida `x-webhook-secret` → enfileira/processa → busca chaves da conta → chama OpenRouter → responde via API Helena.
+- `webhook.helena-tags.$agentId.ts`
+- `cron.followup.ts` — chamado por pg_cron a cada 10min
+- `cron.warmup.ts` — chamado por pg_cron a cada 30min
+
+**Server functions** (`src/lib/*.functions.ts`):
+- `accounts.functions.ts`
+- `agent.functions.ts` — getAgent, updateAgent, toggle, reset
+- `secrets.functions.ts` — `setOpenRouterKey`, `setElevenLabsKey`, `testOpenRouterKey` (faz `GET /key` na OpenRouter para validar + retornar saldo/limite), `testElevenLabsKey`
+- `llm-config.functions.ts` — get/update modelo, listar modelos disponíveis no OpenRouter (`GET /models`)
+- `voice.functions.ts` — listar vozes do ElevenLabs da conta (`GET /v1/voices`), preview, salvar voice_id
+- `audio.functions.ts`
+- `whatsapp.functions.ts` — Evolution API por conta
+- `queues.functions.ts`, `webchat.functions.ts`, `media.functions.ts`
+- `conversations.functions.ts`
+- `usage.functions.ts` — agregação de `agent_runs` para o painel de gastos
+
+**Helpers server-only** (`src/lib/providers/`):
+- `openrouter.server.ts` — `callOpenRouter(accountId, messages, opts)` — busca a chave criptografada da conta, descriptografa via `pgp_sym_decrypt`, chama OpenRouter, registra `agent_runs` com custo estimado.
+- `elevenlabs.server.ts` — `tts(accountId, text)`, `listVoices(accountId)`.
+- `groq.server.ts` — `transcribe(accountId, audioUrl)` (chave por conta; se conta não tiver, áudio fica desabilitado).
+- `helena.server.ts` — cliente CRM.
+
+**Sem Lovable AI Gateway. Sem `LOVABLE_API_KEY` para LLM.**
+
+---
+
+## 4. Frontend simplificado (tela única, igual à referência)
+
+Substituir todo `src/routes/embed.account.$accountId.*` por:
+
+```
+src/routes/embed.account.$accountId.index.tsx  ← ÚNICA tela
+```
+
+Layout:
+- **Header**: "Assistente Virtual · Online" + toggle ATIVO/INATIVO
+- **Card boas-vindas**: nome do agente + Desativar / Resetar / ▶ testar
+- **AÇÕES PRINCIPAIS** (2 cards) — abrem `<Sheet>` lateral:
+  - **Treinamentos avançados** → prompt do agente, base de conhecimento, mídias
+  - **Configurações** → nome, comportamento, **modelo OpenRouter (dropdown buscando `/models` com a chave da conta)**, voz ElevenLabs (dropdown com vozes da conta + preview)
+- **CANAIS DE ATENDIMENTO** (4 cards):
+  - WhatsApp (Evolution)
+  - Áudio (ativar transcrição/resposta)
+  - Filas
+  - Web Chat (BETA)
+- **Card extra "Conexões e Custos"** (subtle, embaixo): chave OpenRouter, chave ElevenLabs, chave Groq (opcional), saldo OpenRouter (`GET /key`), gráfico de custo dos últimos 30 dias (de `agent_runs`).
+
+Cada card abre drawer/sheet — sem mudança de rota.
+
+**Apagar**: `src/components/account/*Tab.tsx`, todas rotas `embed.account.$accountId.{overview,main-agent,training,followup,warmup,integrations,media,automations,conversations,logs}.tsx`.
+
+**Manter**: `/admin` (templates + listagem de contas) com painel completo.
+
+---
+
+## 5. Fluxo de mensagem
+
+1. CRM Helena → POST `/api/public/webhook/helena/:agentId` com `x-webhook-secret`.
+2. Server route valida secret contra `agents.webhook_secret`.
+3. Persiste `messages`, atualiza `conversation_state`, marca `aguardando_followup=false`.
+4. Se áudio + `agent_audio.transcrever_in` → `groq.transcribe(accountId, url)` (se conta não tem chave Groq, ignora ou avisa).
+5. Monta histórico + system_prompt → `openrouter.callOpenRouter(accountId, ...)`:
+   - Busca `account_secrets.openrouter_api_key_enc` → descriptografa → chama OpenRouter com modelo de `agents.llm_model_override` ou `account_llm_config.default_model`.
+   - **Se conta não tem chave OpenRouter cadastrada → retorna erro amigável "Configure sua chave OpenRouter em Conexões"**.
+6. Se mensagem original era áudio + `responder_out` → `elevenlabs.tts(accountId, resposta)` com voz da conta.
+7. Envia via API Helena. Persiste resposta em `messages` + `agent_runs` (tokens, custo, provider).
+
+Follow-up/Warm-up rodam pelos crons consultando `conversation_state` / agendamentos Clinicorp e disparam mensagens usando o mesmo pipeline (chave da conta).
+
+---
+
+## 6. Cron (cole no SQL Editor do self-hosted)
+
+```sql
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+select cron.schedule('followup-tick','*/10 * * * *', $$
+  select net.http_post(
+    url := 'https://SEU-PROJETO.lovable.app/api/public/cron/followup',
+    headers := '{"Content-Type":"application/json"}'::jsonb
+  );
+$$);
+
+select cron.schedule('warmup-tick','*/30 * * * *', $$
+  select net.http_post(
+    url := 'https://SEU-PROJETO.lovable.app/api/public/cron/warmup',
+    headers := '{"Content-Type":"application/json"}'::jsonb
+  );
+$$);
+```
+
+`/api/public/*` na Lovable não exige auth — basta a rota validar internamente (token simples opcional).
+
+---
+
+## 7. Variáveis de ambiente novas
+
+| Nome | Onde | Para que |
+|---|---|---|
+| `SELFHOST_SUPABASE_URL` (+ VITE_) | server + browser | URL do seu Supabase |
+| `SELFHOST_SUPABASE_ANON_KEY` (+ VITE_) | server + browser | Anon key |
+| `SELFHOST_SUPABASE_SERVICE_ROLE_KEY` | **server only** | Service role |
+| `PGCRYPTO_KEY` | **server only** | Criptografar chaves de API por conta |
+| `JWT_SECRET` | server | Sessão do painel embed |
+| `HELENA_HMAC_SECRET` | server | Validar URLs assinadas do CRM |
+
+**Não precisa**: `LOVABLE_API_KEY` para LLM, `OPENROUTER_API_KEY` global, `ELEVENLABS_API_KEY` global, `GROQ_API_KEY` global. Tudo por conta no banco.
+
+---
+
+## 8. O que apagar
+
+- Pasta inteira `server/` (panel-api, engine, scheduler, shared, docker-compose, Dockerfiles)
+- `nginx.conf`, `Dockerfile` raiz, `wrangler.jsonc`
+- `src/lib/api.ts` (client REST do panel-api antigo) → server functions
+- `src/lib/mockApi.ts`
+- `src/components/account/*Tab.tsx`
+- Rotas `embed.account.$accountId.*.tsx` (exceto novo `index.tsx`)
+
+---
+
+## 9. Ordem de implementação
+
+1. Pedir os 3 secrets do self-hosted + `PGCRYPTO_KEY` + `JWT_SECRET` + `HELENA_HMAC_SECRET` via `add_secret`.
+2. Criar `src/integrations/selfhost/{client,client.server}.ts`.
+3. Gerar `migrations/schema.sql` (entrego para você colar).
+4. Criar providers server-only (`openrouter`, `elevenlabs`, `groq`, `helena`) com decryption por conta.
+5. Criar server functions e routes (`api/public/webhook`, `api/public/cron`, `lib/*.functions.ts`).
+6. Reescrever frontend: tela única + drawers + card de conexões/custos.
+7. Apagar `server/` e arquivos obsoletos.
+8. Entregar passo a passo final.
+
+---
+
+## 10. Entregáveis finais
+
+1. `migrations/schema.sql` pronto para colar no SQL Editor.
+2. `migrations/cron.sql` pronto para colar.
+3. Lista de secrets a configurar.
+4. Modelo de URL de webhook por agente: `https://SEU-PROJETO.lovable.app/api/public/webhook/helena/{agentId}` + `x-webhook-secret`.
+5. Instruções para cada cliente cadastrar **sua própria** chave OpenRouter (https://openrouter.ai/keys) e ElevenLabs (https://elevenlabs.io/app/settings/api-keys) na nova tela Conexões.
