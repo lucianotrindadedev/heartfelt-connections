@@ -4,6 +4,8 @@ import { z } from "zod";
 import { attachSelfhostAuth } from "@/integrations/selfhost/auth-attacher";
 import { requireSuperAdmin } from "@/integrations/selfhost/auth-middleware.server";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { encryptValue } from "@/lib/crypto.server";
+
 
 export const listAccounts = createServerFn({ method: "GET" })
   .middleware([attachSelfhostAuth, requireSuperAdmin])
