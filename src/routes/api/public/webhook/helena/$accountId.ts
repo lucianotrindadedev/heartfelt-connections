@@ -137,12 +137,15 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         // 7. Dispara agente quando: inbound + agente ativo
         // (mensagens de humano/agente são apenas gravadas)
+        // Aguardamos para garantir execução no runtime do Worker.
         if (isInbound && agentRow.data.ativo) {
-          // Não-bloqueante. Falhas vão pro log.
-          runAgentTurn(convId).catch((e) => {
+          try {
+            await runAgentTurn(convId);
+          } catch (e) {
             console.error("[agent-turn] falhou:", e);
-          });
+          }
         }
+
 
         return Response.json({ ok: true, conversation_id: convId, role });
       },
