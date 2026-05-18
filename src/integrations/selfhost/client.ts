@@ -1,24 +1,31 @@
-// Cliente Supabase self-hosted para o BROWSER (publishable/anon key).
-// URL e anon key vêm via VITE_ env (públicas — seguras para bundle).
+// Cliente Supabase self-hosted para BROWSER.
+// Bootstrap async: busca URL+anon do servidor (server fn) e inicializa.
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { getSelfhostPublicConfig } from "@/lib/selfhost-config.functions";
 
 let _client: SupabaseClient | null = null;
+let _bootPromise: Promise<SupabaseClient> | null = null;
+
+export async function initSelfhost(): Promise<SupabaseClient> {
+  if (_client) return _client;
+  if (_bootPromise) return _bootPromise;
+  _bootPromise = (async () => {
+    const cfg = await getSelfhostPublicConfig();
+    _client = createClient(cfg.url, cfg.anonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        storageKey: "selfhost-auth",
+      },
+    });
+    return _client;
+  })();
+  return _bootPromise;
+}
 
 export function getSelfhostBrowser(): SupabaseClient {
-  if (_client) return _client;
-  const url = import.meta.env.VITE_SELFHOST_SUPABASE_URL as string | undefined;
-  const key = import.meta.env.VITE_SELFHOST_SUPABASE_ANON_KEY as string | undefined;
-  if (!url || !key) {
-    throw new Error(
-      "VITE_SELFHOST_SUPABASE_URL e VITE_SELFHOST_SUPABASE_ANON_KEY precisam estar no .env"
-    );
+  if (!_client) {
+    throw new Error("Self-hosted client não inicializado. Chame initSelfhost() primeiro.");
   }
-  _client = createClient(url, key, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      storageKey: "selfhost-auth",
-    },
-  });
   return _client;
 }
