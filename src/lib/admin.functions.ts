@@ -44,3 +44,49 @@ export const getAccountDetail = createServerFn({ method: "GET" })
       messageCount: msgCountRes.count ?? 0,
     };
   });
+
+export const createAccount = createServerFn({ method: "POST" })
+  .middleware([attachSelfhostAuth, requireSuperAdmin])
+  .inputValidator((d) =>
+    z
+      .object({
+        id: z
+          .string()
+          .min(1)
+          .max(64)
+          .regex(/^[a-zA-Z0-9_-]+$/, "Use apenas letras, números, _ ou -"),
+        nome: z.string().min(1).max(120),
+        nomeAgente: z.string().min(1).max(120).optional(),
+        systemPrompt: z.string().max(20000).optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+
+    const existing = await sb.from("accounts").select("id").eq("id", data.id).maybeSingle();
+    if (existing.data) throw new Error("Já existe uma conta com esse ID");
+
+    const accIns = await sb
+      .from("accounts")
+      .insert({ id: data.id, nome: data.nome })
+      .select("id")
+      .single();
+    if (accIns.error) throw new Error(accIns.error.message);
+
+    const agentIns = await sb
+      .from("agents")
+      .insert({
+        account_id: data.id,
+        nome: data.nomeAgente ?? "Assistente Virtual",
+        system_prompt: data.systemPrompt ?? "",
+      })
+      .select("id")
+      .single();
+    if (agentIns.error) {
+      await sb.from("accounts").delete().eq("id", data.id);
+      throw new Error(agentIns.error.message);
+    }
+
+    return { accountId: data.id, agentId: agentIns.data.id };
+  });
