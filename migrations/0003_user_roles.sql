@@ -2,7 +2,9 @@
 -- Depois, insira seu user como superadmin:
 --   insert into public.user_roles(user_id, role) values ('SEU_AUTH_USER_ID', 'superadmin');
 
-create type if not exists public.app_role as enum ('superadmin', 'user');
+do $$ begin
+  create type public.app_role as enum ('superadmin', 'user');
+exception when duplicate_object then null; end $$;
 
 create table if not exists public.user_roles (
   id      uuid primary key default gen_random_uuid(),
