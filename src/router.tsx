@@ -37,10 +37,8 @@ export const getRouter = () => {
       queries: {
         staleTime: 30_000,
         retry: (failureCount, error) => {
-          // Não dar retry em erros de autenticação
-          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-            return false;
-          }
+          const msg = error instanceof Error ? error.message : "";
+          if (/unauthor|denied|inválido|invalid/i.test(msg)) return false;
           return failureCount < 2;
         },
       },
