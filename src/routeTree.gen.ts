@@ -20,6 +20,7 @@ import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authentic
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
+import { Route as ApiPublicWebhookHelenaAccountIdRouteImport } from './routes/api/public/webhook/helena/$accountId'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -77,6 +78,12 @@ const AuthenticatedAdminAccountAccountIdRoute =
     path: '/account/$accountId',
     getParentRoute: () => AuthenticatedAdminRoute,
   } as any)
+const ApiPublicWebhookHelenaAccountIdRoute =
+  ApiPublicWebhookHelenaAccountIdRouteImport.update({
+    id: '/api/public/webhook/helena/$accountId',
+    path: '/api/public/webhook/helena/$accountId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -89,6 +96,7 @@ export interface FileRoutesByFullPath {
   '/admin/': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -98,6 +106,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -112,6 +121,7 @@ export interface FileRoutesById {
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
   '/_authenticated/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -126,6 +136,7 @@ export interface FileRouteTypes {
     | '/admin/'
     | '/admin/account/$accountId'
     | '/embed/account/$accountId/'
+    | '/api/public/webhook/helena/$accountId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -135,6 +146,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/admin/account/$accountId'
     | '/embed/account/$accountId'
+    | '/api/public/webhook/helena/$accountId'
   id:
     | '__root__'
     | '/'
@@ -148,6 +160,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/'
     | '/_authenticated/admin/account/$accountId'
     | '/embed/account/$accountId/'
+    | '/api/public/webhook/helena/$accountId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -155,6 +168,7 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   EmbedRoute: typeof EmbedRouteWithChildren
   LoginRoute: typeof LoginRoute
+  ApiPublicWebhookHelenaAccountIdRoute: typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -236,6 +250,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminAccountAccountIdRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
+    '/api/public/webhook/helena/$accountId': {
+      id: '/api/public/webhook/helena/$accountId'
+      path: '/api/public/webhook/helena/$accountId'
+      fullPath: '/api/public/webhook/helena/$accountId'
+      preLoaderRoute: typeof ApiPublicWebhookHelenaAccountIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -297,7 +318,17 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   EmbedRoute: EmbedRouteWithChildren,
   LoginRoute: LoginRoute,
+  ApiPublicWebhookHelenaAccountIdRoute: ApiPublicWebhookHelenaAccountIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}
