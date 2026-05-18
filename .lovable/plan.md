@@ -1,102 +1,135 @@
-## Objetivo
+# Substituir o n8n por agente nativo, estável e escalável
 
-Conectar o Lovable ao seu Supabase self-hosted (Coolify) e deixar o MVP rodando: embed (cliente) + admin (você como SuperAdmin) + pipeline de mensagens + cron.
+## 1. O que muda na criação de conta (SuperAdmin)
 
----
+Hoje o diálogo "Nova conta" pede ID, nome, nome do agente e system prompt. Vai virar um wizard mais simples e útil:
 
-## Etapa 1 — Conectar o Supabase self-hosted (você faz)
+Campos no formulário:
+- **Nome da conta** (ex: "Clínica Magnum")
+- **ID da conta no Helena** (ex: `magnum`) — vira a chave primária `accounts.id`
+- **Token do CRM Helena** (Bearer) — guardado criptografado em `accounts.helena_token_enc`
+- **Base URL do Helena** (opcional, default `https://api.crmmentoriae7.com.br`)
 
-**1.1. Obter as 3 credenciais do Coolify:**
-- `SELFHOST_SUPABASE_URL` → ex.: `https://supabase.seudominio.com`
-- `SELFHOST_SUPABASE_ANON_KEY` → variável `ANON_KEY` do serviço Supabase no Coolify
-- `SELFHOST_SUPABASE_SERVICE_ROLE_KEY` → variável `SERVICE_ROLE_KEY` (NUNCA expor no frontend)
+Ao salvar, o sistema:
+1. Cria `accounts` + `agents` + linhas filhas (`agent_audio`, `agent_followup`, `agent_warmup`, `account_secrets`, `account_llm_config`, `account_voice_config`, `channels_whatsapp`, `webchat_config`).
+2. Gera `agents.webhook_secret` (já existe no schema).
+3. Mostra na tela final **a URL do webhook pronta para colar no Helena**, com botão "Copiar":
 
-> Esses 3 secrets **já existem** no Lovable. Se ainda apontam para outro lugar, eu peço atualização via formulário seguro de secrets.
-
-**1.2. Rodar migrations no SQL Editor do Studio (Coolify):**
-- `migrations/0001_schema.sql` → cria tabelas (`accounts`, `agents`, `account_secrets`, `messages`, `llm_usage_daily`, `followups`, `warmups`, `audit_logs`) + `pgcrypto` + funções de criptografia.
-- `migrations/0002_cron.sql` → agenda follow-up (a cada 10 min) e warm-up (a cada 30 min).
-  - Substituir `APP_URL` → `https://project--b9def3f2-cdca-46bd-bd60-e390afc0784f.lovable.app`
-  - Substituir `APIKEY` → sua `SELFHOST_SUPABASE_ANON_KEY`
-
-**1.3. Confirmar `PGCRYPTO_KEY` e `HELENA_HMAC_SECRET`** (já existem como secrets).
-
----
-
-## Etapa 2 — SuperAdmin (eu implemento)
-
-Painel `/admin` separado do `/embed`, protegido por login do **próprio Supabase self-hosted**.
-
-```text
-/login                         → login Supabase (email/senha)
-/admin                         → layout protegido (_authenticated)
-  /admin                       → lista todas as contas + métricas globais
-  /admin/account/$accountId    → drill-down: performance do agente, custos, logs, mensagens
+```
+https://project--b9def3f2-...lovable.app/api/public/webhook/helena/{accountId}
+Header: X-Helena-Secret: <webhook_secret>
 ```
 
-**Mecanismo de SuperAdmin:**
-- Tabela `app_role` enum (`superadmin`, `user`) + tabela `user_roles` (linkada a `auth.users` do self-hosted).
-- Função `has_role(uuid, app_role) security definer` para evitar recursão de RLS.
-- Server function `requireSuperAdmin` middleware que checa `has_role(auth.uid(), 'superadmin')`.
-- **Você** será inserido manualmente como primeiro superadmin via SQL (te dou o comando).
+Instruções claras: "Cole essa URL no CRM Helena nos eventos **Mensagem recebida (lead)** e **Mensagem enviada (atendente)**."
 
-**RLS:** `accounts`, `messages`, `llm_usage_daily` → `select` liberado para superadmin via `has_role`.
+## 2. Webhook que recebe os eventos do Helena
 
----
+Rota pública: `POST /api/public/webhook/helena/$accountId`
 
-## Etapa 3 — Pipeline funcional do MVP (eu implemento)
+Comportamento:
+1. Valida `X-Helena-Secret` contra `agents.webhook_secret` (timing-safe).
+2. Identifica o **tipo de evento** pelo payload do Helena:
+   - `evento = "mensagem_recebida"` → veio do lead (role `user`)
+   - `evento = "mensagem_enviada"` → veio do atendente humano OU do próprio agente
+3. Extrai: `phone`, `tipo` (text/audio), `content`, `audio_url`, `helena_session_id`.
+4. Faz **upsert** em `conversations (agent_id, phone)`.
+5. **Sempre persiste em `messages`** — inclusive mensagens do atendente humano. Isso é o que garante o "se eu pausar e reativar a IA, ela mantém o contexto".
 
-**3.1. Providers (server-only, `src/integrations/*.server.ts`):**
-- `openrouter.server.ts` → chat completions usando a key da conta.
-- `elevenlabs.server.ts` → TTS por voz da conta.
-- `groq.server.ts` → STT Whisper.
-- `helena.server.ts` → envio de mensagem/áudio de volta ao WhatsApp via Helena.
+Regras de execução do agente:
+- Mensagem do **lead** + `agents.ativo = true` + sem tag "IA Desligada" → enfileira para o agente responder.
+- Mensagem do **lead** + `agents.ativo = false` (pausado pelo usuário) → **apenas grava**, não responde.
+- Mensagem do **atendente humano** → grava como `role='assistant'` com `meta.origem='humano'`. Não dispara LLM.
+- Comando `/pause` ou botão no painel → seta `agents.ativo=false` (ou tag no contato).
+- Comando `/resume` → seta `agents.ativo=true`. Próxima mensagem do lead já entra com **todo o histórico anterior** (humano + IA) no contexto.
 
-**3.2. Webhook de entrada:**
-- `src/routes/api/public/webhook.helena.$agentId.ts`
-  - Verifica HMAC com `HELENA_HMAC_SECRET`.
-  - Persiste mensagem em `messages`.
-  - Se áudio → Groq STT; monta contexto (últimas N mensagens + system prompt do agente).
-  - Chama OpenRouter com a key da conta; grava custo em `llm_usage_daily`.
-  - Se canal de áudio ligado → ElevenLabs TTS → envia áudio via Helena; senão texto.
+Áudio do lead → Groq Whisper antes de salvar `content`. URL original fica em `messages.audio_url`.
 
-**3.3. Cron handlers:**
-- `src/routes/api/public/cron/followup.ts` — varre `followups` pendentes, dispara mensagens.
-- `src/routes/api/public/cron/warmup.ts` — varre `warmups` ativos, dispara mensagens programadas.
-- Ambos autenticados via header `apikey` = anon key do self-hosted.
+## 3. Loop do agente (substitui o n8n)
 
----
+Server function `runAgentTurn(conversationId)` chamada pelo webhook quando precisa responder:
 
-## Etapa 4 — Limpeza (eu implemento)
+```
+1. Lock em conversation_state.lock_conversa (evita corrida)
+2. Debounce de 15s: aguarda novas mensagens do mesmo phone
+3. Lê system_prompt + account_llm_config + últimas 50 mensagens (ordem cronológica)
+4. Chama OpenRouter com a chave da conta (account_secrets.openrouter_api_key_enc)
+5. Insere messages(role='assistant') + agent_runs (tokens, custo, latência)
+6. Se agent_audio.responder_out=true → ElevenLabs TTS → envia áudio via Helena
+   Se não → envia texto via Helena (POST com Bearer token da conta)
+7. Atualiza conversation_state (unlock, last_user_message_at, aguardando_followup)
+```
 
-- Deletar `src/lib/api.ts`, `src/lib/mockApi.ts` (apontavam para VPS antigo).
-- Remover dependência de `ApiError` em `src/router.tsx`.
-- Atualizar `og:image` antigo em `__root.tsx`.
+Crons já planejados (`migrations/0002_cron.sql`) ficam ativos:
+- `/api/public/cron/followup` a cada 10 min
+- `/api/public/cron/warmup` a cada 30 min
 
----
+## 4. Painel de configuração embed (acessado de dentro do CRM Helena)
 
-## Ordem de execução
+URL: `/embed/account/$accountId` (já existe a rota, vai ser preenchida).
 
-1. **Você**: roda Etapa 1.1 + 1.2 e me confirma "migrations OK".
-2. **Eu**: implemento Etapa 2 (admin + auth + roles) e Etapa 4 (limpeza) em um único bloco.
-3. **Eu**: implemento Etapa 3 (pipeline + providers + cron) em um segundo bloco.
-4. **Você**: insere seu user como superadmin (SQL que eu envio), configura conta de teste via `/embed?accountId=...`, cola keys OpenRouter/ElevenLabs/Groq, e testa enviando mensagem via Helena.
+Autenticação: token efêmero gerado pelo SuperAdmin OU validação por origin do iframe + `helena_session_token`. Para o MVP: query param `?token=<webchat_config.token_publico>` validado server-side.
 
----
+A tela bate visualmente com a referência enviada (cards "Treinamentos avançados" / "Configurações", status "Assistente: pausado/ativo", botão "Ativar/Pausar assistente"). Abas:
 
-## Detalhes técnicos
+**Aba "Configurações" (principal):**
+- Toggle Ativar/Pausar assistente → `agents.ativo`
+- Nome do assistente
+- System prompt (textarea grande, com contador)
+- Modelo LLM (select dos modelos OpenRouter mais usados + override)
+- Temperatura, max tokens
 
-- **Auth do admin**: Supabase Auth do self-hosted (email/senha). Login via `supabase.auth.signInWithPassword` no cliente `selfhost/client.ts` (novo arquivo browser-safe usando `SELFHOST_SUPABASE_URL` + `SELFHOST_SUPABASE_ANON_KEY` expostos via `VITE_*` no `.env`).
-- **Server functions**: usam `selfhost/client.server.ts` (service role) + middleware `requireSuperAdmin` para `/admin/*` e `requireAccountAccess` para `/embed/*`.
-- **Embed continua aberto** (sem login) — apenas valida `accountId` na URL, como hoje.
-- **Custos LLM**: agregados em `llm_usage_daily` (já no schema 0001), exibidos na tela de connections do embed e no drill-down do admin.
+**Aba "Áudio":**
+- Toggle transcrever áudio do lead
+- Toggle responder com áudio
+- Voice ID ElevenLabs, modelo, stability, similarity
 
----
+**Aba "Follow-up":**
+- Ativar, delay em minutos, max tentativas, prompts por tentativa
 
-## O que eu preciso de você AGORA
+**Aba "Warm-up" (Clinicorp):**
+- 5 janelas (WU1..WU5) com horas-antes e prompt
 
-Só me confirme:
-- (A) URL pública do Supabase no Coolify (ex.: `https://supabase.seudominio.com`).
-- (B) Se posso prosseguir já criando o login do admin com **email/senha** (mais simples) ou prefere **Google OAuth** (precisa configurar no Studio do Coolify).
+**Aba "Conexões":**
+- Chaves OpenRouter, ElevenLabs, Groq (gravadas criptografadas, mostradas como `••••1234`)
+- Mostra a URL do webhook + secret (com botão "Regenerar" que invalida o anterior)
 
-Assim que você confirmar, eu atualizo os 3 secrets, você roda as 2 migrations, e eu sigo direto para Etapa 2.
+**Aba "Conversas" (observabilidade):**
+- Lista de `conversations` recentes, status, última mensagem
+- Click → timeline de `messages` (user / assistant-IA / assistant-humano diferenciados visualmente)
+- Botão "Pausar IA nesta conversa" / "Reativar"
+
+## 5. Por que isso resolve o que você pediu
+
+| Sua necessidade | Como atende |
+|---|---|
+| "Substituir o n8n" | Webhook + loop do agente + crons rodam dentro do TanStack, sem orquestrador externo |
+| "Escalável e estável" | Lock por conversa, debounce, fila idempotente em Postgres, RLS bypass via service role no servidor |
+| "Mais inteligente" | Contexto completo (50 turnos), modelo configurável por conta, tools no futuro |
+| "SuperAdmin cria conta com Token Helena e gera webhook" | Wizard novo + tela final mostrando URL + secret |
+| "Recebe eventos de enviar e receber mensagens" | Webhook diferencia `mensagem_recebida` vs `mensagem_enviada` |
+| "Armazenar mensagens do atendente humano para preservar contexto" | Toda mensagem entra em `messages`; humano vira `role='assistant', meta.origem='humano'` e é incluído no prompt |
+| "Interromper o agente na conversa" | Toggle global (`agents.ativo`) + por-conversa (`conversation_state.lock_conversa` com flag manual) |
+| "Reativar mantendo contexto" | Histórico nunca é apagado; próxima resposta já lê tudo |
+| "Interface de configuração dentro do CRM" | `/embed/account/$accountId` com layout das suas screenshots |
+
+## 6. Etapas de implementação (em ordem)
+
+1. **Wizard de criação de conta** (substitui o dialog atual): adiciona campo Token Helena + Base URL. Tela de sucesso mostra webhook URL + secret.
+2. **Server fn `helena.server.ts`**: cliente HTTP autenticado por conta (enviar mensagem texto/áudio, gerenciar tags).
+3. **Rota `POST /api/public/webhook/helena/$accountId`**: valida secret, parseia evento, persiste mensagem, decide se chama agente.
+4. **Server fn `runAgentTurn`**: lock, debounce 15s, contexto, OpenRouter, persiste resposta, envia via Helena.
+5. **Server fn `groq.server.ts`** (Whisper) e **`elevenlabs.server.ts`** (TTS) — providers isolados, com cobrança em `agent_runs`.
+6. **Crons** já existentes em `0002_cron.sql` apontando para `/api/public/cron/followup` e `/cron/warmup` (apenas confirmar/atualizar).
+7. **Embed `/embed/account/$accountId`**: layout com cards e abas conforme screenshot.
+8. **Conversas no embed**: timeline com diferenciação humano vs IA + botão pause/resume por conversa.
+
+## 7. Secrets necessários
+
+Já temos `PGCRYPTO_KEY`, `HELENA_HMAC_SECRET`, `SELFHOST_SUPABASE_*`. Faltam **por conta** (gravados criptografados em `account_secrets` via UI): OpenRouter, ElevenLabs, Groq. Nenhum secret novo global precisa ser adicionado para o MVP.
+
+## 8. O que fica explicitamente fora deste plano (para não inchar)
+
+- Tools do agente (Clinicorp, Google Drive, escalar humano por Evolution) — entra em fase 2.
+- Splitter/formatter de mensagens em múltiplas bolhas — fase 2.
+- PDF / Imagem do lead — fase 2.
+- Web chat público (`webchat_config`) — fase 2.
