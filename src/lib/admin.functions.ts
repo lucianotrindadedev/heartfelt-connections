@@ -58,8 +58,13 @@ export const createAccount = createServerFn({ method: "POST" })
           .max(64)
           .regex(/^[a-zA-Z0-9_-]+$/, "Use apenas letras, números, _ ou -"),
         nome: z.string().min(1).max(120),
-        nomeAgente: z.string().min(1).max(120).optional(),
-        systemPrompt: z.string().max(20000).optional(),
+        helenaToken: z.string().min(8).max(1000),
+        helenaBaseUrl: z
+          .string()
+          .url()
+          .max(300)
+          .optional()
+          .or(z.literal("").transform(() => undefined)),
       })
       .parse(d),
   )
@@ -69,9 +74,16 @@ export const createAccount = createServerFn({ method: "POST" })
     const existing = await sb.from("accounts").select("id").eq("id", data.id).maybeSingle();
     if (existing.data) throw new Error("Já existe uma conta com esse ID");
 
+    const tokenEnc = await encryptValue(data.helenaToken);
+
     const accIns = await sb
       .from("accounts")
-      .insert({ id: data.id, nome: data.nome })
+      .insert({
+        id: data.id,
+        nome: data.nome,
+        helena_base_url: data.helenaBaseUrl ?? "https://api.crmmentoriae7.com.br",
+        helena_token_enc: tokenEnc,
+      })
       .select("id")
       .single();
     if (accIns.error) throw new Error(accIns.error.message);
@@ -80,15 +92,46 @@ export const createAccount = createServerFn({ method: "POST" })
       .from("agents")
       .insert({
         account_id: data.id,
-        nome: data.nomeAgente ?? "Assistente Virtual",
-        system_prompt: data.systemPrompt ?? "",
+        nome: "Assistente Virtual",
+        system_prompt: "",
       })
-      .select("id")
+      .select("id, webhook_secret")
       .single();
     if (agentIns.error) {
       await sb.from("accounts").delete().eq("id", data.id);
       throw new Error(agentIns.error.message);
     }
 
-    return { accountId: data.id, agentId: agentIns.data.id };
+    // Cria linhas filhas padrão
+    await Promise.all([
+      sb.from("agent_audio").insert({ agent_id: agentIns.data.id }),
+      sb.from("agent_followup").insert({ agent_id: agentIns.data.id }),
+      sb.from("agent_warmup").insert({ agent_id: agentIns.data.id }),
+      sb.from("channels_whatsapp").insert({ agent_id: agentIns.data.id }),
+      sb.from("webchat_config").insert({ agent_id: agentIns.data.id }),
+      sb.from("account_secrets").insert({ account_id: data.id }),
+      sb.from("account_llm_config").insert({ account_id: data.id }),
+      sb.from("account_voice_config").insert({ account_id: data.id }),
+    ]);
+
+    return {
+      accountId: data.id,
+      agentId: agentIns.data.id,
+      webhookSecret: agentIns.data.webhook_secret as string,
+    };
   });
+
+export const getWebhookInfo = createServerFn({ method: "GET" })
+  .middleware([attachSelfhostAuth, requireSuperAdmin])
+  .inputValidator((d) => z.object({ accountId: z.string().min(1) }).parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { data: row, error } = await sb
+      .from("agents")
+      .select("webhook_secret")
+      .eq("account_id", data.accountId)
+      .single();
+    if (error) throw new Error(error.message);
+    return { accountId: data.accountId, webhookSecret: row.webhook_secret as string };
+  });
+
