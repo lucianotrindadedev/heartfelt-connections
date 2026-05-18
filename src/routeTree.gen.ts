@@ -11,18 +11,15 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as EmbedRouteImport } from './routes/embed'
-import { Route as AdminRouteImport } from './routes/admin'
 import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as EmbedIndexRouteImport } from './routes/embed.index'
-import { Route as AdminIndexRouteImport } from './routes/admin.index'
 import { Route as EmbedAccountIdRouteImport } from './routes/embed.$accountId'
 import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated.admin'
-import { Route as AdminTemplatesIndexRouteImport } from './routes/admin.templates.index'
+import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated.admin.index'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
-import { Route as AdminTemplatesTemplateIdRouteImport } from './routes/admin.templates.$templateId'
-import { Route as AdminAccountAccountIdRouteImport } from './routes/admin.account.$accountId'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
+import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -32,11 +29,6 @@ const LoginRoute = LoginRouteImport.update({
 const EmbedRoute = EmbedRouteImport.update({
   id: '/embed',
   path: '/embed',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AdminRoute = AdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedRoute = AuthenticatedRouteImport.update({
@@ -53,11 +45,6 @@ const EmbedIndexRoute = EmbedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => EmbedRoute,
 } as any)
-const AdminIndexRoute = AdminIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => AdminRoute,
-} as any)
 const EmbedAccountIdRoute = EmbedAccountIdRouteImport.update({
   id: '/$accountId',
   path: '/$accountId',
@@ -68,26 +55,15 @@ const AuthenticatedAdminRoute = AuthenticatedAdminRouteImport.update({
   path: '/admin',
   getParentRoute: () => AuthenticatedRoute,
 } as any)
-const AdminTemplatesIndexRoute = AdminTemplatesIndexRouteImport.update({
-  id: '/templates/',
-  path: '/templates/',
-  getParentRoute: () => AdminRoute,
+const AuthenticatedAdminIndexRoute = AuthenticatedAdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AuthenticatedAdminRoute,
 } as any)
 const EmbedAccountAccountIdRoute = EmbedAccountAccountIdRouteImport.update({
   id: '/account/$accountId',
   path: '/account/$accountId',
   getParentRoute: () => EmbedRoute,
-} as any)
-const AdminTemplatesTemplateIdRoute =
-  AdminTemplatesTemplateIdRouteImport.update({
-    id: '/templates/$templateId',
-    path: '/templates/$templateId',
-    getParentRoute: () => AdminRoute,
-  } as any)
-const AdminAccountAccountIdRoute = AdminAccountAccountIdRouteImport.update({
-  id: '/account/$accountId',
-  path: '/account/$accountId',
-  getParentRoute: () => AdminRoute,
 } as any)
 const EmbedAccountAccountIdIndexRoute =
   EmbedAccountAccountIdIndexRouteImport.update({
@@ -95,97 +71,88 @@ const EmbedAccountAccountIdIndexRoute =
     path: '/',
     getParentRoute: () => EmbedAccountAccountIdRoute,
   } as any)
+const AuthenticatedAdminAccountAccountIdRoute =
+  AuthenticatedAdminAccountAccountIdRouteImport.update({
+    id: '/account/$accountId',
+    path: '/account/$accountId',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/admin': typeof AuthenticatedAdminRoute
   '/embed': typeof EmbedRouteWithChildren
   '/login': typeof LoginRoute
+  '/admin': typeof AuthenticatedAdminRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
-  '/admin/': typeof AdminIndexRoute
   '/embed/': typeof EmbedIndexRoute
-  '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
-  '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
-  '/admin/templates/': typeof AdminTemplatesIndexRoute
+  '/admin/': typeof AuthenticatedAdminIndexRoute
+  '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
-  '/admin': typeof AdminIndexRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed': typeof EmbedIndexRoute
-  '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
-  '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
-  '/admin/templates': typeof AdminTemplatesIndexRoute
+  '/admin': typeof AuthenticatedAdminIndexRoute
+  '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_authenticated': typeof AuthenticatedRouteWithChildren
-  '/admin': typeof AdminRouteWithChildren
   '/embed': typeof EmbedRouteWithChildren
   '/login': typeof LoginRoute
-  '/_authenticated/admin': typeof AuthenticatedAdminRoute
+  '/_authenticated/admin': typeof AuthenticatedAdminRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
-  '/admin/': typeof AdminIndexRoute
   '/embed/': typeof EmbedIndexRoute
-  '/admin/account/$accountId': typeof AdminAccountAccountIdRoute
-  '/admin/templates/$templateId': typeof AdminTemplatesTemplateIdRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
-  '/admin/templates/': typeof AdminTemplatesIndexRoute
+  '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
+  '/_authenticated/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/admin'
     | '/embed'
     | '/login'
+    | '/admin'
     | '/embed/$accountId'
-    | '/admin/'
     | '/embed/'
-    | '/admin/account/$accountId'
-    | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
-    | '/admin/templates/'
+    | '/admin/'
+    | '/admin/account/$accountId'
     | '/embed/account/$accountId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/login'
-    | '/admin'
     | '/embed/$accountId'
     | '/embed'
+    | '/admin'
     | '/admin/account/$accountId'
-    | '/admin/templates/$templateId'
-    | '/admin/templates'
     | '/embed/account/$accountId'
   id:
     | '__root__'
     | '/'
     | '/_authenticated'
-    | '/admin'
     | '/embed'
     | '/login'
     | '/_authenticated/admin'
     | '/embed/$accountId'
-    | '/admin/'
     | '/embed/'
-    | '/admin/account/$accountId'
-    | '/admin/templates/$templateId'
     | '/embed/account/$accountId'
-    | '/admin/templates/'
+    | '/_authenticated/admin/'
+    | '/_authenticated/admin/account/$accountId'
     | '/embed/account/$accountId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
-  AdminRoute: typeof AdminRouteWithChildren
   EmbedRoute: typeof EmbedRouteWithChildren
   LoginRoute: typeof LoginRoute
 }
@@ -204,13 +171,6 @@ declare module '@tanstack/react-router' {
       path: '/embed'
       fullPath: '/embed'
       preLoaderRoute: typeof EmbedRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/admin': {
-      id: '/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authenticated': {
@@ -234,13 +194,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedIndexRouteImport
       parentRoute: typeof EmbedRoute
     }
-    '/admin/': {
-      id: '/admin/'
-      path: '/'
-      fullPath: '/admin/'
-      preLoaderRoute: typeof AdminIndexRouteImport
-      parentRoute: typeof AdminRoute
-    }
     '/embed/$accountId': {
       id: '/embed/$accountId'
       path: '/$accountId'
@@ -255,12 +208,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminRouteImport
       parentRoute: typeof AuthenticatedRoute
     }
-    '/admin/templates/': {
-      id: '/admin/templates/'
-      path: '/templates'
-      fullPath: '/admin/templates/'
-      preLoaderRoute: typeof AdminTemplatesIndexRouteImport
-      parentRoute: typeof AdminRoute
+    '/_authenticated/admin/': {
+      id: '/_authenticated/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AuthenticatedAdminIndexRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
     }
     '/embed/account/$accountId': {
       id: '/embed/account/$accountId'
@@ -269,20 +222,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedAccountAccountIdRouteImport
       parentRoute: typeof EmbedRoute
     }
-    '/admin/templates/$templateId': {
-      id: '/admin/templates/$templateId'
-      path: '/templates/$templateId'
-      fullPath: '/admin/templates/$templateId'
-      preLoaderRoute: typeof AdminTemplatesTemplateIdRouteImport
-      parentRoute: typeof AdminRoute
-    }
-    '/admin/account/$accountId': {
-      id: '/admin/account/$accountId'
-      path: '/account/$accountId'
-      fullPath: '/admin/account/$accountId'
-      preLoaderRoute: typeof AdminAccountAccountIdRouteImport
-      parentRoute: typeof AdminRoute
-    }
     '/embed/account/$accountId/': {
       id: '/embed/account/$accountId/'
       path: '/'
@@ -290,36 +229,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedAccountAccountIdIndexRouteImport
       parentRoute: typeof EmbedAccountAccountIdRoute
     }
+    '/_authenticated/admin/account/$accountId': {
+      id: '/_authenticated/admin/account/$accountId'
+      path: '/account/$accountId'
+      fullPath: '/admin/account/$accountId'
+      preLoaderRoute: typeof AuthenticatedAdminAccountAccountIdRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
   }
 }
 
+interface AuthenticatedAdminRouteChildren {
+  AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
+  AuthenticatedAdminAccountAccountIdRoute: typeof AuthenticatedAdminAccountAccountIdRoute
+}
+
+const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
+  AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
+  AuthenticatedAdminAccountAccountIdRoute:
+    AuthenticatedAdminAccountAccountIdRoute,
+}
+
+const AuthenticatedAdminRouteWithChildren =
+  AuthenticatedAdminRoute._addFileChildren(AuthenticatedAdminRouteChildren)
+
 interface AuthenticatedRouteChildren {
-  AuthenticatedAdminRoute: typeof AuthenticatedAdminRoute
+  AuthenticatedAdminRoute: typeof AuthenticatedAdminRouteWithChildren
 }
 
 const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
-  AuthenticatedAdminRoute: AuthenticatedAdminRoute,
+  AuthenticatedAdminRoute: AuthenticatedAdminRouteWithChildren,
 }
 
 const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
   AuthenticatedRouteChildren,
 )
-
-interface AdminRouteChildren {
-  AdminIndexRoute: typeof AdminIndexRoute
-  AdminAccountAccountIdRoute: typeof AdminAccountAccountIdRoute
-  AdminTemplatesTemplateIdRoute: typeof AdminTemplatesTemplateIdRoute
-  AdminTemplatesIndexRoute: typeof AdminTemplatesIndexRoute
-}
-
-const AdminRouteChildren: AdminRouteChildren = {
-  AdminIndexRoute: AdminIndexRoute,
-  AdminAccountAccountIdRoute: AdminAccountAccountIdRoute,
-  AdminTemplatesTemplateIdRoute: AdminTemplatesTemplateIdRoute,
-  AdminTemplatesIndexRoute: AdminTemplatesIndexRoute,
-}
-
-const AdminRouteWithChildren = AdminRoute._addFileChildren(AdminRouteChildren)
 
 interface EmbedAccountAccountIdRouteChildren {
   EmbedAccountAccountIdIndexRoute: typeof EmbedAccountAccountIdIndexRoute
@@ -351,10 +295,18 @@ const EmbedRouteWithChildren = EmbedRoute._addFileChildren(EmbedRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
-  AdminRoute: AdminRouteWithChildren,
   EmbedRoute: EmbedRouteWithChildren,
   LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}
