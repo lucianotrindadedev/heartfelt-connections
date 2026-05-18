@@ -1,6 +1,6 @@
 import { Outlet, Link, createRootRouteWithContext, HeadContent, Scripts } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { SessionProvider } from "@/lib/session";
+import { AuthProvider } from "@/lib/auth";
 import { Toaster } from "@/components/ui/sonner";
 
 import appCss from "../styles.css?url";
@@ -42,8 +42,8 @@ export const Route = createRootRouteWithContext<RouterContext>()({
       { name: "twitter:title", content: "Sarai Platform — Agentes IA Helena" },
       { property: "og:description", content: "Painel de agentes IA para CRM Helena" },
       { name: "twitter:description", content: "Painel de agentes IA para CRM Helena" },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/70ce64d2-0e5a-45f4-ad36-54ba8f75523e/id-preview-5a58ba20--b9def3f2-cdca-46bd-bd60-e390afc0784f.lovable.app-1776982998570.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/70ce64d2-0e5a-45f4-ad36-54ba8f75523e/id-preview-5a58ba20--b9def3f2-cdca-46bd-bd60-e390afc0784f.lovable.app-1776982998570.png" },
+      { property: "og:image", content: "" },
+      { name: "twitter:image", content: "" },
       { name: "twitter:card", content: "summary_large_image" },
       { property: "og:type", content: "website" },
     ],
@@ -72,10 +72,10 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   return (
     <QueryClientProvider client={queryClient}>
-      <SessionProvider>
+      <AuthProvider>
         <Outlet />
         <Toaster richColors position="top-right" />
-      </SessionProvider>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }
