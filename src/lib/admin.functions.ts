@@ -2,7 +2,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { attachSelfhostAuth } from "@/integrations/selfhost/auth-attacher";
-import { requireSuperAdmin } from "@/integrations/selfhost/auth-middleware.server";
+import { requireSuperAdmin } from "@/integrations/selfhost/auth-middleware";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { encryptValue } from "@/lib/crypto.server";
 
