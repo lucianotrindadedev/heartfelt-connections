@@ -19,8 +19,14 @@ import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated.
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated.admin.index'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
+import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
+import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
+import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/cron/followup'
 import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
 import { Route as ApiPublicWebhookHelenaAccountIdRouteImport } from './routes/api/public/webhook/helena/$accountId'
+import { Route as ApiPublicWebhookAutomacoesFufFinanceiroRouteImport } from './routes/api/public/webhook/automacoes/fuf-financeiro'
+import { Route as ApiPublicWebhookAutomacoesFaltososRouteImport } from './routes/api/public/webhook/automacoes/faltosos'
+import { Route as ApiPublicAuthGoogleCallbackRouteImport } from './routes/api/public/auth/google/callback'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -72,6 +78,21 @@ const EmbedAccountAccountIdIndexRoute =
     path: '/',
     getParentRoute: () => EmbedAccountAccountIdRoute,
   } as any)
+const ApiPublicCronWarmupRoute = ApiPublicCronWarmupRouteImport.update({
+  id: '/api/public/cron/warmup',
+  path: '/api/public/cron/warmup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicCronQueueRoute = ApiPublicCronQueueRouteImport.update({
+  id: '/api/public/cron/queue',
+  path: '/api/public/cron/queue',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicCronFollowupRoute = ApiPublicCronFollowupRouteImport.update({
+  id: '/api/public/cron/followup',
+  path: '/api/public/cron/followup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AuthenticatedAdminAccountAccountIdRoute =
   AuthenticatedAdminAccountAccountIdRouteImport.update({
     id: '/account/$accountId',
@@ -82,6 +103,24 @@ const ApiPublicWebhookHelenaAccountIdRoute =
   ApiPublicWebhookHelenaAccountIdRouteImport.update({
     id: '/api/public/webhook/helena/$accountId',
     path: '/api/public/webhook/helena/$accountId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicWebhookAutomacoesFufFinanceiroRoute =
+  ApiPublicWebhookAutomacoesFufFinanceiroRouteImport.update({
+    id: '/api/public/webhook/automacoes/fuf-financeiro',
+    path: '/api/public/webhook/automacoes/fuf-financeiro',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicWebhookAutomacoesFaltososRoute =
+  ApiPublicWebhookAutomacoesFaltososRouteImport.update({
+    id: '/api/public/webhook/automacoes/faltosos',
+    path: '/api/public/webhook/automacoes/faltosos',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicAuthGoogleCallbackRoute =
+  ApiPublicAuthGoogleCallbackRouteImport.update({
+    id: '/api/public/auth/google/callback',
+    path: '/api/public/auth/google/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
 
@@ -95,7 +134,13 @@ export interface FileRoutesByFullPath {
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/admin/': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
+  '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
+  '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
+  '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
+  '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
+  '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
   '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRoutesByTo {
@@ -105,7 +150,13 @@ export interface FileRoutesByTo {
   '/embed': typeof EmbedIndexRoute
   '/admin': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
+  '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
+  '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
+  '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
+  '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
+  '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
   '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRoutesById {
@@ -120,7 +171,13 @@ export interface FileRoutesById {
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
   '/_authenticated/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
+  '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
+  '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
+  '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
+  '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
+  '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
   '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRouteTypes {
@@ -135,7 +192,13 @@ export interface FileRouteTypes {
     | '/embed/account/$accountId'
     | '/admin/'
     | '/admin/account/$accountId'
+    | '/api/public/cron/followup'
+    | '/api/public/cron/queue'
+    | '/api/public/cron/warmup'
     | '/embed/account/$accountId/'
+    | '/api/public/auth/google/callback'
+    | '/api/public/webhook/automacoes/faltosos'
+    | '/api/public/webhook/automacoes/fuf-financeiro'
     | '/api/public/webhook/helena/$accountId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -145,7 +208,13 @@ export interface FileRouteTypes {
     | '/embed'
     | '/admin'
     | '/admin/account/$accountId'
+    | '/api/public/cron/followup'
+    | '/api/public/cron/queue'
+    | '/api/public/cron/warmup'
     | '/embed/account/$accountId'
+    | '/api/public/auth/google/callback'
+    | '/api/public/webhook/automacoes/faltosos'
+    | '/api/public/webhook/automacoes/fuf-financeiro'
     | '/api/public/webhook/helena/$accountId'
   id:
     | '__root__'
@@ -159,7 +228,13 @@ export interface FileRouteTypes {
     | '/embed/account/$accountId'
     | '/_authenticated/admin/'
     | '/_authenticated/admin/account/$accountId'
+    | '/api/public/cron/followup'
+    | '/api/public/cron/queue'
+    | '/api/public/cron/warmup'
     | '/embed/account/$accountId/'
+    | '/api/public/auth/google/callback'
+    | '/api/public/webhook/automacoes/faltosos'
+    | '/api/public/webhook/automacoes/fuf-financeiro'
     | '/api/public/webhook/helena/$accountId'
   fileRoutesById: FileRoutesById
 }
@@ -168,6 +243,12 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   EmbedRoute: typeof EmbedRouteWithChildren
   LoginRoute: typeof LoginRoute
+  ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute
+  ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
+  ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
+  ApiPublicAuthGoogleCallbackRoute: typeof ApiPublicAuthGoogleCallbackRoute
+  ApiPublicWebhookAutomacoesFaltososRoute: typeof ApiPublicWebhookAutomacoesFaltososRoute
+  ApiPublicWebhookAutomacoesFufFinanceiroRoute: typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
   ApiPublicWebhookHelenaAccountIdRoute: typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 
@@ -243,6 +324,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedAccountAccountIdIndexRouteImport
       parentRoute: typeof EmbedAccountAccountIdRoute
     }
+    '/api/public/cron/warmup': {
+      id: '/api/public/cron/warmup'
+      path: '/api/public/cron/warmup'
+      fullPath: '/api/public/cron/warmup'
+      preLoaderRoute: typeof ApiPublicCronWarmupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/cron/queue': {
+      id: '/api/public/cron/queue'
+      path: '/api/public/cron/queue'
+      fullPath: '/api/public/cron/queue'
+      preLoaderRoute: typeof ApiPublicCronQueueRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/cron/followup': {
+      id: '/api/public/cron/followup'
+      path: '/api/public/cron/followup'
+      fullPath: '/api/public/cron/followup'
+      preLoaderRoute: typeof ApiPublicCronFollowupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_authenticated/admin/account/$accountId': {
       id: '/_authenticated/admin/account/$accountId'
       path: '/account/$accountId'
@@ -255,6 +357,27 @@ declare module '@tanstack/react-router' {
       path: '/api/public/webhook/helena/$accountId'
       fullPath: '/api/public/webhook/helena/$accountId'
       preLoaderRoute: typeof ApiPublicWebhookHelenaAccountIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/webhook/automacoes/fuf-financeiro': {
+      id: '/api/public/webhook/automacoes/fuf-financeiro'
+      path: '/api/public/webhook/automacoes/fuf-financeiro'
+      fullPath: '/api/public/webhook/automacoes/fuf-financeiro'
+      preLoaderRoute: typeof ApiPublicWebhookAutomacoesFufFinanceiroRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/webhook/automacoes/faltosos': {
+      id: '/api/public/webhook/automacoes/faltosos'
+      path: '/api/public/webhook/automacoes/faltosos'
+      fullPath: '/api/public/webhook/automacoes/faltosos'
+      preLoaderRoute: typeof ApiPublicWebhookAutomacoesFaltososRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/auth/google/callback': {
+      id: '/api/public/auth/google/callback'
+      path: '/api/public/auth/google/callback'
+      fullPath: '/api/public/auth/google/callback'
+      preLoaderRoute: typeof ApiPublicAuthGoogleCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -318,8 +441,25 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   EmbedRoute: EmbedRouteWithChildren,
   LoginRoute: LoginRoute,
+  ApiPublicCronFollowupRoute: ApiPublicCronFollowupRoute,
+  ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
+  ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,
+  ApiPublicAuthGoogleCallbackRoute: ApiPublicAuthGoogleCallbackRoute,
+  ApiPublicWebhookAutomacoesFaltososRoute:
+    ApiPublicWebhookAutomacoesFaltososRoute,
+  ApiPublicWebhookAutomacoesFufFinanceiroRoute:
+    ApiPublicWebhookAutomacoesFufFinanceiroRoute,
   ApiPublicWebhookHelenaAccountIdRoute: ApiPublicWebhookHelenaAccountIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}

@@ -54,7 +54,7 @@ function AdminIndex() {
       )}
 
       <div className="grid gap-3">
-        {q.data?.accounts.map((a) => (
+        {q.data?.accounts.map((a: { id: string; nome: string }) => (
           <Link
             key={a.id}
             to="/admin/account/$accountId"
