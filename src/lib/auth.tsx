@@ -30,7 +30,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data } = await client.auth.getSession();
         setSession(data.session);
         setUser(data.session?.user ?? null);
-        const sub = client.auth.onAuthStateChange((_e, sess) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sub = client.auth.onAuthStateChange((_e: any, sess: any) => {
           setSession(sess);
           setUser(sess?.user ?? null);
         });

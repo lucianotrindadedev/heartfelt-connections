@@ -18,9 +18,9 @@ function AdminAccountDetail() {
   });
 
   const totalCost =
-    q.data?.usage.reduce((s, r) => s + Number(r.total_cost_usd ?? 0), 0) ?? 0;
+    q.data?.usage.reduce((s: number, r: { total_cost_usd?: number | null }) => s + Number(r.total_cost_usd ?? 0), 0) ?? 0;
   const totalTokens =
-    q.data?.usage.reduce((s, r) => s + Number(r.total_tokens ?? 0), 0) ?? 0;
+    q.data?.usage.reduce((s: number, r: { total_tokens?: number | null }) => s + Number(r.total_tokens ?? 0), 0) ?? 0;
 
   return (
     <div className="space-y-6">
@@ -105,7 +105,7 @@ function AdminAccountDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {q.data.usage.map((u) => (
+                  {q.data.usage.map((u: { day: string; total_tokens?: number | null; total_cost_usd?: number | null }) => (
                     <tr key={u.day} className="border-t border-border">
                       <td className="py-1.5">{u.day}</td>
                       <td>{Number(u.total_tokens).toLocaleString()}</td>

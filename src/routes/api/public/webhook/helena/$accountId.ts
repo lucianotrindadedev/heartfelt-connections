@@ -8,6 +8,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { runAgentTurn } from "@/lib/agent-turn.server";
+import { enqueueMessage } from "@/lib/message-queue.server";
 
 interface Payload {
   evento?: string; // mensagem_recebida | mensagem_enviada
@@ -36,10 +37,10 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         const accountId = params.accountId;
         const sb = getSelfhost();
 
-        // 1. Carrega agente + secret
+        // 1. Carrega agente + secret + debounce
         const agentRow = await sb
           .from("agents")
-          .select("id, ativo, webhook_secret")
+          .select("id, ativo, webhook_secret, debounce_segundos")
           .eq("account_id", accountId)
           .maybeSingle();
         if (!agentRow.data) {
@@ -136,11 +137,16 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         }
 
         // 7. Dispara agente quando: inbound + agente ativo
-        // (mensagens de humano/agente são apenas gravadas)
-        // Aguardamos para garantir execução no runtime do Worker.
+        // Com debounce: enfileira para agrupar múltiplas mensagens rápidas.
+        // Sem debounce (=0): chama diretamente.
         if (isInbound && agentRow.data.ativo) {
+          const debounce = (agentRow.data.debounce_segundos as number | null) ?? 20;
           try {
-            await runAgentTurn(convId);
+            if (debounce > 0) {
+              await enqueueMessage(convId, debounce);
+            } else {
+              await runAgentTurn(convId);
+            }
           } catch (e) {
             console.error("[agent-turn] falhou:", e);
           }

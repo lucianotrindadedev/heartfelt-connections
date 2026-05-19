@@ -29,6 +29,7 @@ async function ensureAccount(accountId: string, nome?: string) {
       sb.from("agent_followup").insert({ agent_id: agentId }),
       sb.from("agent_warmup").insert({ agent_id: agentId }),
       sb.from("agent_audio").insert({ agent_id: agentId }),
+      sb.from("agent_escalation").insert({ agent_id: agentId }),
       sb.from("channels_whatsapp").insert({ agent_id: agentId }),
       sb.from("webchat_config").insert({ agent_id: agentId }),
       sb.from("account_secrets").insert({ account_id: accountId }),
@@ -78,6 +79,7 @@ export const updateAgent = createServerFn({ method: "POST" })
         ativo: z.boolean().optional(),
         system_prompt: z.string().max(20000).optional(),
         llm_model_override: z.string().max(120).nullable().optional(),
+        debounce_segundos: z.number().int().min(0).max(120).optional(),
       })
       .parse(d)
   )
@@ -89,6 +91,7 @@ export const updateAgent = createServerFn({ method: "POST" })
     if (data.ativo !== undefined) patch.ativo = data.ativo;
     if (data.system_prompt !== undefined) patch.system_prompt = data.system_prompt;
     if (data.llm_model_override !== undefined) patch.llm_model_override = data.llm_model_override;
+    if (data.debounce_segundos !== undefined) patch.debounce_segundos = data.debounce_segundos;
     if (Object.keys(patch).length === 0) return { ok: true };
     const { error } = await sb.from("agents").update(patch).eq("id", agentId);
     if (error) throw new Error(error.message);
