@@ -3,7 +3,31 @@ import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
 import { getAccountDetail } from "@/lib/admin.functions";
 import { Card } from "@/components/ui/card";
-import { Loader2, ArrowLeft, ExternalLink } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Loader2, ArrowLeft, ExternalLink, Copy, Check } from "lucide-react";
+import { useState } from "react";
+
+function CopyField({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="space-y-1">
+      <div className="text-xs text-muted-foreground uppercase">{label}</div>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 rounded bg-muted px-2 py-1.5 text-xs font-mono break-all">
+          {value}
+        </code>
+        <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={copy}>
+          {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export const Route = createFileRoute("/_authenticated/admin/account/$accountId")({
   component: AdminAccountDetail,
@@ -92,6 +116,28 @@ function AdminAccountDetail() {
               <p className="mt-2 text-sm text-muted-foreground">Sem agente configurado.</p>
             )}
           </Card>
+
+          {q.data.agent && (
+            <Card className="p-4 space-y-4">
+              <h2 className="font-semibold">Configuração de Integração</h2>
+              <CopyField
+                label="Webhook Helena (cole em: CRM → Gatilhos → URL)"
+                value={`https://iasarai.vercel.app/api/public/webhook/helena/${accountId}`}
+              />
+              <CopyField
+                label="Header de autenticação (X-Helena-Secret)"
+                value={String(q.data.agent.webhook_secret ?? "")}
+              />
+              <CopyField
+                label="URL do Embed (cole no iframe do CRM)"
+                value={`https://iasarai.vercel.app/embed/account/${accountId}`}
+              />
+              <p className="text-xs text-muted-foreground">
+                No Helena: Configurações → Integrações → Webhook → URL acima + header{" "}
+                <code className="font-mono">X-Helena-Secret: &lt;valor acima&gt;</code>
+              </p>
+            </Card>
+          )}
 
           <Card className="p-4">
             <h2 className="font-semibold">Uso diário (30 dias)</h2>
