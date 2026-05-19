@@ -22,9 +22,10 @@ import {
   Check,
   ExternalLink,
   AlertCircle,
+  ArrowRight,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
@@ -114,8 +115,13 @@ function EmbedHome() {
 
   if (isLoading || !data?.agent) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-muted/30">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-white">
+        <div className="flex flex-col items-center gap-3">
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </div>
+          <p className="text-xs font-medium text-muted-foreground">Carregando…</p>
+        </div>
       </div>
     );
   }
@@ -125,126 +131,103 @@ function EmbedHome() {
   const agentId = agent.id as string;
 
   return (
-    <div className="min-h-screen bg-muted/30">
-      {/* Top bar */}
-      <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Bot className="h-5 w-5" />
+    <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 via-white to-slate-50/80">
+      {/* ── Header ── */}
+      <header className="sticky top-0 z-20 border-b border-slate-200/60 bg-white/85 backdrop-blur-xl">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-primary/70 shadow-lg shadow-primary/25">
+              <Bot className="h-5 w-5 text-white" />
+              <span className={`absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-white ${ativo ? "bg-emerald-400 shadow-sm shadow-emerald-400/50" : "bg-zinc-300"}`} />
             </div>
-            <div className="leading-tight">
-              <p className="text-sm font-semibold">Assistente Virtual</p>
-              <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span
-                  className={`inline-block h-1.5 w-1.5 rounded-full ${ativo ? "bg-emerald-500" : "bg-zinc-400"}`}
-                />
-                {ativo ? "Online" : "Inativo"}
-              </p>
+            <div>
+              <p className="text-sm font-semibold leading-tight text-foreground">{agent.nome as string}</p>
+              <p className="text-[11px] text-muted-foreground">{ativo ? "Atendendo agora" : "Assistente pausado"}</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge
-              variant="outline"
-              className={
-                ativo
-                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                  : "border-zinc-400/40 bg-zinc-500/10 text-zinc-600"
-              }
-            >
-              {ativo ? "ASSISTENTE: ATIVO" : "ASSISTENTE: PAUSADO"}
-            </Badge>
-            <Switch
-              checked={ativo}
-              onCheckedChange={(v) => toggleAtivo.mutate(v)}
-            />
+          <div className="flex items-center gap-2.5">
+            <span className={`hidden rounded-full px-3 py-1 text-[11px] font-semibold tracking-wide sm:inline-block ${ativo ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" : "bg-zinc-100 text-zinc-500 ring-1 ring-zinc-200"}`}>
+              {ativo ? "● ATIVO" : "● PAUSADO"}
+            </span>
+            <Switch checked={ativo} onCheckedChange={(v) => toggleAtivo.mutate(v)} disabled={toggleAtivo.isPending} />
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl space-y-5 px-4 py-5">
-        {/* Status Card */}
-        <Card className="overflow-hidden border-0 bg-gradient-to-br from-primary/10 via-primary/5 to-background p-5">
-          <div className="flex items-start gap-3">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <Bot className="h-7 w-7" />
+      <main className="w-full space-y-6 px-4 py-6 sm:px-6">
+
+        {/* ── Hero Card ── */}
+        <div className={`relative overflow-hidden rounded-3xl p-6 shadow-xl transition-all ${ativo ? "bg-gradient-to-br from-primary via-primary/90 to-primary/75 shadow-primary/20" : "bg-gradient-to-br from-zinc-800 via-zinc-700 to-zinc-600 shadow-zinc-800/20"}`}>
+          {/* decorative blobs */}
+          <div className="pointer-events-none absolute -right-10 -top-10 h-40 w-40 rounded-full bg-white/10 blur-3xl" />
+          <div className="pointer-events-none absolute -bottom-6 right-20 h-28 w-28 rounded-full bg-white/5 blur-2xl" />
+
+          <div className="relative flex items-start gap-4">
+            <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-2 ring-white/20 backdrop-blur">
+              <Bot className="h-9 w-9 text-white" />
             </div>
-            <div className="flex-1 min-w-0">
-              <h2 className="text-base font-semibold truncate">{agent.nome as string}</h2>
-              <p className="text-sm text-muted-foreground">
-                {ativo
-                  ? "Pronto para atender seus clientes 24/7."
-                  : "Ative o agente para começar a atender."}
+            <div className="flex-1 min-w-0 pt-1">
+              <h2 className="text-xl font-bold tracking-tight text-white">{agent.nome as string}</h2>
+              <p className="mt-0.5 text-sm text-white/70">
+                {ativo ? "Pronto para atender seus clientes 24/7." : "Ative o agente para começar a atender."}
               </p>
             </div>
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Button
-              variant={ativo ? "outline" : "default"}
-              size="sm"
+
+          <div className="relative mt-5 flex flex-wrap gap-2">
+            <button
               onClick={() => toggleAtivo.mutate(!ativo)}
               disabled={toggleAtivo.isPending}
+              className="inline-flex items-center gap-2 rounded-xl bg-white/20 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/25 backdrop-blur transition-all hover:bg-white/30 active:scale-95 disabled:opacity-60"
             >
-              <Power className="mr-1.5 h-3.5 w-3.5" />
-              {ativo ? "Pausar assistente" : "Ativar assistente"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                if (confirm("Isso apagará TODO o histórico de conversas. Continuar?")) {
-                  doReset.mutate();
-                }
-              }}
+              {toggleAtivo.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Power className="h-4 w-4" />}
+              {ativo ? "Pausar" : "Ativar assistente"}
+            </button>
+            <button
+              onClick={() => { if (confirm("Isso apagará TODO o histórico de conversas. Continuar?")) doReset.mutate(); }}
               disabled={doReset.isPending}
+              className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/20 backdrop-blur transition-all hover:bg-white/20 active:scale-95 disabled:opacity-60"
             >
-              {doReset.isPending ? (
-                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-              )}
-              Resetar assistente
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                const url = `/api/public/webhook/helena/${accountId}`;
-                void navigator.clipboard.writeText(url);
-                toast.success("URL do webhook copiada!");
-              }}
+              {doReset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
+              Resetar
+            </button>
+            <button
+              onClick={() => { void navigator.clipboard.writeText(`https://iasarai.vercel.app/api/public/webhook/helena/${accountId}`); toast.success("URL do webhook copiada!"); }}
+              className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/20 backdrop-blur transition-all hover:bg-white/20 active:scale-95"
             >
-              <Play className="mr-1.5 h-3.5 w-3.5" />
+              <Zap className="h-4 w-4" />
               Webhook URL
-            </Button>
+            </button>
           </div>
-        </Card>
+        </div>
 
-        {/* AÇÕES PRINCIPAIS */}
+        {/* ── Ações Principais ── */}
         <section>
           <SectionTitle>Ações principais</SectionTitle>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <ActionCard
-              icon={<GraduationCap className="h-5 w-5" />}
+              icon={<GraduationCap className="h-6 w-6" />}
               title="Base de conhecimento"
-              subtitle="Prompt, personalidade e instruções"
+              subtitle="Prompt, personalidade e instruções avançadas"
               label="Configurar treinamentos"
               onClick={() => setOpenSheet("training")}
-              accent="bg-blue-500/10 text-blue-600 dark:text-blue-400"
+              iconClass="bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-blue-500/30"
+              blobClass="bg-blue-400"
             />
             <ActionCard
-              icon={<Settings className="h-5 w-5" />}
+              icon={<Settings className="h-6 w-6" />}
               title="Personalize seu assistente"
-              subtitle="Modelo de IA, voz, debounce"
+              subtitle="Modelo de IA, voz e debounce"
               label="Configurar"
               onClick={() => setOpenSheet("settings")}
-              accent="bg-purple-500/10 text-purple-600 dark:text-purple-400"
-              badge={!data.secrets?.openrouter_last4 ? "⚠ Pendente" : undefined}
+              iconClass="bg-gradient-to-br from-purple-500 to-purple-600 text-white shadow-purple-500/30"
+              blobClass="bg-purple-400"
+              badge={!data.secrets?.openrouter_last4}
             />
           </div>
         </section>
 
-        {/* CANAIS E INTEGRAÇÕES */}
+        {/* ── Canais e Integrações ── */}
         <section>
           <SectionTitle>Canais e integrações</SectionTitle>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -252,86 +235,81 @@ function EmbedHome() {
               icon={<MessageCircle className="h-5 w-5" />}
               title="WhatsApp"
               status="Helena CRM"
-              statusColor="emerald"
+              active
+              iconClass="bg-gradient-to-br from-emerald-400 to-emerald-600 text-white shadow-emerald-500/30"
               onClick={() => setOpenSheet("whatsapp")}
-              accountId={accountId}
             />
             <IntegrationCard
               icon={<Headphones className="h-5 w-5" />}
               title="Áudio"
               status={data.audio?.habilitado ? "Ativo" : "Inativo"}
-              statusColor={data.audio?.habilitado ? "emerald" : "zinc"}
+              active={!!(data.audio?.habilitado)}
+              iconClass="bg-gradient-to-br from-sky-400 to-blue-600 text-white shadow-blue-500/30"
               onClick={() => setOpenSheet("audio")}
-              accountId={accountId}
             />
-            <GoogleCalendarCard
-              accountId={accountId}
-              onClick={() => setOpenSheet("google-calendar")}
-            />
-            <ClinicorpCard
-              accountId={accountId}
-              onClick={() => setOpenSheet("clinicorp")}
-            />
-            <ClinupCard
-              accountId={accountId}
-              onClick={() => setOpenSheet("clinup")}
-            />
+            <GoogleCalendarCard accountId={accountId} onClick={() => setOpenSheet("google-calendar")} />
+            <ClinicorpCard accountId={accountId} onClick={() => setOpenSheet("clinicorp")} />
+            <ClinupCard accountId={accountId} onClick={() => setOpenSheet("clinup")} />
             <IntegrationCard
               icon={<Bell className="h-5 w-5" />}
               title="Follow-up"
               status="Automático"
-              statusColor="zinc"
+              active={false}
+              iconClass="bg-gradient-to-br from-orange-400 to-orange-600 text-white shadow-orange-500/30"
               onClick={() => setOpenSheet("followup")}
-              accountId={accountId}
             />
             <IntegrationCard
               icon={<Flame className="h-5 w-5" />}
               title="Warm-up"
               status="Consultas"
-              statusColor="zinc"
+              active={false}
+              iconClass="bg-gradient-to-br from-red-400 to-rose-600 text-white shadow-rose-500/30"
               onClick={() => setOpenSheet("warmup")}
-              accountId={accountId}
             />
             <IntegrationCard
               icon={<UserX className="h-5 w-5" />}
               title="Escalada humana"
               status="Evolution"
-              statusColor="zinc"
+              active={false}
+              iconClass="bg-gradient-to-br from-pink-400 to-pink-600 text-white shadow-pink-500/30"
               onClick={() => setOpenSheet("escalation")}
-              accountId={accountId}
             />
           </div>
         </section>
 
-        {/* CONEXÕES E CUSTOS */}
+        {/* ── Conexões e Custos ── */}
         <section>
-          <Card
-            className="cursor-pointer p-4 transition-colors hover:bg-accent/50"
+          <button
             onClick={() => setOpenSheet("secrets")}
+            className="group w-full overflow-hidden rounded-2xl border border-amber-200/60 bg-gradient-to-r from-amber-50 to-orange-50 p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-amber-500/10"
           >
             <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600">
-                <KeyRound className="h-4 w-4" />
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-white shadow-md shadow-amber-500/30">
+                <KeyRound className="h-5 w-5" />
               </div>
-              <div className="flex-1">
-                <p className="text-sm font-medium">Conexões e custos</p>
-                <p className="text-xs text-muted-foreground">
-                  OpenRouter
-                  {data.secrets?.openrouter_last4 ? ` ••${data.secrets.openrouter_last4}` : " — não configurado"}
-                  {" · "}
-                  ElevenLabs
-                  {data.secrets?.elevenlabs_last4 ? ` ••${data.secrets.elevenlabs_last4}` : " — não configurado"}
-                </p>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-foreground">Conexões e custos</p>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${data.secrets?.openrouter_last4 ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-600"}`}>
+                    <span className={`h-1 w-1 rounded-full ${data.secrets?.openrouter_last4 ? "bg-emerald-500" : "bg-red-500"}`} />
+                    OpenRouter {data.secrets?.openrouter_last4 ? `••${data.secrets.openrouter_last4}` : "não configurado"}
+                  </span>
+                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${data.secrets?.elevenlabs_last4 ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+                    <span className={`h-1 w-1 rounded-full ${data.secrets?.elevenlabs_last4 ? "bg-emerald-500" : "bg-zinc-400"}`} />
+                    ElevenLabs {data.secrets?.elevenlabs_last4 ? `••${data.secrets.elevenlabs_last4}` : "não configurado"}
+                  </span>
+                </div>
               </div>
               {!data.secrets?.openrouter_last4 && (
-                <AlertCircle className="h-4 w-4 text-amber-500 shrink-0" />
+                <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
               )}
+              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1" />
             </div>
-          </Card>
+          </button>
         </section>
 
-        <p className="pt-2 text-center text-[10px] text-muted-foreground">
-          Conta {accountId} · agente {agentId.slice(0, 8)}
+        <p className="pb-2 text-center text-[10px] text-muted-foreground/60">
+          {accountId} · {agentId.slice(0, 8)}
         </p>
       </main>
 
@@ -429,7 +407,8 @@ function ActionCard({
   subtitle,
   label,
   onClick,
-  accent,
+  iconClass,
+  blobClass,
   badge,
 }: {
   icon: React.ReactNode;
@@ -437,28 +416,30 @@ function ActionCard({
   subtitle: string;
   label: string;
   onClick: () => void;
-  accent: string;
-  badge?: string;
+  iconClass: string;
+  blobClass: string;
+  badge?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      className="group rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
+      className="group relative overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-5 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg"
     >
-      <div className="mb-3 flex items-start justify-between">
-        <div className={`inline-flex h-10 w-10 items-center justify-center rounded-lg ${accent}`}>
+      <div className={`pointer-events-none absolute -right-4 -top-4 h-20 w-20 rounded-full opacity-10 blur-2xl ${blobClass}`} />
+      <div className="relative mb-4 flex items-start justify-between">
+        <div className={`flex h-12 w-12 items-center justify-center rounded-xl shadow-md ${iconClass}`}>
           {icon}
         </div>
         {badge && (
           <Badge variant="outline" className="border-amber-400/40 bg-amber-500/10 text-amber-700 text-[10px]">
-            {badge}
+            Pendente
           </Badge>
         )}
       </div>
-      <p className="text-sm font-semibold">{title}</p>
-      <p className="mb-3 text-xs text-muted-foreground">{subtitle}</p>
-      <p className="text-xs font-medium text-primary group-hover:underline">
-        {label} →
+      <p className="text-sm font-semibold text-foreground">{title}</p>
+      <p className="mb-4 text-xs text-muted-foreground">{subtitle}</p>
+      <p className="inline-flex items-center gap-1 text-xs font-semibold text-primary transition-all group-hover:gap-2">
+        {label} <ArrowRight className="h-3.5 w-3.5" />
       </p>
     </button>
   );
@@ -468,34 +449,30 @@ function IntegrationCard({
   icon,
   title,
   status,
-  statusColor,
+  active,
+  iconClass,
   onClick,
 }: {
   icon: React.ReactNode;
   title: string;
   status: string;
-  statusColor: "emerald" | "zinc" | "amber" | "blue";
+  active: boolean;
+  iconClass: string;
   onClick: () => void;
-  accountId: string;
 }) {
-  const colors: Record<string, string> = {
-    emerald: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
-    zinc: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400",
-    amber: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-    blue: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
-  };
   return (
     <button
       onClick={onClick}
-      className="rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
+      className="group relative overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
     >
-      <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-muted">
+      <div className={`mb-3 flex h-10 w-10 items-center justify-center rounded-xl shadow-sm ${iconClass}`}>
         {icon}
       </div>
-      <p className="text-sm font-semibold">{title}</p>
-      <Badge variant="outline" className={`mt-1 border-0 text-[10px] ${colors[statusColor]}`}>
+      <p className="text-xs font-semibold leading-tight text-foreground">{title}</p>
+      <span className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${active ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-emerald-500" : "bg-zinc-400"}`} />
         {status}
-      </Badge>
+      </span>
     </button>
   );
 }
@@ -516,18 +493,16 @@ function GoogleCalendarCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
+      className="group relative overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
     >
-      <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-muted">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 text-white shadow-sm shadow-blue-500/30">
         <Calendar className="h-5 w-5" />
       </div>
-      <p className="text-sm font-semibold">Google Calendar</p>
-      <Badge
-        variant="outline"
-        className={`mt-1 border-0 text-[10px] ${data?.connected ? "bg-emerald-500/15 text-emerald-700" : "bg-zinc-500/15 text-zinc-600"}`}
-      >
+      <p className="text-xs font-semibold leading-tight text-foreground">Google Calendar</p>
+      <span className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${data?.connected ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${data?.connected ? "bg-emerald-500" : "bg-zinc-400"}`} />
         {data?.connected ? "Conectado" : "Desconectado"}
-      </Badge>
+      </span>
     </button>
   );
 }
@@ -548,18 +523,16 @@ function ClinicorpCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
+      className="group relative overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
     >
-      <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-muted">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-teal-400 to-cyan-600 text-white shadow-sm shadow-teal-500/30">
         <Stethoscope className="h-5 w-5" />
       </div>
-      <p className="text-sm font-semibold">Clinicorp</p>
-      <Badge
-        variant="outline"
-        className={`mt-1 border-0 text-[10px] ${data?.ativo ? "bg-emerald-500/15 text-emerald-700" : "bg-zinc-500/15 text-zinc-600"}`}
-      >
+      <p className="text-xs font-semibold leading-tight text-foreground">Clinicorp</p>
+      <span className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${data?.ativo ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${data?.ativo ? "bg-emerald-500" : "bg-zinc-400"}`} />
         {data?.ativo ? "Ativo" : "Inativo"}
-      </Badge>
+      </span>
     </button>
   );
 }
@@ -580,18 +553,16 @@ function ClinupCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-xl border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md"
+      className="group relative overflow-hidden rounded-2xl border border-slate-200/60 bg-white p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
     >
-      <div className="mb-3 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-muted">
+      <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-violet-400 to-purple-600 text-white shadow-sm shadow-violet-500/30">
         <ClipboardList className="h-5 w-5" />
       </div>
-      <p className="text-sm font-semibold">Clinup</p>
-      <Badge
-        variant="outline"
-        className={`mt-1 border-0 text-[10px] ${data?.ativo ? "bg-emerald-500/15 text-emerald-700" : "bg-zinc-500/15 text-zinc-600"}`}
-      >
+      <p className="text-xs font-semibold leading-tight text-foreground">Clinup</p>
+      <span className={`mt-1.5 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${data?.ativo ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+        <span className={`h-1.5 w-1.5 rounded-full ${data?.ativo ? "bg-emerald-500" : "bg-zinc-400"}`} />
         {data?.ativo ? "Ativo" : "Inativo"}
-      </Badge>
+      </span>
     </button>
   );
 }
