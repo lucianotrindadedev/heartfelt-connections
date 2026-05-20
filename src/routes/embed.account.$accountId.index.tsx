@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Bot,
   Power,
@@ -129,6 +129,18 @@ function EmbedHome() {
   const agent = data.agent;
   const ativo = agent.ativo as boolean;
   const agentId = agent.id as string;
+
+  // Full-screen training view replaces the dashboard
+  if (openSheet === "training") {
+    return (
+      <TrainingView
+        accountId={accountId}
+        initialPrompt={(agent.system_prompt as string | null) ?? ""}
+        initialNome={(agent.nome as string) ?? ""}
+        onClose={() => setOpenSheet(null)}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 via-white to-slate-50/80">
@@ -314,13 +326,6 @@ function EmbedHome() {
       </main>
 
       {/* SHEETS */}
-      <TrainingSheet
-        open={openSheet === "training"}
-        onClose={() => setOpenSheet(null)}
-        accountId={accountId}
-        initialPrompt={(agent.system_prompt as string | null) ?? ""}
-        initialNome={(agent.nome as string) ?? ""}
-      />
       <SettingsSheet
         open={openSheet === "settings"}
         onClose={() => setOpenSheet(null)}
@@ -568,72 +573,326 @@ function ClinupCard({
 }
 
 // =================================================================
-// Sheet: Training
+// Full-screen: Training View
 // =================================================================
 
-function TrainingSheet({
-  open,
-  onClose,
+type TrainingTab = "instrucoes" | "midia" | "neural";
+
+function TrainingView({
   accountId,
   initialPrompt,
   initialNome,
+  onClose,
 }: {
-  open: boolean;
-  onClose: () => void;
   accountId: string;
   initialPrompt: string;
   initialNome: string;
+  onClose: () => void;
 }) {
   const qc = useQueryClient();
-  const update = useServerFn(updateAgent);
-  const [prompt, setPrompt] = useState(initialPrompt);
+  const updateFn = useServerFn(updateAgent);
+
+  const editorRef = useRef<HTMLDivElement>(null);
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [tab, setTab] = useState<TrainingTab>("instrucoes");
   const [nome, setNome] = useState(initialNome);
+  const [charCount, setCharCount] = useState(initialPrompt.length);
+  const [saveState, setSaveState] = useState<"saved" | "unsaved" | "saving">("saved");
+  const [autosave, setAutosave] = useState(true);
 
+  // Seed the contentEditable once on mount
   useEffect(() => {
-    if (open) {
-      setPrompt(initialPrompt);
-      setNome(initialNome);
+    if (editorRef.current) {
+      editorRef.current.innerText = initialPrompt;
     }
-  }, [open, initialPrompt, initialNome]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const m = useMutation({
-    mutationFn: () => update({ data: { accountId, system_prompt: prompt, nome } }),
-    onSuccess: () => {
-      toast.success("Treinamento salvo.");
+  const doSave = async () => {
+    if (!editorRef.current) return;
+    const text = editorRef.current.innerText;
+    setSaveState("saving");
+    try {
+      await updateFn({ data: { accountId, system_prompt: text, nome } });
       qc.invalidateQueries({ queryKey: ["agent", accountId] });
-      onClose();
+      setSaveState("saved");
+    } catch {
+      setSaveState("unsaved");
+      toast.error("Erro ao salvar.");
+    }
+  };
+
+  const handleInput = () => {
+    const len = editorRef.current?.innerText.length ?? 0;
+    setCharCount(len);
+    setSaveState("unsaved");
+    if (autosave) {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = setTimeout(() => { void doSave(); }, 2000);
+    }
+  };
+
+  const fmt = (cmd: string, val?: string) => {
+    document.execCommand(cmd, false, val);
+    editorRef.current?.focus();
+  };
+
+  const tabs: { id: TrainingTab; label: string; icon: React.ReactNode }[] = [
+    {
+      id: "instrucoes",
+      label: "INSTRUÇÕES",
+      icon: <span className="flex h-4 w-4 items-center justify-center rounded-full border border-current text-[9px] font-bold">●</span>,
     },
-  });
+    {
+      id: "midia",
+      label: "CONTEÚDOS EM MÍDIA",
+      icon: <span className="flex h-4 w-4 items-center justify-center rounded-full border border-current text-[9px] font-bold">●</span>,
+    },
+    {
+      id: "neural",
+      label: "NEURAL CHAINS",
+      icon: <span className="flex h-4 w-4 items-center justify-center rounded-full border border-current text-[9px] font-bold">●</span>,
+    },
+  ];
 
   return (
-    <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
-      <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
-        <SheetHeader>
-          <SheetTitle>Base de conhecimento</SheetTitle>
-        </SheetHeader>
-        <div className="space-y-4 py-4">
-          <div>
-            <Label htmlFor="nome">Nome do agente</Label>
-            <Input id="nome" value={nome} onChange={(e) => setNome(e.target.value)} className="mt-1" />
+    <div className="flex min-h-screen flex-col bg-white">
+
+      {/* ── Title bar ── */}
+      <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-3">
+        <Bot className="h-4 w-4 text-primary" />
+        <span className="text-sm font-semibold text-foreground">Treinamento</span>
+      </div>
+
+      {/* ── Action bar ── */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 bg-white px-4 py-2.5">
+        <button
+          onClick={onClose}
+          className="flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary/80"
+        >
+          ← VOLTAR
+        </button>
+
+        <div className="mx-1 h-4 w-px bg-slate-200" />
+
+        <button
+          onClick={() => void doSave()}
+          disabled={saveState === "saving"}
+          className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50 disabled:opacity-60"
+        >
+          {saveState === "saving"
+            ? <Loader2 className="h-3 w-3 animate-spin" />
+            : <RotateCcw className="h-3 w-3" />}
+          Atualizar instruções
+          <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[9px]">▶</span>
+        </button>
+
+        <button
+          className="flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-emerald-500/30 transition-opacity hover:opacity-90"
+          onClick={() => toast.info("Modo Treinador em breve!")}
+        >
+          <MessageCircle className="h-3 w-3" />
+          Modo Treinador
+          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/20 text-[9px]">▶</span>
+        </button>
+
+        <button
+          className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50"
+          onClick={() => toast.info("Follow Up em breve!")}
+        >
+          Follow Up
+          <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[9px]">▶</span>
+        </button>
+
+        <button
+          className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50"
+          onClick={() => toast.info("Templates em breve!")}
+        >
+          Templates
+          <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[9px]">▶</span>
+        </button>
+      </div>
+
+      {/* ── Nav hint ── */}
+      <p className="px-5 py-1.5 text-[11px] text-muted-foreground">
+        Navegue pelas modalidades de treinamento clicando nos botões abaixo
+      </p>
+
+      {/* ── Tabs ── */}
+      <div className="flex items-end gap-0 border-b border-slate-200 px-4">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex items-center gap-2 px-4 py-2.5 text-[11px] font-bold tracking-wider transition-colors ${
+              tab === t.id
+                ? "border-b-[3px] border-primary bg-primary text-white"
+                : "border-b-[3px] border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {t.icon}
+            {t.label}
+            <span className="flex h-4 w-4 items-center justify-center rounded-full border border-current text-[9px]">●</span>
+          </button>
+        ))}
+      </div>
+
+      {/* ── Tab content ── */}
+      {tab === "instrucoes" ? (
+        <>
+          {/* Description banner */}
+          <div className="bg-primary px-5 py-2.5 text-xs text-white/90">
+            Use essa seção para cadastrar treinamentos gerais para que eu tenha informações suficientes para manter uma conversação adequada com os clientes
           </div>
-          <div>
-            <Label htmlFor="prompt">Prompt do agente</Label>
-            <Textarea
-              id="prompt"
-              rows={20}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Você é um assistente virtual para uma clínica odontológica..."
-              className="mt-1 font-mono text-xs"
+
+          {/* Toolbar */}
+          <div className="flex flex-wrap items-center gap-1 border-b border-slate-100 bg-white px-3 py-2">
+            {/* Undo / Redo */}
+            <button onClick={() => fmt("undo")} title="Desfazer" className="rounded p-1.5 text-slate-600 hover:bg-slate-100">
+              <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2"><path d="M3 7h10a5 5 0 0 1 0 10H3m0-10 4-4M3 7l4 4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </button>
+            <button onClick={() => fmt("redo")} title="Refazer" className="rounded p-1.5 text-slate-600 hover:bg-slate-100">
+              <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2"><path d="M21 7H11a5 5 0 0 0 0 10h10m0-10-4-4m4 4-4 4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            </button>
+            <div className="mx-1 h-4 w-px bg-slate-200" />
+
+            {/* Format buttons */}
+            <button onClick={() => fmt("bold")} title="Negrito" className="rounded p-1.5 text-sm font-bold text-slate-700 hover:bg-slate-100">B</button>
+            <button onClick={() => fmt("italic")} title="Itálico" className="rounded p-1.5 text-sm italic text-slate-700 hover:bg-slate-100">I</button>
+            <button onClick={() => fmt("underline")} title="Sublinhado" className="rounded p-1.5 text-sm underline text-slate-700 hover:bg-slate-100">U</button>
+            <button onClick={() => fmt("strikeThrough")} title="Tachado" className="rounded p-1.5 text-sm line-through text-slate-700 hover:bg-slate-100">S</button>
+            <div className="mx-1 h-4 w-px bg-slate-200" />
+
+            {/* Font size */}
+            <select
+              onChange={(e) => { fmt("fontSize", e.target.value); e.target.value = ""; }}
+              defaultValue=""
+              className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 focus:outline-none"
+            >
+              <option value="" disabled>T Tamanho ▾</option>
+              <option value="1">Pequeno</option>
+              <option value="3">Normal</option>
+              <option value="5">Grande</option>
+              <option value="7">Enorme</option>
+            </select>
+            <div className="mx-1 h-4 w-px bg-slate-200" />
+
+            {/* Emoji placeholder */}
+            <button
+              title="Emoji"
+              className="rounded p-1.5 text-base leading-none hover:bg-slate-100"
+              onClick={() => toast.info("Emoji picker em breve!")}
+            >☺</button>
+
+            {/* AI Magic */}
+            <button
+              onClick={() => toast.info("AI Magic em breve!")}
+              className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-white shadow-sm shadow-primary/30 hover:bg-primary/90"
+            >
+              <Zap className="h-3 w-3" /> AI Magic
+            </button>
+
+            {/* Mic placeholder */}
+            <button
+              title="Áudio"
+              className="rounded p-1.5 text-slate-600 hover:bg-slate-100"
+              onClick={() => toast.info("Gravação de áudio em breve!")}
+            >
+              <svg viewBox="0 0 24 24" className="h-4 w-4 fill-none stroke-current stroke-2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 19v3m-3 0h6" strokeLinecap="round"/></svg>
+            </button>
+            <div className="mx-1 h-4 w-px bg-slate-200" />
+
+            {/* Char counter + save */}
+            <span className="text-xs text-muted-foreground">{charCount.toLocaleString()} / 22.500</span>
+            <button
+              onClick={() => void doSave()}
+              title="Salvar"
+              className="ml-1 flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/20"
+            >
+              <Play className="h-3.5 w-3.5 fill-current" />
+            </button>
+
+            <div className="flex-1" />
+
+            {/* Save status */}
+            <span
+              className={`mr-3 flex items-center gap-1.5 text-xs font-medium ${
+                saveState === "saved"
+                  ? "text-emerald-600"
+                  : saveState === "saving"
+                  ? "text-amber-500"
+                  : "text-slate-400"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  saveState === "saved"
+                    ? "bg-emerald-500"
+                    : saveState === "saving"
+                    ? "bg-amber-400 animate-pulse"
+                    : "bg-slate-300"
+                }`}
+              />
+              {saveState === "saved" ? "Salvo" : saveState === "saving" ? "Salvando…" : "Não salvo"}
+            </span>
+
+            {/* Autosave toggle */}
+            <span className="mr-1.5 text-xs text-muted-foreground">Autosave</span>
+            <Switch checked={autosave} onCheckedChange={setAutosave} />
+          </div>
+
+          {/* Agent name bar */}
+          <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-2">
+            <Label className="shrink-0 text-xs text-muted-foreground">Nome:</Label>
+            <Input
+              value={nome}
+              onChange={(e) => { setNome(e.target.value); setSaveState("unsaved"); }}
+              placeholder="Nome do agente"
+              className="h-7 border-0 bg-transparent px-0 text-sm font-medium shadow-none focus-visible:ring-0"
             />
           </div>
-          <Button onClick={() => m.mutate()} disabled={m.isPending} className="w-full">
-            {m.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Salvar
-          </Button>
+
+          {/* ContentEditable editor area */}
+          <div
+            ref={editorRef}
+            contentEditable
+            onInput={handleInput}
+            suppressContentEditableWarning
+            data-placeholder="Você é um assistente virtual especializado em… Descreva aqui a personalidade, tom, objetivos e regras do agente."
+            className="min-h-0 flex-1 cursor-text p-5 text-sm leading-relaxed text-foreground outline-none empty:before:text-muted-foreground/50 empty:before:content-[attr(data-placeholder)]"
+            style={{ minHeight: "calc(100vh - 260px)" }}
+          />
+        </>
+      ) : (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-12 text-center">
+          {tab === "midia" ? (
+            <>
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-100">
+                <GraduationCap className="h-7 w-7 text-sky-500" />
+              </div>
+              <p className="text-sm font-semibold text-foreground">Conteúdos em Mídia</p>
+              <p className="max-w-xs text-xs text-muted-foreground">
+                Envie documentos, PDFs e imagens para treinar o agente com conteúdo visual. Em breve!
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-100">
+                <Settings className="h-7 w-7 text-violet-500" />
+              </div>
+              <p className="text-sm font-semibold text-foreground">Neural Chains</p>
+              <p className="max-w-xs text-xs text-muted-foreground">
+                Crie fluxos de raciocínio encadeados para guiar o agente em situações complexas. Em breve!
+              </p>
+            </>
+          )}
+          <span className="mt-2 rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-500">
+            Em breve
+          </span>
         </div>
-      </SheetContent>
-    </Sheet>
+      )}
+    </div>
   );
 }
 
