@@ -18,6 +18,7 @@ import { Route as EmbedAccountIdRouteImport } from './routes/embed.$accountId'
 import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated.admin'
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated.admin.index'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
+import { Route as AuthenticatedAdminTemplatesRouteImport } from './routes/_authenticated.admin.templates'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
@@ -72,6 +73,12 @@ const EmbedAccountAccountIdRoute = EmbedAccountAccountIdRouteImport.update({
   path: '/account/$accountId',
   getParentRoute: () => EmbedRoute,
 } as any)
+const AuthenticatedAdminTemplatesRoute =
+  AuthenticatedAdminTemplatesRouteImport.update({
+    id: '/templates',
+    path: '/templates',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
 const EmbedAccountAccountIdIndexRoute =
   EmbedAccountAccountIdIndexRouteImport.update({
     id: '/',
@@ -131,6 +138,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AuthenticatedAdminRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
+  '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/admin/': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
@@ -148,6 +156,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed': typeof EmbedIndexRoute
+  '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/admin': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
@@ -168,6 +177,7 @@ export interface FileRoutesById {
   '/_authenticated/admin': typeof AuthenticatedAdminRouteWithChildren
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
+  '/_authenticated/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
   '/_authenticated/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
@@ -189,6 +199,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/embed/$accountId'
     | '/embed/'
+    | '/admin/templates'
     | '/embed/account/$accountId'
     | '/admin/'
     | '/admin/account/$accountId'
@@ -206,6 +217,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/embed/$accountId'
     | '/embed'
+    | '/admin/templates'
     | '/admin'
     | '/admin/account/$accountId'
     | '/api/public/cron/followup'
@@ -225,6 +237,7 @@ export interface FileRouteTypes {
     | '/_authenticated/admin'
     | '/embed/$accountId'
     | '/embed/'
+    | '/_authenticated/admin/templates'
     | '/embed/account/$accountId'
     | '/_authenticated/admin/'
     | '/_authenticated/admin/account/$accountId'
@@ -317,6 +330,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedAccountAccountIdRouteImport
       parentRoute: typeof EmbedRoute
     }
+    '/_authenticated/admin/templates': {
+      id: '/_authenticated/admin/templates'
+      path: '/templates'
+      fullPath: '/admin/templates'
+      preLoaderRoute: typeof AuthenticatedAdminTemplatesRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
     '/embed/account/$accountId/': {
       id: '/embed/account/$accountId/'
       path: '/'
@@ -384,11 +404,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedAdminRouteChildren {
+  AuthenticatedAdminTemplatesRoute: typeof AuthenticatedAdminTemplatesRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
   AuthenticatedAdminAccountAccountIdRoute: typeof AuthenticatedAdminAccountAccountIdRoute
 }
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
+  AuthenticatedAdminTemplatesRoute: AuthenticatedAdminTemplatesRoute,
   AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
   AuthenticatedAdminAccountAccountIdRoute:
     AuthenticatedAdminAccountAccountIdRoute,

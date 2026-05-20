@@ -39,7 +39,15 @@ function AdminIndex() {
             Todas as contas Helena conectadas — clique para ver performance e custos.
           </p>
         </div>
-        <CreateAccountDialog />
+        <div className="flex gap-2">
+          <Link
+            to="/admin/templates"
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
+          >
+            Templates
+          </Link>
+          <CreateAccountDialog />
+        </div>
       </div>
 
       {q.isLoading && (

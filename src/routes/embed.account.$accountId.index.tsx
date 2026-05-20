@@ -67,6 +67,7 @@ import {
   saveWarmupConfig,
   resetAgent,
 } from "@/lib/integrations.functions";
+import { listTemplates } from "@/lib/templates.functions";
 
 export const Route = createFileRoute("/embed/account/$accountId/")({
   component: EmbedHome,
@@ -600,6 +601,7 @@ function TrainingView({
   const [charCount, setCharCount] = useState(initialPrompt.length);
   const [saveState, setSaveState] = useState<"saved" | "unsaved" | "saving">("saved");
   const [autosave, setAutosave] = useState(true);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   // Seed the contentEditable once on mount
   useEffect(() => {
@@ -636,6 +638,20 @@ function TrainingView({
   const fmt = (cmd: string, val?: string) => {
     document.execCommand(cmd, false, val);
     editorRef.current?.focus();
+  };
+
+  const applyTemplate = (prompt: string) => {
+    if (editorRef.current) {
+      editorRef.current.innerText = prompt;
+      setCharCount(prompt.length);
+      setSaveState("unsaved");
+      if (autosave) {
+        if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = setTimeout(() => { void doSave(); }, 2000);
+      }
+    }
+    setShowTemplates(false);
+    toast.success("Template aplicado! Revise e salve.");
   };
 
   const tabs: { id: TrainingTab; label: string; icon: React.ReactNode }[] = [
@@ -707,7 +723,7 @@ function TrainingView({
 
         <button
           className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50"
-          onClick={() => toast.info("Templates em breve!")}
+          onClick={() => setShowTemplates(true)}
         >
           Templates
           <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[9px]">▶</span>
@@ -892,6 +908,521 @@ function TrainingView({
           </span>
         </div>
       )}
+
+      {/* Templates modal */}
+      {showTemplates && (
+        <TemplatesModal
+          accountId={accountId}
+          onClose={() => setShowTemplates(false)}
+          onApply={applyTemplate}
+        />
+      )}
+    </div>
+  );
+}
+
+// =================================================================
+// Templates Modal
+// =================================================================
+
+type TemplateRow = {
+  id: string;
+  nome: string;
+  descricao: string;
+  cover_url: string | null;
+  system_prompt: string;
+  integration_type: string | null;
+  categoria: string;
+  ordem: number;
+};
+
+type TemplateStep =
+  | "list"
+  | "detail"
+  | "integration-clinicorp"
+  | "integration-gcal"
+  | "integration-clinup";
+
+const INTEGRATION_LABELS: Record<string, string> = {
+  clinicorp: "Clinicorp",
+  google_calendar: "Google Calendar",
+  clinup: "Clinup",
+};
+
+const INTEGRATION_COLORS: Record<string, string> = {
+  clinicorp: "bg-teal-100 text-teal-700",
+  google_calendar: "bg-blue-100 text-blue-700",
+  clinup: "bg-violet-100 text-violet-700",
+};
+
+function TemplatesModal({
+  accountId,
+  onClose,
+  onApply,
+}: {
+  accountId: string;
+  onClose: () => void;
+  onApply: (prompt: string) => void;
+}) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listTemplates);
+  const saveClinFn = useServerFn(saveClinicorpConfig);
+  const testClinFn = useServerFn(testClinicorpConnection);
+  const saveClinupFn = useServerFn(saveClinupConfig);
+  const testClinupFn = useServerFn(testClinupConnection);
+  const getAuthUrlFn = useServerFn(getGoogleAuthUrl);
+
+  const [step, setStep] = useState<TemplateStep>("list");
+  const [selected, setSelected] = useState<TemplateRow | null>(null);
+  const [search, setSearch] = useState("");
+  const [activeCategory, setActiveCategory] = useState("todos");
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["templates"],
+    queryFn: () => listFn(),
+  });
+
+  const templates: TemplateRow[] = (data?.templates ?? []) as TemplateRow[];
+
+  // Categories from data
+  const categories = ["todos", ...Array.from(new Set(templates.map((t) => t.categoria)))];
+
+  const filtered = templates.filter((t) => {
+    const matchSearch =
+      !search ||
+      t.nome.toLowerCase().includes(search.toLowerCase()) ||
+      t.descricao.toLowerCase().includes(search.toLowerCase());
+    const matchCat = activeCategory === "todos" || t.categoria === activeCategory;
+    return matchSearch && matchCat;
+  });
+
+  function handleSelect(t: TemplateRow) {
+    setSelected(t);
+    if (!t.integration_type) {
+      setStep("detail");
+    } else if (t.integration_type === "clinicorp") {
+      setStep("integration-clinicorp");
+    } else if (t.integration_type === "google_calendar") {
+      setStep("integration-gcal");
+    } else if (t.integration_type === "clinup") {
+      setStep("integration-clinup");
+    } else {
+      setStep("detail");
+    }
+  }
+
+  function handleApply() {
+    if (selected?.system_prompt) onApply(selected.system_prompt);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 pt-8 backdrop-blur-sm">
+      <div className="w-full max-w-3xl rounded-2xl bg-white shadow-2xl">
+
+        {/* Header */}
+        <div className="flex items-center gap-3 border-b px-6 py-4">
+          {step !== "list" && (
+            <button
+              onClick={() => setStep("list")}
+              className="flex items-center gap-1 text-sm text-primary hover:text-primary/80"
+            >
+              ← Templates
+            </button>
+          )}
+          {step === "list" && (
+            <>
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <GraduationCap className="h-4 w-4 text-primary" />
+              </div>
+              <div className="flex-1">
+                <p className="font-semibold">Templates</p>
+                <p className="text-xs text-muted-foreground">
+                  Use modelos de treinamentos feitos por especialistas para potencializar seu assistente!
+                </p>
+              </div>
+            </>
+          )}
+          {step !== "list" && selected && (
+            <p className="flex-1 font-semibold">{selected.nome}</p>
+          )}
+          <button onClick={onClose} className="rounded p-1 hover:bg-slate-100">
+            <AlertCircle className="h-4 w-4 rotate-45 text-slate-400" />
+          </button>
+        </div>
+
+        {/* ── STEP: LIST ── */}
+        {step === "list" && (
+          <div className="p-5">
+            {/* Search */}
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar templates…"
+              className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm outline-none focus:border-primary focus:bg-white"
+            />
+
+            {/* Category tabs */}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setActiveCategory(cat)}
+                  className={`rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors ${
+                    activeCategory === cat
+                      ? "bg-primary text-white"
+                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                  }`}
+                >
+                  {cat === "todos" ? "⭐ Todos" : cat}
+                </button>
+              ))}
+            </div>
+
+            {/* Grid */}
+            {isLoading ? (
+              <div className="flex justify-center py-12">
+                <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              </div>
+            ) : filtered.length === 0 ? (
+              <p className="py-12 text-center text-sm text-muted-foreground">
+                {search ? "Nenhum template encontrado." : "Nenhum template cadastrado ainda."}
+              </p>
+            ) : (
+              <div className="mt-4 grid max-h-[60vh] gap-4 overflow-y-auto pb-2 sm:grid-cols-3">
+                {filtered.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => handleSelect(t)}
+                    className="group overflow-hidden rounded-xl border border-slate-200 text-left transition-all hover:-translate-y-0.5 hover:shadow-lg"
+                  >
+                    {/* Cover */}
+                    <div
+                      className="h-28 w-full bg-gradient-to-br from-primary/30 to-primary/10 bg-cover bg-center"
+                      style={t.cover_url ? { backgroundImage: `url(${t.cover_url})` } : {}}
+                    />
+                    <div className="p-3 space-y-1">
+                      <p className="text-sm font-semibold text-primary leading-tight line-clamp-2">
+                        {t.nome}
+                      </p>
+                      <p className="text-xs text-muted-foreground line-clamp-2">{t.descricao}</p>
+                      {t.integration_type && (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${INTEGRATION_COLORS[t.integration_type] ?? "bg-slate-100 text-slate-600"}`}
+                        >
+                          <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                          {INTEGRATION_LABELS[t.integration_type]}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── STEP: DETAIL (no integration) ── */}
+        {step === "detail" && selected && (
+          <div className="p-6 space-y-4">
+            {selected.cover_url && (
+              <img
+                src={selected.cover_url}
+                alt={selected.nome}
+                className="h-32 w-full rounded-xl object-cover"
+              />
+            )}
+            <p className="text-sm text-muted-foreground">{selected.descricao}</p>
+            <div className="rounded-xl border bg-slate-50 p-4">
+              <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Preview do prompt</p>
+              <p className="line-clamp-6 whitespace-pre-wrap text-xs leading-relaxed text-foreground">
+                {selected.system_prompt || "(sem prompt)"}
+              </p>
+            </div>
+            <Button onClick={handleApply} className="w-full">
+              Aplicar este template
+            </Button>
+          </div>
+        )}
+
+        {/* ── STEP: CLINICORP SETUP ── */}
+        {step === "integration-clinicorp" && selected && (
+          <TemplateClinicorpSetup
+            accountId={accountId}
+            saveFn={saveClinFn}
+            testFn={testClinFn}
+            onSuccess={() => { void (async () => { handleApply(); })(); }}
+            onSkip={handleApply}
+          />
+        )}
+
+        {/* ── STEP: GOOGLE CALENDAR SETUP ── */}
+        {step === "integration-gcal" && selected && (
+          <TemplateGCalSetup
+            accountId={accountId}
+            getAuthUrlFn={getAuthUrlFn}
+            qc={qc}
+            onSuccess={handleApply}
+            onSkip={handleApply}
+          />
+        )}
+
+        {/* ── STEP: CLINUP SETUP ── */}
+        {step === "integration-clinup" && selected && (
+          <TemplateClinupSetup
+            accountId={accountId}
+            saveFn={saveClinupFn}
+            testFn={testClinupFn}
+            onSuccess={handleApply}
+            onSkip={handleApply}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Integration setup panels ──
+
+function TemplateClinicorpSetup({
+  accountId,
+  saveFn,
+  testFn,
+  onSuccess,
+  onSkip,
+}: {
+  accountId: string;
+  saveFn: ReturnType<typeof useServerFn<typeof saveClinicorpConfig>>;
+  testFn: ReturnType<typeof useServerFn<typeof testClinicorpConnection>>;
+  onSuccess: () => void;
+  onSkip: () => void;
+}) {
+  const [token, setToken] = useState("");
+  const [subscriberId, setSubscriberId] = useState("");
+  const [businessId, setBusinessId] = useState("");
+  const [agendaId, setAgendaId] = useState("");
+  const [duracao, setDuracao] = useState("40");
+  const [saving, setSaving] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await saveFn({
+        data: {
+          accountId,
+          ...(token ? { api_token: token } : {}),
+          subscriber_id: subscriberId,
+          business_id: businessId ? Number(businessId) : undefined,
+          agenda_id: agendaId ? Number(agendaId) : undefined,
+          duracao_consulta: Number(duracao),
+          ativo: true,
+        },
+      });
+      toast.success("Clinicorp configurado!");
+      onSuccess();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    setTestResult(null);
+    const r = await testFn({ data: { accountId } });
+    setTestResult(r.ok ? "✅ Conexão OK" : `❌ ${r.error}`);
+  }
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="rounded-xl border border-teal-200 bg-teal-50 p-4">
+        <p className="text-sm font-semibold text-teal-800">Este template requer o Clinicorp</p>
+        <p className="mt-1 text-xs text-teal-700">
+          Preencha as credenciais abaixo para que o agente possa consultar e agendar no Clinicorp.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="col-span-2">
+          <Label className="text-xs">Token API (Basic auth base64)</Label>
+          <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="cole o token aqui" className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Subscriber ID</Label>
+          <Input value={subscriberId} onChange={(e) => setSubscriberId(e.target.value)} className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Business ID</Label>
+          <Input type="number" value={businessId} onChange={(e) => setBusinessId(e.target.value)} className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Agenda ID</Label>
+          <Input type="number" value={agendaId} onChange={(e) => setAgendaId(e.target.value)} className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Duração (min)</Label>
+          <Input type="number" value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1" />
+        </div>
+      </div>
+      {testResult && <p className="text-xs">{testResult}</p>}
+      <div className="flex gap-2">
+        <Button onClick={handleSave} disabled={saving} className="flex-1 bg-teal-600 hover:bg-teal-700">
+          {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Salvar e aplicar template
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleTest}>Testar</Button>
+      </div>
+      <button onClick={onSkip} className="w-full text-center text-xs text-muted-foreground hover:text-foreground">
+        Pular configuração e aplicar mesmo assim
+      </button>
+    </div>
+  );
+}
+
+function TemplateGCalSetup({
+  accountId,
+  getAuthUrlFn,
+  qc,
+  onSuccess,
+  onSkip,
+}: {
+  accountId: string;
+  getAuthUrlFn: ReturnType<typeof useServerFn<typeof getGoogleAuthUrl>>;
+  qc: ReturnType<typeof useQueryClient>;
+  onSuccess: () => void;
+  onSkip: () => void;
+}) {
+  const [connecting, setConnecting] = useState(false);
+
+  async function connect() {
+    setConnecting(true);
+    try {
+      const { url } = await getAuthUrlFn({ data: { accountId } });
+      const popup = window.open(url, "gcal-oauth", "width=500,height=650,popup=true");
+      if (!popup) { toast.error("Pop-up bloqueado."); return; }
+      const check = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(check);
+          setConnecting(false);
+          qc.invalidateQueries({ queryKey: ["gcal-status", accountId] });
+          onSuccess();
+        }
+      }, 500);
+    } catch {
+      toast.error("Erro ao gerar URL de autenticação.");
+      setConnecting(false);
+    }
+  }
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+        <p className="text-sm font-semibold text-blue-800">Este template requer o Google Calendar</p>
+        <p className="mt-1 text-xs text-blue-700">
+          Conecte sua conta Google para que o agente possa verificar disponibilidade e criar agendamentos.
+        </p>
+      </div>
+      <Button onClick={connect} disabled={connecting} className="w-full bg-blue-600 hover:bg-blue-700">
+        {connecting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
+        Conectar com Google e aplicar template
+      </Button>
+      <button onClick={onSkip} className="w-full text-center text-xs text-muted-foreground hover:text-foreground">
+        Pular configuração e aplicar mesmo assim
+      </button>
+    </div>
+  );
+}
+
+function TemplateClinupSetup({
+  accountId,
+  saveFn,
+  testFn,
+  onSuccess,
+  onSkip,
+}: {
+  accountId: string;
+  saveFn: ReturnType<typeof useServerFn<typeof saveClinupConfig>>;
+  testFn: ReturnType<typeof useServerFn<typeof testClinupConnection>>;
+  onSuccess: () => void;
+  onSkip: () => void;
+}) {
+  const [token, setToken] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [clinicId, setClinicId] = useState("");
+  const [agendaId, setAgendaId] = useState("");
+  const [duracao, setDuracao] = useState("40");
+  const [saving, setSaving] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await saveFn({
+        data: {
+          accountId,
+          ...(token ? { api_token: token } : {}),
+          base_url: baseUrl || undefined,
+          clinic_id: clinicId || undefined,
+          agenda_id: agendaId || undefined,
+          duracao_consulta: Number(duracao),
+          ativo: true,
+        },
+      });
+      toast.success("Clinup configurado!");
+      onSuccess();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    setTestResult(null);
+    const r = await testFn({ data: { accountId } });
+    setTestResult(r.ok ? "✅ Conexão OK" : `❌ ${r.error}`);
+  }
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+        <p className="text-sm font-semibold text-violet-800">Este template requer o Clinup</p>
+        <p className="mt-1 text-xs text-violet-700">
+          Configure as credenciais para que o agente possa agendar no Clinup.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="col-span-2">
+          <Label className="text-xs">URL base (ex: https://app.clinup.com.br)</Label>
+          <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="mt-1" />
+        </div>
+        <div className="col-span-2">
+          <Label className="text-xs">Token API</Label>
+          <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Clinic ID</Label>
+          <Input value={clinicId} onChange={(e) => setClinicId(e.target.value)} className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Agenda ID</Label>
+          <Input value={agendaId} onChange={(e) => setAgendaId(e.target.value)} className="mt-1" />
+        </div>
+        <div>
+          <Label className="text-xs">Duração (min)</Label>
+          <Input type="number" value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1" />
+        </div>
+      </div>
+      {testResult && <p className="text-xs">{testResult}</p>}
+      <div className="flex gap-2">
+        <Button onClick={handleSave} disabled={saving} className="flex-1 bg-violet-600 hover:bg-violet-700">
+          {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Salvar e aplicar template
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleTest}>Testar</Button>
+      </div>
+      <button onClick={onSkip} className="w-full text-center text-xs text-muted-foreground hover:text-foreground">
+        Pular configuração e aplicar mesmo assim
+      </button>
     </div>
   );
 }
