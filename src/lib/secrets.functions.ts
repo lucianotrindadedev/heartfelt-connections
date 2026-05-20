@@ -126,6 +126,50 @@ export const listElevenLabsVoices = createServerFn({ method: "POST" })
     return { voices: (j.voices ?? []).map((v) => ({ voice_id: v.voice_id, name: v.name })) };
   });
 
+// ============================================================
+// HELENA CRM (token + base URL por conta)
+// ============================================================
+
+export const getHelenaConfig = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { data: row } = await sb
+      .from("accounts")
+      .select("helena_base_url, helena_token_enc")
+      .eq("id", data.accountId)
+      .single();
+    return {
+      base_url: (row?.helena_base_url as string | null) ?? "",
+      token_configured: !!(row?.helena_token_enc),
+    };
+  });
+
+export const setHelenaConfig = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput
+      .extend({
+        base_url: z.string().url().optional(),
+        token: z.string().min(8).max(500).optional(),
+      })
+      .parse(d)
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const patch: Record<string, unknown> = {};
+    if (data.base_url !== undefined) patch.helena_base_url = data.base_url;
+    if (data.token) {
+      patch.helena_token_enc = await encryptValue(data.token);
+    }
+    if (Object.keys(patch).length === 0) return { ok: true };
+    const { error } = await sb
+      .from("accounts")
+      .update(patch)
+      .eq("id", data.accountId);
+    if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
 export const getUsageSummary = createServerFn({ method: "POST" })
   .inputValidator((d) => accountIdInput.parse(d))
   .handler(async ({ data }) => {

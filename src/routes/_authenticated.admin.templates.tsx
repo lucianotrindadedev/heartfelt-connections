@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect } from "react";
-import { Plus, Pencil, Trash2, Loader2, X, Eye, EyeOff } from "lucide-react";
+import { useState } from "react";
+import { Plus, Pencil, Trash2, Loader2, X, Eye, EyeOff, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +16,7 @@ import {
   createTemplate,
   updateTemplate,
   deleteTemplate,
+  type TemplateVariable,
 } from "@/lib/templates.functions";
 
 export const Route = createFileRoute("/_authenticated/admin/templates")({
@@ -45,6 +46,7 @@ type TemplateRow = {
   categoria: string;
   ordem: number;
   ativo: boolean;
+  variables: TemplateVariable[];
 };
 
 type FormState = Omit<TemplateRow, "id"> & { id?: string };
@@ -58,6 +60,7 @@ const EMPTY_FORM: FormState = {
   categoria: "geral",
   ordem: 0,
   ativo: true,
+  variables: [],
 };
 
 function AdminTemplates() {
@@ -85,7 +88,7 @@ function AdminTemplates() {
   }
 
   function openEdit(t: TemplateRow) {
-    setForm({ ...t, integration_type: t.integration_type ?? "", cover_url: t.cover_url ?? "" });
+    setForm({ ...t, integration_type: t.integration_type ?? "", cover_url: t.cover_url ?? "", variables: t.variables ?? [] });
     setPreviewPrompt(false);
     setShowForm(true);
   }
@@ -106,6 +109,7 @@ function AdminTemplates() {
         categoria: form.categoria,
         ordem: form.ordem,
         ativo: form.ativo,
+        variables: form.variables ?? [],
       };
       if (editing && form.id) {
         await updateFn({ data: { id: form.id, ...payload } });
@@ -181,6 +185,11 @@ function AdminTemplates() {
                     className={`text-[10px] border-0 ${INTEGRATION_COLORS[t.integration_type] ?? "bg-zinc-100 text-zinc-600"}`}
                   >
                     {INTEGRATION_OPTIONS.find((o) => o.value === t.integration_type)?.label}
+                  </Badge>
+                )}
+                {(t.variables ?? []).length > 0 && (
+                  <Badge variant="outline" className="text-[10px] bg-orange-50 text-orange-600 border-orange-200">
+                    {t.variables.length} var.
                   </Badge>
                 )}
               </div>
@@ -326,6 +335,179 @@ function AdminTemplates() {
                 <p className="mt-1 text-right text-[10px] text-muted-foreground">
                   {form.system_prompt.length.toLocaleString()} caracteres
                 </p>
+              </div>
+
+              {/* Variables */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <Label>Variáveis configuráveis</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setForm((p) => ({
+                        ...p,
+                        variables: [
+                          ...(p.variables ?? []),
+                          { key: "", label: "", placeholder: "", type: "text" as const, required: false },
+                        ],
+                      }))
+                    }
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" /> Adicionar variável
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground mb-3">
+                  Use <code className="bg-muted px-1 rounded">[NOME_DA_VARIAVEL]</code> no prompt para marcar onde o valor será inserido.
+                </p>
+                {(form.variables ?? []).length === 0 ? (
+                  <div className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground">
+                    Nenhuma variável. Adicione para permitir que o usuário configure o prompt.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {(form.variables ?? []).map((v, i) => (
+                      <div key={i} className="rounded-md border p-3 space-y-2 bg-muted/20">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5">
+                            <GripVertical className="h-4 w-4 text-muted-foreground/40" />
+                            <span className="text-xs font-medium text-muted-foreground">Variável {i + 1}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setForm((p) => ({
+                                ...p,
+                                variables: (p.variables ?? []).filter((_, j) => j !== i),
+                              }))
+                            }
+                            className="rounded p-0.5 hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <Label className="text-[11px]">Chave (KEY)</Label>
+                            <Input
+                              value={v.key}
+                              onChange={(e) =>
+                                setForm((p) => ({
+                                  ...p,
+                                  variables: (p.variables ?? []).map((vv, j) =>
+                                    j === i ? { ...vv, key: e.target.value.toUpperCase().replace(/\s/g, "_") } : vv
+                                  ),
+                                }))
+                              }
+                              placeholder="NOME_CONSULTOR"
+                              className="mt-0.5 text-xs font-mono"
+                            />
+                          </div>
+                          <div>
+                            <Label className="text-[11px]">Tipo</Label>
+                            <select
+                              value={v.type}
+                              onChange={(e) =>
+                                setForm((p) => ({
+                                  ...p,
+                                  variables: (p.variables ?? []).map((vv, j) =>
+                                    j === i ? { ...vv, type: e.target.value as "text" | "textarea" } : vv
+                                  ),
+                                }))
+                              }
+                              className="mt-0.5 w-full rounded-md border bg-background p-1.5 text-xs"
+                            >
+                              <option value="text">Texto curto</option>
+                              <option value="textarea">Texto longo</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div>
+                          <Label className="text-[11px]">Rótulo (exibido ao usuário)</Label>
+                          <Input
+                            value={v.label}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                variables: (p.variables ?? []).map((vv, j) =>
+                                  j === i ? { ...vv, label: e.target.value } : vv
+                                ),
+                              }))
+                            }
+                            placeholder="Nome do assistente"
+                            className="mt-0.5 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[11px]">Placeholder</Label>
+                          <Input
+                            value={v.placeholder ?? ""}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                variables: (p.variables ?? []).map((vv, j) =>
+                                  j === i ? { ...vv, placeholder: e.target.value } : vv
+                                ),
+                              }))
+                            }
+                            placeholder="Ex: Maria, Joana, Enzo"
+                            className="mt-0.5 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <Label className="text-[11px]">Chave de configuração do assistente (opcional)</Label>
+                          <select
+                            value={v.settings_key ?? ""}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                variables: (p.variables ?? []).map((vv, j) =>
+                                  j === i ? { ...vv, settings_key: e.target.value || undefined } : vv
+                                ),
+                              }))
+                            }
+                            className="mt-0.5 w-full rounded-md border bg-background p-1.5 text-xs"
+                          >
+                            <option value="">— Não vincular ao perfil —</option>
+                            <option value="assistant_name">Nome do assistente</option>
+                            <option value="company_name">Nome da empresa / clínica</option>
+                            <option value="company_type">Tipo / especialidade da empresa</option>
+                            <option value="doctor_name">Nome do médico / responsável</option>
+                            <option value="company_address">Endereço</option>
+                            <option value="business_hours">Horário de funcionamento</option>
+                            <option value="payment_methods">Formas de pagamento</option>
+                            <option value="featured_services">Serviços em destaque</option>
+                            <option value="assistant_role">Função do assistente</option>
+                            <option value="notification_phone">Telefone de notificações</option>
+                          </select>
+                          <p className="mt-0.5 text-[10px] text-muted-foreground">
+                            Quando vinculado, o valor é pré-preenchido e salvo nas configurações do assistente.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id={`var-req-${i}`}
+                            checked={v.required}
+                            onChange={(e) =>
+                              setForm((p) => ({
+                                ...p,
+                                variables: (p.variables ?? []).map((vv, j) =>
+                                  j === i ? { ...vv, required: e.target.checked } : vv
+                                ),
+                              }))
+                            }
+                            className="rounded"
+                          />
+                          <label htmlFor={`var-req-${i}`} className="text-xs text-muted-foreground">
+                            Campo obrigatório
+                          </label>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Ativo */}

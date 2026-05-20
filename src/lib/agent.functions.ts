@@ -77,9 +77,10 @@ export const updateAgent = createServerFn({ method: "POST" })
       .extend({
         nome: z.string().min(1).max(120).optional(),
         ativo: z.boolean().optional(),
-        system_prompt: z.string().max(20000).optional(),
+        system_prompt: z.string().max(100000).optional(),
         llm_model_override: z.string().max(120).nullable().optional(),
         debounce_segundos: z.number().int().min(0).max(120).optional(),
+        settings: z.record(z.string(), z.string()).optional(),
       })
       .parse(d)
   )
@@ -92,9 +93,35 @@ export const updateAgent = createServerFn({ method: "POST" })
     if (data.system_prompt !== undefined) patch.system_prompt = data.system_prompt;
     if (data.llm_model_override !== undefined) patch.llm_model_override = data.llm_model_override;
     if (data.debounce_segundos !== undefined) patch.debounce_segundos = data.debounce_segundos;
+    if (data.settings !== undefined) patch.settings = data.settings;
     if (Object.keys(patch).length === 0) return { ok: true };
     const { error } = await sb.from("agents").update(patch).eq("id", agentId);
     if (error) throw new Error(error.message);
+    return { ok: true };
+  });
+
+// Merge-update only specific settings keys (safe partial update)
+export const mergeAgentSettings = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput
+      .extend({ settings: z.record(z.string(), z.string()) })
+      .parse(d)
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const agentId = await ensureAccount(data.accountId);
+    // Use jsonb || operator to merge without overwriting unrelated keys
+    const { error } = await sb.rpc("merge_agent_settings", {
+      p_agent_id: agentId,
+      p_patch: data.settings,
+    });
+    if (error) {
+      // Fallback: read current settings, merge, write back
+      const { data: cur } = await sb.from("agents").select("settings").eq("id", agentId).single();
+      const merged = { ...(cur?.settings as Record<string, string> ?? {}), ...data.settings };
+      const { error: e2 } = await sb.from("agents").update({ settings: merged }).eq("id", agentId);
+      if (e2) throw new Error(e2.message);
+    }
     return { ok: true };
   });
 

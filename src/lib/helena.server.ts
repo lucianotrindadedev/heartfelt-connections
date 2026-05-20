@@ -27,12 +27,33 @@ export async function loadHelenaAccount(accountId: string): Promise<HelenaAccoun
 }
 
 // Envia mensagem de texto via API do CRM Helena.
-// Endpoint exato pode variar; usamos POST /v1/messages como padrão.
+// Prioriza o endpoint de sessão (mais simples, não precisa do número "from").
+// Fallback: POST /v1/message/send-sync com "to" e "from" null.
 export async function sendHelenaText(
   account: HelenaAccount,
   params: { phone: string; text: string; sessionId?: string },
 ): Promise<{ ok: boolean; status: number; body: string }> {
-  const url = `${account.baseUrl.replace(/\/$/, "")}/v1/messages`;
+  const base = account.baseUrl.replace(/\/$/, "");
+
+  // Caminho preferencial: envia dentro da sessão existente
+  if (params.sessionId) {
+    const url = `${base}/chat/v1/session/${params.sessionId}/message/sync`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${account.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: params.text }),
+    });
+    const body = await res.text();
+    if (res.ok) return { ok: true, status: res.status, body };
+    // Se falhar, tenta o endpoint direto
+    console.warn(`[helena] sessão ${params.sessionId} falhou (${res.status}), tentando send-sync`);
+  }
+
+  // Fallback: envia diretamente pelo telefone
+  const url = `${base}/v1/message/send-sync`;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -40,12 +61,10 @@ export async function sendHelenaText(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      id_conta: account.id,
-      telefone: params.phone,
-      tipo: "texto",
-      conteudo: params.text,
-      session_id: params.sessionId,
-      origem: "agente",
+      to: params.phone,
+      from: null,
+      body: { text: params.text },
+      options: params.sessionId ? { sessionId: params.sessionId } : undefined,
     }),
   });
   const body = await res.text();
@@ -56,7 +75,24 @@ export async function sendHelenaAudio(
   account: HelenaAccount,
   params: { phone: string; audioUrl: string; sessionId?: string },
 ): Promise<{ ok: boolean; status: number; body: string }> {
-  const url = `${account.baseUrl.replace(/\/$/, "")}/v1/messages`;
+  const base = account.baseUrl.replace(/\/$/, "");
+
+  if (params.sessionId) {
+    const url = `${base}/chat/v1/session/${params.sessionId}/message/sync`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${account.token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ fileUrl: params.audioUrl }),
+    });
+    const body = await res.text();
+    if (res.ok) return { ok: true, status: res.status, body };
+  }
+
+  // Fallback: envia diretamente pelo telefone
+  const url = `${base}/v1/message/send-sync`;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -64,12 +100,9 @@ export async function sendHelenaAudio(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      id_conta: account.id,
-      telefone: params.phone,
-      tipo: "audio",
-      audio_url: params.audioUrl,
-      session_id: params.sessionId,
-      origem: "agente",
+      to: params.phone,
+      from: null,
+      body: { fileUrl: params.audioUrl },
     }),
   });
   const body = await res.text();

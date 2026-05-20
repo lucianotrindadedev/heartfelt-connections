@@ -289,7 +289,7 @@ export const getWarmupConfig = createServerFn({ method: "GET" })
   .inputValidator((d) => agentIdInput.parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { data: wu } = await sb
+    const { data: wuRaw } = await sb
       .from("agent_warmup")
       .select(
         "ativo, tempo_wu1_h, tempo_wu2_h, tempo_wu3_h, tempo_wu4_h, tempo_wu5_h, " +
@@ -297,9 +297,10 @@ export const getWarmupConfig = createServerFn({ method: "GET" })
       )
       .eq("agent_id", data.agentId)
       .single();
+    const wu = wuRaw as Record<string, unknown> | null;
 
     return {
-      ativo: wu?.ativo ?? false,
+      ativo: (wu?.ativo as boolean | undefined) ?? false,
       tempo_wu1_h: (wu?.tempo_wu1_h as number | null) ?? 96,
       tempo_wu2_h: (wu?.tempo_wu2_h as number | null) ?? 72,
       tempo_wu3_h: (wu?.tempo_wu3_h as number | null) ?? 48,

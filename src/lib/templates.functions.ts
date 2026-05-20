@@ -12,6 +12,17 @@ export type IntegrationType = "clinicorp" | "google_calendar" | "clinup" | null;
 
 const INTEGRATION_TYPES = ["clinicorp", "google_calendar", "clinup", ""] as const;
 
+export const variableSchema = z.object({
+  key: z.string().min(1).max(100),
+  label: z.string().min(1).max(200),
+  placeholder: z.string().max(300).default(""),
+  type: z.enum(["text", "textarea"]).default("text"),
+  required: z.boolean().default(false),
+  settings_key: z.string().max(80).optional(), // maps to agent.settings field
+});
+
+export type TemplateVariable = z.infer<typeof variableSchema>;
+
 const templateShape = z.object({
   nome: z.string().min(1).max(200),
   descricao: z.string().max(1000).default(""),
@@ -21,6 +32,7 @@ const templateShape = z.object({
   categoria: z.string().max(100).default("geral"),
   ordem: z.number().int().min(0).default(0),
   ativo: z.boolean().default(true),
+  variables: z.array(variableSchema).default([]),
 });
 
 // ---------------------------------------------------------------------------
@@ -31,7 +43,7 @@ export const listTemplates = createServerFn({ method: "GET" }).handler(async () 
   const sb = getSelfhost();
   const { data, error } = await sb
     .from("prompt_templates")
-    .select("id, nome, descricao, cover_url, system_prompt, integration_type, categoria, ordem")
+    .select("id, nome, descricao, cover_url, system_prompt, integration_type, categoria, ordem, variables")
     .eq("ativo", true)
     .order("ordem", { ascending: true })
     .order("criado_em", { ascending: true });
@@ -72,6 +84,7 @@ export const createTemplate = createServerFn({ method: "POST" })
         categoria: data.categoria,
         ordem: data.ordem,
         ativo: data.ativo,
+        variables: data.variables ?? [],
       })
       .select("id")
       .single();
@@ -100,6 +113,7 @@ export const updateTemplate = createServerFn({ method: "POST" })
         categoria: data.categoria,
         ordem: data.ordem,
         ativo: data.ativo,
+        variables: data.variables ?? [],
         atualizado_em: new Date().toISOString(),
       })
       .eq("id", data.id);

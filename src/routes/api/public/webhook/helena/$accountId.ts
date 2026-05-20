@@ -1,27 +1,63 @@
 // Webhook público recebendo eventos do CRM Helena.
 // POST /api/public/webhook/helena/$accountId
-// Header: X-Helena-Secret: <agents.webhook_secret>
 //
-// Aceita 2 eventos:
-//   - mensagem do lead (role=user)   → grava + dispara agente (se ativo)
-//   - mensagem enviada (atendente/agente) → grava (sem disparar agente)
+// Suporta 2 formatos:
+//
+// NOVO (Helena nativo):
+//   { eventType: "MESSAGE_RECEIVED", content: { companyId, text, direction, sessionId,
+//     details: { from, to } } }
+//   Auth: companyId no payload deve bater com accountId na URL.
+//
+// LEGADO (N8N / formato antigo):
+//   { evento, telefone, conteudo, origem, session_id }
+//   Auth: header X-Helena-Secret com agents.webhook_secret.
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { runAgentTurn } from "@/lib/agent-turn.server";
 import { enqueueMessage } from "@/lib/message-queue.server";
 
-interface Payload {
-  evento?: string; // mensagem_recebida | mensagem_enviada
+// ── Tipo do formato novo (Helena nativo) ──────────────────────────
+
+interface HelenaDetails {
+  to?: string | null;
+  from?: string | null;
+  file?: unknown;
+  transcription?: unknown;
+}
+
+interface HelenaContent {
+  id?: string;
+  companyId?: string;
+  senderId?: string | null;
+  userId?: string | null;
+  type?: string;          // "TEXT" | "AUDIO" | "IMAGE" etc.
+  sessionId?: string;
+  text?: string | null;
+  direction?: string;     // "FROM_HUB" = inbound | "TO_HUB" = outbound
+  origin?: string;        // "GATEWAY" | "BOT" | "AGENT"
+  status?: string;
+  details?: HelenaDetails;
+  fileId?: string | null;
+}
+
+interface HelenaPayload {
+  eventType?: string;     // "MESSAGE_RECEIVED" | ...
+  date?: string;
+  content?: HelenaContent;
+  changeMetadata?: unknown;
+  // Campos legado na mesma interface (para tipagem unificada)
+  evento?: string;
   telefone?: string;
   phone?: string;
-  tipo?: string; // texto | audio
+  tipo?: string;
   conteudo?: string;
-  content?: string;
   texto?: string;
   audio_url?: string;
   session_id?: string;
-  origem?: string; // humano | agente | lead
+  origem?: string;
 }
+
+// ── Utilitários ───────────────────────────────────────────────────
 
 function timingSafeEqual(a: string, b: string) {
   if (a.length !== b.length) return false;
@@ -30,6 +66,8 @@ function timingSafeEqual(a: string, b: string) {
   return r === 0;
 }
 
+// ── Handler ───────────────────────────────────────────────────────
+
 export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
   server: {
     handlers: {
@@ -37,7 +75,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         const accountId = params.accountId;
         const sb = getSelfhost();
 
-        // 1. Carrega agente + secret + debounce
+        // 1. Carrega agente
         const agentRow = await sb
           .from("agents")
           .select("id, ativo, webhook_secret, debounce_segundos")
@@ -47,34 +85,91 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return new Response("Account not found", { status: 404 });
         }
 
-        // 2. Valida secret
-        const provided = request.headers.get("x-helena-secret") ?? "";
-        const expected = agentRow.data.webhook_secret as string;
-        if (!provided || !timingSafeEqual(provided, expected)) {
-          return new Response("Invalid secret", { status: 401 });
-        }
-
-        // 3. Parse payload
-        let body: Payload;
+        // 2. Parse payload
+        let body: HelenaPayload;
         try {
-          body = (await request.json()) as Payload;
+          body = (await request.json()) as HelenaPayload;
         } catch {
           return new Response("Invalid JSON", { status: 400 });
         }
 
-        const phone = (body.telefone ?? body.phone ?? "").toString().trim();
+        // 3. Detecta formato pelo conteúdo do payload (não pelo header)
+        const isNewFormat = !!body.eventType;
+
+        // 4. Autenticação baseada no formato detectado
+        if (isNewFormat) {
+          // Formato nativo Helena: ignora x-helena-secret, valida companyId no payload
+          const payloadCompanyId = body.content?.companyId;
+          if (!payloadCompanyId || payloadCompanyId !== accountId) {
+            return new Response("Unauthorized: companyId mismatch", { status: 401 });
+          }
+        } else {
+          // Formato legado (N8N): valida pelo header x-helena-secret
+          const providedSecret = request.headers.get("x-helena-secret") ?? "";
+          const expectedSecret = (agentRow.data.webhook_secret as string | null) ?? "";
+          if (expectedSecret && !timingSafeEqual(providedSecret, expectedSecret)) {
+            return new Response("Invalid secret", { status: 401 });
+          }
+        }
+
+        let phone: string;
+        let messageContent: string;
+        let sessionId: string | undefined;
+        let audioUrl: string | null = null;
+        let isInbound: boolean;
+        let isHuman: boolean;
+        let messageType: string;
+        let origem: string;
+
+        if (isNewFormat) {
+          const c = body.content ?? {};
+
+          // FROM_HUB = mensagem vinda do cliente para a plataforma Helena (inbound)
+          // TO_HUB   = mensagem enviada pela Helena/agente para o cliente (outbound)
+          isInbound =
+            body.eventType === "MESSAGE_RECEIVED" &&
+            (c.direction === "FROM_HUB" ||
+              c.origin === "GATEWAY" ||
+              c.origin === "CUSTOMER");
+
+          // Identifica se foi humano ou agente
+          isHuman = !isInbound && !!(c.userId);
+          messageType = c.type ?? "TEXT";
+          phone = (c.details?.from ?? "").toString().trim();
+          messageContent = (c.text ?? "").toString();
+          sessionId = c.sessionId;
+          origem = isInbound
+            ? "lead"
+            : isHuman
+              ? "humano"
+              : "agente";
+
+        } else {
+          // Formato legado
+          phone = (body.telefone ?? body.phone ?? "").toString().trim();
+          messageContent = (body.conteudo ?? body.texto ?? "").toString();
+          sessionId = body.session_id;
+          audioUrl = body.audio_url ?? null;
+          messageType = body.tipo ?? "TEXT";
+
+          const evento = (body.evento ?? "mensagem_recebida").toLowerCase();
+          const legadoOrigem = (body.origem ?? "").toLowerCase();
+          isInbound =
+            evento === "mensagem_recebida" ||
+            legadoOrigem === "lead" ||
+            legadoOrigem === "cliente";
+          isHuman = legadoOrigem === "humano" || legadoOrigem === "atendente";
+          origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
+        }
+
         if (!phone) return new Response("Missing phone", { status: 400 });
 
-        const content = (body.conteudo ?? body.content ?? body.texto ?? "").toString();
-        const evento = (body.evento ?? "mensagem_recebida").toLowerCase();
-        const origem = (body.origem ?? "").toLowerCase();
+        // Ignora eventos de status / entrega / leitura sem conteúdo de mensagem
+        if (!isInbound && !isHuman && !messageContent) {
+          return Response.json({ ok: true, skipped: "no-content" });
+        }
 
-        const isInbound =
-          evento === "mensagem_recebida" || origem === "lead" || origem === "cliente";
-        const isHuman = origem === "humano" || origem === "atendente";
-        const isAgent = origem === "agente" || origem === "ia";
-
-        // 4. Upsert conversation
+        // 5. Upsert conversa
         let convId: string;
         const existingConv = await sb
           .from("conversations")
@@ -82,12 +177,13 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           .eq("agent_id", agentRow.data.id)
           .eq("phone", phone)
           .maybeSingle();
+
         if (existingConv.data) {
           convId = existingConv.data.id as string;
-          if (body.session_id) {
+          if (sessionId) {
             await sb
               .from("conversations")
-              .update({ helena_session_id: body.session_id })
+              .update({ helena_session_id: sessionId })
               .eq("id", convId);
           }
         } else {
@@ -96,7 +192,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
             .insert({
               agent_id: agentRow.data.id,
               phone,
-              helena_session_id: body.session_id ?? null,
+              helena_session_id: sessionId ?? null,
             })
             .select("id")
             .single();
@@ -106,22 +202,28 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           convId = ins.data.id as string;
         }
 
-        // 5. Persiste mensagem
+        // 6. Persiste mensagem
         const role = isInbound ? "user" : "assistant";
         const meta: Record<string, unknown> = {
-          origem: isHuman ? "humano" : isAgent ? "agente" : isInbound ? "lead" : "desconhecido",
-          evento,
+          origem,
+          tipo: messageType,
+          ...(isNewFormat
+            ? {
+                direction: body.content?.direction,
+                helena_msg_id: body.content?.id,
+              }
+            : { evento: body.evento ?? "mensagem_recebida" }),
         };
 
         await sb.from("messages").insert({
           conversation_id: convId,
           role,
-          content,
-          audio_url: body.audio_url ?? null,
+          content: messageContent,
+          audio_url: audioUrl,
           meta,
         });
 
-        // 6. Atualiza last_user_message_at se inbound
+        // 7. Atualiza last_user_message_at se inbound
         if (isInbound) {
           await sb
             .from("conversation_state")
@@ -136,9 +238,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
             );
         }
 
-        // 7. Dispara agente quando: inbound + agente ativo
-        // Com debounce: enfileira para agrupar múltiplas mensagens rápidas.
-        // Sem debounce (=0): chama diretamente.
+        // 8. Dispara agente: apenas mensagens inbound + agente ativo
         if (isInbound && agentRow.data.ativo) {
           const debounce = (agentRow.data.debounce_segundos as number | null) ?? 20;
           try {
@@ -151,7 +251,6 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
             console.error("[agent-turn] falhou:", e);
           }
         }
-
 
         return Response.json({ ok: true, conversation_id: convId, role });
       },

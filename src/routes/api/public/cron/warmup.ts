@@ -73,7 +73,7 @@ export const Route = createFileRoute("/api/public/cron/warmup")({
           const agentId = agentData.id as string;
 
           // Busca configuração de warm-up
-          const { data: wu } = await sb
+          const { data: wuRaw } = await sb
             .from("agent_warmup")
             .select(
               "ativo, tempo_wu1_h, tempo_wu2_h, tempo_wu3_h, tempo_wu4_h, tempo_wu5_h, " +
@@ -81,9 +81,10 @@ export const Route = createFileRoute("/api/public/cron/warmup")({
             )
             .eq("agent_id", agentId)
             .single();
+          const wu = wuRaw as Record<string, unknown> | null;
 
-          if (!wu?.ativo) continue;
-          const wuCfg = wu as WarmupConfig;
+          if (!(wu?.ativo as boolean | undefined)) continue;
+          const wuCfg = wu as unknown as WarmupConfig;
 
           // Busca agendamentos próximos no Clinicorp
           let appointments: Awaited<ReturnType<typeof listClinicorpUpcomingAppointments>>;
