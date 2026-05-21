@@ -109,40 +109,115 @@ export interface ClinicorpSlot {
   start: string; // ISO 8601
   end: string;
   dentistPersonId?: number;
+  /** Data local YYYY-MM-DD (igual ao parâmetro do n8n buscar_horarios). */
+  localDate: string;
+  /** Horário local hh:mm — usar em agendar_clinicorp via horario ISO ou campos explícitos. */
+  fromTime: string;
+  toTime: string;
 }
 
-async function fetchSlots(
+function enumerateDates(from: string, to: string): string[] {
+  const start = new Date(`${from.slice(0, 10)}T12:00:00`);
+  const end = new Date(`${to.slice(0, 10)}T12:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
+
+  const dates: string[] = [];
+  const cur = new Date(start);
+  const limit = 14; // evita explosão de requisições (n8n consulta 1 dia por vez)
+  while (cur <= end && dates.length < limit) {
+    dates.push(cur.toISOString().slice(0, 10));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+function slotIsoInBrazil(date: string, time: string): string {
+  const hhmm = time.length === 5 ? time : time.slice(0, 5);
+  // Offset fixo BRT (UTC-3), alinhado ao createClinicorpAppointment
+  return `${date}T${hhmm}:00-03:00`;
+}
+
+function extractCalendarEntries(json: unknown): Record<string, unknown>[] {
+  if (Array.isArray(json)) return json as Record<string, unknown>[];
+  if (!json || typeof json !== "object") return [];
+
+  const obj = json as Record<string, unknown>;
+  const candidates = [
+    obj.availableTimes,
+    obj.AvailableTimes,
+    obj.times,
+    obj.Times,
+    obj.slots,
+    obj.Slots,
+    obj.data,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c as Record<string, unknown>[];
+  }
+  return [];
+}
+
+function parseCalendarDay(json: unknown, date: string): ClinicorpSlot[] {
+  const entries = extractCalendarEntries(json);
+  const slots: ClinicorpSlot[] = [];
+
+  for (const row of entries) {
+    const fromTime = String(
+      row.fromTime ?? row.FromTime ?? row.start_time ?? row.StartTime ?? "",
+    ).slice(0, 5);
+    const toTime = String(
+      row.toTime ?? row.ToTime ?? row.end_time ?? row.EndTime ?? "",
+    ).slice(0, 5);
+    if (!fromTime || !/^\d{2}:\d{2}$/.test(fromTime)) continue;
+
+    const dentistPersonId = Number(
+      row.ProfessionalId ??
+        row.professionalId ??
+        row.Dentist_PersonId ??
+        row.dentist_person_id ??
+        row.person_id,
+    ) || undefined;
+
+    const end = toTime && /^\d{2}:\d{2}$/.test(toTime) ? toTime : fromTime;
+    slots.push({
+      localDate: date,
+      fromTime,
+      toTime: end,
+      start: slotIsoInBrazil(date, fromTime),
+      end: slotIsoInBrazil(date, end),
+      dentistPersonId,
+    });
+  }
+
+  return slots;
+}
+
+/** Mesmo endpoint do n8n `buscar_horarios`: uma data por requisição. */
+async function fetchAvailableTimesForDate(
   config: ClinicorpConfig,
-  from: string,
-  to: string,
-  dentistPersonId?: number,
+  date: string,
 ): Promise<ClinicorpSlot[]> {
-  const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
+  if (!config.codeLink) {
+    throw new Error(
+      "Agenda online (code_link) não configurada no Clinicorp — necessária para buscar horários.",
+    );
+  }
+
+  const url = new URL(`${config.baseUrl}/rest/v1/appointment/get_avaliable_times_calendar`);
   url.searchParams.set("subscriber_id", config.subscriberId);
-  url.searchParams.set("business_id", String(config.businessId));
-  if (config.codeLink) url.searchParams.set("code_link", config.codeLink);
-  if (dentistPersonId) url.searchParams.set("dentist_person_id", String(dentistPersonId));
-  url.searchParams.set("date_from", from.slice(0, 10));
-  url.searchParams.set("date_to", to.slice(0, 10));
-  url.searchParams.set("available_only", "true");
+  url.searchParams.set("date", date.slice(0, 10));
+  url.searchParams.set("code_link", config.codeLink);
 
   const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
-  if (!res.ok) throw new Error(`Clinicorp list failed: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(
+      `Clinicorp get_avaliable_times_calendar failed: ${res.status} — ${err.slice(0, 200)}`,
+    );
+  }
 
-  const json = (await res.json()) as {
-    appointments?: {
-      start_datetime?: string;
-      end_datetime?: string;
-      Dentist_PersonId?: number;
-      dentist_person_id?: number;
-    }[];
-  };
-
-  return (json.appointments ?? []).map((a) => ({
-    start: a.start_datetime ?? "",
-    end: a.end_datetime ?? "",
-    dentistPersonId: a.Dentist_PersonId ?? a.dentist_person_id,
-  }));
+  const json = await res.json();
+  return parseCalendarDay(json, date.slice(0, 10));
 }
 
 export async function listClinicorpSlots(
@@ -151,27 +226,25 @@ export async function listClinicorpSlots(
   to: string,
 ): Promise<ClinicorpSlot[]> {
   const config = await loadConfig(accountId);
+  const dates = enumerateDates(from, to);
+  if (!dates.length) return [];
 
-  if (config.profissionalIds.length === 0) {
-    // Nenhum profissional configurado — retorna todos os horários disponíveis
-    return fetchSlots(config, from, to);
-  }
-
-  if (config.profissionalIds.length === 1) {
-    // Um único profissional — passamos diretamente o filtro
-    return fetchSlots(config, from, to, config.profissionalIds[0]);
-  }
-
-  // Múltiplos profissionais — requisições paralelas, merge e ordena por horário
-  const results = await Promise.all(
-    config.profissionalIds.map((id) => fetchSlots(config, from, to, id).catch(() => [])),
+  const perDay = await Promise.all(
+    dates.map((d) => fetchAvailableTimesForDate(config, d).catch(() => [])),
   );
-  const merged = results.flat();
-  // Remove duplicatas (mesmo start + mesmo dentist) e ordena
+  let merged = perDay.flat();
+
+  if (config.profissionalIds.length > 0) {
+    const allowed = new Set(config.profissionalIds);
+    merged = merged.filter(
+      (s) => !s.dentistPersonId || allowed.has(s.dentistPersonId),
+    );
+  }
+
   const seen = new Set<string>();
   return merged
     .filter((s) => {
-      const key = `${s.start}|${s.dentistPersonId ?? ""}`;
+      const key = `${s.localDate}|${s.fromTime}|${s.dentistPersonId ?? ""}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -187,20 +260,24 @@ export interface ClinicorpPatient {
   phone: string;
 }
 
-export async function findClinicorpPatient(
-  accountId: string,
-  phone: string,
+function phoneVariantsForPatientGet(phone: string): string[] {
+  const digits = phone.replace(/\D/g, "");
+  const without55 = digits.replace(/^55/, "");
+  const variants = new Set<string>();
+  if (without55) variants.add(without55);
+  if (digits) variants.add(digits);
+  if (phone.startsWith("+")) variants.add(phone);
+  variants.add(`+55${without55 || digits}`);
+  return [...variants];
+}
+
+async function fetchPatientByPhone(
+  config: ClinicorpConfig,
+  phoneValue: string,
 ): Promise<ClinicorpPatient | null> {
-  const config = await loadConfig(accountId);
-
-  // Normaliza: mantém o + se já tiver, senão adiciona +55
-  const normalizedPhone = phone.startsWith("+")
-    ? phone
-    : `+55${phone.replace(/\D/g, "")}`;
-
   const url = new URL(`${config.baseUrl}/rest/v1/patient/get`);
   url.searchParams.set("subscriber_id", config.subscriberId);
-  url.searchParams.set("Phone", normalizedPhone); // capital P
+  url.searchParams.set("Phone", phoneValue);
 
   const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
   if (!res.ok) return null;
@@ -224,8 +301,22 @@ export async function findClinicorpPatient(
   return {
     id: id as number | null,
     name: String(p.Name ?? p.name ?? ""),
-    phone: String(p.Phone ?? p.phone ?? phone),
+    phone: String(p.Phone ?? p.phone ?? phoneValue),
   };
+}
+
+export async function findClinicorpPatient(
+  accountId: string,
+  phone: string,
+): Promise<ClinicorpPatient | null> {
+  const config = await loadConfig(accountId);
+
+  // n8n usa dígitos sem prefixo 55; tentamos todas as variantes comuns
+  for (const variant of phoneVariantsForPatientGet(phone)) {
+    const found = await fetchPatientByPhone(config, variant);
+    if (found?.id) return found;
+  }
+  return null;
 }
 
 async function createClinicorpPatient(
@@ -233,7 +324,9 @@ async function createClinicorpPatient(
   params: { name: string; phone: string },
 ): Promise<number | null> {
   // Remove tudo exceto dígitos para MobilePhone (API espera número)
-  const mobilePhone = Number(params.phone.replace(/\D/g, ""));
+  const mobilePhone = Number(
+    params.phone.replace(/\D/g, "").replace(/^55/, ""),
+  );
 
   const res = await fetchClinicorp(`${config.baseUrl}/rest/v1/patient/create`, {
     method: "POST",
@@ -395,13 +488,23 @@ export async function listClinicorpPatientAppointments(
   const patient = await findClinicorpPatient(accountId, phone);
   if (!patient?.id) return [];
 
-  // 2. Lista agendamentos filtrando pelo Patient_PersonId
-  const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
-  url.searchParams.set("subscriber_id", config.subscriberId);
-  url.searchParams.set("business_id", String(config.businessId));
-  url.searchParams.set("patient_person_id", String(patient.id));
+  // 2. Lista agendamentos — mesmo contrato do n8n (POST com from/to/businessId/patientId)
+  const today = new Date().toISOString().slice(0, 10);
+  const inOneYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
 
-  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
+  const res = await fetchClinicorp(`${config.baseUrl}/rest/v1/appointment/list`, {
+    method: "POST",
+    headers: authHeaders(config),
+    body: JSON.stringify({
+      subscriber_id: config.subscriberId,
+      from: today,
+      to: inOneYear,
+      businessId: config.businessId,
+      patientId: patient.id,
+    }),
+  });
   if (!res.ok) return [];
 
   const json = (await res.json()) as {

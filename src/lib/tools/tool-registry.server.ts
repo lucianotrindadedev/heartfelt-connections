@@ -77,12 +77,12 @@ const CLINICORP_TOOLS: ToolDefinition[] = [
     function: {
       name: "listar_horarios_clinicorp",
       description:
-        "Lista horários disponíveis no Clinicorp para agendamento de consulta. Sempre consulte antes de oferecer horários. Ofereça no máximo 2 opções ao paciente.",
+        "Consulta horários vagos na agenda online Clinicorp (get_avaliable_times_calendar), igual ao fluxo n8n buscar_horarios. Consulta dia a dia no intervalo informado. Sempre use antes de oferecer horários. Ofereça no máximo 2 opções ao paciente.",
       parameters: {
         type: "object",
         properties: {
-          de: { type: "string", description: "Data inicial (YYYY-MM-DD)" },
-          ate: { type: "string", description: "Data final (YYYY-MM-DD)" },
+          de: { type: "string", description: "Data inicial (YYYY-MM-DD) — hoje ou futuro" },
+          ate: { type: "string", description: "Data final (YYYY-MM-DD), até 14 dias após 'de'" },
         },
         required: ["de", "ate"],
       },

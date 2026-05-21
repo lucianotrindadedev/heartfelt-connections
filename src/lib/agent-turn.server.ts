@@ -322,17 +322,21 @@ async function executeTool(
         );
         if (!slots.length) return "Nenhum horário disponível no Clinicorp no período informado.";
         return (
-          "Horários disponíveis no Clinicorp:\n" +
+          "Horários disponíveis no Clinicorp (agenda online):\n" +
           slots
             .slice(0, 10)
             .map((s) => {
               const dt = new Date(s.start).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-              // Inclui dentistPersonId para ser usado ao agendar (obrigatório pela API)
-              const dentPart = s.dentistPersonId ? ` | dentist_person_id=${s.dentistPersonId}` : "";
-              return `- ${s.start} (${dt})${dentPart}`;
+              const dentPart = s.dentistPersonId
+                ? ` | dentist_person_id=${s.dentistPersonId}`
+                : "";
+              return (
+                `- data=${s.localDate} | fromTime=${s.fromTime} | toTime=${s.toTime}` +
+                ` | horario_iso=${s.start} (${dt})${dentPart}`
+              );
             })
             .join("\n") +
-          "\n\nIMPORTANTE: Ao chamar agendar_clinicorp, use o campo horario com o valor ISO exato acima e informe o dentist_person_id do horário escolhido."
+          "\n\nIMPORTANTE: Ao chamar agendar_clinicorp, use horario com horario_iso exato e dentist_person_id do slot. Os campos data/fromTime/toTime devem corresponder ao slot escolhido."
         );
       }
 
