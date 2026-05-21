@@ -487,12 +487,11 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           const debounce = (agentRow.data.debounce_segundos as number | null) ?? 20;
           console.log(`[webhook] agendando agent turn para ${convId} — debounce=${debounce}s`);
           try {
-            if (debounce > 0) {
-              await enqueueMessage(convId, debounce);
-              scheduleConversationAgentTurn(convId, debounce);
-            } else {
-              scheduleConversationAgentTurn(convId, 0);
-            }
+            // SEMPRE enfileira (safety net) — se o fire-and-forget abaixo for
+            // cancelado pelo runtime ao retornar a Response, o cron de queue
+            // garante que o agente roda. Com debounce=0, executa imediatamente.
+            await enqueueMessage(convId, debounce);
+            scheduleConversationAgentTurn(convId, debounce);
           } catch (e) {
             console.error("[agent-turn] falhou:", e);
           }
