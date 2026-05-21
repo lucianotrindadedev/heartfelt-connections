@@ -292,6 +292,45 @@ function phoneVariantsForPatientGet(phone: string): string[] {
   return [...variants];
 }
 
+interface ClinicorpPatientRaw {
+  PatientId?: number;
+  Patient_PersonId?: number;
+  Person_Id?: number;
+  person_id?: number;
+  id?: number;
+  Name?: string;
+  name?: string;
+  Phone?: string;
+  phone?: string;
+  Status?: string;
+  status?: string;
+}
+
+function pickActivePatient(rows: ClinicorpPatientRaw[]): ClinicorpPatientRaw | null {
+  if (!rows.length) return null;
+  // Prioriza ACTIVE — descarta DELETED/INACTIVE.
+  const active = rows.find(
+    (r) => (r.Status ?? r.status ?? "").toUpperCase() === "ACTIVE",
+  );
+  return active ?? rows.find((r) => (r.Status ?? r.status ?? "").toUpperCase() !== "DELETED") ?? null;
+}
+
+function normalizePatient(raw: ClinicorpPatientRaw, fallbackPhone: string): ClinicorpPatient | null {
+  const id =
+    raw.PatientId ??
+    raw.Patient_PersonId ??
+    raw.Person_Id ??
+    raw.person_id ??
+    raw.id ??
+    null;
+  if (!id) return null;
+  return {
+    id: id as number,
+    name: String(raw.Name ?? raw.name ?? ""),
+    phone: String(raw.Phone ?? raw.phone ?? fallbackPhone),
+  };
+}
+
 async function fetchPatientByPhone(
   config: ClinicorpConfig,
   phoneValue: string,
@@ -303,27 +342,23 @@ async function fetchPatientByPhone(
   const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
   if (!res.ok) return null;
 
-  const json = (await res.json()) as {
-    patient?: {
-      Person_Id?: number;
-      person_id?: number;
-      id?: number;
-      Name?: string;
-      name?: string;
-      Phone?: string;
-      phone?: string;
-    };
-  };
-  if (!json.patient) return null;
+  const json = (await res.json()) as unknown;
 
-  const p = json.patient;
-  const id = p.Person_Id ?? p.person_id ?? p.id ?? null;
+  // API real retorna ARRAY direto: [{ PatientId, Name, Phone, Status, BirthDate }]
+  // Algumas variantes podem retornar { patient: {...} } ou { patients: [...] }.
+  let rows: ClinicorpPatientRaw[] = [];
+  if (Array.isArray(json)) {
+    rows = json as ClinicorpPatientRaw[];
+  } else if (json && typeof json === "object") {
+    const obj = json as Record<string, unknown>;
+    if (Array.isArray(obj.patients)) rows = obj.patients as ClinicorpPatientRaw[];
+    else if (obj.patient && typeof obj.patient === "object")
+      rows = [obj.patient as ClinicorpPatientRaw];
+  }
 
-  return {
-    id: id as number | null,
-    name: String(p.Name ?? p.name ?? ""),
-    phone: String(p.Phone ?? p.phone ?? phoneValue),
-  };
+  const picked = pickActivePatient(rows);
+  if (!picked) return null;
+  return normalizePatient(picked, phoneValue);
 }
 
 export async function findClinicorpPatient(
@@ -344,7 +379,7 @@ async function createClinicorpPatient(
   config: ClinicorpConfig,
   params: { name: string; phone: string },
 ): Promise<number | null> {
-  // Remove tudo exceto dígitos para MobilePhone (API espera número)
+  // Remove tudo exceto dígitos para MobilePhone (API espera número sem +55)
   const mobilePhone = Number(
     params.phone.replace(/\D/g, "").replace(/^55/, ""),
   );
@@ -359,12 +394,26 @@ async function createClinicorpPatient(
       IgnoreSameName: "X",
     }),
   });
-  if (!res.ok) throw new Error(`Clinicorp create patient failed: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Clinicorp create patient failed: ${res.status} ${err.slice(0, 200)}`);
+  }
 
-  const created = (await res.json()) as {
-    patient?: { Person_Id?: number; person_id?: number; id?: number };
-  };
-  return created.patient?.Person_Id ?? created.patient?.person_id ?? created.patient?.id ?? null;
+  const json = (await res.json()) as unknown;
+
+  // Suporta: { patient: {...} } | { PatientId } | [{ PatientId }] | array
+  let row: ClinicorpPatientRaw | null = null;
+  if (Array.isArray(json)) row = (json as ClinicorpPatientRaw[])[0] ?? null;
+  else if (json && typeof json === "object") {
+    const obj = json as Record<string, unknown>;
+    if (obj.patient && typeof obj.patient === "object") row = obj.patient as ClinicorpPatientRaw;
+    else row = obj as ClinicorpPatientRaw;
+  }
+  if (!row) return null;
+
+  return (
+    row.PatientId ?? row.Patient_PersonId ?? row.Person_Id ?? row.person_id ?? row.id ?? null
+  );
 }
 
 // ── Agendamento ────────────────────────────────────────────────────────────
