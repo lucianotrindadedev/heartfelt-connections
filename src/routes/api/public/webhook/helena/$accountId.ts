@@ -21,6 +21,7 @@ import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
   loadHelenaSession,
+  resolveHelenaContactId,
   sendHelenaText,
   setHelenaContactTags,
   type HelenaContact,
@@ -30,6 +31,29 @@ const AI_DISABLED_TAG = "IA Desligada";
 
 function hasIaDesligadaTag(tagNames: string[]): boolean {
   return tagNames.some((t) => t.trim().toUpperCase() === AI_DISABLED_TAG.toUpperCase());
+}
+
+/** Normaliza texto do comando (remove prefixo *Atendente:*, acentos opcionais, espaços). */
+function normalizeCommandText(text: string): string {
+  return text
+    .trim()
+    .replace(/^\*[^*]+:\*\s*/s, "")
+    .replace(/^\*[^*]+\*\s*/s, "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function matchesAgentCommand(message: string, command: string): boolean {
+  const msg = normalizeCommandText(message);
+  const cmd = normalizeCommandText(command);
+  if (!msg || !cmd) return false;
+  if (msg === cmd) return true;
+  const msgCore = msg.replace(/^\//, "");
+  const cmdCore = cmd.replace(/^\//, "");
+  return msgCore === cmdCore;
 }
 
 interface HelenaDetails {
@@ -381,41 +405,62 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         // ── Comandos de pausar/reativar a IA (configuráveis por agente) ──
         // Adiciona ou remove a tag "IA Desligada" no contato Helena.
-        const normalizedMsg = messageContent.trim().toLowerCase();
-        const isPauseCmd = isInbound && normalizedMsg === pauseCommand;
-        const isResumeCmd = isInbound && normalizedMsg === resumeCommand;
+        const isPauseCmd =
+          isInbound && matchesAgentCommand(messageContent, pauseCommand);
+        const isResumeCmd =
+          isInbound && matchesAgentCommand(messageContent, resumeCommand);
 
         if (isPauseCmd || isResumeCmd) {
-          console.log(`[webhook] comando ${isPauseCmd ? "pausar" : "ativar"} recebido para ${convId}`);
+          console.log(
+            `[webhook] comando ${isPauseCmd ? "pausar" : "ativar"} recebido para ${convId} (cmd="${pauseCommand}" / "${resumeCommand}")`,
+          );
 
-          // Busca contactId do Helena (necessário para a API de tags)
-          let contactId: string | null = null;
+          let tagApplied = false;
           try {
             const helena = await loadHelenaAccount(accountId);
-            if (sessionId) {
-              const sess = await loadHelenaSession(helena, sessionId);
-              contactId = sess?.contactId ?? null;
-            }
+            const contactId = await resolveHelenaContactId(helena, {
+              sessionId,
+              contact: resolvedContact,
+              phone: fromDetails || legacyPhone || resolvedContact?.phoneNumber,
+            });
 
-            // Aplica/remove a tag
             if (contactId) {
+              await sb
+                .from("conversations")
+                .update({
+                  helena_contact_id: contactId,
+                  atualizado_em: new Date().toISOString(),
+                })
+                .eq("id", convId);
+
               const tagResult = await setHelenaContactTags(
                 helena,
                 contactId,
                 [AI_DISABLED_TAG],
                 isPauseCmd ? "InsertIfNotExists" : "DeleteIfExists",
               );
+              tagApplied = tagResult.ok;
               if (!tagResult.ok) {
-                console.error(`[webhook] tag op falhou: ${tagResult.status} ${tagResult.body.slice(0, 200)}`);
+                console.error(
+                  `[webhook] tag op falhou: ${tagResult.status} ${tagResult.body.slice(0, 300)}`,
+                );
+              } else {
+                console.log(
+                  `[webhook] tag "${AI_DISABLED_TAG}" ${isPauseCmd ? "adicionada" : "removida"} — contact ${contactId}`,
+                );
               }
             } else {
               console.warn("[webhook] sem contactId — não foi possível alterar tag Helena");
             }
 
-            // Envia confirmação ao usuário
-            const confirmText = isPauseCmd
-              ? "Atendimento pausado ⏸️ A IA não responderá até receber o comando de reativação."
-              : "Atendimento reativado ✅ A IA voltará a responder normalmente.";
+            const confirmText = !contactId
+              ? "Não consegui localizar seu cadastro no CRM para pausar a IA. Peça ao atendente humano aplicar a etiqueta IA Desligada."
+              : !tagApplied
+                ? "Recebi o comando, mas não consegui atualizar a etiqueta no CRM. Tente novamente ou peça ajuda ao atendente."
+                : isPauseCmd
+                  ? "Atendimento pausado ⏸️ A IA não responderá até receber o comando de reativação."
+                  : "Atendimento reativado ✅ A IA voltará a responder normalmente.";
+
             await sendHelenaText(helena, {
               phone: fromDetails || legacyPhone || undefined,
               text: confirmText,
@@ -438,6 +483,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
             ok: true,
             conversation_id: convId,
             action: isPauseCmd ? "pause" : "resume",
+            tag_applied: tagApplied,
           });
         }
 

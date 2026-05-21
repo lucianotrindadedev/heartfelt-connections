@@ -68,7 +68,14 @@ function parseHelenaContactRaw(raw: Record<string, unknown>, contactId: string):
   const rawTags = raw.tagNames as unknown;
   let tagNames: string[] = [];
   if (Array.isArray(rawTags)) {
-    tagNames = rawTags.map((t) => (typeof t === "string" ? t : String(t)));
+    tagNames = rawTags.map((t) => {
+      if (typeof t === "string") return t;
+      if (t && typeof t === "object") {
+        const o = t as Record<string, unknown>;
+        return String(o.name ?? o.tagName ?? o.label ?? t);
+      }
+      return String(t);
+    });
   }
 
   const rawUtm = (raw.utm as Record<string, unknown> | null) ?? {};
@@ -161,11 +168,10 @@ export async function loadHelenaContactFromSession(
  * Body: { tagNames: string[], operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" }
  * (mesma rota do node "Add Tag IA Desligada" no workflow N8N)
  */
-export async function setHelenaContactTags(
+async function postHelenaContactTags(
   account: HelenaAccount,
   contactId: string,
-  tagNames: string[],
-  operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
+  body: Record<string, unknown>,
 ): Promise<{ ok: boolean; status: number; body: string }> {
   const base = account.baseUrl.replace(/\/$/, "");
   const res = await fetch(`${base}/core/v1/contact/${contactId}/tags`, {
@@ -175,10 +181,75 @@ export async function setHelenaContactTags(
       "Content-Type": "application/*+json",
       accept: "application/json",
     },
-    body: JSON.stringify({ tagNames, operation }),
+    body: JSON.stringify(body),
   });
   const text = await res.text();
   return { ok: res.ok, status: res.status, body: text };
+}
+
+export async function setHelenaContactTags(
+  account: HelenaAccount,
+  contactId: string,
+  tagNames: string[],
+  operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const withOp = await postHelenaContactTags(account, contactId, { tagNames, operation });
+  if (withOp.ok) return withOp;
+
+  // n8n "Add Tag IA Desligada" envia só { tagNames } — retry no insert
+  if (operation === "InsertIfNotExists") {
+    const minimal = await postHelenaContactTags(account, contactId, { tagNames });
+    if (minimal.ok) return minimal;
+    return minimal;
+  }
+
+  return withOp;
+}
+
+/** Resolve contactId para tags: sessão, contato já carregado ou telefone. */
+export async function resolveHelenaContactId(
+  account: HelenaAccount,
+  opts: {
+    sessionId?: string;
+    contact?: HelenaContact | null;
+    phone?: string;
+  },
+): Promise<string | null> {
+  if (opts.contact?.id) return opts.contact.id;
+
+  if (opts.sessionId) {
+    const fromSession = await loadHelenaContactFromSession(account, opts.sessionId);
+    if (fromSession?.id) return fromSession.id;
+    const sess = await loadHelenaSession(account, opts.sessionId);
+    if (sess?.contactId) return sess.contactId;
+  }
+
+  const phone = opts.phone ? normalizeBrazilPhone(opts.phone) : null;
+  if (!phone) return null;
+
+  const base = account.baseUrl.replace(/\/$/, "");
+  const variants = [phone, phone.replace(/^\+55/, ""), `+55${phone.replace(/\D/g, "").replace(/^55/, "")}`];
+  for (const p of [...new Set(variants.filter(Boolean))]) {
+    try {
+      const res = await fetch(
+        `${base}/core/v1/contact?phone=${encodeURIComponent(p)}`,
+        { headers: { Authorization: `Bearer ${account.token}`, accept: "application/json" } },
+      );
+      if (!res.ok) continue;
+      const json = (await res.json()) as
+        | { id?: string | number }
+        | { data?: { id?: string | number }[] }
+        | null;
+      const id =
+        (json as { id?: string | number })?.id ??
+        (json as { data?: { id?: string | number }[] })?.data?.[0]?.id;
+      if (id) return String(id);
+    } catch {
+      /* tenta próxima variante */
+    }
+  }
+
+  return null;
 }
 
 /** Atualiza telefone do contato no CRM Helena (equivalente Criar_contato do n8n). */
