@@ -51,9 +51,61 @@ interface HelenaPayload {
   tipo?: string;
   conteudo?: string;
   texto?: string;
+  text?: string | null;
   audio_url?: string;
   session_id?: string;
+  sessionId?: string;
+  direction?: string;
+  origin?: string;
+  type?: string;
+  userId?: string | null;
+  companyId?: string;
+  details?: HelenaDetails;
   origem?: string;
+}
+
+/** Helena envia 3 formatos: envelope { eventType, content }, conteúdo flat na raiz, ou legado n8n. */
+function normalizeHelenaPayload(raw: HelenaPayload): {
+  eventType: string;
+  content: HelenaContent;
+} {
+  if (raw.eventType && raw.content) {
+    return { eventType: raw.eventType, content: raw.content };
+  }
+
+  const flatSession = (raw.sessionId ?? raw.session_id ?? raw.content?.sessionId)?.toString().trim();
+  const flatText = raw.text ?? raw.content?.text;
+  const flatDirection = raw.direction ?? raw.content?.direction;
+  const flatType = raw.type ?? raw.content?.type;
+
+  if (flatSession && (flatDirection || flatText !== undefined || flatType)) {
+    return {
+      eventType: raw.eventType ?? "MESSAGE_RECEIVED",
+      content: {
+        id: raw.content?.id,
+        companyId: raw.companyId ?? raw.content?.companyId,
+        sessionId: flatSession,
+        text: flatText ?? null,
+        direction: flatDirection,
+        origin: raw.origin ?? raw.content?.origin,
+        type: flatType ?? "TEXT",
+        userId: raw.userId ?? raw.content?.userId,
+        details: raw.details ?? raw.content?.details,
+      },
+    };
+  }
+
+  return {
+    eventType: (raw.evento ?? "mensagem_recebida").toString(),
+    content: {
+      sessionId: (raw.session_id ?? raw.sessionId)?.toString(),
+      text: (raw.conteudo ?? raw.texto ?? raw.text ?? "").toString() || null,
+      type: raw.tipo ?? "TEXT",
+      details: {
+        from: raw.telefone ?? raw.phone ?? raw.details?.from ?? null,
+      },
+    },
+  };
 }
 
 function timingSafeEqual(a: string, b: string) {
@@ -217,11 +269,15 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return new Response("Invalid JSON", { status: 400 });
         }
 
-        const isNewFormat = !!body.eventType;
+        const { eventType, content: c } = normalizeHelenaPayload(body);
+        const isHelenaNative =
+          eventType === "MESSAGE_RECEIVED" ||
+          !!c.direction ||
+          !!c.sessionId;
 
-        if (isNewFormat) {
-          const payloadCompanyId = body.content?.companyId;
-          if (!payloadCompanyId || payloadCompanyId !== accountId) {
+        if (isHelenaNative) {
+          const payloadCompanyId = c.companyId;
+          if (payloadCompanyId && payloadCompanyId !== accountId) {
             return new Response("Unauthorized: companyId mismatch", { status: 401 });
           }
         } else {
@@ -232,45 +288,31 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           }
         }
 
-        let fromDetails = "";
-        let messageContent: string;
-        let sessionId: string | undefined;
-        let audioUrl: string | null = null;
-        let isInbound: boolean;
-        let isHuman: boolean;
-        let messageType: string;
-        let origem: string;
-        let legacyPhone = "";
+        const sessionId = c.sessionId?.trim() || undefined;
+        const fromDetails = (c.details?.from ?? "").toString().trim();
+        const legacyPhone = (body.telefone ?? body.phone ?? "").toString().trim();
+        const messageContent = (c.text ?? "").toString();
+        const audioUrl = body.audio_url ?? null;
+        const messageType = c.type ?? "TEXT";
 
-        if (isNewFormat) {
-          const c = body.content ?? {};
-          isInbound =
-            body.eventType === "MESSAGE_RECEIVED" &&
-            (c.direction === "FROM_HUB" ||
-              c.origin === "GATEWAY" ||
-              c.origin === "CUSTOMER");
-          isHuman = !isInbound && !!c.userId;
-          messageType = c.type ?? "TEXT";
-          fromDetails = (c.details?.from ?? "").toString().trim();
-          messageContent = (c.text ?? "").toString();
-          sessionId = c.sessionId;
-          origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
-        } else {
-          legacyPhone = (body.telefone ?? body.phone ?? "").toString().trim();
-          fromDetails = legacyPhone;
-          messageContent = (body.conteudo ?? body.texto ?? "").toString();
-          sessionId = body.session_id;
-          audioUrl = body.audio_url ?? null;
-          messageType = body.tipo ?? "TEXT";
-          const evento = (body.evento ?? "mensagem_recebida").toLowerCase();
-          const legadoOrigem = (body.origem ?? "").toLowerCase();
-          isInbound =
-            evento === "mensagem_recebida" ||
-            legadoOrigem === "lead" ||
-            legadoOrigem === "cliente";
-          isHuman = legadoOrigem === "humano" || legadoOrigem === "atendente";
-          origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
-        }
+        const isInbound =
+          c.direction === "FROM_HUB" ||
+          c.origin === "GATEWAY" ||
+          c.origin === "CUSTOMER" ||
+          (eventType === "MESSAGE_RECEIVED" &&
+            c.direction !== "TO_HUB" &&
+            (c.direction === "FROM_HUB" || !c.direction)) ||
+          (body.evento ?? "").toLowerCase() === "mensagem_recebida" ||
+          (body.origem ?? "").toLowerCase() === "lead" ||
+          (body.origem ?? "").toLowerCase() === "cliente";
+
+        const isHuman =
+          !isInbound &&
+          (!!c.userId ||
+            (body.origem ?? "").toLowerCase() === "humano" ||
+            (body.origem ?? "").toLowerCase() === "atendente");
+
+        const origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
 
         if (!sessionId && !fromDetails && !legacyPhone) {
           return new Response("Missing sessionId or contact identifier", { status: 400 });
@@ -296,10 +338,11 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           origem,
           tipo: messageType,
           channel_from: fromDetails || null,
-          ...(isNewFormat
+          ...(isHelenaNative
             ? {
-                direction: body.content?.direction,
-                helena_msg_id: body.content?.id,
+                direction: c.direction,
+                helena_msg_id: c.id,
+                payload_shape: body.eventType ? "envelope" : "flat",
               }
             : { evento: body.evento ?? "mensagem_recebida" }),
         };
