@@ -65,6 +65,7 @@ import {
   getClinicorpConfig,
   saveClinicorpConfig,
   testClinicorpConnection,
+  listClinicorpProfessionalsFn,
   getClinupConfig,
   saveClinupConfig,
   testClinupConnection,
@@ -2322,6 +2323,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   const getCfg = useServerFn(getClinicorpConfig);
   const saveCfg = useServerFn(saveClinicorpConfig);
   const testConn = useServerFn(testClinicorpConnection);
+  const listProfs = useServerFn(listClinicorpProfessionalsFn);
 
   const { data } = useQuery({
     queryKey: ["clinicorp-config", accountId],
@@ -2332,24 +2334,43 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   const [token, setToken] = useState("");
   const [subscriberId, setSubscriberId] = useState("");
   const [businessId, setBusinessId] = useState("");
-  const [agendaId, setAgendaId] = useState("");
-  const [duracao, setDuracao] = useState("40");
+  const [profissionalId, setProfissionalId] = useState<string>("");
   const [ativo, setAtivo] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [professionals, setProfessionals] = useState<{ id: number; name: string }[]>([]);
+  const [loadingProfs, setLoadingProfs] = useState(false);
 
   useEffect(() => {
     if (data) {
       setSubscriberId(data.subscriber_id ?? "");
       setBusinessId(data.business_id ? String(data.business_id) : "");
-      setAgendaId(data.agenda_id ? String(data.agenda_id) : "");
-      setDuracao(String(data.duracao_consulta ?? 40));
+      setProfissionalId(data.profissional_id ? String(data.profissional_id) : "");
       setAtivo(data.ativo ?? false);
     }
   }, [data]);
 
+  // Carrega profissionais quando as credenciais básicas estão preenchidas e a config já existe
+  useEffect(() => {
+    if (!data?.token_configured) return;
+    if (!subscriberId || !businessId) return;
+    setLoadingProfs(true);
+    listProfs({ data: { accountId } })
+      .then((r) => { if (r.ok) setProfessionals(r.professionals); })
+      .finally(() => setLoadingProfs(false));
+  }, [data?.token_configured, subscriberId, businessId, accountId]);
+
   const save = useMutation({
     mutationFn: () =>
-      saveCfg({ data: { accountId, ...(token ? { api_token: token } : {}), subscriber_id: subscriberId, business_id: businessId ? Number(businessId) : undefined, agenda_id: agendaId ? Number(agendaId) : undefined, duracao_consulta: Number(duracao), ativo } }),
+      saveCfg({
+        data: {
+          accountId,
+          ...(token ? { api_token: token } : {}),
+          subscriber_id: subscriberId || undefined,
+          business_id: businessId ? Number(businessId) : undefined,
+          profissional_id: profissionalId ? Number(profissionalId) : null,
+          ativo,
+        },
+      }),
     onSuccess: () => {
       toast.success("Clinicorp salvo.");
       setToken("");
@@ -2362,6 +2383,15 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
     setTestResult(null);
     const r = await testConn({ data: { accountId } });
     setTestResult(r.ok ? "✅ Conexão OK" : `❌ ${r.error}`);
+  }
+
+  async function doLoadProfs() {
+    setLoadingProfs(true);
+    setProfessionals([]);
+    const r = await listProfs({ data: { accountId } });
+    if (r.ok) setProfessionals(r.professionals);
+    else toast.error(r.error ?? "Erro ao carregar profissionais.");
+    setLoadingProfs(false);
   }
 
   return (
@@ -2385,8 +2415,16 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
           <ToggleRow label="Ativar integração Clinicorp" value={ativo} onChange={setAtivo} />
           <div>
             <Label className="text-xs font-semibold">Token API (Basic auth base64)</Label>
-            {data?.token_last4 && !token && <p className="text-xs text-muted-foreground mb-1">Atual: ••••{data.token_last4}</p>}
-            <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="cole o token Basic auth aqui" className="mt-1" />
+            {data?.token_configured && !token && (
+              <p className="text-xs text-muted-foreground mb-1">Token configurado ✓</p>
+            )}
+            <Input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="cole o token Basic auth aqui"
+              className="mt-1"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -2397,15 +2435,46 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
               <Label className="text-xs font-semibold">Business ID</Label>
               <Input type="number" value={businessId} onChange={(e) => setBusinessId(e.target.value)} className="mt-1" />
             </div>
-            <div>
-              <Label className="text-xs font-semibold">Agenda ID</Label>
-              <Input type="number" value={agendaId} onChange={(e) => setAgendaId(e.target.value)} className="mt-1" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold">Duração (min)</Label>
-              <Input type="number" min={5} max={480} value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1" />
-            </div>
           </div>
+
+          {/* Profissional — opcional */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <Label className="text-xs font-semibold">Profissional <span className="font-normal text-muted-foreground">(opcional)</span></Label>
+              {data?.token_configured && (
+                <button
+                  type="button"
+                  onClick={doLoadProfs}
+                  disabled={loadingProfs}
+                  className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+                >
+                  {loadingProfs ? "Carregando..." : "↻ Recarregar"}
+                </button>
+              )}
+            </div>
+            <select
+              value={profissionalId}
+              onChange={(e) => setProfissionalId(e.target.value)}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="">— Qualquer profissional —</option>
+              {professionals.map((p) => (
+                <option key={p.id} value={String(p.id)}>
+                  {p.name}
+                </option>
+              ))}
+              {/* mantém o ID salvo caso a lista ainda não tenha carregado */}
+              {profissionalId && !professionals.find((p) => String(p.id) === profissionalId) && (
+                <option value={profissionalId}>ID {profissionalId}</option>
+              )}
+            </select>
+            {!data?.token_configured && (
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Salve o token primeiro para carregar a lista de profissionais.
+              </p>
+            )}
+          </div>
+
           {testResult && <p className="text-xs">{testResult}</p>}
           <div className="flex gap-2">
             <Button onClick={() => save.mutate()} disabled={save.isPending} className="flex-1">

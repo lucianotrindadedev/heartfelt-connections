@@ -64,7 +64,7 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
     const sb = getSelfhost();
     const { data: cfg } = await sb
       .from("clinicorp_config")
-      .select("subscriber_id, business_id, agenda_id, duracao_consulta, ativo, api_token_enc")
+      .select("subscriber_id, business_id, agenda_id, ativo, api_token_enc")
       .eq("account_id", data.accountId)
       .single();
 
@@ -72,9 +72,8 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
       ativo: cfg?.ativo ?? false,
       subscriber_id: (cfg?.subscriber_id as string | null) ?? "",
       business_id: (cfg?.business_id as number | null) ?? null,
-      agenda_id: (cfg?.agenda_id as number | null) ?? null,
-      duracao_consulta: (cfg?.duracao_consulta as number | null) ?? 40,
-      token_last4: cfg?.api_token_enc ? "****" : null,
+      profissional_id: (cfg?.agenda_id as number | null) ?? null,
+      token_configured: !!cfg?.api_token_enc,
     };
   });
 
@@ -85,17 +84,20 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
         api_token: z.string().optional(),
         subscriber_id: z.string().optional(),
         business_id: z.number().int().optional(),
-        agenda_id: z.number().int().optional(),
-        duracao_consulta: z.number().int().min(5).max(480).optional(),
+        profissional_id: z.number().int().nullable().optional(),
         ativo: z.boolean().optional(),
       })
       .parse(d)
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { accountId, api_token, ...rest } = data;
+    const { accountId, api_token, profissional_id, ...rest } = data;
 
     const patch: Record<string, unknown> = { ...rest };
+    // profissional_id mapeia para agenda_id na tabela
+    if (profissional_id !== undefined) {
+      patch.agenda_id = profissional_id;
+    }
     if (api_token) {
       patch.api_token_enc = await encryptValue(api_token);
     }
@@ -112,12 +114,24 @@ export const testClinicorpConnection = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const { listClinicorpSlots } = await import("@/lib/tools/clinicorp.server");
     const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
     try {
-      await listClinicorpSlots(data.accountId, today, tomorrow);
+      await listClinicorpSlots(data.accountId, today, nextWeek);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+export const listClinicorpProfessionalsFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const { listClinicorpProfessionals } = await import("@/lib/tools/clinicorp.server");
+    try {
+      const list = await listClinicorpProfessionals(data.accountId);
+      return { ok: true, professionals: list };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), professionals: [] };
     }
   });
 

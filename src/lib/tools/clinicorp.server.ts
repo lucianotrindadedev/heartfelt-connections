@@ -6,18 +6,17 @@ interface ClinicorpConfig {
   apiToken: string; // Basic auth base64
   subscriberId: string;
   businessId: number;
-  agendaId: number;
-  duracaoConsulta: number;
+  profissionalId: number | null; // dentist_person_id — opcional
   baseUrl: string;
 }
 
-const DEFAULT_BASE = "https://api.clinicorp.com.br";
+const DEFAULT_BASE = "https://api.clinicorp.com";
 
 async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
   const sb = getSelfhost();
   const { data, error } = await sb
     .from("clinicorp_config")
-    .select("api_token_enc, subscriber_id, business_id, agenda_id, duracao_consulta, ativo")
+    .select("api_token_enc, subscriber_id, business_id, agenda_id, ativo")
     .eq("account_id", accountId)
     .single();
 
@@ -31,8 +30,7 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
     apiToken,
     subscriberId: data.subscriber_id as string,
     businessId: data.business_id as number,
-    agendaId: data.agenda_id as number,
-    duracaoConsulta: (data.duracao_consulta as number) || 40,
+    profissionalId: (data.agenda_id as number | null) ?? null,
     baseUrl: DEFAULT_BASE,
   };
 }
@@ -59,7 +57,10 @@ export async function listClinicorpSlots(
   const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
   url.searchParams.set("subscriber_id", config.subscriberId);
   url.searchParams.set("business_id", String(config.businessId));
-  url.searchParams.set("dentist_person_id", String(config.agendaId));
+  // só filtra por profissional se estiver configurado
+  if (config.profissionalId) {
+    url.searchParams.set("dentist_person_id", String(config.profissionalId));
+  }
   url.searchParams.set("date_from", from.slice(0, 10));
   url.searchParams.set("date_to", to.slice(0, 10));
   url.searchParams.set("available_only", "true");
@@ -75,6 +76,34 @@ export async function listClinicorpSlots(
     start: a.start_datetime ?? "",
     end: a.end_datetime ?? "",
   }));
+}
+
+export interface ClinicorpProfessional {
+  id: number;
+  name: string;
+}
+
+export async function listClinicorpProfessionals(
+  accountId: string,
+): Promise<ClinicorpProfessional[]> {
+  const config = await loadConfig(accountId);
+
+  const url = new URL(`${config.baseUrl}/rest/v1/dentist/list`);
+  url.searchParams.set("subscriber_id", config.subscriberId);
+  url.searchParams.set("business_id", String(config.businessId));
+
+  const res = await fetch(url.toString(), { headers: authHeaders(config) });
+  if (!res.ok) throw new Error(`Clinicorp professionals failed: ${res.status}`);
+
+  const json = (await res.json()) as {
+    dentists?: { person_id?: number; name?: string }[];
+    data?: { person_id?: number; name?: string }[];
+  };
+
+  const list = json.dentists ?? json.data ?? [];
+  return list
+    .filter((d) => d.person_id)
+    .map((d) => ({ id: d.person_id as number, name: d.name ?? "" }));
 }
 
 export interface ClinicorpPatient {
@@ -123,7 +152,8 @@ export async function createClinicorpAppointment(
     phone: string;
     name: string;
     email?: string;
-    datetime: string; // ISO 8601
+    datetime: string; // ISO 8601 (start)
+    endDatetime?: string; // ISO 8601 (end) — opcional, padrão +30 min
   },
 ): Promise<AppointmentResult> {
   const config = await loadConfig(accountId);
@@ -153,21 +183,28 @@ export async function createClinicorpAppointment(
     };
   }
 
-  const endDatetime = new Date(
-    new Date(params.datetime).getTime() + config.duracaoConsulta * 60 * 1000,
-  ).toISOString();
+  // Usa end fornecido pelo agente, ou fallback de 30 min
+  const endDatetime =
+    params.endDatetime ??
+    new Date(new Date(params.datetime).getTime() + 30 * 60 * 1000).toISOString();
+
+  const body: Record<string, unknown> = {
+    subscriber_id: config.subscriberId,
+    business_id: config.businessId,
+    patient_id: patient.id,
+    start_datetime: params.datetime,
+    end_datetime: endDatetime,
+  };
+
+  // Só passa dentist_person_id se profissional estiver configurado
+  if (config.profissionalId) {
+    body.dentist_person_id = config.profissionalId;
+  }
 
   const res = await fetch(`${config.baseUrl}/rest/v1/appointment/create`, {
     method: "POST",
     headers: authHeaders(config),
-    body: JSON.stringify({
-      subscriber_id: config.subscriberId,
-      business_id: config.businessId,
-      dentist_person_id: config.agendaId,
-      patient_id: patient.id,
-      start_datetime: params.datetime,
-      end_datetime: endDatetime,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {
@@ -205,7 +242,9 @@ export async function listClinicorpUpcomingAppointments(
   const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
   url.searchParams.set("subscriber_id", config.subscriberId);
   url.searchParams.set("business_id", String(config.businessId));
-  url.searchParams.set("dentist_person_id", String(config.agendaId));
+  if (config.profissionalId) {
+    url.searchParams.set("dentist_person_id", String(config.profissionalId));
+  }
   url.searchParams.set("date_from", from.slice(0, 10));
   url.searchParams.set("date_to", to.slice(0, 10));
 
