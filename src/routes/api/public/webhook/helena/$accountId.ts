@@ -11,6 +11,7 @@ import {
 } from "@/lib/conversation-channel.server";
 import { enqueueMessage } from "@/lib/message-queue.server";
 import { scheduleConversationAgentTurn } from "@/lib/schedule-agent-turn.server";
+import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
 import {
   isResetCommand,
   resetConversationHistory,
@@ -31,29 +32,6 @@ const AI_DISABLED_TAG = "IA Desligada";
 
 function hasIaDesligadaTag(tagNames: string[]): boolean {
   return tagNames.some((t) => t.trim().toUpperCase() === AI_DISABLED_TAG.toUpperCase());
-}
-
-/** Normaliza texto do comando (remove prefixo *Atendente:*, acentos opcionais, espaços). */
-function normalizeCommandText(text: string): string {
-  return text
-    .trim()
-    .replace(/^\*[^*]+:\*\s*/s, "")
-    .replace(/^\*[^*]+\*\s*/s, "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function matchesAgentCommand(message: string, command: string): boolean {
-  const msg = normalizeCommandText(message);
-  const cmd = normalizeCommandText(command);
-  if (!msg || !cmd) return false;
-  if (msg === cmd) return true;
-  const msgCore = msg.replace(/^\//, "");
-  const cmdCore = cmd.replace(/^\//, "");
-  return msgCore === cmdCore;
 }
 
 interface HelenaDetails {
@@ -307,11 +285,10 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return new Response("Account not found", { status: 404 });
         }
 
-        // Comandos configuráveis (settings.pause_command / settings.resume_command).
-        // Default: "/pausar" e "/ativar".
+        // Comandos livres em settings.pause_command / resume_command (qualquer texto; vários separados por vírgula).
         const agentSettings = (agentRow.data.settings as Record<string, string> | null) ?? {};
-        const pauseCommand = (agentSettings.pause_command?.trim() || "/pausar").toLowerCase();
-        const resumeCommand = (agentSettings.resume_command?.trim() || "/ativar").toLowerCase();
+        const pauseCommandRaw = agentSettings.pause_command;
+        const resumeCommandRaw = agentSettings.resume_command;
 
         let body: HelenaPayload;
         try {
@@ -406,13 +383,15 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // ── Comandos de pausar/reativar a IA (configuráveis por agente) ──
         // Adiciona ou remove a tag "IA Desligada" no contato Helena.
         const isPauseCmd =
-          isInbound && matchesAgentCommand(messageContent, pauseCommand);
+          isInbound &&
+          messageMatchesAgentCommand(messageContent, pauseCommandRaw, ["/pausar"]);
         const isResumeCmd =
-          isInbound && matchesAgentCommand(messageContent, resumeCommand);
+          isInbound &&
+          messageMatchesAgentCommand(messageContent, resumeCommandRaw, ["/ativar"]);
 
         if (isPauseCmd || isResumeCmd) {
           console.log(
-            `[webhook] comando ${isPauseCmd ? "pausar" : "ativar"} recebido para ${convId} (cmd="${pauseCommand}" / "${resumeCommand}")`,
+            `[webhook] comando ${isPauseCmd ? "pausar" : "ativar"} recebido para ${convId} (pause="${pauseCommandRaw ?? ""}" resume="${resumeCommandRaw ?? ""}")`,
           );
 
           let tagApplied = false;
