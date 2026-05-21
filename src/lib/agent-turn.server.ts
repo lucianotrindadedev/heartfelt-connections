@@ -143,6 +143,108 @@ function isStallResponse(text: string): boolean {
   return STALL_PATTERNS.some((re) => re.test(text));
 }
 
+function collectToolContents(messages: OpenRouterMessage[]): string[] {
+  return messages
+    .filter((m) => m.role === "tool" && m.content)
+    .map((m) => m.content as string);
+}
+
+function formatSlotLine(line: string): string {
+  const dt = line.match(/\(([^)]+)\)/)?.[1];
+  if (dt) return dt;
+  const date = line.match(/data=([^\s|]+)/)?.[1] ?? "";
+  const from = line.match(/fromTime=([^\s|]+)/)?.[1] ?? "";
+  return `${date} às ${from}`.trim();
+}
+
+/** Resposta determinística quando o LLM não finaliza após tools. */
+function buildReplyFromToolResults(toolContents: string[]): string | null {
+  if (!toolContents.length) return null;
+
+  for (let i = toolContents.length - 1; i >= 0; i--) {
+    const t = toolContents[i];
+    if (t.startsWith("Erro ao executar listar_horarios")) {
+      return "Não consegui consultar a agenda online neste momento. Pode me dizer qual dia da semana prefere? Assim tento de novo para você.";
+    }
+    if (t.startsWith("Erro ao executar agendar_clinicorp")) {
+      return "O horário escolhido pode ter sido preenchido agora. Quer que eu consulte a agenda de novo e te passe outras opções?";
+    }
+    if (t.startsWith("Erro ao executar")) {
+      return "Tive um problema técnico ao acessar o sistema da clínica. Pode me confirmar seu nome completo para eu tentar novamente?";
+    }
+  }
+
+  const apptOk = [...toolContents]
+    .reverse()
+    .find((t) => t.includes("Consulta agendada com sucesso") || t.includes("Agendamento criado com sucesso"));
+  if (apptOk) return apptOk;
+
+  const slotsMsg = [...toolContents]
+    .reverse()
+    .find(
+      (t) =>
+        t.includes("Horários disponíveis no Clinicorp") ||
+        t.includes("Horários disponíveis no Clinup") ||
+        t.includes("Horários disponíveis no Google Calendar"),
+    );
+
+  if (slotsMsg) {
+    if (slotsMsg.includes("Nenhum horário disponível")) {
+      return "Consultei a agenda e, neste período, não há horários livres. Qual outro dia da semana ficaria melhor para você?";
+    }
+    const lines = slotsMsg.split("\n").filter((l) => l.trim().startsWith("- "));
+    if (!lines.length) {
+      return "Consultei a agenda, mas não encontrei horários livres para oferecer agora. Qual outro dia ficaria melhor?";
+    }
+    const a = formatSlotLine(lines[0]);
+    const b = lines[1] ? formatSlotLine(lines[1]) : null;
+    if (b && b !== a) {
+      return `Consultei a agenda e tenho estas opções para sua consulta:\n\n• ${a}\n• ${b}\n\nQual horário prefere?`;
+    }
+    return `Consultei a agenda e tenho disponível: ${a}. Posso reservar esse horário para você?`;
+  }
+
+  const patientMsg = [...toolContents]
+    .reverse()
+    .find((t) => t.includes("Paciente encontrado") || t.includes("Paciente não encontrado"));
+  if (patientMsg?.includes("Paciente encontrado")) {
+    const name = patientMsg.match(/Nome:\s*([^|]+)/)?.[1]?.trim();
+    if (name) {
+      return `Encontrei seu cadastro como ${name}. Vou consultar os horários disponíveis — qual dia da semana fica melhor para você?`;
+    }
+  }
+
+  return null;
+}
+
+async function forceFinalReplyAfterTools(
+  orKey: string,
+  model: string,
+  messages: OpenRouterMessage[],
+  maxTokens: number,
+  temperature: number,
+): Promise<string> {
+  const res = await fetchOpenRouter(orKey, {
+    model,
+    messages: [
+      ...messages,
+      {
+        role: "user",
+        content:
+          "Com base SOMENTE nos resultados das ferramentas já executadas acima, escreva a resposta final ao paciente em português. " +
+          "Se a ferramenta listou horários, ofereça no máximo 2 opções com data e hora exatos do retorno. " +
+          "NÃO diga que vai verificar, conferir ou retornar depois — a agenda já foi consultada.",
+      },
+    ],
+    max_tokens: maxTokens,
+    temperature,
+    tool_choice: "none",
+  });
+  if (!res.ok) return "";
+  const json = (await res.json()) as OpenRouterResponse;
+  return json.choices?.[0]?.message?.content?.trim() ?? "";
+}
+
 async function deliverAgentReply(params: {
   accountId: string;
   agentId: string;
@@ -782,6 +884,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
           const toolResult = await executeTool(tc.function.name, toolArgs, toolCtx);
           effectivePhone = toolCtx.effectivePhone;
+          console.log(
+            `[agent] tool ${tc.function.name} → ${toolResult.slice(0, 180).replace(/\n/g, " ")}`,
+          );
 
           messages.push({
             role: "tool",
@@ -796,47 +901,56 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // Resposta final (sem tool_calls)
       const candidate = assistantMsg.content?.trim() ?? "";
 
-      // Detector de stall: se temos ferramentas, nada foi chamado neste turno
-      // e a resposta soa como "vou verificar / já te retorno", força UMA
-      // iteração extra com tool_choice="required" para o modelo realmente
-      // chamar a ferramenta em vez de alucinar uma promessa.
-      if (
-        tools.length > 0 &&
-        !anyToolCalled &&
-        loop < MAX_TOOL_LOOPS - 1 &&
-        isStallResponse(candidate)
-      ) {
-        console.log(`[agent] stall detectado ("${candidate.slice(0, 60)}…") — forçando tool_choice=required`);
-        // Remove a resposta de stall do histórico para evitar que o modelo
-        // tente "completá-la" no próximo loop.
+      // Stall sem tools: força tool_choice=required.
+      // Stall COM tools já executadas: não entregar "vou verificar" — reabre o loop.
+      if (tools.length > 0 && loop < MAX_TOOL_LOOPS - 1 && isStallResponse(candidate)) {
+        if (!anyToolCalled) {
+          console.log(
+            `[agent] stall sem tools ("${candidate.slice(0, 60)}…") — tool_choice=required`,
+          );
+          messages.pop();
+          forceToolNext = true;
+          continue;
+        }
+        console.log(
+          `[agent] stall após tools ("${candidate.slice(0, 60)}…") — ignorando e forçando resposta final`,
+        );
         messages.pop();
-        forceToolNext = true;
-        continue;
+        finalReply = "";
+        break;
       }
 
       finalReply = candidate;
       break;
     }
 
-    // Após várias tools, força uma resposta final sem novas ferramentas
-    if (!finalReply) {
-      const forceRes = await fetchOpenRouter(orKey, {
-        model,
-        messages,
-        max_tokens: llm.data?.max_tokens ?? 1024,
-        temperature: llm.data?.temperature ?? 0.7,
-        tool_choice: "none",
-      });
-      if (forceRes.ok) {
-        const forceJson = (await forceRes.json()) as OpenRouterResponse;
-        totalTokensIn += forceJson.usage?.prompt_tokens ?? 0;
-        totalTokensOut += forceJson.usage?.completion_tokens ?? 0;
-        finalReply = forceJson.choices?.[0]?.message?.content?.trim() ?? "";
-      }
+    const maxTokens = llm.data?.max_tokens ?? 1024;
+    const temperature = llm.data?.temperature ?? 0.7;
+    const toolContents = collectToolContents(messages);
+
+    if (finalReply && anyToolCalled && isStallResponse(finalReply)) {
+      finalReply = "";
     }
 
     if (!finalReply) {
-      throw new Error("Agente não gerou resposta final após ferramentas");
+      finalReply = buildReplyFromToolResults(toolContents) ?? "";
+    }
+
+    if (!finalReply) {
+      finalReply = await forceFinalReplyAfterTools(
+        orKey,
+        model,
+        messages,
+        maxTokens,
+        temperature,
+      );
+    }
+
+    if (!finalReply) {
+      const toolSummary = toolContents.map((t) => t.slice(0, 100)).join(" || ");
+      throw new Error(
+        `Agente não gerou resposta final após ferramentas${toolSummary ? ` | tools: ${toolSummary.slice(0, 400)}` : ""}`,
+      );
     }
 
     await deliverAgentReply({

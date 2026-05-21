@@ -116,17 +116,27 @@ export interface ClinicorpSlot {
   toTime: string;
 }
 
+function addCalendarDay(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  const dt = new Date(y, m - 1, d + days);
+  const mm = String(dt.getMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getDate()).padStart(2, "0");
+  return `${dt.getFullYear()}-${mm}-${dd}`;
+}
+
 function enumerateDates(from: string, to: string): string[] {
-  const start = new Date(`${from.slice(0, 10)}T12:00:00`);
-  const end = new Date(`${to.slice(0, 10)}T12:00:00`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return [];
+  const startD = from.slice(0, 10);
+  const endD = to.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startD) || !/^\d{4}-\d{2}-\d{2}$/.test(endD)) {
+    return [];
+  }
 
   const dates: string[] = [];
-  const cur = new Date(start);
-  const limit = 14; // evita explosão de requisições (n8n consulta 1 dia por vez)
-  while (cur <= end && dates.length < limit) {
-    dates.push(cur.toISOString().slice(0, 10));
-    cur.setUTCDate(cur.getUTCDate() + 1);
+  let cur = startD;
+  const limit = 14;
+  while (cur <= endD && dates.length < limit) {
+    dates.push(cur);
+    cur = addCalendarDay(cur, 1);
   }
   return dates;
 }
