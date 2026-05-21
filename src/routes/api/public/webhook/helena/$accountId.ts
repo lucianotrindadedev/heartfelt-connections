@@ -16,6 +16,7 @@ import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
   loadHelenaSession,
+  sendHelenaText,
 } from "@/lib/helena.server";
 
 interface HelenaDetails {
@@ -331,6 +332,51 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         if (!convId) {
           return new Response("DB error: could not upsert conversation", { status: 500 });
+        }
+
+        // ── Comando /reset: limpa histórico e responde sem acionar agente ──
+        if (isInbound && messageContent.trim().toLowerCase() === "/reset") {
+          console.log(`[webhook] /reset recebido para conversa ${convId}`);
+
+          // 1. Apaga todas as mensagens da conversa
+          await sb.from("messages").delete().eq("conversation_id", convId);
+
+          // 2. Limpa a fila de debounce (evita que um turn pendente dispare o agente)
+          await sb
+            .from("message_queue")
+            .update({ processed: true })
+            .eq("conversation_id", convId)
+            .eq("processed", false);
+
+          // 3. Reseta conversation_state (lock, followup, tudo zerado)
+          await sb.from("conversation_state").upsert(
+            {
+              conversation_id: convId,
+              lock_conversa: false,
+              aguardando_followup: false,
+              numero_followup: 0,
+              last_user_message_at: new Date().toISOString(),
+            },
+            { onConflict: "conversation_id" },
+          );
+
+          // 4. Envia confirmação via Helena
+          try {
+            const helena = await loadHelenaAccount(accountId);
+            const sendResult = await sendHelenaText(helena, {
+              phone: fromDetails || legacyPhone || undefined,
+              text: "Memória resetada com sucesso ✅",
+              sessionId,
+            });
+            console.log(`[webhook] /reset confirmação enviada: ok=${sendResult.ok} status=${sendResult.status}`);
+            if (!sendResult.ok) {
+              console.error(`[webhook] /reset envio falhou: ${sendResult.body.slice(0, 200)}`);
+            }
+          } catch (e) {
+            console.error("[webhook] /reset - falha ao enviar confirmação:", e);
+          }
+
+          return Response.json({ ok: true, conversation_id: convId, action: "reset" });
         }
 
         const role = isInbound ? "user" : "assistant";
