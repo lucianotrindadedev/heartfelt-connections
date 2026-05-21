@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { encryptValue } from "@/lib/crypto.server";
+import { resetConversationHistory } from "@/lib/reset-conversation.server";
 import { getGoogleCalendarStatus } from "@/lib/tools/google-calendar.server";
 
 const accountIdInput = z.object({ accountId: z.string().min(1) });
@@ -366,8 +367,6 @@ export const resetAgent = createServerFn({ method: "POST" })
   .inputValidator((d) => z.object({ agentId: z.string().uuid() }).parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-
-    // Busca todas as conversas do agente
     const { data: convs } = await sb
       .from("conversations")
       .select("id")
@@ -375,15 +374,10 @@ export const resetAgent = createServerFn({ method: "POST" })
 
     if (!convs?.length) return { ok: true, deleted: 0 };
 
-    const ids = convs.map((c: { id: unknown }) => c.id as string);
+    for (const c of convs) {
+      await resetConversationHistory(c.id as string);
+    }
 
-    // Remove mensagens e estados
-    await Promise.all([
-      sb.from("messages").delete().in("conversation_id", ids),
-      sb.from("conversation_state").delete().in("conversation_id", ids),
-      sb.from("message_queue").delete().in("conversation_id", ids),
-    ]);
-
-    return { ok: true, deleted: ids.length };
+    return { ok: true, deleted: convs.length };
   });
 

@@ -12,6 +12,11 @@ import {
 import { runAgentTurn } from "@/lib/agent-turn.server";
 import { enqueueMessage } from "@/lib/message-queue.server";
 import {
+  isResetCommand,
+  resetConversationHistory,
+  RESET_CONFIRMATION_MESSAGE,
+} from "@/lib/reset-conversation.server";
+import {
   getContactChannel,
   loadHelenaAccount,
   loadHelenaContactFromSession,
@@ -319,8 +324,9 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return new Response("Missing sessionId or contact identifier", { status: 400 });
         }
 
-        if (!isInbound && !isHuman && !messageContent) {
-          return Response.json({ ok: true, skipped: "no-content" });
+        // Eco do bot/plataforma (TO_HUB sem atendente) — não grava no histórico do LLM
+        if (!isInbound && !isHuman) {
+          return Response.json({ ok: true, skipped: "outbound-bot" });
         }
 
         const convId = await upsertConversation(accountId, {
@@ -334,44 +340,17 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return new Response("DB error: could not upsert conversation", { status: 500 });
         }
 
-        // ── Comando /reset: limpa histórico e responde sem acionar agente ──
-        if (isInbound && messageContent.trim().toLowerCase() === "/reset") {
-          console.log(`[webhook] /reset recebido para conversa ${convId}`);
+        // ── Comando /reset: limpa histórico, confirma e NÃO aciona o agente ──
+        if (isInbound && isResetCommand(messageContent)) {
+          await resetConversationHistory(convId);
 
-          // 1. Apaga todas as mensagens da conversa
-          await sb.from("messages").delete().eq("conversation_id", convId);
-
-          // 2. Limpa a fila de debounce (evita que um turn pendente dispare o agente)
-          await sb
-            .from("message_queue")
-            .update({ processed: true })
-            .eq("conversation_id", convId)
-            .eq("processed", false);
-
-          // 3. Reseta conversation_state (lock, followup, tudo zerado)
-          await sb.from("conversation_state").upsert(
-            {
-              conversation_id: convId,
-              lock_conversa: false,
-              aguardando_followup: false,
-              numero_followup: 0,
-              last_user_message_at: new Date().toISOString(),
-            },
-            { onConflict: "conversation_id" },
-          );
-
-          // 4. Envia confirmação via Helena
           try {
             const helena = await loadHelenaAccount(accountId);
-            const sendResult = await sendHelenaText(helena, {
+            await sendHelenaText(helena, {
               phone: fromDetails || legacyPhone || undefined,
-              text: "Memória resetada com sucesso ✅",
+              text: RESET_CONFIRMATION_MESSAGE,
               sessionId,
             });
-            console.log(`[webhook] /reset confirmação enviada: ok=${sendResult.ok} status=${sendResult.status}`);
-            if (!sendResult.ok) {
-              console.error(`[webhook] /reset envio falhou: ${sendResult.body.slice(0, 200)}`);
-            }
           } catch (e) {
             console.error("[webhook] /reset - falha ao enviar confirmação:", e);
           }
