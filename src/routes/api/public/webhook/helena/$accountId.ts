@@ -432,19 +432,21 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
               console.warn("[webhook] sem contactId — não foi possível alterar tag Helena");
             }
 
-            const confirmText = !contactId
-              ? "Não consegui localizar seu cadastro no CRM para pausar a IA. Peça ao atendente humano aplicar a etiqueta IA Desligada."
-              : !tagApplied
-                ? "Recebi o comando, mas não consegui atualizar a etiqueta no CRM. Tente novamente ou peça ajuda ao atendente."
-                : isPauseCmd
-                  ? "Atendimento pausado ⏸️ A IA não responderá até receber o comando de reativação."
+            // Pausa com sucesso = silenciosa (só aplica tag). Avisa só em erro ou ao reativar.
+            const shouldNotifyUser = isResumeCmd || !contactId || !tagApplied;
+            if (shouldNotifyUser) {
+              const confirmText = !contactId
+                ? "Não consegui localizar seu cadastro no CRM para pausar a IA. Peça ao atendente humano aplicar a etiqueta IA Desligada."
+                : !tagApplied
+                  ? "Recebi o comando, mas não consegui atualizar a etiqueta no CRM. Tente novamente ou peça ajuda ao atendente."
                   : "Atendimento reativado ✅ A IA voltará a responder normalmente.";
 
-            await sendHelenaText(helena, {
-              phone: fromDetails || legacyPhone || undefined,
-              text: confirmText,
-              sessionId,
-            });
+              await sendHelenaText(helena, {
+                phone: fromDetails || legacyPhone || undefined,
+                text: confirmText,
+                sessionId,
+              });
+            }
           } catch (e) {
             console.error("[webhook] pause/resume - falha:", e);
           }

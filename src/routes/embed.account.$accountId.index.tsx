@@ -2173,7 +2173,7 @@ function AgentSettingsView({
                 <Label className="text-sm font-semibold">Comandos para pausar a IA</Label>
                 <p className="mb-3 text-xs text-muted-foreground">
                   Defina <strong>qualquer frase</strong> que o lead envia no WhatsApp para pausar ou reativar a IA.
-                  Ao pausar, a tag <strong>&quot;IA Desligada&quot;</strong> é aplicada no Helena. A comparação ignora maiúsculas, acentos e barra inicial (<code>/pausar</code> = <code>pausar</code>).
+                  Ao pausar, a tag <strong>&quot;IA Desligada&quot;</strong> é aplicada no Helena (pausa silenciosa, sem mensagem automática). A comparação ignora maiúsculas, acentos e barra inicial (<code>/pausar</code> = <code>pausar</code>).
                   Vários comandos no mesmo campo: separe por vírgula (ex.: <code>/pausar, parar bot, stop</code>).
                   Se deixar vazio, o padrão é <code>/pausar</code> e <code>/ativar</code>.
                 </p>
