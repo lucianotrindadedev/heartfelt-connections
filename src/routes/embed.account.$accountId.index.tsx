@@ -2335,7 +2335,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   const [subscriberId, setSubscriberId] = useState("");
   const [businessId, setBusinessId] = useState("");
   const [codeLink, setCodeLink] = useState("");
-  const [profissionalId, setProfissionalId] = useState<string>("");
+  const [selectedProfIds, setSelectedProfIds] = useState<number[]>([]);
   const [ativo, setAtivo] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [professionals, setProfessionals] = useState<{ id: number; name: string }[]>([]);
@@ -2346,7 +2346,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
       setSubscriberId(data.subscriber_id ?? "");
       setBusinessId(data.business_id ? String(data.business_id) : "");
       setCodeLink(data.code_link ?? "");
-      setProfissionalId(data.profissional_id ? String(data.profissional_id) : "");
+      setSelectedProfIds(data.profissional_ids ?? []);
       setAtivo(data.ativo ?? false);
     }
   }, [data]);
@@ -2360,6 +2360,12 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
       .finally(() => setLoadingProfs(false));
   }, [data?.token_configured, accountId]);
 
+  function toggleProf(id: number) {
+    setSelectedProfIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
   const save = useMutation({
     mutationFn: () =>
       saveCfg({
@@ -2369,7 +2375,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
           subscriber_id: subscriberId || undefined,
           business_id: businessId ? Number(businessId) : undefined,
           code_link: codeLink || undefined,
-          profissional_id: profissionalId ? Number(profissionalId) : null,
+          profissional_ids: selectedProfIds,
           ativo,
         },
       }),
@@ -2460,12 +2466,12 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
             </p>
           </div>
 
-          {/* Profissional — opcional */}
+          {/* Profissionais — múltipla seleção */}
           <div>
-            <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center justify-between mb-2">
               <Label className="text-xs font-semibold">
-                Profissional{" "}
-                <span className="font-normal text-muted-foreground">(opcional)</span>
+                Profissionais{" "}
+                <span className="font-normal text-muted-foreground">(opcional — marque os desejados)</span>
               </Label>
               {data?.token_configured && (
                 <button
@@ -2478,29 +2484,45 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
                 </button>
               )}
             </div>
-            <select
-              value={profissionalId}
-              onChange={(e) => setProfissionalId(e.target.value)}
-              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="">— Qualquer profissional —</option>
-              {professionals.map((p) => (
-                <option key={p.id} value={String(p.id)}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+
             {!data?.token_configured ? (
-              <p className="text-[10px] text-muted-foreground mt-1">
+              <p className="text-[10px] text-muted-foreground">
                 Salve o token primeiro para carregar os profissionais.
               </p>
             ) : loadingProfs ? (
-              <p className="text-[10px] text-muted-foreground mt-1">Carregando profissionais...</p>
+              <p className="text-[10px] text-muted-foreground">Carregando profissionais...</p>
             ) : professionals.length === 0 ? (
-              <p className="text-[10px] text-muted-foreground mt-1">
+              <p className="text-[10px] text-muted-foreground">
                 Nenhum profissional encontrado. Clique em ↻ Recarregar.
               </p>
-            ) : null}
+            ) : (
+              <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-48 overflow-y-auto">
+                {professionals.map((p) => {
+                  const checked = selectedProfIds.includes(p.id);
+                  return (
+                    <label
+                      key={p.id}
+                      className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-slate-50 transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleProf(p.id)}
+                        className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                      />
+                      <span className="text-sm">{p.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            {selectedProfIds.length > 0 && professionals.length > 0 && (
+              <p className="text-[10px] text-muted-foreground mt-1">
+                {selectedProfIds.length} profissional{selectedProfIds.length > 1 ? "is" : ""} selecionado{selectedProfIds.length > 1 ? "s" : ""}.
+                Deixe todos desmarcados para usar qualquer profissional disponível.
+              </p>
+            )}
           </div>
 
           {testResult && <p className="text-xs">{testResult}</p>}

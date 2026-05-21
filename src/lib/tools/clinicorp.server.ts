@@ -3,11 +3,11 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
 
 interface ClinicorpConfig {
-  apiToken: string;       // Basic auth base64
+  apiToken: string;         // Basic auth base64
   subscriberId: string;
   businessId: number;
-  codeLink: string | null;      // agenda_id: Code Link da agenda online (listing de slots)
-  profissionalId: number | null; // dentist_person_id: Person_Id do profissional (opcional)
+  codeLink: string | null;        // agenda_id: Code Link da agenda online
+  profissionalIds: number[];      // dentist_person_id[]: profissionais selecionados ([] = todos)
   baseUrl: string;
 }
 
@@ -27,6 +27,13 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
   const apiToken = await decryptValue(data.api_token_enc as unknown as string);
   if (!apiToken) throw new Error("Token Clinicorp inválido");
 
+  // dentist_person_id é jsonb: null | number[] (ex: [111, 222])
+  let profissionalIds: number[] = [];
+  const raw = data.dentist_person_id as unknown;
+  if (Array.isArray(raw)) {
+    profissionalIds = (raw as unknown[]).map(Number).filter(Boolean);
+  }
+
   return {
     apiToken,
     subscriberId: data.subscriber_id as string,
@@ -34,7 +41,7 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
     codeLink: (data.agenda_id as string | number | null)
       ? String(data.agenda_id)
       : null,
-    profissionalId: (data.dentist_person_id as number | null) ?? null,
+    profissionalIds,
     baseUrl: DEFAULT_BASE,
   };
 }
@@ -94,24 +101,17 @@ export interface ClinicorpSlot {
   dentistPersonId?: number;
 }
 
-export async function listClinicorpSlots(
-  accountId: string,
+async function fetchSlots(
+  config: ClinicorpConfig,
   from: string,
   to: string,
+  dentistPersonId?: number,
 ): Promise<ClinicorpSlot[]> {
-  const config = await loadConfig(accountId);
-
   const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
   url.searchParams.set("subscriber_id", config.subscriberId);
   url.searchParams.set("business_id", String(config.businessId));
-  // Code Link da agenda online (libera horários para agendamento por API)
-  if (config.codeLink) {
-    url.searchParams.set("code_link", config.codeLink);
-  }
-  // Filtra por profissional se configurado
-  if (config.profissionalId) {
-    url.searchParams.set("dentist_person_id", String(config.profissionalId));
-  }
+  if (config.codeLink) url.searchParams.set("code_link", config.codeLink);
+  if (dentistPersonId) url.searchParams.set("dentist_person_id", String(dentistPersonId));
   url.searchParams.set("date_from", from.slice(0, 10));
   url.searchParams.set("date_to", to.slice(0, 10));
   url.searchParams.set("available_only", "true");
@@ -133,6 +133,40 @@ export async function listClinicorpSlots(
     end: a.end_datetime ?? "",
     dentistPersonId: a.Dentist_PersonId ?? a.dentist_person_id,
   }));
+}
+
+export async function listClinicorpSlots(
+  accountId: string,
+  from: string,
+  to: string,
+): Promise<ClinicorpSlot[]> {
+  const config = await loadConfig(accountId);
+
+  if (config.profissionalIds.length === 0) {
+    // Nenhum profissional configurado — retorna todos os horários disponíveis
+    return fetchSlots(config, from, to);
+  }
+
+  if (config.profissionalIds.length === 1) {
+    // Um único profissional — passamos diretamente o filtro
+    return fetchSlots(config, from, to, config.profissionalIds[0]);
+  }
+
+  // Múltiplos profissionais — requisições paralelas, merge e ordena por horário
+  const results = await Promise.all(
+    config.profissionalIds.map((id) => fetchSlots(config, from, to, id).catch(() => [])),
+  );
+  const merged = results.flat();
+  // Remove duplicatas (mesmo start + mesmo dentist) e ordena
+  const seen = new Set<string>();
+  return merged
+    .filter((s) => {
+      const key = `${s.start}|${s.dentistPersonId ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => a.start.localeCompare(b.start));
 }
 
 // ── Paciente ──────────────────────────────────────────────────────────────
@@ -253,8 +287,10 @@ export async function createClinicorpAppointment(
   // Meia-noite UTC do dia (formato que a API espera)
   const dateStr = startDate.toISOString().split("T")[0] + "T03:00:00.000Z";
 
-  // 3. Dentist_PersonId: parâmetro passado > config > omite
-  const dentistPersonId = params.dentistPersonId ?? config.profissionalId ?? undefined;
+  // 3. Dentist_PersonId: parâmetro passado > primeiro da config > omite
+  const dentistPersonId =
+    params.dentistPersonId ??
+    (config.profissionalIds.length === 1 ? config.profissionalIds[0] : undefined);
 
   const body: Record<string, unknown> = {
     Patient_PersonId: patientId,
@@ -308,7 +344,9 @@ export async function listClinicorpUpcomingAppointments(
   url.searchParams.set("subscriber_id", config.subscriberId);
   url.searchParams.set("business_id", String(config.businessId));
   if (config.codeLink) url.searchParams.set("code_link", config.codeLink);
-  if (config.profissionalId) url.searchParams.set("dentist_person_id", String(config.profissionalId));
+  if (config.profissionalIds.length === 1) {
+    url.searchParams.set("dentist_person_id", String(config.profissionalIds[0]));
+  }
   url.searchParams.set("date_from", from.slice(0, 10));
   url.searchParams.set("date_to", to.slice(0, 10));
 
