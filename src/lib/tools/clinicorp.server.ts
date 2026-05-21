@@ -157,18 +157,30 @@ function extractCalendarEntries(json: unknown): Record<string, unknown>[] {
   return [];
 }
 
+/** Normaliza "8:30" → "08:30". Retorna "" se não bater com HH:MM. */
+function padHourMinute(raw: string): string {
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return "";
+  const hh = match[1].padStart(2, "0");
+  return `${hh}:${match[2]}`;
+}
+
 function parseCalendarDay(json: unknown, date: string): ClinicorpSlot[] {
   const entries = extractCalendarEntries(json);
   const slots: ClinicorpSlot[] = [];
 
   for (const row of entries) {
-    const fromTime = String(
-      row.fromTime ?? row.FromTime ?? row.start_time ?? row.StartTime ?? "",
-    ).slice(0, 5);
-    const toTime = String(
-      row.toTime ?? row.ToTime ?? row.end_time ?? row.EndTime ?? "",
-    ).slice(0, 5);
-    if (!fromTime || !/^\d{2}:\d{2}$/.test(fromTime)) continue;
+    // API real retorna { From, To, ProfessionalId } — mantemos fallbacks para outras variantes.
+    const rawFrom = String(
+      row.From ?? row.from ?? row.fromTime ?? row.FromTime ?? row.start_time ?? row.StartTime ?? "",
+    ).trim();
+    const rawTo = String(
+      row.To ?? row.to ?? row.toTime ?? row.ToTime ?? row.end_time ?? row.EndTime ?? "",
+    ).trim();
+
+    const fromTime = padHourMinute(rawFrom);
+    if (!fromTime) continue;
+    const toTime = padHourMinute(rawTo) || fromTime;
 
     const dentistPersonId = Number(
       row.ProfessionalId ??
@@ -178,13 +190,12 @@ function parseCalendarDay(json: unknown, date: string): ClinicorpSlot[] {
         row.person_id,
     ) || undefined;
 
-    const end = toTime && /^\d{2}:\d{2}$/.test(toTime) ? toTime : fromTime;
     slots.push({
       localDate: date,
       fromTime,
-      toTime: end,
+      toTime,
       start: slotIsoInBrazil(date, fromTime),
-      end: slotIsoInBrazil(date, end),
+      end: slotIsoInBrazil(date, toTime),
       dentistPersonId,
     });
   }
