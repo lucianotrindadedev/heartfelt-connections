@@ -8,7 +8,11 @@ export function isResetCommand(text: string): boolean {
 
 export const RESET_CONFIRMATION_MESSAGE = "Memória resetada";
 
-/** Apaga mensagens, fila de debounce e estado — não dispara o agente. */
+/**
+ * Apaga mensagens, fila de debounce, estado E zera o stage da máquina multi-agente.
+ * Após reset, próxima mensagem do lead inicia em RECEPTION com lead_data vazio.
+ * Não dispara o agente.
+ */
 export async function resetConversationHistory(conversationId: string): Promise<void> {
   const sb = getSelfhost();
 
@@ -26,4 +30,14 @@ export async function resetConversationHistory(conversationId: string): Promise<
     },
     { onConflict: "conversation_id" },
   );
+
+  // Zera stage e lead_data preservando outros campos de conversations.meta.
+  const { data: conv } = await sb
+    .from("conversations")
+    .select("meta")
+    .eq("id", conversationId)
+    .maybeSingle();
+  const existingMeta = (conv?.meta as Record<string, unknown> | null) ?? {};
+  const cleanedMeta = { ...existingMeta, stage: "RECEPTION", lead_data: {}, current_agent: null };
+  await sb.from("conversations").update({ meta: cleanedMeta }).eq("id", conversationId);
 }
