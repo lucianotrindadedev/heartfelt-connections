@@ -64,7 +64,7 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
     const sb = getSelfhost();
     const { data: cfg } = await sb
       .from("clinicorp_config")
-      .select("subscriber_id, business_id, agenda_id, ativo, api_token_enc")
+      .select("subscriber_id, business_id, agenda_id, dentist_person_id, ativo, api_token_enc")
       .eq("account_id", data.accountId)
       .single();
 
@@ -72,7 +72,10 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
       ativo: cfg?.ativo ?? false,
       subscriber_id: (cfg?.subscriber_id as string | null) ?? "",
       business_id: (cfg?.business_id as number | null) ?? null,
-      profissional_id: (cfg?.agenda_id as number | null) ?? null,
+      code_link: (cfg?.agenda_id as string | number | null)
+        ? String(cfg!.agenda_id)
+        : "",
+      profissional_id: (cfg?.dentist_person_id as number | null) ?? null,
       token_configured: !!cfg?.api_token_enc,
     };
   });
@@ -84,23 +87,20 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
         api_token: z.string().optional(),
         subscriber_id: z.string().optional(),
         business_id: z.number().int().optional(),
-        profissional_id: z.number().int().nullable().optional(),
+        code_link: z.string().optional(),      // agenda_id na tabela
+        profissional_id: z.number().int().nullable().optional(), // dentist_person_id
         ativo: z.boolean().optional(),
       })
       .parse(d)
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { accountId, api_token, profissional_id, ...rest } = data;
+    const { accountId, api_token, code_link, profissional_id, ...rest } = data;
 
     const patch: Record<string, unknown> = { ...rest };
-    // profissional_id mapeia para agenda_id na tabela
-    if (profissional_id !== undefined) {
-      patch.agenda_id = profissional_id;
-    }
-    if (api_token) {
-      patch.api_token_enc = await encryptValue(api_token);
-    }
+    if (code_link !== undefined) patch.agenda_id = code_link || null;
+    if (profissional_id !== undefined) patch.dentist_person_id = profissional_id;
+    if (api_token) patch.api_token_enc = await encryptValue(api_token);
 
     await sb
       .from("clinicorp_config")

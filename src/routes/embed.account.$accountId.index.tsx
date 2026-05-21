@@ -2334,6 +2334,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   const [token, setToken] = useState("");
   const [subscriberId, setSubscriberId] = useState("");
   const [businessId, setBusinessId] = useState("");
+  const [codeLink, setCodeLink] = useState("");
   const [profissionalId, setProfissionalId] = useState<string>("");
   const [ativo, setAtivo] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -2344,20 +2345,20 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
     if (data) {
       setSubscriberId(data.subscriber_id ?? "");
       setBusinessId(data.business_id ? String(data.business_id) : "");
+      setCodeLink(data.code_link ?? "");
       setProfissionalId(data.profissional_id ? String(data.profissional_id) : "");
       setAtivo(data.ativo ?? false);
     }
   }, [data]);
 
-  // Carrega profissionais quando as credenciais básicas estão preenchidas e a config já existe
+  // Carrega profissionais automaticamente quando o token já está salvo
   useEffect(() => {
     if (!data?.token_configured) return;
-    if (!subscriberId || !businessId) return;
     setLoadingProfs(true);
     listProfs({ data: { accountId } })
       .then((r) => { if (r.ok) setProfessionals(r.professionals); })
       .finally(() => setLoadingProfs(false));
-  }, [data?.token_configured, subscriberId, businessId, accountId]);
+  }, [data?.token_configured, accountId]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -2367,6 +2368,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
           ...(token ? { api_token: token } : {}),
           subscriber_id: subscriberId || undefined,
           business_id: businessId ? Number(businessId) : undefined,
+          code_link: codeLink || undefined,
           profissional_id: profissionalId ? Number(profissionalId) : null,
           ativo,
         },
@@ -2413,6 +2415,8 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
       {expanded && (
         <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
           <ToggleRow label="Ativar integração Clinicorp" value={ativo} onChange={setAtivo} />
+
+          {/* Token */}
           <div>
             <Label className="text-xs font-semibold">Token API (Basic auth base64)</Label>
             {data?.token_configured && !token && (
@@ -2426,6 +2430,8 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
               className="mt-1"
             />
           </div>
+
+          {/* Subscriber ID + Business ID */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs font-semibold">Subscriber ID</Label>
@@ -2437,10 +2443,30 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
             </div>
           </div>
 
+          {/* Code Link */}
+          <div>
+            <Label className="text-xs font-semibold">
+              Code Link{" "}
+              <span className="font-normal text-muted-foreground">(agenda online)</span>
+            </Label>
+            <Input
+              value={codeLink}
+              onChange={(e) => setCodeLink(e.target.value)}
+              placeholder="ex: 73828"
+              className="mt-1"
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Código da agenda que libera horários para agendamento por API.
+            </p>
+          </div>
+
           {/* Profissional — opcional */}
           <div>
             <div className="flex items-center justify-between mb-1">
-              <Label className="text-xs font-semibold">Profissional <span className="font-normal text-muted-foreground">(opcional)</span></Label>
+              <Label className="text-xs font-semibold">
+                Profissional{" "}
+                <span className="font-normal text-muted-foreground">(opcional)</span>
+              </Label>
               {data?.token_configured && (
                 <button
                   type="button"
@@ -2463,16 +2489,18 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
                   {p.name}
                 </option>
               ))}
-              {/* mantém o ID salvo caso a lista ainda não tenha carregado */}
-              {profissionalId && !professionals.find((p) => String(p.id) === profissionalId) && (
-                <option value={profissionalId}>ID {profissionalId}</option>
-              )}
             </select>
-            {!data?.token_configured && (
+            {!data?.token_configured ? (
               <p className="text-[10px] text-muted-foreground mt-1">
-                Salve o token primeiro para carregar a lista de profissionais.
+                Salve o token primeiro para carregar os profissionais.
               </p>
-            )}
+            ) : loadingProfs ? (
+              <p className="text-[10px] text-muted-foreground mt-1">Carregando profissionais...</p>
+            ) : professionals.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Nenhum profissional encontrado. Clique em ↻ Recarregar.
+              </p>
+            ) : null}
           </div>
 
           {testResult && <p className="text-xs">{testResult}</p>}
