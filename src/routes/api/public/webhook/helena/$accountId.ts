@@ -23,6 +23,7 @@ import {
   loadHelenaSession,
   sendHelenaText,
   setHelenaContactTags,
+  type HelenaContact,
 } from "@/lib/helena.server";
 
 const AI_DISABLED_TAG = "IA Desligada";
@@ -135,10 +136,15 @@ interface ConversationUpsertInput {
   legacyPhone?: string;
 }
 
+interface ConversationUpsertResult {
+  convId: string | null;
+  contact: HelenaContact | null;
+}
+
 async function upsertConversation(
   accountId: string,
   input: ConversationUpsertInput,
-): Promise<string | null> {
+): Promise<ConversationUpsertResult> {
   const sb = getSelfhost();
   let channel: ConversationChannel = "unknown";
   let contactId: string | null = null;
@@ -147,6 +153,7 @@ async function upsertConversation(
   let contactPhone: string | null = null;
   let leadPhone: string | null = null;
   let sessionChannelId: string | null = null;
+  let resolvedContact: HelenaContact | null = null;
 
   if (input.sessionId) {
     try {
@@ -155,6 +162,7 @@ async function upsertConversation(
       const session = await loadHelenaSession(helena, input.sessionId);
       sessionChannelId = session?.channelId ?? null;
       if (contact) {
+        resolvedContact = contact;
         contactId = contact.id;
         instagram = contact.instagram;
         messengerId = contact.messengerId;
@@ -211,7 +219,7 @@ async function upsertConversation(
       if (!existingLead && contactPhone) updates.lead_phone = contactPhone;
 
       await sb.from("conversations").update(updates).eq("id", convId);
-      return convId;
+      return { convId, contact: resolvedContact };
     }
   }
 
@@ -235,7 +243,7 @@ async function upsertConversation(
         lead_phone: contactPhone,
       })
       .eq("id", convId);
-    return convId;
+    return { convId, contact: resolvedContact };
   }
 
   const ins = await sb
@@ -254,9 +262,9 @@ async function upsertConversation(
 
   if (ins.error) {
     console.error("[webhook] insert conversation:", ins.error.message);
-    return null;
+    return { convId: null, contact: resolvedContact };
   }
-  return ins.data.id as string;
+  return { convId: ins.data.id as string, contact: resolvedContact };
 }
 
 export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
@@ -342,7 +350,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return Response.json({ ok: true, skipped: "outbound-bot" });
         }
 
-        const convId = await upsertConversation(accountId, {
+        const { convId, contact: resolvedContact } = await upsertConversation(accountId, {
           agentId: agentRow.data.id as string,
           sessionId,
           fromDetails: fromDetails || legacyPhone,
@@ -434,20 +442,11 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         }
 
         // ── Bloqueio por tag "IA Desligada": ignora completamente o agente ──
-        // O lead pode enviar mensagens (são salvas no histórico) mas a IA não
-        // responde até que o comando de reativação seja enviado.
-        let agentBlockedByTag = false;
-        if (isInbound && sessionId) {
-          try {
-            const helena = await loadHelenaAccount(accountId);
-            const contact = await loadHelenaContactFromSession(helena, sessionId);
-            if (contact && hasIaDesligadaTag(contact.tagNames)) {
-              agentBlockedByTag = true;
-              console.log(`[webhook] agente bloqueado pela tag "IA Desligada" — conv ${convId}`);
-            }
-          } catch (e) {
-            console.warn("[webhook] falha ao verificar tag IA Desligada:", e);
-          }
+        // Reutiliza o contato já carregado em upsertConversation (sem nova chamada HTTP).
+        const agentBlockedByTag =
+          isInbound && !!resolvedContact && hasIaDesligadaTag(resolvedContact.tagNames);
+        if (agentBlockedByTag) {
+          console.log(`[webhook] agente bloqueado pela tag "IA Desligada" — conv ${convId}`);
         }
 
         const role = isInbound ? "user" : "assistant";
@@ -486,6 +485,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         if (isInbound && agentRow.data.ativo && !agentBlockedByTag) {
           const debounce = (agentRow.data.debounce_segundos as number | null) ?? 20;
+          console.log(`[webhook] agendando agent turn para ${convId} — debounce=${debounce}s`);
           try {
             if (debounce > 0) {
               await enqueueMessage(convId, debounce);
@@ -496,6 +496,10 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           } catch (e) {
             console.error("[agent-turn] falhou:", e);
           }
+        } else if (isInbound) {
+          console.log(
+            `[webhook] agente NÃO disparado — ativo=${agentRow.data.ativo}, bloqueado=${agentBlockedByTag}`,
+          );
         }
 
         return Response.json({ ok: true, conversation_id: convId, role });
