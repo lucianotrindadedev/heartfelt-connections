@@ -476,7 +476,8 @@ function TrainingView({
     setSaveState("unsaved");
     if (autosave) {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-      autoSaveTimer.current = setTimeout(() => { void doSave(markdown); }, 2000);
+      // 60s de inatividade — só salva quando o usuário para de digitar
+      autoSaveTimer.current = setTimeout(() => { void doSave(markdown); }, 60000);
     }
   };
 
@@ -486,7 +487,7 @@ function TrainingView({
     setSaveState("unsaved");
     if (autosave) {
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
-      autoSaveTimer.current = setTimeout(() => { void doSave(prompt); }, 2000);
+      autoSaveTimer.current = setTimeout(() => { void doSave(prompt); }, 60000);
     }
     setShowTemplates(false);
     toast.success("Template aplicado! Revise e salve.");
@@ -729,17 +730,33 @@ function PromptEditor({
     editorProps: {
       attributes: {
         class: "p-5 cursor-text",
-        style: "min-height: calc(100vh - 320px)",
+        // +4pt em relação ao padrão (14px → ~19px). 1rem ≈ 16px; usamos px para travar.
+        style: "min-height: calc(100vh - 320px); font-size: 18px; line-height: 1.6;",
       },
     },
   });
 
-  // When initialContent changes externally (template applied), sync editor
+  // Sincroniza conteúdo externo (template aplicado) sem mexer no cursor quando
+  // o usuário está digitando. Só chama setContent se o markdown atual do editor
+  // realmente difere do novo initialContent — assim, edições locais que voltam
+  // como initialContent prop NÃO disparam reset de cursor.
   const prevContent = useRef(initialContent);
   useEffect(() => {
-    if (editor && initialContent !== prevContent.current) {
-      prevContent.current = initialContent;
-      editor.commands.setContent(initialContent);
+    if (!editor) return;
+    if (initialContent === prevContent.current) return;
+    prevContent.current = initialContent;
+
+    const mdStorage = editor.storage as { markdown?: { getMarkdown: () => string } };
+    const currentMd = mdStorage.markdown?.getMarkdown() ?? editor.getText();
+    if (currentMd.trim() === initialContent.trim()) return;
+
+    // Preserva a posição do cursor quando o conteúdo precisar ser realmente recarregado
+    const { from, to } = editor.state.selection;
+    editor.commands.setContent(initialContent, { emitUpdate: false });
+    try {
+      editor.commands.setTextSelection({ from, to });
+    } catch {
+      /* posição inválida após reset — ignora */
     }
   }, [initialContent, editor]);
 
