@@ -122,6 +122,27 @@ async function delay(ms: number): Promise<void> {
 const TURN_ERROR_USER_MESSAGE =
   "Desculpe, tive uma instabilidade ao consultar os horários. Pode me enviar \"ok\" de novo em alguns segundos?";
 
+// Mensagens em que o modelo "promete" verificar algo SEM ter chamado nenhuma
+// ferramenta — sintoma de hallucination em vez de tool calling real.
+const STALL_PATTERNS: RegExp[] = [
+  /\bestou verificando\b/i,
+  /\bvou verificar\b/i,
+  /\bvou conferir\b/i,
+  /\bvou checar\b/i,
+  /\bdeixa eu (?:verificar|conferir|checar|olhar)\b/i,
+  /\bj[áa] (?:te |lhe )?retorno\b/i,
+  /\bj[áa] j[áa] (?:te |lhe )?(?:respondo|retorno)\b/i,
+  /\bum momento(?:,| -)? (?:vou|estou)/i,
+  /\baguarde um (?:instante|momento)/i,
+  /\best[aá]?(?:rei)? consultando\b/i,
+  /\best[aá]?(?:rei)? buscando\b/i,
+];
+
+function isStallResponse(text: string): boolean {
+  if (!text || text.length < 6) return false;
+  return STALL_PATTERNS.some((re) => re.test(text));
+}
+
 async function deliverAgentReply(params: {
   accountId: string;
   agentId: string;
@@ -683,6 +704,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let totalTokensOut = 0;
     let t0 = Date.now();
     let latencyMs = 0;
+    let anyToolCalled = false;
+    let forceToolNext = false;
 
     // 5. Tool use loop
     for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
@@ -696,8 +719,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       };
       if (tools.length > 0) {
         body.tools = tools as unknown as ToolDefinition[];
-        body.tool_choice = "auto";
+        // Quando detectamos stall, força o modelo a chamar uma ferramenta.
+        body.tool_choice = forceToolNext ? "required" : "auto";
       }
+      forceToolNext = false;
 
       const orRes = await fetchOpenRouter(orKey, body);
       latencyMs = Date.now() - t0;
@@ -734,6 +759,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
       // Se tem tool_calls → executa ferramentas
       if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+        anyToolCalled = true;
         for (const tc of assistantMsg.tool_calls) {
           let toolArgs: Record<string, unknown> = {};
           try {
@@ -768,7 +794,27 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
 
       // Resposta final (sem tool_calls)
-      finalReply = assistantMsg.content?.trim() ?? "";
+      const candidate = assistantMsg.content?.trim() ?? "";
+
+      // Detector de stall: se temos ferramentas, nada foi chamado neste turno
+      // e a resposta soa como "vou verificar / já te retorno", força UMA
+      // iteração extra com tool_choice="required" para o modelo realmente
+      // chamar a ferramenta em vez de alucinar uma promessa.
+      if (
+        tools.length > 0 &&
+        !anyToolCalled &&
+        loop < MAX_TOOL_LOOPS - 1 &&
+        isStallResponse(candidate)
+      ) {
+        console.log(`[agent] stall detectado ("${candidate.slice(0, 60)}…") — forçando tool_choice=required`);
+        // Remove a resposta de stall do histórico para evitar que o modelo
+        // tente "completá-la" no próximo loop.
+        messages.pop();
+        forceToolNext = true;
+        continue;
+      }
+
+      finalReply = candidate;
       break;
     }
 
