@@ -2093,6 +2093,38 @@ function AgentSettingsView({
                   </div>
                 </div>
               </div>
+
+              <div className="border-t border-slate-100" />
+
+              {/* Comandos pausar / reativar */}
+              <div>
+                <Label className="text-sm font-semibold">Comandos para pausar a IA</Label>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Palavras que o lead pode enviar no WhatsApp para pausar ou reativar a IA. Quando pausada, a tag <strong>"IA Desligada"</strong> é adicionada ao contato no Helena e a IA não responde até o comando de reativação.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Comando para pausar</Label>
+                    <input
+                      type="text"
+                      value={settings.pause_command ?? "/pausar"}
+                      onChange={(e) => setSetting("pause_command", e.target.value)}
+                      placeholder="/pausar"
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">Comando para reativar</Label>
+                    <input
+                      type="text"
+                      value={settings.resume_command ?? "/ativar"}
+                      onChange={(e) => setSetting("resume_command", e.target.value)}
+                      placeholder="/ativar"
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Save button */}

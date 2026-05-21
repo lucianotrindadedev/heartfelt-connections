@@ -22,7 +22,14 @@ import {
   loadHelenaContactFromSession,
   loadHelenaSession,
   sendHelenaText,
+  setHelenaContactTags,
 } from "@/lib/helena.server";
+
+const AI_DISABLED_TAG = "IA Desligada";
+
+function hasIaDesligadaTag(tagNames: string[]): boolean {
+  return tagNames.some((t) => t.trim().toUpperCase() === AI_DISABLED_TAG.toUpperCase());
+}
 
 interface HelenaDetails {
   to?: string | null;
@@ -261,12 +268,18 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         const agentRow = await sb
           .from("agents")
-          .select("id, ativo, webhook_secret, debounce_segundos")
+          .select("id, ativo, webhook_secret, debounce_segundos, settings")
           .eq("account_id", accountId)
           .maybeSingle();
         if (!agentRow.data) {
           return new Response("Account not found", { status: 404 });
         }
+
+        // Comandos configuráveis (settings.pause_command / settings.resume_command).
+        // Default: "/pausar" e "/ativar".
+        const agentSettings = (agentRow.data.settings as Record<string, string> | null) ?? {};
+        const pauseCommand = (agentSettings.pause_command?.trim() || "/pausar").toLowerCase();
+        const resumeCommand = (agentSettings.resume_command?.trim() || "/ativar").toLowerCase();
 
         let body: HelenaPayload;
         try {
@@ -358,6 +371,85 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return Response.json({ ok: true, conversation_id: convId, action: "reset" });
         }
 
+        // ── Comandos de pausar/reativar a IA (configuráveis por agente) ──
+        // Adiciona ou remove a tag "IA Desligada" no contato Helena.
+        const normalizedMsg = messageContent.trim().toLowerCase();
+        const isPauseCmd = isInbound && normalizedMsg === pauseCommand;
+        const isResumeCmd = isInbound && normalizedMsg === resumeCommand;
+
+        if (isPauseCmd || isResumeCmd) {
+          console.log(`[webhook] comando ${isPauseCmd ? "pausar" : "ativar"} recebido para ${convId}`);
+
+          // Busca contactId do Helena (necessário para a API de tags)
+          let contactId: string | null = null;
+          try {
+            const helena = await loadHelenaAccount(accountId);
+            if (sessionId) {
+              const sess = await loadHelenaSession(helena, sessionId);
+              contactId = sess?.contactId ?? null;
+            }
+
+            // Aplica/remove a tag
+            if (contactId) {
+              const tagResult = await setHelenaContactTags(
+                helena,
+                contactId,
+                [AI_DISABLED_TAG],
+                isPauseCmd ? "InsertIfNotExists" : "DeleteIfExists",
+              );
+              if (!tagResult.ok) {
+                console.error(`[webhook] tag op falhou: ${tagResult.status} ${tagResult.body.slice(0, 200)}`);
+              }
+            } else {
+              console.warn("[webhook] sem contactId — não foi possível alterar tag Helena");
+            }
+
+            // Envia confirmação ao usuário
+            const confirmText = isPauseCmd
+              ? "Atendimento pausado ⏸️ A IA não responderá até receber o comando de reativação."
+              : "Atendimento reativado ✅ A IA voltará a responder normalmente.";
+            await sendHelenaText(helena, {
+              phone: fromDetails || legacyPhone || undefined,
+              text: confirmText,
+              sessionId,
+            });
+          } catch (e) {
+            console.error("[webhook] pause/resume - falha:", e);
+          }
+
+          // Em caso de pause, limpa qualquer turn pendente
+          if (isPauseCmd) {
+            await sb
+              .from("message_queue")
+              .update({ processed: true })
+              .eq("conversation_id", convId)
+              .eq("processed", false);
+          }
+
+          return Response.json({
+            ok: true,
+            conversation_id: convId,
+            action: isPauseCmd ? "pause" : "resume",
+          });
+        }
+
+        // ── Bloqueio por tag "IA Desligada": ignora completamente o agente ──
+        // O lead pode enviar mensagens (são salvas no histórico) mas a IA não
+        // responde até que o comando de reativação seja enviado.
+        let agentBlockedByTag = false;
+        if (isInbound && sessionId) {
+          try {
+            const helena = await loadHelenaAccount(accountId);
+            const contact = await loadHelenaContactFromSession(helena, sessionId);
+            if (contact && hasIaDesligadaTag(contact.tagNames)) {
+              agentBlockedByTag = true;
+              console.log(`[webhook] agente bloqueado pela tag "IA Desligada" — conv ${convId}`);
+            }
+          } catch (e) {
+            console.warn("[webhook] falha ao verificar tag IA Desligada:", e);
+          }
+        }
+
         const role = isInbound ? "user" : "assistant";
         const meta: Record<string, unknown> = {
           origem,
@@ -392,7 +484,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           );
         }
 
-        if (isInbound && agentRow.data.ativo) {
+        if (isInbound && agentRow.data.ativo && !agentBlockedByTag) {
           const debounce = (agentRow.data.debounce_segundos as number | null) ?? 20;
           try {
             if (debounce > 0) {

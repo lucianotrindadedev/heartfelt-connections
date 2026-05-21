@@ -155,6 +155,32 @@ export async function loadHelenaContactFromSession(
   return contact;
 }
 
+/**
+ * Adiciona ou remove tags do contato Helena.
+ * Endpoint: POST /core/v1/contact/{contactId}/tags
+ * Body: { tagNames: string[], operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" }
+ * (mesma rota do node "Add Tag IA Desligada" no workflow N8N)
+ */
+export async function setHelenaContactTags(
+  account: HelenaAccount,
+  contactId: string,
+  tagNames: string[],
+  operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const res = await fetch(`${base}/core/v1/contact/${contactId}/tags`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${account.token}`,
+      "Content-Type": "application/*+json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({ tagNames, operation }),
+  });
+  const text = await res.text();
+  return { ok: res.ok, status: res.status, body: text };
+}
+
 /** Atualiza telefone do contato no CRM Helena (equivalente Criar_contato do n8n). */
 export async function updateHelenaContactPhone(
   account: HelenaAccount,
