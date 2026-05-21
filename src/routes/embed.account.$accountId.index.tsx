@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Color } from "@tiptap/extension-color";
@@ -1822,6 +1822,9 @@ function AgentSettingsView({
   const [debounce, setDebounce] = useState(debounceSegundos);
   const [settings, setSettings] = useState<Record<string, string>>(agentSettings);
   const [activeSection, setActiveSection] = useState<"profile" | "ai" | "integrations">("profile");
+  // Combobox do modelo: busca + abre/fecha dropdown
+  const [modelSearch, setModelSearch] = useState("");
+  const [modelOpen, setModelOpen] = useState(false);
 
   const models = useQuery({
     queryKey: ["openrouter-models", accountId],
@@ -1836,6 +1839,26 @@ function AgentSettingsView({
 
   const setSetting = (key: string, val: string) =>
     setSettings((p) => ({ ...p, [key]: val }));
+
+  // Modelos ordenados alfabeticamente + filtrados pela busca (case-insensitive,
+  // busca em nome e id).
+  const filteredSortedModels = useMemo(() => {
+    const list = models.data?.models ?? [];
+    const q = modelSearch.trim().toLowerCase();
+    const filtered = !q
+      ? list
+      : list.filter(
+          (m) =>
+            m.name.toLowerCase().includes(q) ||
+            m.id.toLowerCase().includes(q),
+        );
+    return [...filtered].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  }, [models.data, modelSearch]);
+
+  const selectedModelLabel = useMemo(() => {
+    const found = (models.data?.models ?? []).find((m) => m.id === model);
+    return found?.name ?? model;
+  }, [models.data, model]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -2030,16 +2053,65 @@ function AgentSettingsView({
                     <Loader2 className="h-4 w-4 animate-spin" /> Carregando modelos…
                   </div>
                 ) : (
-                  <select
-                    className="w-full rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
-                  >
-                    <option value="">— escolher modelo —</option>
-                    {(models.data?.models ?? []).map((m) => (
-                      <option key={m.id} value={m.id}>{m.name}</option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={modelOpen ? modelSearch : selectedModelLabel}
+                      onChange={(e) => {
+                        setModelSearch(e.target.value);
+                        setModelOpen(true);
+                      }}
+                      onFocus={() => {
+                        setModelOpen(true);
+                        setModelSearch("");
+                      }}
+                      placeholder={
+                        model ? "Buscar outro modelo…" : "— buscar e escolher modelo —"
+                      }
+                      className="w-full rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    />
+                    {modelOpen && (
+                      <>
+                        {/* clique fora fecha */}
+                        <div
+                          className="fixed inset-0 z-10"
+                          onClick={() => {
+                            setModelOpen(false);
+                            setModelSearch("");
+                          }}
+                        />
+                        <div className="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl">
+                          {filteredSortedModels.length === 0 ? (
+                            <div className="px-3 py-3 text-xs text-muted-foreground">
+                              Nenhum modelo encontrado para "{modelSearch}".
+                            </div>
+                          ) : (
+                            filteredSortedModels.map((m) => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                onClick={() => {
+                                  setModel(m.id);
+                                  setModelOpen(false);
+                                  setModelSearch("");
+                                }}
+                                className={`block w-full border-b border-slate-50 px-3 py-2 text-left text-sm transition-colors last:border-b-0 hover:bg-slate-50 ${
+                                  m.id === model
+                                    ? "bg-primary/5 text-primary"
+                                    : "text-foreground"
+                                }`}
+                              >
+                                <div className="font-medium">{m.name}</div>
+                                <div className="font-mono text-[10px] text-muted-foreground">
+                                  {m.id}
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
 
