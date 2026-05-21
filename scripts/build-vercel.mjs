@@ -165,15 +165,18 @@ await writeFile(
 );
 
 // ── 7. Routing config ─────────────────────────────────────────────────────
-// filesystem → tenta arquivos estáticos primeiro; o resto vai para index.func
+// IMPORTANTE: o dest usa o NOME da função sem o sufixo ".func".
+// Pasta functions/index.func → dest: "/index"
 await writeFile(
   join(VERCEL_OUT, "config.json"),
   JSON.stringify(
     {
       version: 3,
       routes: [
+        // Serve arquivos estáticos (assets JS/CSS) diretamente
         { handle: "filesystem" },
-        { src: "^/(.*)", dest: "/index.func" },
+        // Todas as outras rotas vão para a serverless function "index"
+        { src: "^/(.*)", dest: "/index" },
       ],
     },
     null,
