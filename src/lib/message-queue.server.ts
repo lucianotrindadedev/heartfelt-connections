@@ -1,6 +1,6 @@
 // Fila de mensagens com debounce para agrupamento antes de rodar o agente.
 import { getSelfhost } from "@/integrations/selfhost/client.server";
-import { runAgentTurn } from "@/lib/agent-turn.server";
+import { runAgentTurn, ConversationLockedError } from "@/lib/agent-turn.server";
 
 export async function enqueueMessage(
   conversationId: string,
@@ -81,6 +81,10 @@ export async function processQueue(): Promise<{ processed: number; skipped: numb
       await sb.from("message_queue").update({ processed: true }).eq("id", id);
       processed++;
     } catch (e) {
+      if (e instanceof ConversationLockedError) {
+        console.log(`[queue] ${convId} ainda bloqueada — item mantido na fila`);
+        continue;
+      }
       console.error(`[queue] agent-turn falhou para ${convId}:`, e);
       // Não marca processed — próximo tick da fila tenta de novo
     }

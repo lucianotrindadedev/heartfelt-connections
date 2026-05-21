@@ -23,6 +23,7 @@ import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.a
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
 import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/cron/followup'
+import { Route as ApiPublicCronDrainConversationRouteImport } from './routes/api/public/cron/drain-conversation'
 import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
 import { Route as ApiPublicWebhookHelenaAccountIdRouteImport } from './routes/api/public/webhook/helena/$accountId'
 import { Route as ApiPublicWebhookAutomacoesFufFinanceiroRouteImport } from './routes/api/public/webhook/automacoes/fuf-financeiro'
@@ -100,6 +101,12 @@ const ApiPublicCronFollowupRoute = ApiPublicCronFollowupRouteImport.update({
   path: '/api/public/cron/followup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicCronDrainConversationRoute =
+  ApiPublicCronDrainConversationRouteImport.update({
+    id: '/api/public/cron/drain-conversation',
+    path: '/api/public/cron/drain-conversation',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const AuthenticatedAdminAccountAccountIdRoute =
   AuthenticatedAdminAccountAccountIdRouteImport.update({
     id: '/account/$accountId',
@@ -142,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/admin/': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
+  '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
@@ -159,6 +167,7 @@ export interface FileRoutesByTo {
   '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/admin': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
+  '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
@@ -181,6 +190,7 @@ export interface FileRoutesById {
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
   '/_authenticated/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
+  '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
@@ -203,6 +213,7 @@ export interface FileRouteTypes {
     | '/embed/account/$accountId'
     | '/admin/'
     | '/admin/account/$accountId'
+    | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
@@ -220,6 +231,7 @@ export interface FileRouteTypes {
     | '/admin/templates'
     | '/admin'
     | '/admin/account/$accountId'
+    | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
@@ -241,6 +253,7 @@ export interface FileRouteTypes {
     | '/embed/account/$accountId'
     | '/_authenticated/admin/'
     | '/_authenticated/admin/account/$accountId'
+    | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
@@ -256,6 +269,7 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   EmbedRoute: typeof EmbedRouteWithChildren
   LoginRoute: typeof LoginRoute
+  ApiPublicCronDrainConversationRoute: typeof ApiPublicCronDrainConversationRoute
   ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
@@ -365,6 +379,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicCronFollowupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/cron/drain-conversation': {
+      id: '/api/public/cron/drain-conversation'
+      path: '/api/public/cron/drain-conversation'
+      fullPath: '/api/public/cron/drain-conversation'
+      preLoaderRoute: typeof ApiPublicCronDrainConversationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_authenticated/admin/account/$accountId': {
       id: '/_authenticated/admin/account/$accountId'
       path: '/account/$accountId'
@@ -463,6 +484,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   EmbedRoute: EmbedRouteWithChildren,
   LoginRoute: LoginRoute,
+  ApiPublicCronDrainConversationRoute: ApiPublicCronDrainConversationRoute,
   ApiPublicCronFollowupRoute: ApiPublicCronFollowupRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,

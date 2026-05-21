@@ -9,8 +9,8 @@ import {
   normalizeBrazilPhone,
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
-import { runAgentTurn } from "@/lib/agent-turn.server";
 import { enqueueMessage } from "@/lib/message-queue.server";
+import { scheduleConversationAgentTurn } from "@/lib/schedule-agent-turn.server";
 import {
   isResetCommand,
   resetConversationHistory,
@@ -397,8 +397,9 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           try {
             if (debounce > 0) {
               await enqueueMessage(convId, debounce);
+              scheduleConversationAgentTurn(convId, debounce);
             } else {
-              await runAgentTurn(convId);
+              scheduleConversationAgentTurn(convId, 0);
             }
           } catch (e) {
             console.error("[agent-turn] falhou:", e);

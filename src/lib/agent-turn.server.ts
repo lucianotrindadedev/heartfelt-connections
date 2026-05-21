@@ -36,6 +36,54 @@ import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 const MAX_HISTORY = 50;
 const MAX_TOOL_LOOPS = 8;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_TIMEOUT_MS = 90_000;
+/** Lock preso após crash/timeout da função serverless. */
+const STALE_LOCK_MS = 4 * 60 * 1000;
+
+export class ConversationLockedError extends Error {
+  constructor(conversationId: string) {
+    super(`Conversa ${conversationId} com turno em andamento`);
+    this.name = "ConversationLockedError";
+  }
+}
+
+function fetchOpenRouter(
+  orKey: string,
+  body: Record<string, unknown>,
+): Promise<Response> {
+  return fetch(OPENROUTER_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${orKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(OPENROUTER_TIMEOUT_MS),
+  });
+}
+
+async function clearStaleConversationLock(conversationId: string): Promise<void> {
+  const sb = getSelfhost();
+  const { data } = await sb
+    .from("conversation_state")
+    .select("lock_conversa, atualizado_em")
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+
+  if (!data?.lock_conversa) return;
+
+  const updatedAt = data.atualizado_em
+    ? new Date(data.atualizado_em as string).getTime()
+    : 0;
+  if (Date.now() - updatedAt < STALE_LOCK_MS) return;
+
+  console.warn(
+    `[agent] lock obsoleto em ${conversationId} (>${STALE_LOCK_MS / 1000}s) — liberando`,
+  );
+  await sb
+    .from("conversation_state")
+    .upsert({ conversation_id: conversationId, lock_conversa: false }, { onConflict: "conversation_id" });
+}
 
 interface MsgRow {
   role: string;
@@ -555,8 +603,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   });
   let effectivePhone = phoneResolved.phone;
 
-  // 2. Verifica lock — se já há um turn em andamento, re-enfileira com delay curto e sai.
-  //    Isso evita turns concorrentes que causam race conditions e respostas duplicadas.
+  await clearStaleConversationLock(conversationId);
+
+  // 2. Verifica lock — turn concorrente: falha para a fila/agendador tentar de novo
   const stateCheck = await sb
     .from("conversation_state")
     .select("lock_conversa")
@@ -564,11 +613,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     .maybeSingle();
 
   if (stateCheck.data?.lock_conversa) {
-    // Turn em andamento: reagenda para não perder a mensagem (ex.: "estética" logo após pergunta do bot)
-    const debounce = (agent.debounce_segundos as number | null) ?? 20;
+    const debounce = (agent.data.debounce_segundos as number | null) ?? 20;
     await enqueueMessage(conversationId, Math.min(5, debounce));
     console.log(`[agent] Conversa ${conversationId} bloqueada — reagendado em 5s`);
-    return;
+    throw new ConversationLockedError(conversationId);
   }
 
   const llm = await sb
@@ -648,14 +696,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         body.tool_choice = "auto";
       }
 
-      const orRes = await fetch(OPENROUTER_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${orKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
+      const orRes = await fetchOpenRouter(orKey, body);
       latencyMs = Date.now() - t0;
 
       if (!orRes.ok) {
@@ -730,19 +771,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     // Após várias tools, força uma resposta final sem novas ferramentas
     if (!finalReply) {
-      const forceRes = await fetch(OPENROUTER_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${orKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          max_tokens: llm.data?.max_tokens ?? 1024,
-          temperature: llm.data?.temperature ?? 0.7,
-          tool_choice: "none",
-        }),
+      const forceRes = await fetchOpenRouter(orKey, {
+        model,
+        messages,
+        max_tokens: llm.data?.max_tokens ?? 1024,
+        temperature: llm.data?.temperature ?? 0.7,
+        tool_choice: "none",
       });
       if (forceRes.ok) {
         const forceJson = (await forceRes.json()) as OpenRouterResponse;
@@ -769,6 +803,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       latencyMs,
     });
   } catch (turnError) {
+    if (turnError instanceof ConversationLockedError) {
+      throw turnError;
+    }
+
     const errMsg = turnError instanceof Error ? turnError.message : String(turnError);
     console.error(`[agent] turn falhou ${conversationId}:`, errMsg);
 
