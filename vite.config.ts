@@ -3,20 +3,32 @@
 //     componentTagger (dev-only), VITE_* env injection, @ alias, React/TanStack dedupe,
 //     error logger plugins, sandbox detection.
 //
-// Para deploy no Coolify (Docker + Nginx) precisamos desabilitar o plugin Cloudflare
-// e gerar um build SPA estático que o Nginx serve com fallback para index.html.
+// Targets:
+//   - Padrão (sem env var)         → Cloudflare Workers (wrangler deploy)
+//   - BUILD_TARGET=static          → SPA estática (Coolify/Nginx)
+//   - VERCEL=1 (set pelo Vercel)   → Node.js server (Vercel Serverless Functions)
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 const isStaticBuild = process.env.BUILD_TARGET === "static";
+const isVercel = !!process.env.VERCEL;
 
 export default defineConfig(
-  isStaticBuild
+  isVercel
     ? {
+        // Desabilita Cloudflare plugin para gerar bundle Node.js compatível com Vercel.
+        // client.base "/" mantém caminhos de assets idênticos ao build CF (sem /_build prefix).
         cloudflare: false,
         tanstackStart: {
-          target: "static",
-          spa: { enabled: true },
+          client: { base: "/" },
         },
       }
-    : {},
+    : isStaticBuild
+      ? {
+          cloudflare: false,
+          tanstackStart: {
+            target: "static",
+            spa: { enabled: true },
+          },
+        }
+      : {},
 );
