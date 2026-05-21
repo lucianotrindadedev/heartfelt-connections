@@ -76,14 +76,13 @@ export async function processQueue(): Promise<{ processed: number; skipped: numb
       continue;
     }
 
-    // Marca como processed e roda o agente
-    await sb.from("message_queue").update({ processed: true }).eq("id", id);
-
     try {
       await runAgentTurn(convId);
+      await sb.from("message_queue").update({ processed: true }).eq("id", id);
       processed++;
     } catch (e) {
       console.error(`[queue] agent-turn falhou para ${convId}:`, e);
+      // Não marca processed — próximo tick da fila tenta de novo
     }
   }
 

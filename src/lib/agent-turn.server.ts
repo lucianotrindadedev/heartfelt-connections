@@ -13,6 +13,7 @@ import {
   updateHelenaContactPhone,
   type HelenaContact,
 } from "@/lib/helena.server";
+import { enqueueMessage } from "@/lib/message-queue.server";
 import { splitMessage, typingDelayMs } from "@/lib/message-splitter.server";
 import { buildToolsForAccount, type ToolDefinition } from "@/lib/tools/tool-registry.server";
 import { listGoogleCalendarSlots, createGoogleCalendarEvent } from "@/lib/tools/google-calendar.server";
@@ -510,10 +511,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     .maybeSingle();
 
   if (stateCheck.data?.lock_conversa) {
-    // Já existe um turn em andamento.
-    // O finally do turn ativo verificará se chegaram mensagens novas APÓS o início
-    // do turn e disparará um re-run automaticamente — não precisamos fazer nada aqui.
-    console.log(`[agent] Conversa ${conversationId} bloqueada — turn ativo fará re-run se necessário`);
+    // Turn em andamento: reagenda para não perder a mensagem (ex.: "estética" logo após pergunta do bot)
+    const debounce = (agent.debounce_segundos as number | null) ?? 20;
+    await enqueueMessage(conversationId, Math.min(5, debounce));
+    console.log(`[agent] Conversa ${conversationId} bloqueada — reagendado em 5s`);
     return;
   }
 
@@ -536,11 +537,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   const orKey = await decryptValue(secrets.data.openrouter_api_key_enc as unknown as string);
   if (!orKey) throw new Error("Falha ao descriptografar OpenRouter key");
 
-  // 3. Registra o timestamp do início do turn ANTES de adquirir o lock.
-  //    Qualquer mensagem do usuário com criado_em > turnStartedAt chegou durante este turn.
-  const turnStartedAt = new Date().toISOString();
-
-  // 4. Adquire lock
+  // 3. Adquire lock
   await sb
     .from("conversation_state")
     .upsert({ conversation_id: conversationId, lock_conversa: true }, { onConflict: "conversation_id" });
@@ -725,20 +722,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       .from("conversation_state")
       .upsert({ conversation_id: conversationId, lock_conversa: false }, { onConflict: "conversation_id" });
 
-    // Re-run se chegaram novas mensagens do usuário DURANTE o processamento deste turn.
-    // Isso garante que mensagens enviadas enquanto o agente processava a mensagem anterior
-    // não se percam (mesmo com debounce=0).
-    const newUserMsg = await sb
+    // Re-run se a última mensagem da conversa ainda é do usuário (não respondida).
+    const lastMsg = await sb
       .from("messages")
-      .select("id")
+      .select("role")
       .eq("conversation_id", conversationId)
-      .eq("role", "user")
-      .gt("criado_em", turnStartedAt)
-      .limit(1);
+      .order("criado_em", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    if (newUserMsg.data && newUserMsg.data.length > 0) {
-      console.log(`[agent] Nova mensagem detectada durante o turn — re-executando para ${conversationId}`);
-      // Não await para não bloquear a resposta do webhook
+    if (lastMsg.data?.role === "user") {
+      console.log(`[agent] Mensagem do usuário pendente — re-executando ${conversationId}`);
       void runAgentTurn(conversationId).catch((e) =>
         console.error(`[agent] re-run falhou para ${conversationId}:`, e),
       );
