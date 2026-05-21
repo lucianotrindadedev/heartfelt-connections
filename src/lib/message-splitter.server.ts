@@ -16,53 +16,36 @@ const DEFAULT_SPLITTER_MODEL = "openai/gpt-4.1-mini";
 
 // Tamanho máximo de cada parte (caracteres)
 const MAX_CHARS = 600;
-// Textos abaixo disso não são divididos
-const MIN_TO_SPLIT = 300;
 
 // ── Splitter baseado em regras ──────────────────────────────────────────────
+//
+// Regra principal: cada parágrafo duplo (\n\n) = mensagem separada, SEMPRE.
+// Isso garante que "Olá!\n\nSou a Mariana..." vira 2 mensagens independente
+// do tamanho total. Só não divide quando não há \n\n no texto.
 
 function ruleBasedSplit(text: string): string[] {
-  if (text.trim().length <= MIN_TO_SPLIT) return [text.trim()];
+  const trimmed = text.trim();
+  if (!trimmed) return [];
 
   // 1. Divide em blocos por parágrafos duplos
-  const blocks = text.split(/\n{2,}/);
+  const blocks = trimmed.split(/\n{2,}/);
+  const nonEmpty = blocks.map((b) => b.trim()).filter((b) => b.length > 0);
 
-  const parts: string[] = [];
-  let current = "";
+  if (nonEmpty.length === 0) return [];
 
-  for (const block of blocks) {
-    const trimmed = block.trim();
-    if (!trimmed) continue;
-
-    if (!current) {
-      current = trimmed;
-      continue;
-    }
-
-    const joined = current + "\n\n" + trimmed;
-
-    if (joined.length <= MAX_CHARS) {
-      // Ainda cabe na mesma mensagem
-      current = joined;
-    } else {
-      // Não cabe — fecha a parte atual e abre nova
-      parts.push(current);
-      current = trimmed;
-    }
-  }
-
-  if (current) parts.push(current);
-
-  // 2. Se alguma parte ainda for muito grande (bloco sem \n\n),
-  //    divide por linha simples (\n) com a mesma lógica
+  // 2. Cada bloco = mensagem separada.
+  //    Se algum bloco ainda for muito longo (sem \n\n interno),
+  //    divide por linha simples (\n).
   const finalParts: string[] = [];
-  for (const part of parts) {
-    if (part.length <= MAX_CHARS) {
-      finalParts.push(part);
+
+  for (const block of nonEmpty) {
+    if (block.length <= MAX_CHARS) {
+      finalParts.push(block);
       continue;
     }
 
-    const lines = part.split("\n");
+    // Bloco longo: divide por linha simples
+    const lines = block.split("\n");
     let cur = "";
     for (const line of lines) {
       const joined = cur ? cur + "\n" + line : line;
@@ -140,13 +123,13 @@ export async function splitMessage(
   text: string,
   accountId: string,
 ): Promise<string[]> {
-  // Textos curtos — enviar como está
-  if (text.trim().length <= MIN_TO_SPLIT) return [text.trim()];
+  const trimmed = text.trim();
+  if (!trimmed) return [];
 
-  // Sempre gera a divisão por regras primeiro (rápida e confiável)
-  const ruleResult = ruleBasedSplit(text);
+  // Divide por regras (cada \n\n = mensagem separada)
+  const ruleResult = ruleBasedSplit(trimmed);
 
-  // Se todas as partes já são pequenas, não precisa do LLM
+  // Se gerou múltiplas partes ou uma única parte curta, não precisa do LLM
   const needsLlm = ruleResult.length === 1 && ruleResult[0].length > MAX_CHARS;
   if (!needsLlm) return ruleResult;
 
