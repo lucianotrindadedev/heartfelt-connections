@@ -111,7 +111,28 @@ const serverModule = require("./server-bundle.cjs");
 const server = serverModule?.default ?? serverModule;
 
 module.exports = async function handler(request) {
-  return server.fetch(request);
+  // Vercel pode passar request.url como path relativo ("/") sem host.
+  // h3-v2 faz \`new URL(request.url)\` e precisa de URL absoluta.
+  let req = request;
+  try {
+    new URL(request.url); // testa se já é absoluta
+  } catch {
+    // reconstrói URL completa a partir dos headers
+    const host = request.headers.get("x-forwarded-host")
+      || request.headers.get("host")
+      || "localhost";
+    const proto = request.headers.get("x-forwarded-proto") || "https";
+    const fullUrl = \`\${proto}://\${host}\${request.url}\`;
+    const hasBody = !["GET", "HEAD"].includes(request.method) && request.body;
+    req = new Request(fullUrl, {
+      method: request.method,
+      headers: request.headers,
+      body: hasBody ? request.body : null,
+      // duplex: 'half' é necessário no Node.js 20 para requests com body stream
+      ...(hasBody ? { duplex: "half" } : {}),
+    });
+  }
+  return server.fetch(req);
 };
 `,
 );
