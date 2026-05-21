@@ -849,8 +849,42 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
       const choice = orJson.choices?.[0];
       const assistantMsg = choice?.message;
+      const finishReason = choice?.finish_reason;
 
-      if (!assistantMsg) throw new Error("OpenRouter retornou resposta vazia");
+      // Resposta vazia (sem message OU message vazio sem tool_calls) — comum
+      // em modelos de reasoning (o1/o3/o4-mini) que estouram max_tokens na
+      // fase de raciocínio interno antes de gerar o texto final.
+      const hasContent =
+        !!assistantMsg &&
+        (!!(assistantMsg.content && assistantMsg.content.trim()) ||
+          !!(assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0));
+
+      if (!hasContent) {
+        console.warn(
+          `[agent] resposta vazia do OpenRouter (model=${model}, finish_reason=${finishReason}, tokens_out=${orJson.usage?.completion_tokens})`,
+        );
+        // Se já executamos ferramentas neste turn, monta resposta determinística
+        // a partir dos resultados — assim o lead recebe algo útil.
+        if (anyToolCalled) {
+          const toolContents = collectToolContents(messages);
+          const fromTools = buildReplyFromToolResults(toolContents);
+          if (fromTools) {
+            console.log("[agent] usando resposta determinística após tools (LLM vazio)");
+            finalReply = fromTools;
+            break;
+          }
+        }
+        // Nenhuma tool executada e LLM vazio: tenta UMA vez forçando tool_choice
+        // antes de desistir. Útil quando o reasoning consumiu todos os tokens.
+        if (tools.length > 0 && !anyToolCalled && loop < MAX_TOOL_LOOPS - 1) {
+          console.log("[agent] retry com tool_choice=required após resposta vazia");
+          forceToolNext = true;
+          continue;
+        }
+        throw new Error(
+          `OpenRouter retornou resposta vazia (finish_reason=${finishReason})`,
+        );
+      }
 
       // Adiciona resposta ao histórico local
       messages.push({
