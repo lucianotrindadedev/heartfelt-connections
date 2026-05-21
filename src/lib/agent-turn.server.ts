@@ -53,6 +53,53 @@ async function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// ── Contexto de data/hora (America/Sao_Paulo, pt-BR) ───────────────────────
+
+function buildDateContext(): string {
+  const TZ = "America/Sao_Paulo";
+  const now = new Date();
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const tomorrow  = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+  function fmt(date: Date, includeTime: boolean): string {
+    const p = new Intl.DateTimeFormat("pt-BR", {
+      weekday: "long",
+      day:     "2-digit",
+      month:   "2-digit",
+      year:    "numeric",
+      ...(includeTime
+        ? { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+        : {}),
+      timeZone: TZ,
+    }).formatToParts(date);
+
+    const get = (type: string) => p.find((x) => x.type === type)?.value ?? "";
+
+    const weekday   = get("weekday");
+    const day       = get("day");
+    const monthNum  = get("month");
+    const year      = get("year");
+    const monthName = new Intl.DateTimeFormat("pt-BR", {
+      month: "long",
+      timeZone: TZ,
+    }).format(date);
+
+    let out = `${weekday} - ${day}/${monthNum}/${year} - ${day} de ${monthName} de ${year}`;
+    if (includeTime) {
+      out += ` - ${get("hour")}:${get("minute")}:${get("second")}`;
+    }
+    return out;
+  }
+
+  return [
+    "<informacoes-sistema>",
+    `Ontem foi ${fmt(yesterday, false)}`,
+    `Hoje é ${fmt(now, true)}`,
+    `Amanhã é ${fmt(tomorrow, false)}`,
+    "</informacoes-sistema>",
+  ].join("\n");
+}
+
 async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
@@ -294,8 +341,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       (llm.data?.default_model as string | undefined) ||
       "x-ai/grok-3-fast";
 
-    const systemPrompt =
+    const basePrompt =
       (agent.data.system_prompt as string) || "Você é um assistente prestativo.";
+
+    // Injeta contexto de data/hora atual (America/Sao_Paulo) no topo do system prompt
+    const systemPrompt = buildDateContext() + "\n\n" + basePrompt;
 
     // 4. Carrega ferramentas disponíveis
     const tools = await buildToolsForAccount(accountId, agentId);
