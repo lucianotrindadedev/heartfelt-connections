@@ -425,13 +425,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const helena = await loadHelenaAccount(accountId);
     const parts = await splitMessage(finalReply, accountId);
 
-    for (const part of parts) {
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      // Delay de digitação antes de enviar (exceto na primeira parte)
+      if (i > 0) {
+        await delay(typingDelayMs(part));
+      }
       const sendRes = await sendHelenaText(helena, { phone, text: part, sessionId });
       if (!sendRes.ok) {
         console.error(`[helena] envio falhou ${sendRes.status}: ${sendRes.body.slice(0, 200)}`);
-      }
-      if (parts.length > 1) {
-        await delay(typingDelayMs(part));
       }
     }
   } finally {
