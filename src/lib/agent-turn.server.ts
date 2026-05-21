@@ -71,6 +71,55 @@ async function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+const TURN_ERROR_USER_MESSAGE =
+  "Desculpe, tive uma instabilidade ao consultar os horários. Pode me enviar \"ok\" de novo em alguns segundos?";
+
+async function deliverAgentReply(params: {
+  accountId: string;
+  agentId: string;
+  conversationId: string;
+  model: string;
+  text: string;
+  sessionId?: string;
+  phone?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+  latencyMs?: number;
+}): Promise<void> {
+  const sb = getSelfhost();
+  await sb.from("agent_runs").insert({
+    account_id: params.accountId,
+    agent_id: params.agentId,
+    conversation_id: params.conversationId,
+    provider: "openrouter",
+    model: params.model,
+    latency_ms: params.latencyMs ?? null,
+    tokens_in: params.tokensIn ?? null,
+    tokens_out: params.tokensOut ?? null,
+  });
+
+  await sb.from("messages").insert({
+    conversation_id: params.conversationId,
+    role: "assistant",
+    content: params.text,
+    meta: { origem: "agente", model: params.model },
+  });
+
+  const helena = await loadHelenaAccount(params.accountId);
+  const parts = await splitMessage(params.text, params.accountId);
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) await delay(typingDelayMs(parts[i]));
+    const sendRes = await sendHelenaText(helena, {
+      phone: params.phone,
+      text: parts[i],
+      sessionId: params.sessionId,
+    });
+    if (!sendRes.ok) {
+      console.error(`[helena] envio falhou ${sendRes.status}: ${sendRes.body.slice(0, 200)}`);
+    }
+  }
+}
+
 // ── Contexto de data/hora (America/Sao_Paulo, pt-BR) ───────────────────────
 
 function buildDateContext(): string {
@@ -675,46 +724,73 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       break;
     }
 
-    if (!finalReply) throw new Error("Agente não gerou resposta final");
+    // Após várias tools, força uma resposta final sem novas ferramentas
+    if (!finalReply) {
+      const forceRes = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${orKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: llm.data?.max_tokens ?? 1024,
+          temperature: llm.data?.temperature ?? 0.7,
+          tool_choice: "none",
+        }),
+      });
+      if (forceRes.ok) {
+        const forceJson = (await forceRes.json()) as OpenRouterResponse;
+        totalTokensIn += forceJson.usage?.prompt_tokens ?? 0;
+        totalTokensOut += forceJson.usage?.completion_tokens ?? 0;
+        finalReply = forceJson.choices?.[0]?.message?.content?.trim() ?? "";
+      }
+    }
 
-    // 6. Loga agent_run
+    if (!finalReply) {
+      throw new Error("Agente não gerou resposta final após ferramentas");
+    }
+
+    await deliverAgentReply({
+      accountId,
+      agentId,
+      conversationId,
+      model,
+      text: finalReply,
+      sessionId,
+      phone: effectivePhone ?? conversationPhone,
+      tokensIn: totalTokensIn,
+      tokensOut: totalTokensOut,
+      latencyMs,
+    });
+  } catch (turnError) {
+    const errMsg = turnError instanceof Error ? turnError.message : String(turnError);
+    console.error(`[agent] turn falhou ${conversationId}:`, errMsg);
+
     await sb.from("agent_runs").insert({
       account_id: accountId,
       agent_id: agentId,
       conversation_id: conversationId,
       provider: "openrouter",
-      model,
-      latency_ms: latencyMs,
-      tokens_in: totalTokensIn,
-      tokens_out: totalTokensOut,
+      model:
+        (agent.data.llm_model_override as string | null) ||
+        "unknown",
+      error: errMsg.slice(0, 500),
     });
 
-    // 7. Persiste resposta no DB
-    await sb.from("messages").insert({
-      conversation_id: conversationId,
-      role: "assistant",
-      content: finalReply,
-      meta: { origem: "agente", model },
-    });
-
-    // 8. Divide em partes e envia com delay de digitação
-    const helena = await loadHelenaAccount(accountId);
-    const parts = await splitMessage(finalReply, accountId);
-
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      // Delay de digitação antes de enviar (exceto na primeira parte)
-      if (i > 0) {
-        await delay(typingDelayMs(part));
-      }
-      const sendRes = await sendHelenaText(helena, {
-        phone: effectivePhone ?? conversationPhone,
-        text: part,
+    try {
+      await deliverAgentReply({
+        accountId,
+        agentId,
+        conversationId,
+        model: "error-fallback",
+        text: TURN_ERROR_USER_MESSAGE,
         sessionId,
+        phone: effectivePhone ?? conversationPhone,
       });
-      if (!sendRes.ok) {
-        console.error(`[helena] envio falhou ${sendRes.status}: ${sendRes.body.slice(0, 200)}`);
-      }
+    } catch (sendErr) {
+      console.error("[agent] falha ao enviar mensagem de erro ao usuário:", sendErr);
     }
   } finally {
     // Libera o lock

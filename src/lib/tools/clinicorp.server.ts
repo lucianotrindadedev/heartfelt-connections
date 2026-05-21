@@ -13,6 +13,14 @@ interface ClinicorpConfig {
 }
 
 const DEFAULT_BASE = "https://api.clinicorp.com";
+const CLINICORP_TIMEOUT_MS = 20_000;
+
+function fetchClinicorp(url: string, init?: RequestInit): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    signal: AbortSignal.timeout(CLINICORP_TIMEOUT_MS),
+  });
+}
 
 async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
   const sb = getSelfhost();
@@ -68,7 +76,7 @@ export async function listClinicorpProfessionals(
 ): Promise<ClinicorpProfessional[]> {
   const config = await loadConfig(accountId);
 
-  const res = await fetch(
+  const res = await fetchClinicorp(
     `${config.baseUrl}/rest/v1/professional/list_all_professionals`,
     { headers: authHeaders(config) },
   );
@@ -118,7 +126,7 @@ async function fetchSlots(
   url.searchParams.set("date_to", to.slice(0, 10));
   url.searchParams.set("available_only", "true");
 
-  const res = await fetch(url.toString(), { headers: authHeaders(config) });
+  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
   if (!res.ok) throw new Error(`Clinicorp list failed: ${res.status}`);
 
   const json = (await res.json()) as {
@@ -194,7 +202,7 @@ export async function findClinicorpPatient(
   url.searchParams.set("subscriber_id", config.subscriberId);
   url.searchParams.set("Phone", normalizedPhone); // capital P
 
-  const res = await fetch(url.toString(), { headers: authHeaders(config) });
+  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
   if (!res.ok) return null;
 
   const json = (await res.json()) as {
@@ -227,7 +235,7 @@ async function createClinicorpPatient(
   // Remove tudo exceto dígitos para MobilePhone (API espera número)
   const mobilePhone = Number(params.phone.replace(/\D/g, ""));
 
-  const res = await fetch(`${config.baseUrl}/rest/v1/patient/create`, {
+  const res = await fetchClinicorp(`${config.baseUrl}/rest/v1/patient/create`, {
     method: "POST",
     headers: authHeaders(config),
     body: JSON.stringify({
@@ -332,7 +340,7 @@ export async function createClinicorpAppointment(
 
   console.log("[clinicorp] create appointment body:", JSON.stringify(body));
 
-  const res = await fetch(
+  const res = await fetchClinicorp(
     `${config.baseUrl}/rest/v1/appointment/create_appointment_by_api`,
     {
       method: "POST",
@@ -393,7 +401,7 @@ export async function listClinicorpPatientAppointments(
   url.searchParams.set("business_id", String(config.businessId));
   url.searchParams.set("patient_person_id", String(patient.id));
 
-  const res = await fetch(url.toString(), { headers: authHeaders(config) });
+  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
   if (!res.ok) return [];
 
   const json = (await res.json()) as {
@@ -427,7 +435,7 @@ export async function cancelClinicorpAppointment(
 ): Promise<{ ok: boolean; message: string }> {
   const config = await loadConfig(accountId);
 
-  const res = await fetch(
+  const res = await fetchClinicorp(
     `${config.baseUrl}/rest/v1/appointment/cancel_appointment`,
     {
       method: "POST",
@@ -465,7 +473,7 @@ export async function listClinicorpUpcomingAppointments(
   url.searchParams.set("date_from", from.slice(0, 10));
   url.searchParams.set("date_to", to.slice(0, 10));
 
-  const res = await fetch(url.toString(), { headers: authHeaders(config) });
+  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
   if (!res.ok) return [];
 
   const json = (await res.json()) as {
