@@ -102,37 +102,49 @@ await esbuild({
 // pacotes que usam require() dinâmico como h3-v2, seroval, etc.)
 await writeFile(
   join(FUNC_DIR, "index.js"),
-  `// Vercel serverless function — wraps TanStack Start's Web fetch handler.
-// server-bundle.cjs tem todos os pacotes npm bundleados (h3-v2, react, etc.)
+  `// Vercel Serverless Function (Node.js runtime).
+// Vercel chama handler(req: IncomingMessage, res: ServerResponse).
+// Converte para Web Fetch API Request/Response que TanStack Start usa internamente.
+"use strict";
 const serverModule = require("./server-bundle.cjs");
-
-// server.js exports: { default: server, T, a, c, createServerEntry, g }
-// "server" tem o método .fetch(Request) -> Promise<Response>
 const server = serverModule?.default ?? serverModule;
 
-module.exports = async function handler(request) {
-  // Vercel pode passar request.url como path relativo ("/") sem host.
-  // h3-v2 faz \`new URL(request.url)\` e precisa de URL absoluta.
-  let req = request;
+module.exports = async function handler(req, res) {
+  // ── Constrói URL completa (Vercel IncomingMessage.url é só o path) ─────
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const host  = req.headers["x-forwarded-host"]  || req.headers["host"] || "localhost";
+  const url   = \`\${proto}://\${host}\${req.url}\`;
+
+  // ── Lê o body como Buffer ──────────────────────────────────────────────
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const body = chunks.length > 0 ? Buffer.concat(chunks) : null;
+
+  // ── Converte IncomingMessage → Web Request ─────────────────────────────
+  const hasBody = !["GET", "HEAD"].includes(req.method || "GET") && body;
+  const webRequest = new Request(url, {
+    method:  req.method || "GET",
+    headers: new Headers(req.headers),
+    body:    hasBody ? body : null,
+    ...(hasBody ? { duplex: "half" } : {}),
+  });
+
+  // ── Chama o TanStack Start server ──────────────────────────────────────
+  let webResponse;
   try {
-    new URL(request.url); // testa se já é absoluta
-  } catch {
-    // reconstrói URL completa a partir dos headers
-    const host = request.headers.get("x-forwarded-host")
-      || request.headers.get("host")
-      || "localhost";
-    const proto = request.headers.get("x-forwarded-proto") || "https";
-    const fullUrl = \`\${proto}://\${host}\${request.url}\`;
-    const hasBody = !["GET", "HEAD"].includes(request.method) && request.body;
-    req = new Request(fullUrl, {
-      method: request.method,
-      headers: request.headers,
-      body: hasBody ? request.body : null,
-      // duplex: 'half' é necessário no Node.js 20 para requests com body stream
-      ...(hasBody ? { duplex: "half" } : {}),
-    });
+    webResponse = await server.fetch(webRequest);
+  } catch (err) {
+    console.error("[vercel-handler] server.fetch error:", err);
+    res.statusCode = 500;
+    res.end("Internal Server Error");
+    return;
   }
-  return server.fetch(req);
+
+  // ── Converte Web Response → Node.js ServerResponse ─────────────────────
+  res.statusCode = webResponse.status;
+  webResponse.headers.forEach((value, key) => res.setHeader(key, value));
+  const buffer = Buffer.from(await webResponse.arrayBuffer());
+  res.end(buffer);
 };
 `,
 );
