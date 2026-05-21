@@ -256,6 +256,8 @@ async function deliverAgentReply(params: {
   tokensIn?: number;
   tokensOut?: number;
   latencyMs?: number;
+  /** true se a mensagem veio de buildReplyFromToolResults (fallback determinístico). */
+  fallback?: boolean;
 }): Promise<void> {
   const sb = getSelfhost();
   await sb.from("agent_runs").insert({
@@ -269,11 +271,14 @@ async function deliverAgentReply(params: {
     tokens_out: params.tokensOut ?? null,
   });
 
+  const meta: Record<string, unknown> = { origem: "agente", model: params.model };
+  if (params.fallback) meta.fallback = true;
+
   await sb.from("messages").insert({
     conversation_id: params.conversationId,
     role: "assistant",
     content: params.text,
-    meta: { origem: "agente", model: params.model },
+    meta,
   });
 
   const helena = await loadHelenaAccount(params.accountId);
@@ -797,6 +802,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     const messages: OpenRouterMessage[] = [{ role: "system", content: systemPrompt }];
     for (const m of ordered) {
+      // Filtra fallbacks determinísticos do histórico — eles foram entregues ao
+      // usuário mas não devem ser vistos pela LLM (o modelo aprende a copiá-los
+      // em vez de chamar a ferramenta real).
+      if (m.meta && (m.meta as Record<string, unknown>).fallback === true) continue;
       if (m.role === "user") messages.push({ role: "user", content: m.content ?? "" });
       else if (m.role === "assistant") messages.push({ role: "assistant", content: m.content ?? "" });
     }
@@ -808,6 +817,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let latencyMs = 0;
     let anyToolCalled = false;
     let forceToolNext = false;
+    let emptyReplyFromTools = false;
 
     // 5. Tool use loop
     for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
@@ -871,6 +881,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           if (fromTools) {
             console.log("[agent] usando resposta determinística após tools (LLM vazio)");
             finalReply = fromTools;
+            emptyReplyFromTools = true;
             break;
           }
         }
@@ -961,6 +972,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const maxTokens = llm.data?.max_tokens ?? 1024;
     const temperature = llm.data?.temperature ?? 0.7;
     const toolContents = collectToolContents(messages);
+    let replyIsFallback = false;
 
     if (finalReply && anyToolCalled && isStallResponse(finalReply)) {
       finalReply = "";
@@ -968,6 +980,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     if (!finalReply) {
       finalReply = buildReplyFromToolResults(toolContents) ?? "";
+      if (finalReply) replyIsFallback = true;
+    } else if (emptyReplyFromTools) {
+      replyIsFallback = true;
     }
 
     if (!finalReply) {
@@ -998,6 +1013,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       tokensIn: totalTokensIn,
       tokensOut: totalTokensOut,
       latencyMs,
+      fallback: replyIsFallback,
     });
   } catch (turnError) {
     if (turnError instanceof ConversationLockedError) {
