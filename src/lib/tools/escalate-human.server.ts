@@ -10,6 +10,7 @@ export async function escalateToHuman(params: {
   accountId: string;
   phone: string;
   sessionId?: string;
+  helenaContactId?: string;
   reason?: string;
 }): Promise<{ tagged: boolean; alerted: boolean }> {
   const sb = getSelfhost();

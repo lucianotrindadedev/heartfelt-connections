@@ -1,22 +1,22 @@
 // Webhook público recebendo eventos do CRM Helena.
 // POST /api/public/webhook/helena/$accountId
-//
-// Suporta 2 formatos:
-//
-// NOVO (Helena nativo):
-//   { eventType: "MESSAGE_RECEIVED", content: { companyId, text, direction, sessionId,
-//     details: { from, to } } }
-//   Auth: companyId no payload deve bater com accountId na URL.
-//
-// LEGADO (N8N / formato antigo):
-//   { evento, telefone, conteudo, origem, session_id }
-//   Auth: header X-Helena-Secret com agents.webhook_secret.
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import {
+  buildConversationKey,
+  detectChannelFromSession,
+  isLikelyWhatsAppIdentifier,
+  normalizeBrazilPhone,
+  type ConversationChannel,
+} from "@/lib/conversation-channel.server";
 import { runAgentTurn } from "@/lib/agent-turn.server";
 import { enqueueMessage } from "@/lib/message-queue.server";
-
-// ── Tipo do formato novo (Helena nativo) ──────────────────────────
+import {
+  getContactChannel,
+  loadHelenaAccount,
+  loadHelenaContactFromSession,
+  loadHelenaSession,
+} from "@/lib/helena.server";
 
 interface HelenaDetails {
   to?: string | null;
@@ -30,22 +30,21 @@ interface HelenaContent {
   companyId?: string;
   senderId?: string | null;
   userId?: string | null;
-  type?: string;          // "TEXT" | "AUDIO" | "IMAGE" etc.
+  type?: string;
   sessionId?: string;
   text?: string | null;
-  direction?: string;     // "FROM_HUB" = inbound | "TO_HUB" = outbound
-  origin?: string;        // "GATEWAY" | "BOT" | "AGENT"
+  direction?: string;
+  origin?: string;
   status?: string;
   details?: HelenaDetails;
   fileId?: string | null;
 }
 
 interface HelenaPayload {
-  eventType?: string;     // "MESSAGE_RECEIVED" | ...
+  eventType?: string;
   date?: string;
   content?: HelenaContent;
   changeMetadata?: unknown;
-  // Campos legado na mesma interface (para tipagem unificada)
   evento?: string;
   telefone?: string;
   phone?: string;
@@ -57,8 +56,6 @@ interface HelenaPayload {
   origem?: string;
 }
 
-// ── Utilitários ───────────────────────────────────────────────────
-
 function timingSafeEqual(a: string, b: string) {
   if (a.length !== b.length) return false;
   let r = 0;
@@ -66,7 +63,136 @@ function timingSafeEqual(a: string, b: string) {
   return r === 0;
 }
 
-// ── Handler ───────────────────────────────────────────────────────
+interface ConversationUpsertInput {
+  agentId: string;
+  sessionId?: string;
+  fromDetails?: string;
+  legacyPhone?: string;
+}
+
+async function upsertConversation(
+  accountId: string,
+  input: ConversationUpsertInput,
+): Promise<string | null> {
+  const sb = getSelfhost();
+  let channel: ConversationChannel = "unknown";
+  let contactId: string | null = null;
+  let instagram: string | null = null;
+  let messengerId: string | null = null;
+  let contactPhone: string | null = null;
+  let leadPhone: string | null = null;
+  let sessionChannelId: string | null = null;
+
+  if (input.sessionId) {
+    try {
+      const helena = await loadHelenaAccount(accountId);
+      const contact = await loadHelenaContactFromSession(helena, input.sessionId);
+      const session = await loadHelenaSession(helena, input.sessionId);
+      sessionChannelId = session?.channelId ?? null;
+      if (contact) {
+        contactId = contact.id;
+        instagram = contact.instagram;
+        messengerId = contact.messengerId;
+        contactPhone = normalizeBrazilPhone(contact.phoneNumber);
+        channel = getContactChannel(contact, sessionChannelId);
+      } else if (sessionChannelId) {
+        channel = detectChannelFromSession(sessionChannelId);
+      }
+    } catch (e) {
+      console.warn("[webhook] falha ao enriquecer sessão Helena:", e);
+    }
+  }
+
+  if (channel === "unknown" && input.fromDetails) {
+    if (isLikelyWhatsAppIdentifier(input.fromDetails)) {
+      channel = "whatsapp";
+    }
+  }
+  if (channel === "unknown" && input.legacyPhone && isLikelyWhatsAppIdentifier(input.legacyPhone)) {
+    channel = "whatsapp";
+  }
+
+  const conversationPhone = buildConversationKey({
+    channel,
+    fromDetails: input.fromDetails ?? input.legacyPhone,
+    instagram,
+    messengerId,
+    sessionId: input.sessionId,
+    contactPhone,
+    leadPhone,
+  });
+
+  const channelIdentifier =
+    instagram ?? messengerId ?? (channel === "whatsapp" ? conversationPhone : null);
+
+  // 1) Busca por sessionId (multicanal)
+  if (input.sessionId) {
+    const bySession = await sb
+      .from("conversations")
+      .select("id, phone, lead_phone")
+      .eq("agent_id", input.agentId)
+      .eq("helena_session_id", input.sessionId)
+      .maybeSingle();
+
+    if (bySession.data) {
+      const convId = bySession.data.id as string;
+      const updates: Record<string, unknown> = {
+        channel,
+        channel_identifier: channelIdentifier,
+        atualizado_em: new Date().toISOString(),
+      };
+      if (contactId) updates.helena_contact_id = contactId;
+      const existingLead = normalizeBrazilPhone(bySession.data.lead_phone as string | null);
+      if (!existingLead && contactPhone) updates.lead_phone = contactPhone;
+
+      await sb.from("conversations").update(updates).eq("id", convId);
+      return convId;
+    }
+  }
+
+  // 2) Busca por phone legado (WhatsApp / migração)
+  const byPhone = await sb
+    .from("conversations")
+    .select("id")
+    .eq("agent_id", input.agentId)
+    .eq("phone", conversationPhone)
+    .maybeSingle();
+
+  if (byPhone.data) {
+    const convId = byPhone.data.id as string;
+    await sb
+      .from("conversations")
+      .update({
+        helena_session_id: input.sessionId ?? null,
+        helena_contact_id: contactId,
+        channel,
+        channel_identifier: channelIdentifier,
+        lead_phone: contactPhone,
+      })
+      .eq("id", convId);
+    return convId;
+  }
+
+  const ins = await sb
+    .from("conversations")
+    .insert({
+      agent_id: input.agentId,
+      phone: conversationPhone,
+      helena_session_id: input.sessionId ?? null,
+      helena_contact_id: contactId,
+      channel,
+      channel_identifier: channelIdentifier,
+      lead_phone: contactPhone,
+    })
+    .select("id")
+    .single();
+
+  if (ins.error) {
+    console.error("[webhook] insert conversation:", ins.error.message);
+    return null;
+  }
+  return ins.data.id as string;
+}
 
 export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
   server: {
@@ -75,7 +201,6 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         const accountId = params.accountId;
         const sb = getSelfhost();
 
-        // 1. Carrega agente
         const agentRow = await sb
           .from("agents")
           .select("id, ativo, webhook_secret, debounce_segundos")
@@ -85,7 +210,6 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return new Response("Account not found", { status: 404 });
         }
 
-        // 2. Parse payload
         let body: HelenaPayload;
         try {
           body = (await request.json()) as HelenaPayload;
@@ -93,18 +217,14 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return new Response("Invalid JSON", { status: 400 });
         }
 
-        // 3. Detecta formato pelo conteúdo do payload (não pelo header)
         const isNewFormat = !!body.eventType;
 
-        // 4. Autenticação baseada no formato detectado
         if (isNewFormat) {
-          // Formato nativo Helena: ignora x-helena-secret, valida companyId no payload
           const payloadCompanyId = body.content?.companyId;
           if (!payloadCompanyId || payloadCompanyId !== accountId) {
             return new Response("Unauthorized: companyId mismatch", { status: 401 });
           }
         } else {
-          // Formato legado (N8N): valida pelo header x-helena-secret
           const providedSecret = request.headers.get("x-helena-secret") ?? "";
           const expectedSecret = (agentRow.data.webhook_secret as string | null) ?? "";
           if (expectedSecret && !timingSafeEqual(providedSecret, expectedSecret)) {
@@ -112,7 +232,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           }
         }
 
-        let phone: string;
+        let fromDetails = "";
         let messageContent: string;
         let sessionId: string | undefined;
         let audioUrl: string | null = null;
@@ -120,38 +240,28 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         let isHuman: boolean;
         let messageType: string;
         let origem: string;
+        let legacyPhone = "";
 
         if (isNewFormat) {
           const c = body.content ?? {};
-
-          // FROM_HUB = mensagem vinda do cliente para a plataforma Helena (inbound)
-          // TO_HUB   = mensagem enviada pela Helena/agente para o cliente (outbound)
           isInbound =
             body.eventType === "MESSAGE_RECEIVED" &&
             (c.direction === "FROM_HUB" ||
               c.origin === "GATEWAY" ||
               c.origin === "CUSTOMER");
-
-          // Identifica se foi humano ou agente
-          isHuman = !isInbound && !!(c.userId);
+          isHuman = !isInbound && !!c.userId;
           messageType = c.type ?? "TEXT";
-          phone = (c.details?.from ?? "").toString().trim();
+          fromDetails = (c.details?.from ?? "").toString().trim();
           messageContent = (c.text ?? "").toString();
           sessionId = c.sessionId;
-          origem = isInbound
-            ? "lead"
-            : isHuman
-              ? "humano"
-              : "agente";
-
+          origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
         } else {
-          // Formato legado
-          phone = (body.telefone ?? body.phone ?? "").toString().trim();
+          legacyPhone = (body.telefone ?? body.phone ?? "").toString().trim();
+          fromDetails = legacyPhone;
           messageContent = (body.conteudo ?? body.texto ?? "").toString();
           sessionId = body.session_id;
           audioUrl = body.audio_url ?? null;
           messageType = body.tipo ?? "TEXT";
-
           const evento = (body.evento ?? "mensagem_recebida").toLowerCase();
           const legadoOrigem = (body.origem ?? "").toLowerCase();
           isInbound =
@@ -162,51 +272,30 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
         }
 
-        if (!phone) return new Response("Missing phone", { status: 400 });
+        if (!sessionId && !fromDetails && !legacyPhone) {
+          return new Response("Missing sessionId or contact identifier", { status: 400 });
+        }
 
-        // Ignora eventos de status / entrega / leitura sem conteúdo de mensagem
         if (!isInbound && !isHuman && !messageContent) {
           return Response.json({ ok: true, skipped: "no-content" });
         }
 
-        // 5. Upsert conversa
-        let convId: string;
-        const existingConv = await sb
-          .from("conversations")
-          .select("id")
-          .eq("agent_id", agentRow.data.id)
-          .eq("phone", phone)
-          .maybeSingle();
+        const convId = await upsertConversation(accountId, {
+          agentId: agentRow.data.id as string,
+          sessionId,
+          fromDetails: fromDetails || legacyPhone,
+          legacyPhone,
+        });
 
-        if (existingConv.data) {
-          convId = existingConv.data.id as string;
-          if (sessionId) {
-            await sb
-              .from("conversations")
-              .update({ helena_session_id: sessionId })
-              .eq("id", convId);
-          }
-        } else {
-          const ins = await sb
-            .from("conversations")
-            .insert({
-              agent_id: agentRow.data.id,
-              phone,
-              helena_session_id: sessionId ?? null,
-            })
-            .select("id")
-            .single();
-          if (ins.error) {
-            return new Response(`DB error: ${ins.error.message}`, { status: 500 });
-          }
-          convId = ins.data.id as string;
+        if (!convId) {
+          return new Response("DB error: could not upsert conversation", { status: 500 });
         }
 
-        // 6. Persiste mensagem
         const role = isInbound ? "user" : "assistant";
         const meta: Record<string, unknown> = {
           origem,
           tipo: messageType,
+          channel_from: fromDetails || null,
           ...(isNewFormat
             ? {
                 direction: body.content?.direction,
@@ -223,22 +312,18 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           meta,
         });
 
-        // 7. Atualiza last_user_message_at se inbound
         if (isInbound) {
-          await sb
-            .from("conversation_state")
-            .upsert(
-              {
-                conversation_id: convId,
-                last_user_message_at: new Date().toISOString(),
-                aguardando_followup: false,
-                numero_followup: 0,
-              },
-              { onConflict: "conversation_id" },
-            );
+          await sb.from("conversation_state").upsert(
+            {
+              conversation_id: convId,
+              last_user_message_at: new Date().toISOString(),
+              aguardando_followup: false,
+              numero_followup: 0,
+            },
+            { onConflict: "conversation_id" },
+          );
         }
 
-        // 8. Dispara agente: apenas mensagens inbound + agente ativo
         if (isInbound && agentRow.data.ativo) {
           const debounce = (agentRow.data.debounce_segundos as number | null) ?? 20;
           try {

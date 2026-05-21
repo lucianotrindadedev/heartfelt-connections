@@ -60,9 +60,24 @@ const CLINICORP_TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
+      name: "buscar_paciente_clinicorp",
+      description:
+        "Verifica se o lead já tem cadastro no Clinicorp pelo telefone. Chame SEMPRE antes de agendar para saber se o paciente existe. Retorna nome e ID do paciente se encontrado, ou indica que não tem cadastro.",
+      parameters: {
+        type: "object",
+        properties: {
+          telefone: { type: "string", description: "Telefone do lead com DDD (ex: 21999990000 ou +5521999990000)" },
+        },
+        required: ["telefone"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "listar_horarios_clinicorp",
       description:
-        "Lista horários disponíveis no Clinicorp para agendamento de consulta. Sempre consulte antes de oferecer horários. Ofereça no máximo 2 opções.",
+        "Lista horários disponíveis no Clinicorp para agendamento de consulta. Sempre consulte antes de oferecer horários. Ofereça no máximo 2 opções ao paciente.",
       parameters: {
         type: "object",
         properties: {
@@ -78,16 +93,47 @@ const CLINICORP_TOOLS: ToolDefinition[] = [
     function: {
       name: "agendar_clinicorp",
       description:
-        "Cria consulta no Clinicorp. Só use após confirmar nome, telefone e horário com o paciente e após consultar disponibilidade real.",
+        "Cria consulta no Clinicorp. Se o paciente não tiver cadastro, ele será criado automaticamente. Só use após: (1) buscar_paciente_clinicorp, (2) listar_horarios_clinicorp, (3) confirmar nome, telefone e horário com o paciente. Nunca confirme ao paciente antes do retorno de sucesso.",
       parameters: {
         type: "object",
         properties: {
           nome: { type: "string", description: "Nome completo do paciente" },
           telefone: { type: "string", description: "Telefone do paciente com DDD" },
-          email: { type: "string", description: "E-mail do paciente (opcional)" },
-          horario: { type: "string", description: "Data/hora ISO 8601 (ex: 2024-03-15T10:00:00-03:00)" },
+          horario: { type: "string", description: "Data/hora ISO 8601 do slot escolhido (ex: 2024-03-15T10:00:00-03:00)" },
+          dentist_person_id: { type: "string", description: "ID do profissional do slot escolhido — obtido via listar_horarios_clinicorp (campo dentist_person_id=XXXX). Obrigatório quando disponível." },
         },
         required: ["nome", "telefone", "horario"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "buscar_agendamentos_clinicorp",
+      description:
+        "Busca os agendamentos existentes do paciente no Clinicorp pelo telefone. Use para confirmar se o agendamento foi criado com sucesso, ou quando o paciente quiser cancelar/remarcar.",
+      parameters: {
+        type: "object",
+        properties: {
+          telefone: { type: "string", description: "Telefone do paciente com DDD" },
+        },
+        required: ["telefone"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancelar_agendamento_clinicorp",
+      description:
+        "Cancela um agendamento no Clinicorp. Obtenha o agendamento_id via buscar_agendamentos_clinicorp antes de cancelar. Confirme com o paciente antes de executar.",
+      parameters: {
+        type: "object",
+        properties: {
+          agendamento_id: { type: "string", description: "ID do agendamento retornado por buscar_agendamentos_clinicorp" },
+          motivo: { type: "string", description: "Motivo do cancelamento informado pelo paciente" },
+        },
+        required: ["agendamento_id"],
       },
     },
   },
@@ -211,6 +257,33 @@ const HELENA_TAG_TOOLS: ToolDefinition[] = [
 ];
 
 // ============================================================
+// TELEFONE COLETADO (Instagram / Messenger)
+// ============================================================
+
+export const SALVAR_TELEFONE_TOOL: ToolDefinition = {
+  type: "function",
+  function: {
+    name: "salvar_telefone_lead",
+    description:
+      "Salva o WhatsApp informado pelo lead durante a conversa. Use quando o paciente passar nome e telefone (Instagram/Messenger) ou quando atualizar o número. Obrigatório antes de agendar no Clinicorp se ainda não houver telefone no contexto.",
+    parameters: {
+      type: "object",
+      properties: {
+        telefone: {
+          type: "string",
+          description: "Telefone com DDD, 10 ou 11 dígitos (ex: 11988776655)",
+        },
+        nome: {
+          type: "string",
+          description: "Nome completo do paciente (opcional, para atualizar no CRM)",
+        },
+      },
+      required: ["telefone"],
+    },
+  },
+};
+
+// ============================================================
 // ESCALAÇÃO HUMANA
 // ============================================================
 
@@ -251,10 +324,14 @@ export async function buildToolsForAccount(
   const tools: ToolDefinition[] = [];
 
   if (gcal.data?.ativo) tools.push(...GCAL_TOOLS);
-  if (clinicorp.data?.ativo) tools.push(...CLINICORP_TOOLS);
+  if (clinicorp.data?.ativo) {
+    tools.push(...CLINICORP_TOOLS);
+    tools.push(SALVAR_TELEFONE_TOOL);
+  }
   if (clinup.data?.ativo) {
     tools.push(...CLINUP_TOOLS);
-    tools.push(...HELENA_TAG_TOOLS); // Tags sempre junto com Clinup
+    tools.push(SALVAR_TELEFONE_TOOL);
+    tools.push(...HELENA_TAG_TOOLS);
   }
   if (escalation.data?.ativo) tools.push(ESCALATION_TOOL);
 

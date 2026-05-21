@@ -43,10 +43,13 @@ export const Route = createFileRoute("/api/public/cron/followup")({
           // Carrega agente e configuração de follow-up
           const conv = await sb
             .from("conversations")
-            .select("id, phone, helena_session_id, agent_id")
+            .select("id, phone, helena_session_id, agent_id, lead_phone, channel")
             .eq("id", convId)
             .single();
           if (!conv.data) continue;
+
+          const sessionId = (conv.data.helena_session_id as string | null) ?? undefined;
+          if (!sessionId) continue;
 
           const agent = await sb
             .from("agents")
@@ -91,8 +94,8 @@ export const Route = createFileRoute("/api/public/cron/followup")({
           // Envia follow-up
           try {
             const helena = await loadHelenaAccount(accountId);
-            const phone = conv.data.phone as string;
-            const sessionId = (conv.data.helena_session_id as string | null) ?? undefined;
+            const phone =
+              (conv.data.lead_phone as string | null) ?? (conv.data.phone as string);
 
             const sendRes = await sendHelenaText(helena, { phone, text: prompt, sessionId });
 

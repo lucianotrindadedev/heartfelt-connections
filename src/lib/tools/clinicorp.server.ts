@@ -8,6 +8,7 @@ interface ClinicorpConfig {
   businessId: number;
   codeLink: string | null;        // agenda_id: Code Link da agenda online
   profissionalIds: number[];      // dentist_person_id[]: profissionais selecionados ([] = todos)
+  duracaoConsulta: number;        // minutos (default 40)
   baseUrl: string;
 }
 
@@ -17,7 +18,7 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
   const sb = getSelfhost();
   const { data, error } = await sb
     .from("clinicorp_config")
-    .select("api_token_enc, subscriber_id, business_id, agenda_id, dentist_person_id, ativo")
+    .select("api_token_enc, subscriber_id, business_id, agenda_id, dentist_person_id, duracao_consulta, ativo")
     .eq("account_id", accountId)
     .single();
 
@@ -42,6 +43,7 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
       ? String(data.agenda_id)
       : null,
     profissionalIds,
+    duracaoConsulta: (data.duracao_consulta as number | null) ?? 40,
     baseUrl: DEFAULT_BASE,
   };
 }
@@ -251,17 +253,38 @@ export interface AppointmentResult {
   patientName: string;
 }
 
+// Extrai data e hora no fuso America/Sao_Paulo a partir de qualquer ISO 8601.
+// Retorna { localDate: "YYYY-MM-DD", localTime: "HH:MM" } no horário de Brasília.
+function extractSpTime(isoStr: string): { localDate: string; localTime: string } {
+  const TZ = "America/Sao_Paulo";
+  const d = new Date(isoStr);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  return {
+    localDate: `${get("year")}-${get("month")}-${get("day")}`,
+    localTime: `${get("hour")}:${get("minute")}`,
+  };
+}
+
 export async function createClinicorpAppointment(
   accountId: string,
   params: {
     phone: string;
     name: string;
     datetime: string;   // ISO 8601 — usado para extrair date, fromTime
-    endDatetime?: string; // ISO 8601 — usado para toTime (fallback +30 min)
+    endDatetime?: string; // ISO 8601 — usado para toTime (opcional)
     dentistPersonId?: number; // sobrescreve o profissional da config
   },
 ): Promise<AppointmentResult> {
   const config = await loadConfig(accountId);
+
+  // Duração da consulta: usa o valor configurado (default 40 min)
+  const duracaoMin = config.duracaoConsulta;
 
   // 1. Busca ou cria paciente
   let patient = await findClinicorpPatient(accountId, params.phone);
@@ -275,17 +298,20 @@ export async function createClinicorpAppointment(
   }
   if (!patientId) throw new Error("Não foi possível obter ID do paciente Clinicorp");
 
-  // 2. Extrai fromTime / toTime / date do ISO 8601
-  const startDate = new Date(params.datetime);
-  const endDate = params.endDatetime
-    ? new Date(params.endDatetime)
-    : new Date(startDate.getTime() + 30 * 60 * 1000);
+  // 2. Extrai fromTime / toTime / date no fuso horário de Brasília (America/Sao_Paulo)
+  const { localDate, localTime: fromTime } = extractSpTime(params.datetime);
 
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const fromTime = `${pad(startDate.getUTCHours())}:${pad(startDate.getUTCMinutes())}`;
-  const toTime   = `${pad(endDate.getUTCHours())}:${pad(endDate.getUTCMinutes())}`;
-  // Meia-noite UTC do dia (formato que a API espera)
-  const dateStr = startDate.toISOString().split("T")[0] + "T03:00:00.000Z";
+  let toTime: string;
+  if (params.endDatetime) {
+    toTime = extractSpTime(params.endDatetime).localTime;
+  } else {
+    // Calcula fim baseado na duração configurada
+    const startMs = new Date(params.datetime).getTime();
+    toTime = extractSpTime(new Date(startMs + duracaoMin * 60 * 1000).toISOString()).localTime;
+  }
+
+  // date: formato que a Clinicorp API espera — midnight BRT (UTC-3 = T03:00:00.000Z)
+  const dateStr = localDate + "T03:00:00.000Z";
 
   // 3. Dentist_PersonId: parâmetro passado > primeiro da config > omite
   const dentistPersonId =
@@ -293,6 +319,7 @@ export async function createClinicorpAppointment(
     (config.profissionalIds.length === 1 ? config.profissionalIds[0] : undefined);
 
   const body: Record<string, unknown> = {
+    subscriber_id: config.subscriberId,
     Patient_PersonId: patientId,
     fromTime,
     toTime,
@@ -302,6 +329,8 @@ export async function createClinicorpAppointment(
   if (dentistPersonId) {
     body.Dentist_PersonId = dentistPersonId;
   }
+
+  console.log("[clinicorp] create appointment body:", JSON.stringify(body));
 
   const res = await fetch(
     `${config.baseUrl}/rest/v1/appointment/create_appointment_by_api`,
@@ -314,7 +343,9 @@ export async function createClinicorpAppointment(
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`Clinicorp create appointment failed: ${res.status} ${err.slice(0, 200)}`);
+    const msg = `Clinicorp create appointment failed: ${res.status} — ${err.slice(0, 300)}`;
+    console.error("[clinicorp]", msg);
+    throw new Error(msg);
   }
 
   const json = (await res.json()) as {
@@ -323,12 +354,96 @@ export async function createClinicorpAppointment(
   };
 
   const appt = json.appointment ?? json.Appointment;
+  const apptId = (appt as { id?: number | string })?.id ?? (appt as { Id?: number | string })?.Id ?? "";
+  const apptDt = (appt as { start_datetime?: string })?.start_datetime ?? (appt as { StartDateTime?: string })?.StartDateTime ?? params.datetime;
 
   return {
-    id: appt?.id ?? appt?.Id ?? "",
-    datetime: appt?.start_datetime ?? appt?.StartDateTime ?? params.datetime,
+    id: apptId,
+    datetime: apptDt,
     patientName: patient?.name ?? params.name,
   };
+}
+
+// ── Agendamentos do paciente ────────────────────────────────────────────────
+
+export interface ClinicorpAppointment {
+  id: number | string;
+  datetime: string;
+  status: string;
+  dentistName?: string;
+}
+
+/**
+ * Busca os agendamentos de um paciente pelo telefone.
+ * Primeiro encontra o Patient_PersonId, depois lista os agendamentos.
+ */
+export async function listClinicorpPatientAppointments(
+  accountId: string,
+  phone: string,
+): Promise<ClinicorpAppointment[]> {
+  const config = await loadConfig(accountId);
+
+  // 1. Localiza o paciente para obter o PersonId
+  const patient = await findClinicorpPatient(accountId, phone);
+  if (!patient?.id) return [];
+
+  // 2. Lista agendamentos filtrando pelo Patient_PersonId
+  const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
+  url.searchParams.set("subscriber_id", config.subscriberId);
+  url.searchParams.set("business_id", String(config.businessId));
+  url.searchParams.set("patient_person_id", String(patient.id));
+
+  const res = await fetch(url.toString(), { headers: authHeaders(config) });
+  if (!res.ok) return [];
+
+  const json = (await res.json()) as {
+    appointments?: {
+      id?: number | string;
+      Id?: number | string;
+      start_datetime?: string;
+      StartDateTime?: string;
+      status?: string;
+      Status?: string;
+      dentist_name?: string;
+      DentistName?: string;
+    }[];
+  };
+
+  return (json.appointments ?? []).map((a) => ({
+    id: a.id ?? a.Id ?? "",
+    datetime: a.start_datetime ?? a.StartDateTime ?? "",
+    status: a.status ?? a.Status ?? "",
+    dentistName: a.dentist_name ?? a.DentistName,
+  }));
+}
+
+/**
+ * Cancela um agendamento pelo ID.
+ */
+export async function cancelClinicorpAppointment(
+  accountId: string,
+  appointmentId: number | string,
+  _reason?: string,
+): Promise<{ ok: boolean; message: string }> {
+  const config = await loadConfig(accountId);
+
+  const res = await fetch(
+    `${config.baseUrl}/rest/v1/appointment/cancel_appointment`,
+    {
+      method: "POST",
+      headers: authHeaders(config),
+      body: JSON.stringify({
+        subscriber_id: config.subscriberId,
+        id: Number(appointmentId),
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    return { ok: false, message: `Erro ao cancelar: ${res.status} ${err.slice(0, 100)}` };
+  }
+  return { ok: true, message: "Agendamento cancelado com sucesso." };
 }
 
 // ── Warm-up: agendamentos próximos ─────────────────────────────────────────

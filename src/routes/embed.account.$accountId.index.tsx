@@ -1022,6 +1022,7 @@ function TemplatesModal({
   const listFn = useServerFn(listTemplates);
   const saveClinFn = useServerFn(saveClinicorpConfig);
   const testClinFn = useServerFn(testClinicorpConnection);
+  const listClinProfsFn = useServerFn(listClinicorpProfessionalsFn);
   const saveClinupFn = useServerFn(saveClinupConfig);
   const testClinupFn = useServerFn(testClinupConnection);
   const getAuthUrlFn = useServerFn(getGoogleAuthUrl);
@@ -1369,6 +1370,7 @@ function TemplatesModal({
             accountId={accountId}
             saveFn={saveClinFn}
             testFn={testClinFn}
+            listProfsFn={listClinProfsFn}
             onSuccess={() => { void (async () => { handleApply(); })(); }}
             onSkip={handleApply}
           />
@@ -1406,22 +1408,42 @@ function TemplateClinicorpSetup({
   accountId,
   saveFn,
   testFn,
+  listProfsFn,
   onSuccess,
   onSkip,
 }: {
   accountId: string;
   saveFn: ReturnType<typeof useServerFn<typeof saveClinicorpConfig>>;
   testFn: ReturnType<typeof useServerFn<typeof testClinicorpConnection>>;
+  listProfsFn: ReturnType<typeof useServerFn<typeof listClinicorpProfessionalsFn>>;
   onSuccess: () => void;
   onSkip: () => void;
 }) {
   const [token, setToken] = useState("");
   const [subscriberId, setSubscriberId] = useState("");
   const [businessId, setBusinessId] = useState("");
-  const [agendaId, setAgendaId] = useState("");
-  const [duracao, setDuracao] = useState("40");
+  const [codeLink, setCodeLink] = useState("");
+  const [selectedProfIds, setSelectedProfIds] = useState<number[]>([]);
+  const [professionals, setProfessionals] = useState<{ id: number; name: string }[]>([]);
+  const [loadingProfs, setLoadingProfs] = useState(false);
+  const [tokenSaved, setTokenSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  function toggleProf(id: number) {
+    setSelectedProfIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
+  async function doLoadProfs() {
+    setLoadingProfs(true);
+    setProfessionals([]);
+    const r = await listProfsFn({ data: { accountId } });
+    if (r.ok) setProfessionals(r.professionals);
+    else toast.error(r.error ?? "Erro ao carregar profissionais.");
+    setLoadingProfs(false);
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -1430,14 +1452,15 @@ function TemplateClinicorpSetup({
         data: {
           accountId,
           ...(token ? { api_token: token } : {}),
-          subscriber_id: subscriberId,
+          subscriber_id: subscriberId || undefined,
           business_id: businessId ? Number(businessId) : undefined,
-          agenda_id: agendaId ? Number(agendaId) : undefined,
-          duracao_consulta: Number(duracao),
+          code_link: codeLink || undefined,
+          profissional_ids: selectedProfIds,
           ativo: true,
         },
       });
       toast.success("Clinicorp configurado!");
+      setTokenSaved(true);
       onSuccess();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Erro ao salvar.");
@@ -1460,28 +1483,107 @@ function TemplateClinicorpSetup({
           Preencha as credenciais abaixo para que o agente possa consultar e agendar no Clinicorp.
         </p>
       </div>
+
+      {/* Token */}
+      <div>
+        <Label className="text-xs font-semibold">Token API (Basic auth base64)</Label>
+        <Input
+          type="password"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder="cole o token Basic auth aqui"
+          className="mt-1"
+        />
+      </div>
+
+      {/* Subscriber ID + Business ID */}
       <div className="grid grid-cols-2 gap-3">
-        <div className="col-span-2">
-          <Label className="text-xs">Token API (Basic auth base64)</Label>
-          <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="cole o token aqui" className="mt-1" />
-        </div>
         <div>
-          <Label className="text-xs">Subscriber ID</Label>
+          <Label className="text-xs font-semibold">Subscriber ID</Label>
           <Input value={subscriberId} onChange={(e) => setSubscriberId(e.target.value)} className="mt-1" />
         </div>
         <div>
-          <Label className="text-xs">Business ID</Label>
+          <Label className="text-xs font-semibold">Business ID</Label>
           <Input type="number" value={businessId} onChange={(e) => setBusinessId(e.target.value)} className="mt-1" />
         </div>
-        <div>
-          <Label className="text-xs">Agenda ID</Label>
-          <Input type="number" value={agendaId} onChange={(e) => setAgendaId(e.target.value)} className="mt-1" />
-        </div>
-        <div>
-          <Label className="text-xs">Duração (min)</Label>
-          <Input type="number" value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1" />
-        </div>
       </div>
+
+      {/* Code Link */}
+      <div>
+        <Label className="text-xs font-semibold">
+          Code Link{" "}
+          <span className="font-normal text-muted-foreground">(agenda online)</span>
+        </Label>
+        <Input
+          value={codeLink}
+          onChange={(e) => setCodeLink(e.target.value)}
+          placeholder="ex: 73828"
+          className="mt-1"
+        />
+        <p className="text-[10px] text-muted-foreground mt-1">
+          Código da agenda que libera horários para agendamento por API.
+        </p>
+      </div>
+
+      {/* Profissionais — múltipla seleção */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <Label className="text-xs font-semibold">
+            Profissionais{" "}
+            <span className="font-normal text-muted-foreground">(opcional — marque os desejados)</span>
+          </Label>
+          {token && (
+            <button
+              type="button"
+              onClick={doLoadProfs}
+              disabled={loadingProfs}
+              className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+            >
+              {loadingProfs ? "Carregando..." : "↻ Carregar profissionais"}
+            </button>
+          )}
+        </div>
+
+        {!token && professionals.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">
+            Preencha o token acima para carregar os profissionais.
+          </p>
+        ) : loadingProfs ? (
+          <p className="text-[10px] text-muted-foreground">Carregando profissionais...</p>
+        ) : professionals.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">
+            Clique em ↻ Carregar profissionais após preencher o token.
+          </p>
+        ) : (
+          <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-48 overflow-y-auto">
+            {professionals.map((p) => {
+              const checked = selectedProfIds.includes(p.id);
+              return (
+                <label
+                  key={p.id}
+                  className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-slate-50 transition-colors"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleProf(p.id)}
+                    className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                  />
+                  <span className="text-sm">{p.name}</span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+
+        {selectedProfIds.length > 0 && professionals.length > 0 && (
+          <p className="text-[10px] text-muted-foreground mt-1">
+            {selectedProfIds.length} profissional{selectedProfIds.length > 1 ? "is" : ""} selecionado{selectedProfIds.length > 1 ? "s" : ""}.
+            Deixe todos desmarcados para usar qualquer profissional disponível.
+          </p>
+        )}
+      </div>
+
       {testResult && <p className="text-xs">{testResult}</p>}
       <div className="flex gap-2">
         <Button onClick={handleSave} disabled={saving} className="flex-1 bg-teal-600 hover:bg-teal-700">
