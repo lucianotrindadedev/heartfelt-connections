@@ -12,7 +12,7 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_SPLITTER_MODEL = "x-ai/grok-3-fast";
+const DEFAULT_SPLITTER_MODEL = "openai/gpt-4.1-mini";
 
 // Tamanho máximo de cada parte (caracteres)
 const MAX_CHARS = 600;
