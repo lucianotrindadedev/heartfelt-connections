@@ -643,6 +643,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     .from("conversation_state")
     .upsert({ conversation_id: conversationId, lock_conversa: true }, { onConflict: "conversation_id" });
 
+  // Marca o início do turno — usado para detectar mensagens novas durante o processamento.
+  const turnStartedAt = new Date().toISOString();
+
   try {
     // 5. Histórico
     const msgs = await sb
@@ -658,7 +661,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const model =
       (agent.data.llm_model_override as string | null) ||
       (llm.data?.default_model as string | undefined) ||
-      "x-ai/grok-3-fast";
+      "google/gemini-2.5-flash";
 
     const basePrompt =
       (agent.data.system_prompt as string) || "Você é um assistente prestativo.";
@@ -840,17 +843,19 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       .from("conversation_state")
       .upsert({ conversation_id: conversationId, lock_conversa: false }, { onConflict: "conversation_id" });
 
-    // Re-run se a última mensagem da conversa ainda é do usuário (não respondida).
-    const lastMsg = await sb
+    // Re-run somente se chegou uma NOVA mensagem do usuário DURANTE o turno atual.
+    // Verifica criado_em > turnStartedAt para evitar re-runs em loop por mensagens antigas
+    // ou por mensagens duplicadas (retries do Helena).
+    const newerUserMsg = await sb
       .from("messages")
-      .select("role")
+      .select("id")
       .eq("conversation_id", conversationId)
-      .order("criado_em", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .eq("role", "user")
+      .gt("criado_em", turnStartedAt)
+      .limit(1);
 
-    if (lastMsg.data?.role === "user") {
-      console.log(`[agent] Mensagem do usuário pendente — re-executando ${conversationId}`);
+    if (newerUserMsg.data && newerUserMsg.data.length > 0) {
+      console.log(`[agent] Nova mensagem detectada durante o turn — re-executando ${conversationId}`);
       void runAgentTurn(conversationId).catch((e) =>
         console.error(`[agent] re-run falhou para ${conversationId}:`, e),
       );
