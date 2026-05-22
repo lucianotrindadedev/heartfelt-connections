@@ -3,7 +3,7 @@
 ## Pré-requisitos na VPS
 
 - Postgres `iasarai-db` (migrations já aplicadas)
-- Redis (opcional por enquanto — app ainda usa fila no Postgres)
+- **Redis** (fila BullMQ do agente — recomendado em produção)
 - Stack Supabase com **Kong/PostgREST** para API (`SELFHOST_SUPABASE_URL`) — o Postgres 17 sozinho não basta
 
 ## 1. Criar Application
@@ -39,7 +39,13 @@ SELFHOST_SUPABASE_SERVICE_ROLE_KEY=...
 SELFHOST_SUPABASE_ANON_KEY=...
 
 PGCRYPTO_KEY=...
+
+# Fila do agente (BullMQ) — mesma rede Docker do serviço Redis
+REDIS_URL=redis://default:<senha>@<host-redis>:6379
+REDIS_QUEUE_WORKER=true
 ```
+
+Com Redis ativo, o debounce do agente **não grava mais** em `message_queue` no Postgres. O `pg_cron` em `/api/public/cron/queue` vira opcional (só limpa itens antigos se ainda existirem).
 
 **Build** (Build Arguments / Docker Build Args — obrigatório para o login no painel):
 
@@ -48,21 +54,27 @@ VITE_SUPABASE_URL=https://db.72.62.104.184.sslip.io
 VITE_SUPABASE_PUBLISHABLE_KEY=<anon key>
 ```
 
-Redis: a app ainda não usa Redis no código; pode subir `REDIS_URL` depois.
+## 4. Redis na Coolify
 
-## 4. Deploy
+1. **+ New Resource** → **Redis** (mesmo Project da app).
+2. Anote a URL interna (ex.: `redis://default:xxx@redis-abc:6379`).
+3. Na app, variáveis `REDIS_URL` e `REDIS_QUEUE_WORKER=true`.
+4. **Redeploy** — logs devem mostrar `[redis-queue] worker BullMQ iniciado` após subir.
+5. Teste: `GET https://SEU-DOMINIO/api/health` → `{ "redis": true, "redis_worker": true }`.
+
+## 5. Deploy
 
 Clique **Deploy**. Build roda `npm run build:vercel` dentro do Docker (~3–5 min).
 
 Teste: abra `https://SEU-DOMINIO/` → tela de login.
 
-## 5. Webhook Helena
+## 6. Webhook Helena
 
 ```
 https://SEU-DOMINIO/api/public/webhook/helena/8b8c63cf-c6d3-4e78-b2df-6fbbc732fb1b
 ```
 
-## 6. Cron no Postgres (opcional)
+## 7. Cron no Postgres (opcional sem Redis)
 
 No container `iasarai-db`:
 
@@ -73,6 +85,6 @@ ALTER DATABASE postgres SET app.cron_secret = '<CRON_SECRET>';
 
 Depois rode `migrations/0005_cron_update.sql`.
 
-## 7. Desligar Vercel
+## 8. Desligar Vercel
 
 Quando Coolify estiver estável, pare deploy em `iasarai.vercel.app`.

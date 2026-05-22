@@ -1,6 +1,8 @@
-// Agenda execução do agente após debounce — não depende só do pg_cron.
+// Agenda execução do agente após debounce — Redis (Coolify), HTTP drain ou pg_cron.
 import { runAgentTurn, ConversationLockedError } from "@/lib/agent-turn.server";
 import { resolveAppBaseUrl } from "@/lib/app-base-url";
+import { enqueueAgentTurn } from "@/lib/agent-queue-redis.server";
+import { isRedisAgentQueueActive } from "@/lib/redis.server";
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -35,8 +37,11 @@ export async function dispatchInboundAgentTurn(
 ): Promise<void> {
   scheduleConversationAgentTurn(conversationId, delaySeconds);
 
-  // Rede de segurança: se waitUntil/drain HTTP falhar, o cron processa depois.
-  // processQueue ignora se o agente já respondeu (evita duplicata).
+  if (isRedisAgentQueueActive()) {
+    return;
+  }
+
+  // Rede de segurança (Postgres): cron processa se drain HTTP falhar.
   const { enqueueMessage } = await import("@/lib/message-queue.server");
   await enqueueMessage(conversationId, delaySeconds + QUEUE_BACKUP_EXTRA_SEC);
 }
@@ -106,6 +111,11 @@ export function scheduleConversationAgentTurn(
   delaySeconds: number,
   lockRetry = 0,
 ): void {
+  if (isRedisAgentQueueActive()) {
+    void enqueueAgentTurn(conversationId, delaySeconds, lockRetry);
+    return;
+  }
+
   const task = () => runTurnWithLockRetries(conversationId, lockRetry);
 
   const waitUntil = getWaitUntil();

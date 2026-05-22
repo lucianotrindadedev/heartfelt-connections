@@ -135,6 +135,8 @@ interface ConversationUpsertInput {
   sessionId?: string;
   fromDetails?: string;
   legacyPhone?: string;
+  /** Telefone real do lead no WhatsApp (FROM_HUB) — prioridade sobre CRM. */
+  inboundLeadPhone?: string | null;
 }
 
 interface ConversationUpsertResult {
@@ -216,8 +218,13 @@ async function upsertConversation(
         atualizado_em: new Date().toISOString(),
       };
       if (contactId) updates.helena_contact_id = contactId;
-      const existingLead = normalizeBrazilPhone(bySession.data.lead_phone as string | null);
-      if (!existingLead && contactPhone) updates.lead_phone = contactPhone;
+      const inboundWa = normalizeBrazilPhone(input.inboundLeadPhone);
+      if (inboundWa) {
+        updates.lead_phone = inboundWa;
+      } else {
+        const existingLead = normalizeBrazilPhone(bySession.data.lead_phone as string | null);
+        if (!existingLead && contactPhone) updates.lead_phone = contactPhone;
+      }
 
       await sb.from("conversations").update(updates).eq("id", convId);
       return { convId, contact: resolvedContact };
@@ -350,11 +357,16 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return Response.json({ ok: true, skipped: "outbound-bot" });
         }
 
+        const inboundLeadPhone = isInbound
+          ? normalizeBrazilPhone(fromDetails || legacyPhone)
+          : null;
+
         const { convId, contact: resolvedContact } = await upsertConversation(accountId, {
           agentId: agentRow.data.id as string,
           sessionId,
           fromDetails: fromDetails || legacyPhone,
           legacyPhone,
+          inboundLeadPhone,
         });
 
         if (!convId) {
@@ -452,11 +464,8 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
           // Em caso de pause, limpa qualquer turn pendente
           if (isPauseCmd) {
-            await sb
-              .from("message_queue")
-              .update({ processed: true })
-              .eq("conversation_id", convId)
-              .eq("processed", false);
+            const { clearConversationQueue } = await import("@/lib/message-queue.server");
+            await clearConversationQueue(convId);
           }
 
           return Response.json({

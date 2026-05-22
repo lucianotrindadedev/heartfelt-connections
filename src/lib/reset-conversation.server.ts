@@ -1,5 +1,6 @@
 // Limpa histórico LLM de uma conversa (comando /reset ou painel admin).
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { clearConversationQueue } from "@/lib/message-queue.server";
 
 export function isResetCommand(text: string): boolean {
   const t = text.trim().toLowerCase().replace(/\s+/g, "");
@@ -18,7 +19,7 @@ export async function resetConversationHistory(conversationId: string): Promise<
 
   await sb.from("messages").delete().eq("conversation_id", conversationId);
 
-  await sb.from("message_queue").delete().eq("conversation_id", conversationId);
+  await clearConversationQueue(conversationId);
 
   await sb.from("conversation_state").upsert(
     {

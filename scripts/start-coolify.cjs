@@ -76,4 +76,14 @@ const httpServer = http.createServer(async (req, res) => {
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`[iasarai] listening on http://0.0.0.0:${PORT}`);
+
+  if (process.env.REDIS_URL && process.env.REDIS_QUEUE_WORKER === "true") {
+    setTimeout(() => {
+      const secret = process.env.CRON_SECRET;
+      const headers = secret ? { "x-cron-secret": secret } : {};
+      void fetch(`http://127.0.0.1:${PORT}/api/health`, { headers }).catch((err) => {
+        console.warn("[iasarai] warmup redis worker via /api/health:", err?.message ?? err);
+      });
+    }, 1500);
+  }
 });
