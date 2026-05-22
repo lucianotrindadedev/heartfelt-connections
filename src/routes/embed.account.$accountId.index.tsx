@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { helenaWebhookUrl } from "@/lib/app-base-url";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -81,7 +81,14 @@ import {
 } from "@/lib/integrations.functions";
 import { listTemplates } from "@/lib/templates.functions";
 
+interface AccountSearch {
+  picked?: string;
+}
+
 export const Route = createFileRoute("/embed/account/$accountId/")({
+  validateSearch: (s: Record<string, unknown>): AccountSearch => ({
+    picked: (s.picked as string | undefined) ?? undefined,
+  }),
   component: EmbedHome,
 });
 
@@ -141,8 +148,59 @@ function AccountNotRegisteredBlocker({ accountId }: { accountId: string }) {
   );
 }
 
+// =================================================================
+// Seletor inline quando a conta tem múltiplos agentes Sarai irmãos
+// (mesmo helena_account_id). Renderizado direto no embed.
+// =================================================================
+function MultiAgentSelector({
+  accounts,
+  onPick,
+}: {
+  accounts: { id: string; nome: string }[];
+  onPick: (accountId: string) => void;
+}) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="w-full max-w-sm">
+        <div className="mb-6 text-center">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+            <Bot className="h-6 w-6 text-primary" />
+          </div>
+          <h1 className="text-lg font-semibold">Selecionar agente</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Esta conta do Helena tem {accounts.length} agentes configurados.
+            Selecione qual deseja gerenciar.
+          </p>
+        </div>
+        <div className="space-y-2">
+          {accounts.map((a, i) => (
+            <button
+              key={a.id}
+              onClick={() => onPick(a.id)}
+              className="flex w-full items-center justify-between rounded-xl border bg-card p-4 text-left transition hover:bg-accent/50 hover:border-primary/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                  {i + 1}
+                </div>
+                <div>
+                  <p className="font-medium text-sm">{a.nome}</p>
+                  <p className="text-[11px] font-mono text-muted-foreground">{a.id}</p>
+                </div>
+              </div>
+              <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EmbedHome() {
   const { accountId } = Route.useParams();
+  const { picked } = Route.useSearch();
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const fetchAgent = useServerFn(getAgent);
   const updateAgentFn = useServerFn(updateAgent);
@@ -179,6 +237,29 @@ function EmbedHome() {
   // Conta não cadastrada → blocker em tela cheia
   if (data && data.registered === false) {
     return <AccountNotRegisteredBlocker accountId={accountId} />;
+  }
+
+  // Múltiplos agentes Sarai sob o mesmo Helena CRM → seletor
+  // (a menos que o usuário já tenha escolhido — flag ?picked=1 na URL)
+  if (
+    data &&
+    data.registered &&
+    !picked &&
+    data.siblings &&
+    data.siblings.length > 1
+  ) {
+    return (
+      <MultiAgentSelector
+        accounts={data.siblings}
+        onPick={(id) =>
+          navigate({
+            to: "/embed/account/$accountId",
+            params: { accountId: id },
+            search: { picked: "1" },
+          })
+        }
+      />
+    );
   }
 
   if (isLoading || !data || !data.registered || !data.agent) {

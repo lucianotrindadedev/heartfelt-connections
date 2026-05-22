@@ -75,7 +75,16 @@ export const getAgent = createServerFn({ method: "GET" })
       return { registered: false as const };
     }
 
-    const [agent, llm, voice, audio, wa, fu, wu, secrets, clinicorp, clinup, gcal] = await Promise.all([
+    // Busca a conta corrente para descobrir o helena_account_id
+    const currentAccountRow = await sb
+      .from("accounts")
+      .select("helena_account_id")
+      .eq("id", data.accountId)
+      .maybeSingle();
+    const helenaAccountId =
+      (currentAccountRow.data?.helena_account_id as string | null) ?? data.accountId;
+
+    const [agent, llm, voice, audio, wa, fu, wu, secrets, clinicorp, clinup, gcal, siblings] = await Promise.all([
       sb.from("agents").select("*").eq("id", agentId).single(),
       sb.from("account_llm_config").select("*").eq("account_id", data.accountId).single(),
       sb.from("account_voice_config").select("*").eq("account_id", data.accountId).single(),
@@ -91,6 +100,12 @@ export const getAgent = createServerFn({ method: "GET" })
       sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       sb.from("clinup_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      // Outras contas Sarai sob o mesmo Helena CRM ID — para mostrar seletor no embed
+      sb
+        .from("accounts")
+        .select("id, nome")
+        .eq("helena_account_id", helenaAccountId)
+        .order("criado_em", { ascending: true }),
     ]);
     return {
       registered: true as const,
@@ -108,6 +123,8 @@ export const getAgent = createServerFn({ method: "GET" })
         clinup: !!clinup.data,
         google_calendar: !!gcal.data,
       },
+      /** Outras contas Sarai sob o mesmo Helena CRM ID (incluindo a atual). */
+      siblings: (siblings.data ?? []) as { id: string; nome: string }[],
     };
   });
 
