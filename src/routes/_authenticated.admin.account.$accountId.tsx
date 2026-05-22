@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
 import { getAccountDetail } from "@/lib/admin.functions";
+import { embedAccountUrl, helenaWebhookUrl, useClientAppBaseUrl } from "@/lib/app-base-url";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loader2, ArrowLeft, ExternalLink, Copy, Check } from "lucide-react";
@@ -35,6 +36,7 @@ export const Route = createFileRoute("/_authenticated/admin/account/$accountId")
 
 function AdminAccountDetail() {
   const { accountId } = Route.useParams();
+  const appBaseUrl = useClientAppBaseUrl();
   const fetch = useServerFn(getAccountDetail);
   const q = useQuery({
     queryKey: ["admin", "account", accountId],
@@ -122,7 +124,7 @@ function AdminAccountDetail() {
               <h2 className="font-semibold">Configuração de Integração</h2>
               <CopyField
                 label="Webhook Helena (cole em: CRM → Gatilhos → URL)"
-                value={`https://iasarai.vercel.app/api/public/webhook/helena/${accountId}`}
+                value={helenaWebhookUrl(accountId, appBaseUrl)}
               />
               <CopyField
                 label="Header de autenticação (X-Helena-Secret)"
@@ -130,7 +132,7 @@ function AdminAccountDetail() {
               />
               <CopyField
                 label="URL do Embed (cole no iframe do CRM)"
-                value={`https://iasarai.vercel.app/embed/account/${accountId}`}
+                value={embedAccountUrl(accountId, appBaseUrl)}
               />
               <p className="text-xs text-muted-foreground">
                 No Helena: Configurações → Integrações → Webhook → URL acima + header{" "}

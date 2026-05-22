@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { helenaWebhookUrl } from "@/lib/app-base-url";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -246,7 +247,7 @@ function EmbedHome() {
               Resetar
             </button>
             <button
-              onClick={() => { void navigator.clipboard.writeText(`https://iasarai.vercel.app/api/public/webhook/helena/${accountId}`); toast.success("URL do webhook copiada!"); }}
+              onClick={() => { void navigator.clipboard.writeText(helenaWebhookUrl(accountId)); toast.success("URL do webhook copiada!"); }}
               className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/20 backdrop-blur transition-all hover:bg-white/20 active:scale-95"
             >
               <Zap className="h-4 w-4" />

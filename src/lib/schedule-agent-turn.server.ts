@@ -1,19 +1,9 @@
 // Agenda execução do agente após debounce — não depende só do pg_cron.
 import { runAgentTurn, ConversationLockedError } from "@/lib/agent-turn.server";
+import { resolveAppBaseUrl } from "@/lib/app-base-url";
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-function resolveAppBaseUrl(): string | null {
-  const raw =
-    process.env.APP_URL ??
-    process.env.APP_BASE_URL ??
-    process.env.PUBLIC_APP_URL ??
-    process.env.VERCEL_URL ??
-    null;
-  if (!raw) return null;
-  return raw.startsWith("http") ? raw.replace(/\/$/, "") : `https://${raw}`;
 }
 
 type WaitUntilFn = (promise: Promise<unknown>) => void;

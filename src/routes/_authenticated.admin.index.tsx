@@ -3,6 +3,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { createAccount, listAccounts } from "@/lib/admin.functions";
+import { helenaWebhookUrl } from "@/lib/app-base-url";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -239,9 +240,7 @@ function SuccessStep({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
-  const origin =
-    typeof window !== "undefined" ? window.location.origin : "https://app.exemplo.com";
-  const webhookUrl = `${origin}/api/public/webhook/helena/${created.accountId}`;
+  const webhookUrl = helenaWebhookUrl(created.accountId);
 
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState(false);
