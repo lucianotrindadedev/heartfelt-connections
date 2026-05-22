@@ -11,7 +11,9 @@ const DEFAULT_SPLITTER_MODEL = "openai/gpt-4.1-mini";
 const MAX_CHARS = 600;
 const MIN_LLM_SPLIT_CHARS = 80;
 const MIN_PART_CHARS = 8;
-const MAX_PARTS = 8;
+const MAX_PARTS = 5;
+/** Não quebrar mensagens menores que isto — costumam ser 1 bolha só. */
+const NO_SPLIT_BELOW_CHARS = 220;
 /** Pausa mínima entre bolhas no WhatsApp (Helena/WhatsApp podem fundir envios muito rápidos). */
 export const MIN_INTER_PART_DELAY_MS = 1200;
 
@@ -120,21 +122,33 @@ function ruleBasedSplit(text: string): string[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
 
+  // 1. Quebra EXPLÍCITA do agente com \n\n entre blocos — respeita sempre.
   if (/\n{2,}/.test(trimmed)) {
     const blocks = trimmed.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
     if (blocks.length > 1) return capParts(blocks);
   }
 
+  // 2. Mensagens curtas (até 220 chars) ficam em UMA bolha só.
+  // Evita fragmentar frases naturais como "Tudo bem! Como posso ajudar?"
+  // em duas bolhas (que destrói o flow + esconde a pergunta final).
+  if (trimmed.length <= NO_SPLIT_BELOW_CHARS) {
+    return [trimmed];
+  }
+
+  // 3. Múltiplas linhas curtas (lista / itens) — preserva.
   const lines = trimmed.split(/\n/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length >= 2 && lines.length <= 8 && lines.every((l) => l.length <= MAX_CHARS)) {
+  if (lines.length >= 2 && lines.length <= MAX_PARTS && lines.every((l) => l.length <= MAX_CHARS)) {
     return capParts(lines);
   }
 
+  // 4. Texto longo (>220 chars) sem quebras explícitas:
+  //    a) Tenta separar saudação + corpo + pergunta
+  //    b) Senão, quebra em frases
+  const opener = splitOpenerAndBody(trimmed);
+  if (opener && opener.length > 1) return opener;
+
   const sentences = splitAllSentences(trimmed);
   if (sentences) return sentences;
-
-  const opener = splitOpenerAndBody(trimmed);
-  if (opener) return opener;
 
   const clause = splitLongClause(trimmed);
   if (clause) return capParts(clause);
