@@ -26,6 +26,7 @@ import {
   releaseConversationLock,
   tryAcquireConversationLock,
 } from "@/lib/conversation-lock.server";
+import { conversationNeedsAgentReply } from "@/lib/conversation-reply.server";
 import { splitMessage, typingDelayMs } from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 import type { AgentContext, AgentResult } from "./context";
@@ -183,6 +184,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   if (!lockAcquired) {
     console.log(`[orch] lock ocupado ${conversationId} — turno duplicado ignorado`);
     throw new ConversationLockedError(conversationId);
+  }
+
+  if (!(await conversationNeedsAgentReply(conversationId))) {
+    console.log(`[orch] ${conversationId} já respondida — turno ignorado`);
+    await releaseConversationLock(conversationId);
+    return;
   }
 
   // 3. LLM config + secret

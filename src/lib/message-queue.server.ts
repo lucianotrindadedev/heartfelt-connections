@@ -1,6 +1,7 @@
 // Fila de mensagens com debounce para agrupamento antes de rodar o agente.
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { runAgentTurn, ConversationLockedError } from "@/lib/agent-turn.server";
+import { conversationNeedsAgentReply } from "@/lib/conversation-reply.server";
 
 export async function enqueueMessage(
   conversationId: string,
@@ -71,6 +72,12 @@ export async function processQueue(): Promise<{ processed: number; skipped: numb
 
     if (newer && newer.length > 0) {
       // Tem item mais recente pendente → pula este
+      await sb.from("message_queue").update({ processed: true }).eq("id", id);
+      skipped++;
+      continue;
+    }
+
+    if (!(await conversationNeedsAgentReply(convId))) {
       await sb.from("message_queue").update({ processed: true }).eq("id", id);
       skipped++;
       continue;

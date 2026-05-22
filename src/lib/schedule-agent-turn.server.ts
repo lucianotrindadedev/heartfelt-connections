@@ -8,6 +8,7 @@ function delay(ms: number): Promise<void> {
 function resolveAppBaseUrl(): string | null {
   const raw =
     process.env.APP_URL ??
+    process.env.APP_BASE_URL ??
     process.env.PUBLIC_APP_URL ??
     process.env.VERCEL_URL ??
     null;
@@ -35,27 +36,19 @@ export function hasBackgroundTaskSupport(): boolean {
  * Nesse caso NÃO usar só message_queue — o pg_cron roda a cada 1 min (~0–60s de atraso
  * mesmo com debounce=0). Preferir drain HTTP (nova invocação imediata).
  */
+/** Segundos extras na fila pg_cron se waitUntil/drain falhar (cron ~1 min). */
+const QUEUE_BACKUP_EXTRA_SEC = 15;
+
 export async function dispatchInboundAgentTurn(
   conversationId: string,
   delaySeconds: number,
 ): Promise<void> {
-  if (hasBackgroundTaskSupport()) {
-    scheduleConversationAgentTurn(conversationId, delaySeconds);
-    return;
-  }
+  scheduleConversationAgentTurn(conversationId, delaySeconds);
 
-  const base = resolveAppBaseUrl();
-  const secret = process.env.CRON_SECRET;
-  if (base && secret) {
-    scheduleConversationAgentTurn(conversationId, delaySeconds);
-    return;
-  }
-
-  console.warn(
-    "[schedule] APP_URL/CRON_SECRET ausente — agente só via pg_cron (até ~60s de atraso)",
-  );
+  // Rede de segurança: se waitUntil/drain HTTP falhar, o cron processa depois.
+  // processQueue ignora se o agente já respondeu (evita duplicata).
   const { enqueueMessage } = await import("@/lib/message-queue.server");
-  await enqueueMessage(conversationId, delaySeconds);
+  await enqueueMessage(conversationId, delaySeconds + QUEUE_BACKUP_EXTRA_SEC);
 }
 
 async function runTurnWithLockRetries(
@@ -87,7 +80,7 @@ function triggerDrainHttp(
   }
 
   const notBeforeMs = Date.now() + delaySeconds * 1000;
-  fetch(`${base}/api/public/cron/drain-conversation`, {
+  void fetch(`${base}/api/public/cron/drain-conversation`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -98,7 +91,21 @@ function triggerDrainHttp(
       not_before_ms: notBeforeMs,
       lock_retry: lockRetry,
     }),
-  }).catch((err) => console.error("[schedule] drain HTTP falhou:", err));
+  })
+    .then(async (res) => {
+      if (res.ok) return;
+      const body = await res.text();
+      console.error(
+        `[schedule] drain HTTP ${res.status} ${conversationId}: ${body.slice(0, 300)}`,
+      );
+      const { enqueueMessage } = await import("@/lib/message-queue.server");
+      await enqueueMessage(conversationId, Math.max(delaySeconds, 5));
+    })
+    .catch(async (err) => {
+      console.error("[schedule] drain HTTP falhou:", err);
+      const { enqueueMessage } = await import("@/lib/message-queue.server");
+      await enqueueMessage(conversationId, Math.max(delaySeconds, 5));
+    });
 }
 
 /**
