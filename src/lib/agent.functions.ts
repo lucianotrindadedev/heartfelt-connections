@@ -45,7 +45,7 @@ export const getAgent = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const sb = getSelfhost();
     const agentId = await ensureAccount(data.accountId);
-    const [agent, llm, voice, audio, wa, fu, wu, secrets] = await Promise.all([
+    const [agent, llm, voice, audio, wa, fu, wu, secrets, clinicorp, clinup, gcal] = await Promise.all([
       sb.from("agents").select("*").eq("id", agentId).single(),
       sb.from("account_llm_config").select("*").eq("account_id", data.accountId).single(),
       sb.from("account_voice_config").select("*").eq("account_id", data.accountId).single(),
@@ -58,6 +58,9 @@ export const getAgent = createServerFn({ method: "GET" })
         .select("openrouter_last4,elevenlabs_last4,groq_last4,evolution_last4,atualizado_em")
         .eq("account_id", data.accountId)
         .single(),
+      sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      sb.from("clinup_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      sb.from("google_calendar_tokens").select("ativo").eq("account_id", data.accountId).maybeSingle(),
     ]);
     return {
       agent: agent.data,
@@ -68,6 +71,12 @@ export const getAgent = createServerFn({ method: "GET" })
       followup: fu.data,
       warmup: wu.data,
       secrets: secrets.data,
+      /** Quais integrações estão configuradas (independente de ativo=true/false). */
+      configured_integrations: {
+        clinicorp: !!clinicorp.data,
+        clinup: !!clinup.data,
+        google_calendar: !!gcal.data,
+      },
     };
   });
 

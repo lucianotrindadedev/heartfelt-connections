@@ -165,6 +165,7 @@ function EmbedHome() {
         audioHabilitado={!!(data.audio?.habilitado)}
         audioTranscrever={!!(data.audio?.transcrever_in)}
         audioResponder={!!(data.audio?.responder_out)}
+        configuredIntegrations={data.configured_integrations ?? { clinicorp: false, clinup: false, google_calendar: false }}
         onClose={() => setOpenSheet(null)}
       />
     );
@@ -1796,6 +1797,7 @@ function AgentSettingsView({
   audioHabilitado,
   audioTranscrever,
   audioResponder,
+  configuredIntegrations,
   onClose,
 }: {
   accountId: string;
@@ -1809,6 +1811,7 @@ function AgentSettingsView({
   audioHabilitado: boolean;
   audioTranscrever: boolean;
   audioResponder: boolean;
+  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -2227,6 +2230,7 @@ function AgentSettingsView({
             audioHabilitado={audioHabilitado}
             audioTranscrever={audioTranscrever}
             audioResponder={audioResponder}
+            configuredIntegrations={configuredIntegrations}
           />
         )}
       </div>
@@ -2244,30 +2248,59 @@ function IntegrationsTab({
   audioHabilitado,
   audioTranscrever,
   audioResponder,
+  configuredIntegrations,
 }: {
   accountId: string;
   agentId: string;
   audioHabilitado: boolean;
   audioTranscrever: boolean;
   audioResponder: boolean;
+  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
 }) {
+  const hasAny =
+    configuredIntegrations.clinicorp ||
+    configuredIntegrations.clinup ||
+    configuredIntegrations.google_calendar;
+
   return (
     <div className="mx-auto max-w-2xl px-6 py-8 space-y-4">
       <div className="rounded-xl border border-primary/20 bg-primary/5 px-5 py-3.5">
         <p className="text-xs text-primary/80 leading-relaxed">
-          <strong className="text-primary">Dica:</strong> Configure aqui os canais e ferramentas que seu assistente usa. Ative apenas o que seu negócio precisa.
+          <strong className="text-primary">Dica:</strong> Configure aqui os canais e ferramentas que seu assistente usa. Apenas as integrações do seu template estão disponíveis.
         </p>
       </div>
+
+      {/* Helena CRM — sempre visível */}
       <HelenaConfigPanel accountId={accountId} />
+
+      {/* Áudio — sempre visível */}
       <AudioPanel
         accountId={accountId}
         initialHabilitado={audioHabilitado}
         initialTranscrever={audioTranscrever}
         initialResponder={audioResponder}
       />
-      <GoogleCalendarPanel accountId={accountId} />
-      <ClinicorpPanel accountId={accountId} />
-      <ClinupPanel accountId={accountId} />
+
+      {/* Integrações de agendamento — condicionais ao template */}
+      {configuredIntegrations.clinicorp && (
+        <ClinicorpPanel accountId={accountId} />
+      )}
+      {configuredIntegrations.clinup && (
+        <ClinupPanel accountId={accountId} />
+      )}
+      {configuredIntegrations.google_calendar && (
+        <GoogleCalendarPanel accountId={accountId} />
+      )}
+
+      {/* Nenhuma integração configurada ainda */}
+      {!hasAny && (
+        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-5 py-6 text-center">
+          <p className="text-sm font-medium text-slate-500">Nenhuma integração configurada</p>
+          <p className="mt-1 text-xs text-slate-400">
+            Aplique um template com integração (Clinicorp, Clinup ou Google Agenda) para ativar as ferramentas de agendamento.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
