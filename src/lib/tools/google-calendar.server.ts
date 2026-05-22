@@ -143,6 +143,17 @@ interface DisponibilidadeBloco {
 }
 type Disponibilidade = Record<string, DisponibilidadeBloco[]>;
 
+/** Mapeia chave abreviada da UI ('seg', 'ter'...) para chave longa ('segunda', 'terca'...). */
+const SHORT_DAY_MAP: Record<string, string> = {
+  dom: "domingo",
+  seg: "segunda",
+  ter: "terca",
+  qua: "quarta",
+  qui: "quinta",
+  sex: "sexta",
+  sab: "sabado",
+};
+
 /** Lê business_hours_json do agente e devolve no formato {segunda: [...], terca: [...], ...}. */
 function parseDisponibilidadeFromSettings(
   raw: string | undefined | null,
@@ -152,30 +163,54 @@ function parseDisponibilidadeFromSettings(
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (!parsed || typeof parsed !== "object") return {};
 
-    // Aceita dois formatos:
-    //   1) { segunda: [{inicio, fim}], ... }  ← formato n8n
-    //   2) { segunda: { enabled, start, end, intervalo? }, ... }  ← BusinessHoursEditor UI
+    // Aceita três formatos:
+    //   1) { segunda: [{inicio, fim}], ... }                            ← formato n8n
+    //   2) { segunda: { enabled, start, end, intervalo? }, ... }        ← variante
+    //   3) { seg: { active, start, lunch_start, lunch_end, end }, ... } ← BusinessHoursEditor UI (atual)
     const out: Disponibilidade = {};
     for (const [k, v] of Object.entries(parsed)) {
-      const key = removeAcento(k);
+      const lower = removeAcento(k);
+      // Resolve chave: se for "seg" mapeia para "segunda"
+      const key = SHORT_DAY_MAP[lower] ?? lower;
+
       if (Array.isArray(v)) {
         out[key] = (v as DisponibilidadeBloco[]).filter(
           (b) => b && typeof b.inicio === "string" && typeof b.fim === "string",
         );
       } else if (v && typeof v === "object") {
         const obj = v as Record<string, unknown>;
-        if (obj.enabled === false) {
+        // Aceita 'enabled' (legado) ou 'active' (UI atual)
+        const isActive =
+          obj.active !== false && obj.enabled !== false;
+        if (!isActive) {
           out[key] = [];
           continue;
         }
         const start = (obj.start as string) || (obj.inicio as string) || "";
         const end = (obj.end as string) || (obj.fim as string) || "";
-        if (start && end) out[key] = [{ inicio: start, fim: end }];
-        else out[key] = [];
+        const lunchStart = (obj.lunch_start as string) || "";
+        const lunchEnd = (obj.lunch_end as string) || "";
+
+        if (!start || !end) {
+          out[key] = [];
+          continue;
+        }
+
+        // Se há intervalo de almoço (e ele faz sentido), divide em 2 blocos:
+        // [start..lunchStart] + [lunchEnd..end]. Senão, bloco único.
+        if (lunchStart && lunchEnd && lunchStart < lunchEnd && lunchStart > start && lunchEnd < end) {
+          out[key] = [
+            { inicio: start, fim: lunchStart },
+            { inicio: lunchEnd, fim: end },
+          ];
+        } else {
+          out[key] = [{ inicio: start, fim: end }];
+        }
       }
     }
     return out;
-  } catch {
+  } catch (e) {
+    console.warn("[gcal] parse business_hours_json falhou:", e);
     return {};
   }
 }
@@ -335,6 +370,10 @@ export async function listGoogleCalendarSlots(
     );
   });
 
+  console.log(
+    `[gcal] janelas: ${candidates.length} candidatas → ${janelasNoExpediente.length} dentro do expediente (calendar=${token.calendarId}, temExpediente=${temExpediente}, dias=${Object.keys(disponibilidade).filter((k) => (disponibilidade[k]?.length ?? 0) > 0).join(",")})`,
+  );
+
   if (janelasNoExpediente.length === 0) return [];
 
   // 3. Consulta eventos existentes no período
@@ -349,7 +388,11 @@ export async function listGoogleCalendarSlots(
   const evRes = await fetch(eventsUrl.toString(), {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
-  if (!evRes.ok) throw new Error(`Falha consultando eventos: ${evRes.status}`);
+  if (!evRes.ok) {
+    const errBody = await evRes.text();
+    console.error(`[gcal] events fetch falhou ${evRes.status}: ${errBody.slice(0, 300)}`);
+    throw new Error(`Falha consultando eventos: ${evRes.status}`);
+  }
 
   const evJson = (await evRes.json()) as {
     items?: { start?: { dateTime?: string }; end?: { dateTime?: string } }[];
@@ -368,6 +411,10 @@ export async function listGoogleCalendarSlots(
     }
     return true;
   });
+
+  console.log(
+    `[gcal] após eventos: ${janelasNoExpediente.length} → ${semConflito.length} sem conflito (${eventos.length} eventos no período)`,
+  );
 
   // 5. Embaralha + corta amostras
   let resultado = [...semConflito];
