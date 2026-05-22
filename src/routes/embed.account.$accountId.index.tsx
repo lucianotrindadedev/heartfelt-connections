@@ -63,6 +63,8 @@ import {
   getGoogleCalendarStatusFn,
   getGoogleAuthUrl,
   disconnectGoogleCalendar,
+  listGoogleCalendarsFn,
+  selectGoogleCalendarFn,
   getClinicorpConfig,
   saveClinicorpConfig,
   testClinicorpConnection,
@@ -458,6 +460,17 @@ function BusinessHoursEditor({
   onChange: (human: string, json: string) => void;
 }) {
   const [schedule, setSchedule] = useState<WeekSchedule>(() => parseBhJson(jsonValue));
+
+  // Sincroniza o valor inicial com o pai uma vez na montagem,
+  // para que o varValues do TemplatesModal já tenha o schedule default
+  // mesmo que o usuário ainda não tenha tocado em nada.
+  const didSyncRef = useRef(false);
+  useEffect(() => {
+    if (didSyncRef.current) return;
+    didSyncRef.current = true;
+    onChange(bhToHuman(schedule), JSON.stringify(schedule));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function update(day: string, field: keyof DaySchedule, value: string | boolean) {
     setSchedule((prev) => {
@@ -993,6 +1006,19 @@ function PromptEditor({
 }) {
   const [showColorPicker, setShowColorPicker] = useState<"text" | "highlight" | null>(null);
   const [showToolsPicker, setShowToolsPicker] = useState(false);
+  const toolsPickerRef = useRef<HTMLDivElement>(null);
+
+  // Fecha o tools picker ao clicar fora — sem overlay que bloqueia scroll
+  useEffect(() => {
+    if (!showToolsPicker) return;
+    function handleOutside(e: MouseEvent) {
+      if (toolsPickerRef.current && !toolsPickerRef.current.contains(e.target as Node)) {
+        setShowToolsPicker(false);
+      }
+    }
+    document.addEventListener("mousedown", handleOutside);
+    return () => document.removeEventListener("mousedown", handleOutside);
+  }, [showToolsPicker]);
 
   // Filtra os grupos de tools pelas integrações configuradas neste agente.
   // Grupos "sempre visíveis": Qualificação, Escalada e Helena CRM.
@@ -1226,10 +1252,14 @@ function PromptEditor({
         <div className="mx-1 h-4 w-px bg-slate-200" />
 
         {/* Tools inserter */}
-        <div className="relative">
+        <div className="relative" ref={toolsPickerRef}>
           <button
             title="Inserir tool no prompt"
-            onClick={() => { setShowToolsPicker((v) => !v); setShowColorPicker(null); }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setShowToolsPicker((v) => !v);
+              setShowColorPicker(null);
+            }}
             className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition-colors ${showToolsPicker ? "bg-primary/10 text-primary" : "text-slate-600 hover:bg-slate-100"}`}
           >
             <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-none stroke-current stroke-[1.75]"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -1238,14 +1268,14 @@ function PromptEditor({
           </button>
 
           {showToolsPicker && (
-            <div className="absolute left-0 top-full z-30 mt-1 w-72 rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
+            <div className="absolute left-0 top-full z-50 mt-1 w-[420px] rounded-xl border border-slate-200 bg-white shadow-2xl">
               {visibleTools.length === 0 ? (
                 <div className="px-4 py-6 text-center">
                   <p className="text-xs font-medium text-slate-500">Nenhuma integração configurada</p>
                   <p className="mt-1 text-[11px] text-slate-400">Configure uma integração para ver as tools disponíveis.</p>
                 </div>
               ) : (
-                <div className="max-h-96 overflow-y-auto overscroll-contain">
+                <div className="max-h-[420px] overflow-y-auto overscroll-contain rounded-xl">
                   {visibleTools.map((group) => (
                     <div key={group.group}>
                       <div className="sticky top-0 bg-slate-50 px-3 py-2 border-b border-slate-100">
@@ -1258,15 +1288,14 @@ function PromptEditor({
                           onMouseDown={(e) => {
                             // onMouseDown + preventDefault preserva o foco do editor
                             e.preventDefault();
-                            // Insere como HTML — forma mais confiável no TipTap
                             editor.chain().focus().insertContent(
                               `<code>${tool.name}</code>&nbsp;`
                             ).run();
                             setShowToolsPicker(false);
                           }}
-                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-primary/5 active:bg-primary/10 transition-colors"
+                          className="flex w-full flex-col gap-0.5 px-3 py-2 text-left hover:bg-primary/5 active:bg-primary/10 transition-colors border-b border-slate-50 last:border-0"
                         >
-                          <code className="shrink-0 rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-primary whitespace-nowrap">
+                          <code className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-primary w-fit">
                             {tool.name}
                           </code>
                           <span className="text-[11px] text-slate-500 leading-snug">{tool.desc}</span>
@@ -1319,9 +1348,9 @@ function PromptEditor({
         <Switch checked={autosave} onCheckedChange={onAutosaveChange} />
       </div>
 
-      {/* Click outside to close pickers */}
-      {(showColorPicker || showToolsPicker) && (
-        <div className="fixed inset-0 z-10" onClick={() => { setShowColorPicker(null); setShowToolsPicker(false); }} />
+      {/* Click outside to close color picker */}
+      {showColorPicker && (
+        <div className="fixed inset-0 z-10" onClick={() => { setShowColorPicker(null); }} />
       )}
 
       {/* Editor area — code chips, headings e listas estilizados */}
@@ -1656,7 +1685,11 @@ function TemplatesModal({
                 const prefilled = !!(v.settings_key && agentSettings[v.settings_key]);
 
                 // ── Editor estruturado de horários ──
-                if (v.key === "business_hours") {
+                // Aceita tanto v.key === "business_hours" quanto v.settings_key === "business_hours"
+                // (no template Clinicorp/Google a key é HORARIOS_FUNCIONAMENTO mas o settings_key é business_hours).
+                const isBusinessHours =
+                  v.key === "business_hours" || v.settings_key === "business_hours";
+                if (isBusinessHours) {
                   return (
                     <div key={v.key} className="sm:col-span-2">
                       <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 mb-2">
@@ -1669,9 +1702,17 @@ function TemplatesModal({
                         )}
                       </label>
                       <BusinessHoursEditor
-                        jsonValue={agentSettings.business_hours_json ?? ""}
+                        jsonValue={
+                          varValues.business_hours_json ||
+                          agentSettings.business_hours_json ||
+                          ""
+                        }
                         onChange={(human, json) => {
-                          setVarValues((p) => ({ ...p, [v.key]: human, business_hours_json: json }));
+                          setVarValues((p) => ({
+                            ...p,
+                            [v.key]: human,
+                            business_hours_json: json,
+                          }));
                         }}
                       />
                     </div>
@@ -1730,7 +1771,16 @@ function TemplatesModal({
             <div className="flex gap-3 pt-2">
               <Button
                 onClick={() => void goToIntegrationOrApply()}
-                disabled={(selected.variables ?? []).filter((v) => v.required).some((v) => !varValues[v.key]?.trim())}
+                disabled={(selected.variables ?? [])
+                  .filter((v) => v.required)
+                  .some((v) => {
+                    // Business hours: aceita JSON do editor estruturado
+                    const isBh = v.key === "business_hours" || v.settings_key === "business_hours";
+                    if (isBh) {
+                      return !(varValues.business_hours_json?.trim() || varValues[v.key]?.trim());
+                    }
+                    return !varValues[v.key]?.trim();
+                  })}
                 className="flex-1"
               >
                 {selected.integration_type ? "Configurar integração →" : "Aplicar template"}
@@ -2887,10 +2937,19 @@ function GoogleCalendarPanel({ accountId }: { accountId: string }) {
   const getStatus = useServerFn(getGoogleCalendarStatusFn);
   const getAuthUrl = useServerFn(getGoogleAuthUrl);
   const disconnect = useServerFn(disconnectGoogleCalendar);
+  const listCalendars = useServerFn(listGoogleCalendarsFn);
+  const selectCalendar = useServerFn(selectGoogleCalendarFn);
 
   const { data } = useQuery({
     queryKey: ["gcal-status", accountId],
     queryFn: () => getStatus({ data: { accountId } }),
+  });
+
+  // Lista de calendários só busca quando conectado
+  const calendarsQ = useQuery({
+    queryKey: ["gcal-list", accountId],
+    queryFn: () => listCalendars({ data: { accountId } }),
+    enabled: !!data?.connected,
   });
 
   const [expanded, setExpanded] = useState(false);
@@ -2907,6 +2966,7 @@ function GoogleCalendarPanel({ accountId }: { accountId: string }) {
           clearInterval(check);
           setConnecting(false);
           qc.invalidateQueries({ queryKey: ["gcal-status", accountId] });
+          qc.invalidateQueries({ queryKey: ["gcal-list", accountId] });
         }
       }, 500);
     } catch {
@@ -2920,7 +2980,18 @@ function GoogleCalendarPanel({ accountId }: { accountId: string }) {
     onSuccess: () => {
       toast.success("Google Calendar desconectado.");
       qc.invalidateQueries({ queryKey: ["gcal-status", accountId] });
+      qc.invalidateQueries({ queryKey: ["gcal-list", accountId] });
     },
+  });
+
+  const selectM = useMutation({
+    mutationFn: (input: { calendarId: string; calendarName: string }) =>
+      selectCalendar({ data: { accountId, ...input } }),
+    onSuccess: () => {
+      toast.success("Calendário selecionado");
+      qc.invalidateQueries({ queryKey: ["gcal-status", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar"),
   });
 
   return (
@@ -2946,11 +3017,57 @@ function GoogleCalendarPanel({ accountId }: { accountId: string }) {
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
                 <div className="flex items-center gap-2">
                   <Check className="h-4 w-4 text-emerald-600" />
-                  <p className="text-sm font-medium text-emerald-800">Conectado</p>
+                  <p className="text-sm font-medium text-emerald-800">Conta conectada</p>
                 </div>
                 {data.email && <p className="mt-1 text-xs text-muted-foreground">Conta: {data.email}</p>}
-                {data.calendarName && <p className="text-xs text-muted-foreground">Calendário: {data.calendarName}</p>}
               </div>
+
+              {/* Seletor de calendário */}
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium">Calendário usado para agendamentos</Label>
+                {calendarsQ.isLoading ? (
+                  <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando calendários…
+                  </div>
+                ) : calendarsQ.error ? (
+                  <p className="text-xs text-destructive">
+                    Erro ao listar calendários: {calendarsQ.error instanceof Error ? calendarsQ.error.message : "desconhecido"}
+                  </p>
+                ) : (
+                  <>
+                    <select
+                      value={data.calendarId ?? ""}
+                      onChange={(e) => {
+                        const cal = calendarsQ.data?.calendars.find((c) => c.id === e.target.value);
+                        if (cal) selectM.mutate({ calendarId: cal.id, calendarName: cal.summary });
+                      }}
+                      className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      disabled={selectM.isPending}
+                    >
+                      <option value="" disabled>Selecione um calendário...</option>
+                      {(calendarsQ.data?.calendars ?? []).map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.summary} {c.primary ? "(principal)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {data.calendarName && (
+                      <p className="text-[11px] text-muted-foreground">
+                        Atualmente em uso: <span className="font-medium">{data.calendarName}</span>
+                      </p>
+                    )}
+                    {selectM.isPending && (
+                      <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Salvando…
+                      </p>
+                    )}
+                  </>
+                )}
+                <p className="text-[11px] text-muted-foreground">
+                  O agente buscará janelas livres e criará eventos neste calendário.
+                </p>
+              </div>
+
               <Button variant="outline" className="w-full" onClick={() => disconnectM.mutate()} disabled={disconnectM.isPending}>
                 {disconnectM.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Desconectar Google Calendar
@@ -2958,7 +3075,7 @@ function GoogleCalendarPanel({ accountId }: { accountId: string }) {
             </>
           ) : (
             <>
-              <p className="text-xs text-muted-foreground">Conecte sua conta Google para que o agente possa verificar disponibilidade e criar agendamentos.</p>
+              <p className="text-xs text-muted-foreground">Conecte sua conta Google para que o agente possa verificar disponibilidade e criar agendamentos. Após o login, escolha qual calendário será usado.</p>
               <Button onClick={connect} disabled={connecting} className="w-full">
                 {connecting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
                 Conectar com Google
