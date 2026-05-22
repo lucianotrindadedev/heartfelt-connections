@@ -12,6 +12,7 @@
 import { z } from "zod";
 import type { AgentContext, AgentResult } from "./context";
 import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
+import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
 import { loadHelenaAccount, setHelenaContactTags } from "@/lib/helena.server";
 
@@ -22,10 +23,10 @@ const ResultSchema = z.object({
   next_stage: z.enum(VALID_STAGES),
   lead_data_patch: z
     .object({
-      name: z.string().optional(),
-      interest: z.string().optional(),
-      notes: z.string().optional(),
-      escalation_reason: z.string().optional(),
+      name: z.string().nullish(),
+      interest: z.string().nullish(),
+      notes: z.string().nullish(),
+      escalation_reason: z.string().nullish(),
     })
     .optional(),
   reasoning: z.string().optional(),
@@ -286,13 +287,13 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       enableCaching: ctx.model.startsWith("anthropic/"),
       toolChoice: "none",
     },
-    (raw) => ResultSchema.parse(raw),
+    (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
   );
 
-  const mergedPatch: Partial<LeadData> = {
+  const mergedPatch = {
     ...accumulatedPatch,
-    ...(result.lead_data_patch ?? {}),
-  };
+    ...stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>),
+  } as Partial<LeadData>;
 
   return {
     reply: result.reply,

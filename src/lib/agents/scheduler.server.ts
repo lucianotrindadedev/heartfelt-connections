@@ -10,6 +10,7 @@
 //   só funciona se já temos selected_slot_iso + name).
 
 import { z } from "zod";
+import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import {
   listClinicorpSlots,
   createClinicorpAppointment,
@@ -29,14 +30,14 @@ const ResultSchema = z.object({
   next_stage: z.enum(VALID_STAGES),
   lead_data_patch: z
     .object({
-      name: z.string().optional(),
-      selected_slot_iso: z.string().optional(),
-      dentist_person_id: z.number().optional(),
-      commitment_confirmed: z.boolean().optional(),
-      patient_id: z.number().optional(),
-      appointment_id: z.union([z.number(), z.string()]).optional(),
-      notes: z.string().optional(),
-      escalation_reason: z.string().optional(),
+      name: z.string().nullish(),
+      selected_slot_iso: z.string().nullish(),
+      dentist_person_id: z.number().nullish(),
+      commitment_confirmed: z.boolean().nullish(),
+      patient_id: z.number().nullish(),
+      appointment_id: z.union([z.number(), z.string()]).nullish(),
+      notes: z.string().nullish(),
+      escalation_reason: z.string().nullish(),
     })
     .optional(),
   reasoning: z.string().optional(),
@@ -398,11 +399,14 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       enableCaching: ctx.model.startsWith("anthropic/"),
       toolChoice: "none",
     },
-    (raw) => ResultSchema.parse(raw),
+    (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
   );
 
   // Merge final do patch: o que o LLM declarou + o que veio de tools.
-  const mergedPatch: Partial<LeadData> = { ...accumulatedPatch, ...(result.lead_data_patch ?? {}) };
+  const mergedPatch = {
+    ...accumulatedPatch,
+    ...stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>),
+  } as Partial<LeadData>;
 
   return {
     reply: result.reply,

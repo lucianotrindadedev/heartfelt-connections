@@ -25,6 +25,7 @@ import { enqueueMessage } from "@/lib/message-queue.server";
 import { splitMessage, typingDelayMs } from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 import type { AgentContext, AgentResult } from "./context";
+import { stripNullishFields } from "./parse-llm-json.server";
 import { runQualifierAgent } from "./qualifier.server";
 import { runSchedulerAgent } from "./scheduler.server";
 import {
@@ -339,7 +340,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     // 11. Aplica transição validada + merge de lead_data
     const newStage = resolveNextStage(stage, result.next_stage);
-    const newLeadData: LeadData = { ...leadData, ...(result.lead_data_patch ?? {}) };
+    const patch = stripNullishFields(
+      (result.lead_data_patch ?? {}) as Record<string, unknown>,
+    ) as Partial<LeadData>;
+    const newLeadData: LeadData = { ...leadData, ...patch };
 
     // 12. Persiste e entrega
     await persistStageAndLeadData(conversationId, meta, newStage, newLeadData, route);
@@ -391,10 +395,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       .gt("criado_em", turnStartedAt)
       .limit(1);
     if (newer.data && newer.data.length > 0) {
-      console.log(`[orch] nova mensagem durante turn — re-executando ${conversationId}`);
-      void runAgentTurn(conversationId).catch((e) =>
-        console.error(`[orch] re-run falhou: ${e instanceof Error ? e.message : e}`),
+      const debounceSec = Math.min(
+        5,
+        (agent.data.debounce_segundos as number | null) ?? 20,
       );
+      console.log(
+        `[orch] nova mensagem durante turn — reagendando em ${debounceSec}s ${conversationId}`,
+      );
+      const { scheduleConversationAgentTurn } = await import(
+        "@/lib/schedule-agent-turn.server"
+      );
+      scheduleConversationAgentTurn(conversationId, debounceSec, 0);
     }
   }
 }
