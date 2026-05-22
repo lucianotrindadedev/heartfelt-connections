@@ -38,7 +38,7 @@ console.log("🔨  Building TanStack Start (Node.js target)...");
 const buildResult = spawnSync("npm", ["run", "build"], {
   stdio: "inherit",
   shell: true,
-  env: { ...process.env, VERCEL: "1" },
+  env: { ...process.env, VERCEL: "1", NODE_ENV: "production" },
   cwd: ROOT,
 });
 if (buildResult.status !== 0) {

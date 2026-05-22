@@ -3,9 +3,8 @@ FROM node:22-bookworm-slim AS builder
 
 WORKDIR /app
 
-# Coolify pode injetar NODE_ENV=production no build — força instalar devDependencies (vite, esbuild)
+# Coolify pode injetar NODE_ENV=production — NPM_CONFIG_PRODUCTION=false ainda instala devDeps (vite, esbuild)
 ENV NPM_CONFIG_PRODUCTION=false
-ENV NODE_ENV=development
 
 COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
@@ -18,6 +17,8 @@ ARG VITE_SUPABASE_PUBLISHABLE_KEY
 ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL
 ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
 
+# Vite/SSR deve emitir jsx (production), não jsxDEV — senão o runtime em NODE_ENV=production quebra
+ENV NODE_ENV=production
 RUN npm run build:vercel
 
 # ── runtime ──
