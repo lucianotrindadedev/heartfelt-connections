@@ -93,6 +93,54 @@ type SheetKey =
   | "warmup"
   | "escalation";
 
+// =================================================================
+// Blocker: conta não cadastrada
+// =================================================================
+function AccountNotRegisteredBlocker({ accountId }: { accountId: string }) {
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/90 p-6 backdrop-blur-sm">
+      <div className="w-full max-w-md overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+        {/* Header colorido */}
+        <div className="bg-gradient-to-br from-amber-400 to-orange-500 px-6 py-8 text-center">
+          <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-white/20 backdrop-blur-sm">
+            <AlertCircle className="h-8 w-8 text-white" />
+          </div>
+          <h1 className="mt-4 text-xl font-bold text-white">Agente não disponível</h1>
+          <p className="mt-1 text-sm text-white/90">
+            Esta conta ainda não está cadastrada na plataforma Sarai.
+          </p>
+        </div>
+
+        {/* Conteúdo */}
+        <div className="space-y-4 px-6 py-6">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              ID da conta solicitada
+            </p>
+            <p className="mt-1 break-all font-mono text-xs text-slate-700">{accountId}</p>
+          </div>
+
+          <div className="space-y-2 text-sm text-slate-600">
+            <p>
+              O assistente virtual ainda não foi liberado para esta conta. Para ativar:
+            </p>
+            <ol className="list-decimal space-y-1 pl-5 text-xs">
+              <li>Entre em contato com o suporte Sarai</li>
+              <li>Envie o ID acima para liberação</li>
+              <li>Após o cadastro, recarregue esta página</li>
+            </ol>
+          </div>
+
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+            <strong className="font-semibold">Importante:</strong> sem cadastro prévio,
+            nenhum agente é provisionado para esta conta — esta é uma medida de segurança.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function EmbedHome() {
   const { accountId } = Route.useParams();
   const qc = useQueryClient();
@@ -102,10 +150,18 @@ function EmbedHome() {
 
   const [openSheet, setOpenSheet] = useState<SheetKey>(null);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ["agent", accountId],
     queryFn: () => fetchAgent({ data: { accountId } }),
+    retry: false,
   });
+
+  // Conta não cadastrada → blocker em tela cheia
+  const notRegistered =
+    error instanceof Error && error.message.includes("ACCOUNT_NOT_REGISTERED");
+  if (notRegistered) {
+    return <AccountNotRegisteredBlocker accountId={accountId} />;
+  }
 
   const toggleAtivo = useMutation({
     mutationFn: (ativo: boolean) => updateAgentFn({ data: { accountId, ativo } }),

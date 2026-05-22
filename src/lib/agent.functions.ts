@@ -4,13 +4,29 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 
 const accountIdInput = z.object({ accountId: z.string().min(1) });
 
-// Garante que existe accounts + agents + linhas filhas para a conta.
-async function ensureAccount(accountId: string, nome?: string) {
+/**
+ * Erro lançado quando a conta NÃO está cadastrada na plataforma.
+ * O embed captura isso e exibe a tela de "Agente não disponível".
+ */
+export const ACCOUNT_NOT_REGISTERED = "ACCOUNT_NOT_REGISTERED";
+
+/**
+ * Verifica se a conta existe (sem auto-provisionar).
+ * Se existir mas faltar agent / linhas filhas, cria-as.
+ * Se NÃO existir, lança ACCOUNT_NOT_REGISTERED.
+ */
+async function ensureAccount(accountId: string) {
   const sb = getSelfhost();
-  await sb.from("accounts").upsert(
-    { id: accountId, nome: nome ?? accountId },
-    { onConflict: "id", ignoreDuplicates: true }
-  );
+
+  // 1. Verifica se a conta existe — NÃO cria automaticamente
+  const { data: accountRow } = await sb
+    .from("accounts")
+    .select("id")
+    .eq("id", accountId)
+    .maybeSingle();
+  if (!accountRow) throw new Error(ACCOUNT_NOT_REGISTERED);
+
+  // 2. Conta existe — garante o agent e as linhas filhas (retrocompat)
   const { data: existing } = await sb
     .from("agents")
     .select("id")
