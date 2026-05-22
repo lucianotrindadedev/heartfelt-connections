@@ -26,10 +26,30 @@ export const getGoogleAuthUrl = createServerFn({ method: "GET" })
   .inputValidator((d) => accountIdInput.parse(d))
   .handler(async ({ data }) => {
     const clientId = process.env.GOOGLE_CLIENT_ID;
-    const redirectUri =
-      process.env.GOOGLE_REDIRECT_URI ?? `${process.env.APP_BASE_URL ?? ""}/api/public/auth/google/callback`;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
-    if (!clientId) throw new Error("GOOGLE_CLIENT_ID não configurado");
+    if (!clientId) {
+      throw new Error(
+        "GOOGLE_CLIENT_ID não configurado no servidor. Configure as variáveis de ambiente GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_REDIRECT_URI no Coolify.",
+      );
+    }
+    if (!clientSecret) {
+      throw new Error(
+        "GOOGLE_CLIENT_SECRET não configurado no servidor.",
+      );
+    }
+
+    const explicitRedirect = process.env.GOOGLE_REDIRECT_URI;
+    const baseUrl = process.env.APP_BASE_URL;
+
+    const redirectUri = explicitRedirect
+      || (baseUrl ? `${baseUrl.replace(/\/$/, "")}/api/public/auth/google/callback` : null);
+
+    if (!redirectUri) {
+      throw new Error(
+        "Nem GOOGLE_REDIRECT_URI nem APP_BASE_URL estão configurados no servidor.",
+      );
+    }
 
     const params = new URLSearchParams({
       client_id: clientId,

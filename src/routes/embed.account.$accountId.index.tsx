@@ -2078,8 +2078,10 @@ function TemplateGCalSetup({
           onSuccess();
         }
       }, 500);
-    } catch {
-      toast.error("Erro ao gerar URL de autenticação.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[gcal-auth]", e);
+      toast.error(`Erro ao gerar URL: ${msg.slice(0, 200)}`);
       setConnecting(false);
     }
   }
@@ -2969,8 +2971,10 @@ function GoogleCalendarPanel({ accountId }: { accountId: string }) {
           qc.invalidateQueries({ queryKey: ["gcal-list", accountId] });
         }
       }, 500);
-    } catch {
-      toast.error("Erro ao gerar URL de autenticação.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[gcal-auth]", e);
+      toast.error(`Erro ao gerar URL: ${msg.slice(0, 200)}`);
       setConnecting(false);
     }
   }
