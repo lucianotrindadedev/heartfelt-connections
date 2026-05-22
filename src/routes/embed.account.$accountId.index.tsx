@@ -2062,7 +2062,33 @@ function TemplateGCalSetup({
   onSuccess: () => void;
   onSkip: () => void;
 }) {
+  const getStatus = useServerFn(getGoogleCalendarStatusFn);
+  const listCalendars = useServerFn(listGoogleCalendarsFn);
+  const selectCalendar = useServerFn(selectGoogleCalendarFn);
   const [connecting, setConnecting] = useState(false);
+
+  // Status da conexão Google
+  const statusQ = useQuery({
+    queryKey: ["gcal-status", accountId],
+    queryFn: () => getStatus({ data: { accountId } }),
+  });
+
+  // Calendários disponíveis (só busca quando conectado)
+  const calendarsQ = useQuery({
+    queryKey: ["gcal-list", accountId],
+    queryFn: () => listCalendars({ data: { accountId } }),
+    enabled: !!statusQ.data?.connected,
+  });
+
+  const selectM = useMutation({
+    mutationFn: (input: { calendarId: string; calendarName: string }) =>
+      selectCalendar({ data: { accountId, ...input } }),
+    onSuccess: () => {
+      toast.success("Calendário selecionado");
+      qc.invalidateQueries({ queryKey: ["gcal-status", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar"),
+  });
 
   async function connect() {
     setConnecting(true);
@@ -2074,8 +2100,10 @@ function TemplateGCalSetup({
         if (popup.closed) {
           clearInterval(check);
           setConnecting(false);
+          // Atualiza status + lista — NÃO chama onSuccess ainda; usuário precisa
+          // escolher o calendário primeiro.
           qc.invalidateQueries({ queryKey: ["gcal-status", accountId] });
-          onSuccess();
+          qc.invalidateQueries({ queryKey: ["gcal-list", accountId] });
         }
       }, 500);
     } catch (e) {
@@ -2086,20 +2114,93 @@ function TemplateGCalSetup({
     }
   }
 
+  const connected = !!statusQ.data?.connected;
+  const hasCalendarSelected = !!statusQ.data?.calendarId && !!statusQ.data?.calendarName;
+
+  // ── Estado: ainda não conectado ──
+  if (!connected) {
+    return (
+      <div className="p-6 space-y-4">
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+          <p className="text-sm font-semibold text-blue-800">Este template requer o Google Calendar</p>
+          <p className="mt-1 text-xs text-blue-700">
+            Conecte sua conta Google. Depois você escolhe qual agenda o agente vai usar.
+          </p>
+        </div>
+        <Button onClick={connect} disabled={connecting} className="w-full bg-blue-600 hover:bg-blue-700">
+          {connecting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
+          Conectar com Google
+        </Button>
+        <button onClick={onSkip} className="w-full text-center text-xs text-muted-foreground hover:text-foreground">
+          Pular configuração e aplicar mesmo assim
+        </button>
+      </div>
+    );
+  }
+
+  // ── Estado: conectado → mostrar seletor de calendário ──
   return (
     <div className="p-6 space-y-4">
-      <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
-        <p className="text-sm font-semibold text-blue-800">Este template requer o Google Calendar</p>
-        <p className="mt-1 text-xs text-blue-700">
-          Conecte sua conta Google para que o agente possa verificar disponibilidade e criar agendamentos.
-        </p>
+      <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+        <div className="flex items-center gap-2">
+          <Check className="h-4 w-4 text-emerald-600" />
+          <p className="text-sm font-semibold text-emerald-800">Conta Google conectada</p>
+        </div>
+        {statusQ.data?.email && (
+          <p className="mt-1 text-xs text-emerald-700">Conta: {statusQ.data.email}</p>
+        )}
       </div>
-      <Button onClick={connect} disabled={connecting} className="w-full bg-blue-600 hover:bg-blue-700">
-        {connecting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
-        Conectar com Google e aplicar template
+
+      <div className="space-y-2">
+        <Label className="text-xs font-medium">Selecione a agenda para os agendamentos</Label>
+        {calendarsQ.isLoading ? (
+          <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando agendas…
+          </div>
+        ) : calendarsQ.error ? (
+          <p className="text-xs text-destructive">
+            Erro ao listar agendas: {calendarsQ.error instanceof Error ? calendarsQ.error.message : "desconhecido"}
+          </p>
+        ) : (
+          <>
+            <select
+              value={statusQ.data?.calendarId ?? ""}
+              onChange={(e) => {
+                const cal = calendarsQ.data?.calendars.find((c) => c.id === e.target.value);
+                if (cal) selectM.mutate({ calendarId: cal.id, calendarName: cal.summary });
+              }}
+              disabled={selectM.isPending}
+              className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+            >
+              <option value="" disabled>Selecione uma agenda...</option>
+              {(calendarsQ.data?.calendars ?? []).map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.summary} {c.primary ? "(principal)" : ""}
+                </option>
+              ))}
+            </select>
+            <p className="text-[11px] text-muted-foreground">
+              O agente buscará janelas livres e criará eventos nesta agenda.
+            </p>
+            {selectM.isPending && (
+              <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> Salvando…
+              </p>
+            )}
+          </>
+        )}
+      </div>
+
+      <Button
+        onClick={onSuccess}
+        disabled={!hasCalendarSelected || selectM.isPending}
+        className="w-full bg-blue-600 hover:bg-blue-700"
+      >
+        {hasCalendarSelected ? "Aplicar template" : "Selecione uma agenda para continuar"}
       </Button>
+
       <button onClick={onSkip} className="w-full text-center text-xs text-muted-foreground hover:text-foreground">
-        Pular configuração e aplicar mesmo assim
+        Pular e aplicar mesmo assim
       </button>
     </div>
   );
