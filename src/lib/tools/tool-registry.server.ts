@@ -21,14 +21,32 @@ const GCAL_TOOLS: ToolDefinition[] = [
     function: {
       name: "listar_horarios_google_calendar",
       description:
-        "Lista horários disponíveis no Google Calendar do consultório. Use antes de sugerir qualquer horário. Ofereça no máximo 2 opções.",
+        "Lista janelas DISPONÍVEIS na agenda Google do consultório (já filtradas por expediente da clínica e sem conflito com eventos existentes). Sempre use antes de oferecer qualquer horário. Evite períodos muito amplos: para perguntas tipo 'amanhã às 14h', use uma margem (ex: 12h às 16h). Ofereça no máximo 2 opções ao paciente.",
       parameters: {
         type: "object",
         properties: {
-          de: { type: "string", description: "Data/hora inicial ISO 8601 (ex: 2024-03-15T08:00:00-03:00)" },
-          ate: { type: "string", description: "Data/hora final ISO 8601 (ex: 2024-03-15T18:00:00-03:00)" },
+          periodo_inicio: {
+            type: "string",
+            description: "Início do período a buscar (ISO 8601 com fuso, ex: 2026-03-15T08:00:00-03:00). Deve estar no futuro.",
+          },
+          periodo_fim: {
+            type: "string",
+            description: "Fim do período a buscar (ISO 8601 com fuso). Use a janela necessária do expediente.",
+          },
+          tamanho_janela_minutos: {
+            type: "integer",
+            description: "Duração de cada slot em minutos. Valores válidos: 10, 15, 20, 30, 40, 45, 60, 90, 120. Default: 40.",
+          },
+          granularidade: {
+            type: "integer",
+            description: "Espaçamento entre slots em minutos (mesmo conjunto de valores válidos). Default: 30.",
+          },
+          amostras: {
+            type: "integer",
+            description: "Número de slots a sortear aleatoriamente do conjunto disponível. Default: retorna todos.",
+          },
         },
-        required: ["de", "ate"],
+        required: ["periodo_inicio", "periodo_fim"],
       },
     },
   },
@@ -37,16 +55,61 @@ const GCAL_TOOLS: ToolDefinition[] = [
     function: {
       name: "agendar_google_calendar",
       description:
-        "Cria agendamento no Google Calendar. Só use após confirmar o horário com o paciente.",
+        "Cria evento na agenda Google. Só use após: (1) listar_horarios_google_calendar confirmando disponibilidade, (2) confirmar nome e horário com o paciente. Nunca confirme ao paciente antes do retorno de sucesso.",
       parameters: {
         type: "object",
         properties: {
-          titulo: { type: "string", description: "Título do evento (ex: Avaliação - João)" },
-          inicio: { type: "string", description: "Início ISO 8601" },
-          fim: { type: "string", description: "Fim ISO 8601" },
-          descricao: { type: "string", description: "Detalhes adicionais (opcional)" },
+          evento_inicio: { type: "string", description: "Início do evento (ISO 8601 com fuso)" },
+          duracao_minutos: { type: "integer", description: "Duração do evento em minutos (ex: 40)" },
+          titulo: { type: "string", description: "Título do evento (ex: 'Consulta - João Silva')" },
+          descricao: { type: "string", description: "Descrição livre (resumo da queixa / interesse principal do paciente)" },
         },
-        required: ["titulo", "inicio", "fim"],
+        required: ["evento_inicio", "duracao_minutos", "titulo"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "buscar_agendamentos_google_calendar",
+      description:
+        "Busca agendamentos futuros do paciente atual na agenda Google. Use ANTES de criar um novo agendamento para evitar duplicidade, ou quando o paciente quiser cancelar/remarcar. A busca usa o telefone do contato (já no contexto).",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "atualizar_agendamento_google_calendar",
+      description:
+        "Atualiza apenas título e/ou descrição de um agendamento já existente (não muda horário). Para mudar horário, cancele e crie outro.",
+      parameters: {
+        type: "object",
+        properties: {
+          id_evento: { type: "string", description: "ID do evento (retornado por buscar_agendamentos_google_calendar ou agendar_google_calendar)" },
+          titulo: { type: "string", description: "Novo título (opcional)" },
+          descricao: { type: "string", description: "Nova descrição (opcional)" },
+        },
+        required: ["id_evento"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancelar_agendamento_google_calendar",
+      description:
+        "Cancela (deleta) um agendamento na agenda Google. Use o id_evento retornado por buscar_agendamentos_google_calendar. Confirme com o paciente antes.",
+      parameters: {
+        type: "object",
+        properties: {
+          id_evento: { type: "string", description: "ID do evento a cancelar" },
+        },
+        required: ["id_evento"],
       },
     },
   },

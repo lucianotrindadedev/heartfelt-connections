@@ -3,7 +3,11 @@ import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { encryptValue } from "@/lib/crypto.server";
 import { resetConversationHistory } from "@/lib/reset-conversation.server";
-import { getGoogleCalendarStatus } from "@/lib/tools/google-calendar.server";
+import {
+  getGoogleCalendarStatus,
+  listAvailableCalendars,
+  selectGoogleCalendar,
+} from "@/lib/tools/google-calendar.server";
 
 const accountIdInput = z.object({ accountId: z.string().min(1) });
 const agentIdInput = z.object({ agentId: z.string().uuid() });
@@ -52,6 +56,29 @@ export const disconnectGoogleCalendar = createServerFn({ method: "POST" })
       .from("google_calendar_tokens")
       .update({ ativo: false })
       .eq("account_id", data.accountId);
+    return { ok: true };
+  });
+
+/** Lista calendários disponíveis na conta Google conectada (writer ou owner). */
+export const listGoogleCalendarsFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const calendars = await listAvailableCalendars(data.accountId);
+    return { calendars };
+  });
+
+/** Salva qual calendário será usado pelo agente para agendar. */
+export const selectGoogleCalendarFn = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput
+      .extend({
+        calendarId: z.string().min(1).max(300),
+        calendarName: z.string().max(300).optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    await selectGoogleCalendar(data.accountId, data.calendarId, data.calendarName);
     return { ok: true };
   });
 

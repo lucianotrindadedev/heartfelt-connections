@@ -57,6 +57,28 @@ export const Route = createFileRoute("/api/public/auth/google/callback")({
             ? ((await infoRes.json()) as { email?: string })
             : null;
 
+          // Busca o calendário primário do usuário (nome amigável p/ UI)
+          let primaryCalendarId = "primary";
+          let primaryCalendarName: string | null = null;
+          try {
+            const calRes = await fetch(
+              "https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer",
+              { headers: { Authorization: `Bearer ${tokens.access_token}` } },
+            );
+            if (calRes.ok) {
+              const calJson = (await calRes.json()) as {
+                items?: { id: string; summary: string; primary?: boolean }[];
+              };
+              const primary = (calJson.items ?? []).find((c) => c.primary);
+              if (primary) {
+                primaryCalendarId = primary.id;
+                primaryCalendarName = primary.summary;
+              }
+            }
+          } catch {
+            // segue com fallback "primary"
+          }
+
           const expiresAt = new Date(
             Date.now() + (tokens.expires_in ?? 3600) * 1000,
           ).toISOString();
@@ -68,6 +90,8 @@ export const Route = createFileRoute("/api/public/auth/google/callback")({
               access_token_enc: await encryptValue(tokens.access_token),
               refresh_token_enc: await encryptValue(tokens.refresh_token),
               email: info?.email ?? null,
+              calendar_id: primaryCalendarId,
+              calendar_name: primaryCalendarName,
               expires_at: expiresAt,
               ativo: true,
               atualizado_em: new Date().toISOString(),

@@ -17,6 +17,12 @@ import {
   findClinicorpPatient,
   type ClinicorpSlot,
 } from "@/lib/tools/clinicorp.server";
+import {
+  listGoogleCalendarSlots,
+  createGoogleCalendarEvent,
+  findGoogleCalendarEventsByPhone,
+  type GCalSlot,
+} from "@/lib/tools/google-calendar.server";
 import type { AgentContext, AgentResult } from "./context";
 import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
 import type { LeadData, Stage } from "./stage";
@@ -113,6 +119,32 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
   if (!ctx.effectivePhone) {
     return { result: JSON.stringify({ found: false, reason: "no_phone" }) };
   }
+
+  // Google Calendar: usa busca por telefone na descrição dos eventos
+  if (ctx.integrations.googleCalendar) {
+    try {
+      const events = await findGoogleCalendarEventsByPhone(ctx.accountId, ctx.effectivePhone);
+      if (events.length === 0) {
+        return { result: JSON.stringify({ found: false }) };
+      }
+      // Retorna o próximo agendamento futuro
+      const next = events.sort((a, b) => a.inicio.localeCompare(b.inicio))[0];
+      return {
+        result: JSON.stringify({
+          found: true,
+          appointment_id: next.id,
+          titulo: next.titulo,
+          inicio: next.inicio,
+        }),
+        patch: { appointment_id: next.id },
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { result: JSON.stringify({ found: false, error: msg.slice(0, 200) }) };
+    }
+  }
+
+  // Default: Clinicorp
   const patient = await findClinicorpPatient(ctx.accountId, ctx.effectivePhone);
   if (!patient?.id) {
     return { result: JSON.stringify({ found: false }) };
@@ -148,12 +180,44 @@ function formatSlot(s: ClinicorpSlot): {
   };
 }
 
+function formatGCalSlot(s: GCalSlot): {
+  iso: string;
+  date_label: string;
+  time_label: string;
+} {
+  return {
+    iso: s.inicio,
+    date_label: s.date_label,
+    time_label: s.time_label,
+  };
+}
+
 async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
 ): Promise<ToolOutcome> {
   const today = new Date();
   const end = new Date(today.getTime() + (diasAFrente ?? 7) * 24 * 60 * 60 * 1000);
+
+  // Google Calendar: usa lógica de janelas com expediente da clínica
+  if (ctx.integrations.googleCalendar) {
+    const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
+    const slots = await listGoogleCalendarSlots(ctx.accountId, {
+      periodoInicio: today.toISOString(),
+      periodoFim: end.toISOString(),
+      tamanhoJanelaMinutos: duracao,
+      granularidade: Math.min(duracao, 30),
+      amostras: 6,
+      businessHoursJson: ctx.agentSettings.business_hours_json,
+    });
+    const formatted = slots.map(formatGCalSlot);
+    return {
+      result: JSON.stringify({ count: formatted.length, slots: formatted }),
+      patch: { offered_slots: formatted },
+    };
+  }
+
+  // Default: Clinicorp
   const fmt = (d: Date) =>
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
 
@@ -178,6 +242,29 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
     return { result: JSON.stringify({ ok: false, error: "telefone ausente" }) };
   }
 
+  // Google Calendar
+  if (ctx.integrations.googleCalendar) {
+    try {
+      const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
+      const interest = ld.interest ? ` — ${ld.interest}` : "";
+      const ev = await createGoogleCalendarEvent(ctx.accountId, {
+        eventoInicio: ld.selected_slot_iso,
+        duracaoMinutos: duracao,
+        titulo: `Consulta - ${ld.name}${interest}`,
+        descricao: ld.notes ?? "",
+        telefone: ctx.effectivePhone,
+      });
+      return {
+        result: JSON.stringify({ ok: true, appointment_id: ev.id, datetime: ev.start }),
+        patch: { appointment_id: ev.id },
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300) }) };
+    }
+  }
+
+  // Default: Clinicorp
   try {
     const appt = await createClinicorpAppointment(ctx.accountId, {
       phone: ctx.effectivePhone,
