@@ -37,13 +37,16 @@ export async function dispatchInboundAgentTurn(
 ): Promise<void> {
   scheduleConversationAgentTurn(conversationId, delaySeconds);
 
-  if (isRedisAgentQueueActive()) {
-    return;
+  // Rede de segurança SEMPRE ativa (Postgres message_queue + pg_cron):
+  // se o Redis worker estiver caído ou o BullMQ não consumir, o pg_cron pega
+  // o backup. Custo: 1 INSERT por turn (negligenciável). O lock no
+  // orchestrator garante que o mesmo turn não roda 2x.
+  try {
+    const { enqueueMessage } = await import("@/lib/message-queue.server");
+    await enqueueMessage(conversationId, delaySeconds + QUEUE_BACKUP_EXTRA_SEC);
+  } catch (e) {
+    console.error("[schedule] enqueueMessage backup falhou:", e);
   }
-
-  // Rede de segurança (Postgres): cron processa se drain HTTP falhar.
-  const { enqueueMessage } = await import("@/lib/message-queue.server");
-  await enqueueMessage(conversationId, delaySeconds + QUEUE_BACKUP_EXTRA_SEC);
 }
 
 async function runTurnWithLockRetries(
