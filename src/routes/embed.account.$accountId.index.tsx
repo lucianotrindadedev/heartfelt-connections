@@ -145,6 +145,7 @@ function EmbedHome() {
         initialPrompt={(agent.system_prompt as string | null) ?? ""}
         initialNome={(agent.nome as string) ?? ""}
         agentSettings={(agent.settings as Record<string, string> | null) ?? {}}
+        configuredIntegrations={data.configured_integrations ?? { clinicorp: false, clinup: false, google_calendar: false }}
         onClose={() => setOpenSheet(null)}
       />
     );
@@ -663,12 +664,14 @@ function TrainingView({
   initialPrompt,
   initialNome,
   agentSettings,
+  configuredIntegrations,
   onClose,
 }: {
   accountId: string;
   initialPrompt: string;
   initialNome: string;
   agentSettings: Record<string, string>;
+  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -849,6 +852,7 @@ function TrainingView({
             autosave={autosave}
             onAutosaveChange={setAutosave}
             onSave={() => void doSave()}
+            configuredIntegrations={configuredIntegrations}
           />
         </>
       ) : (
@@ -976,6 +980,7 @@ function PromptEditor({
   autosave,
   onAutosaveChange,
   onSave,
+  configuredIntegrations,
 }: {
   initialContent: string;
   onChange: (md: string) => void;
@@ -984,9 +989,22 @@ function PromptEditor({
   autosave: boolean;
   onAutosaveChange: (v: boolean) => void;
   onSave: () => void;
+  configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
 }) {
   const [showColorPicker, setShowColorPicker] = useState<"text" | "highlight" | null>(null);
   const [showToolsPicker, setShowToolsPicker] = useState(false);
+
+  // Filtra os grupos de tools pelas integrações configuradas neste agente.
+  // Grupos "sempre visíveis": Qualificação, Escalada e Helena CRM.
+  const visibleTools = useMemo(() => {
+    const ci = configuredIntegrations;
+    return PROMPT_TOOLS.filter((g) => {
+      if (g.group.startsWith("Clinicorp")) return !!ci?.clinicorp;
+      if (g.group.startsWith("Clinup"))    return !!ci?.clinup;
+      if (g.group.startsWith("Google"))    return !!ci?.google_calendar;
+      return true; // Qualificação, Escalada, Helena — sempre
+    });
+  }, [configuredIntegrations]);
 
   const editor = useEditor({
     extensions: [
@@ -1220,34 +1238,44 @@ function PromptEditor({
           </button>
 
           {showToolsPicker && (
-            <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden">
-              <div className="max-h-80 overflow-y-auto">
-                {PROMPT_TOOLS.map((group) => (
-                  <div key={group.group}>
-                    <div className="sticky top-0 bg-slate-50 px-3 py-1.5 border-b border-slate-100">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{group.group}</p>
+            <div className="absolute left-0 top-full z-30 mt-1 w-72 rounded-xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
+              {visibleTools.length === 0 ? (
+                <div className="px-4 py-6 text-center">
+                  <p className="text-xs font-medium text-slate-500">Nenhuma integração configurada</p>
+                  <p className="mt-1 text-[11px] text-slate-400">Configure uma integração para ver as tools disponíveis.</p>
+                </div>
+              ) : (
+                <div className="max-h-96 overflow-y-auto overscroll-contain">
+                  {visibleTools.map((group) => (
+                    <div key={group.group}>
+                      <div className="sticky top-0 bg-slate-50 px-3 py-2 border-b border-slate-100">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{group.group}</p>
+                      </div>
+                      {group.tools.map((tool) => (
+                        <button
+                          key={tool.name}
+                          type="button"
+                          onMouseDown={(e) => {
+                            // onMouseDown + preventDefault preserva o foco do editor
+                            e.preventDefault();
+                            // Insere como HTML — forma mais confiável no TipTap
+                            editor.chain().focus().insertContent(
+                              `<code>${tool.name}</code>&nbsp;`
+                            ).run();
+                            setShowToolsPicker(false);
+                          }}
+                          className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-primary/5 active:bg-primary/10 transition-colors"
+                        >
+                          <code className="shrink-0 rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold text-primary whitespace-nowrap">
+                            {tool.name}
+                          </code>
+                          <span className="text-[11px] text-slate-500 leading-snug">{tool.desc}</span>
+                        </button>
+                      ))}
                     </div>
-                    {group.tools.map((tool) => (
-                      <button
-                        key={tool.name}
-                        onClick={() => {
-                          editor.chain().focus().insertContent([
-                            { type: "text", marks: [{ type: "code" }], text: tool.name },
-                            { type: "text", text: " " },
-                          ]).run();
-                          setShowToolsPicker(false);
-                        }}
-                        className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-slate-50 transition-colors"
-                      >
-                        <code className="mt-0.5 shrink-0 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
-                          {tool.name}
-                        </code>
-                        <span className="text-[11px] text-slate-500 leading-snug">{tool.desc}</span>
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
