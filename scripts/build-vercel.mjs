@@ -86,7 +86,7 @@ await esbuild({
   entryPoints: [join(DIST_SERVER, "server.js")],
   bundle: true,
   platform: "node",
-  target: "node20",
+  target: "node22",
   format: "cjs",
   outfile: join(FUNC_DIR, "server-bundle.cjs"),
   external: ["*.node"],
@@ -154,7 +154,9 @@ await writeFile(
   join(FUNC_DIR, ".vc-config.json"),
   JSON.stringify(
     {
-      runtime: "nodejs20.x",
+      // nodejs22.x tem WebSocket nativo — resolve "Node.js 20 detected without
+      // native WebSocket support" do @supabase/supabase-js RealtimeClient.
+      runtime: "nodejs22.x",
       handler: "index.js",
       launcherType: "Nodejs",
       supportsResponseStreaming: false,
