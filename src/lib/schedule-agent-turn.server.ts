@@ -30,7 +30,10 @@ export function hasBackgroundTaskSupport(): boolean {
 
 /**
  * Dispara UM único caminho de execução após debounce.
- * Antes: enqueue + schedule rodavam juntos → dois turnos e mensagens duplicadas.
+ *
+ * Na Vercel Build Output API o handler custom não expõe waitUntil no globalThis.
+ * Nesse caso NÃO usar só message_queue — o pg_cron roda a cada 1 min (~0–60s de atraso
+ * mesmo com debounce=0). Preferir drain HTTP (nova invocação imediata).
  */
 export async function dispatchInboundAgentTurn(
   conversationId: string,
@@ -40,6 +43,17 @@ export async function dispatchInboundAgentTurn(
     scheduleConversationAgentTurn(conversationId, delaySeconds);
     return;
   }
+
+  const base = resolveAppBaseUrl();
+  const secret = process.env.CRON_SECRET;
+  if (base && secret) {
+    scheduleConversationAgentTurn(conversationId, delaySeconds);
+    return;
+  }
+
+  console.warn(
+    "[schedule] APP_URL/CRON_SECRET ausente — agente só via pg_cron (até ~60s de atraso)",
+  );
   const { enqueueMessage } = await import("@/lib/message-queue.server");
   await enqueueMessage(conversationId, delaySeconds);
 }
@@ -108,10 +122,6 @@ export function scheduleConversationAgentTurn(
     return;
   }
 
-  if (delaySeconds <= 0) {
-    void task();
-    return;
-  }
-
+  // Sem waitUntil: void task() morre quando o webhook encerra res.end() na mesma invocação.
   triggerDrainHttp(conversationId, delaySeconds, lockRetry);
 }

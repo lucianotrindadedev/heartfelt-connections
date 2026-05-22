@@ -110,6 +110,14 @@ const serverModule = require("./server-bundle.cjs");
 const server = serverModule?.default ?? serverModule;
 
 module.exports = async function handler(req, res) {
+  // waitUntil do Vercel — permite rodar o agente após responder o webhook (sem esperar cron 1min)
+  try {
+    const vf = require("@vercel/functions");
+    if (typeof vf.waitUntil === "function") {
+      globalThis.waitUntil = vf.waitUntil;
+    }
+  } catch (_) {}
+
   // ── Constrói URL completa (Vercel IncomingMessage.url é só o path) ─────
   const proto = req.headers["x-forwarded-proto"] || "https";
   const host  = req.headers["x-forwarded-host"]  || req.headers["host"] || "localhost";

@@ -311,6 +311,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     const latencyMs = Date.now() - t0;
+    const wallMs = Date.now() - new Date(turnStartedAt).getTime();
+    console.log(
+      `[orch] turn ok conv=${conversationId} route=${route} llm=${latencyMs}ms wall=${wallMs}ms tools=${result.tools_called?.join(",") ?? "none"}`,
+    );
 
     // 11. Aplica transição validada + merge de lead_data
     const newStage = resolveNextStage(stage, result.next_stage);
