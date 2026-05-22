@@ -301,7 +301,9 @@ export async function sendHelenaText(
     });
     const body = await res.text();
     if (res.ok) return { ok: true, status: res.status, body };
-    console.warn(`[helena] sessão ${params.sessionId} falhou (${res.status}), tentando send-sync`);
+    console.warn(
+      `[helena] sessão ${params.sessionId} falhou (${res.status}) body=${body.slice(0, 500)} — tentando send-sync`,
+    );
   }
 
   const toPhone = normalizeBrazilPhone(params.phone);
@@ -314,20 +316,26 @@ export async function sendHelenaText(
   }
 
   const url = `${base}/v1/message/send-sync`;
+  const requestBody = {
+    to: formatPhoneE164(toPhone),
+    from: null,
+    body: { text: params.text },
+    options: params.sessionId ? { sessionId: params.sessionId } : undefined,
+  };
   const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${account.token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      to: formatPhoneE164(toPhone),
-      from: null,
-      body: { text: params.text },
-      options: params.sessionId ? { sessionId: params.sessionId } : undefined,
-    }),
+    body: JSON.stringify(requestBody),
   });
   const body = await res.text();
+  if (!res.ok) {
+    console.error(
+      `[helena] send-sync falhou ${res.status} — endpoint=${url} to=${requestBody.to} sessionId=${params.sessionId ?? "-"} body=${body}`,
+    );
+  }
   return { ok: res.ok, status: res.status, body };
 }
 
