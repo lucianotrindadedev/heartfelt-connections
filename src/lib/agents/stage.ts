@@ -45,6 +45,10 @@ export interface LeadData {
   patient_id?: number;
   /** Notas livres do agente (ex.: queixa principal, objeções, observações clínicas). */
   notes?: string;
+  /** Marca que a tag inicial ("N/A Não Agendado") já foi aplicada — evita reaplicar. */
+  initial_tag_applied?: boolean;
+  /** Marca que a tag de status pós-agendamento ("Agendado") já foi aplicada. */
+  booked_tag_applied?: boolean;
 }
 
 /** Transições válidas entre stages. `*` = qualquer origem. */

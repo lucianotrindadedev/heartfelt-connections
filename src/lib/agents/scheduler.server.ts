@@ -23,9 +23,39 @@ import {
   findGoogleCalendarEventsByPhone,
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
+import { loadHelenaAccount } from "@/lib/helena.server";
+import { swapTag } from "@/lib/helena-tags.server";
 import type { AgentContext, AgentResult } from "./context";
 import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
 import type { LeadData, Stage } from "./stage";
+
+/**
+ * Após agendamento confirmado: remove "N/A Não Agendado" e adiciona "Agendado"
+ * (ou tags compatíveis existentes no CRM). MANTÉM a tag de interesse —
+ * o swap só toca as 2 tags de status.
+ */
+async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
+  if (!ctx.helenaContact?.id) return;
+  if (ctx.leadData.booked_tag_applied) return; // idempotente
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    const res = await swapTag(
+      helena,
+      ctx.helenaContact.id,
+      "N/A Não Agendado",
+      "Agendado",
+    );
+    if (res.ok) {
+      console.log(
+        `[scheduler] tag swap após agendamento: removeu=${res.removed ?? "(não existia)"} adicionou=${res.added}`,
+      );
+    } else {
+      console.warn(`[scheduler] tag swap falhou: motivo=${res.reason}`);
+    }
+  } catch (e) {
+    console.warn("[scheduler] erro ao trocar tags pós-agendamento:", e);
+  }
+}
 
 // ── Schema de saída estruturada ────────────────────────────────────────────
 
@@ -254,9 +284,10 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
         descricao: ld.notes ?? "",
         telefone: ctx.effectivePhone,
       });
+      await applyBookedTagSwap(ctx);
       return {
         result: JSON.stringify({ ok: true, appointment_id: ev.id, datetime: ev.start }),
-        patch: { appointment_id: ev.id },
+        patch: { appointment_id: ev.id, booked_tag_applied: true },
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -272,9 +303,10 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
       datetime: ld.selected_slot_iso,
       dentistPersonId: ld.dentist_person_id,
     });
+    await applyBookedTagSwap(ctx);
     return {
       result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
-      patch: { appointment_id: appt.id },
+      patch: { appointment_id: appt.id, booked_tag_applied: true },
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

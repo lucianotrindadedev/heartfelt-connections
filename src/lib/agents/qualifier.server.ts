@@ -14,7 +14,11 @@ import type { AgentContext, AgentResult } from "./context";
 import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
-import { loadHelenaAccount, setHelenaContactTags } from "@/lib/helena.server";
+import { loadHelenaAccount } from "@/lib/helena.server";
+import {
+  applyTagByApproxName,
+  getAvailableTagNames,
+} from "@/lib/helena-tags.server";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -74,19 +78,53 @@ async function execAplicarTag(
   }
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
-    const res = await setHelenaContactTags(
+    // Resolve o nome aproximado para o nome EXATO já existente no CRM.
+    // Não cria tags novas — se não achar, retorna erro para o LLM tentar outra.
+    const result = await applyTagByApproxName(
       helena,
       ctx.helenaContact.id,
-      [tag],
+      tag,
       "InsertIfNotExists",
     );
-    if (!res.ok) {
-      return { result: JSON.stringify({ ok: false, status: res.status }) };
+    if (!result.ok) {
+      return {
+        result: JSON.stringify({
+          ok: false,
+          reason: result.reason ?? "unknown",
+          requested: tag,
+        }),
+      };
     }
-    return { result: JSON.stringify({ ok: true, tag }) };
+    return { result: JSON.stringify({ ok: true, tag: result.tag }) };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return { result: JSON.stringify({ ok: false, error: msg.slice(0, 200) }) };
+  }
+}
+
+/**
+ * Aplica a tag inicial de "lead recebido / não agendado" no primeiro contato.
+ * Roda automaticamente (não é tool — o LLM não precisa pedir).
+ * Procura no CRM uma tag que case com "N/A Não Agendado" (qualquer variante).
+ */
+async function ensureInitialNotScheduledTag(ctx: AgentContext): Promise<void> {
+  if (!ctx.helenaContact?.id) return;
+  if (ctx.leadData.initial_tag_applied) return; // idempotente
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    const res = await applyTagByApproxName(
+      helena,
+      ctx.helenaContact.id,
+      "N/A Não Agendado",
+      "InsertIfNotExists",
+    );
+    if (res.ok) {
+      console.log(`[qualifier] tag inicial aplicada: ${res.tag}`);
+    } else {
+      console.log(`[qualifier] tag inicial não aplicada (motivo=${res.reason})`);
+    }
+  } catch (e) {
+    console.warn("[qualifier] falha ao aplicar tag inicial:", e);
   }
 }
 
@@ -155,7 +193,7 @@ Responda APENAS em JSON válido:
 }`;
 }
 
-function buildDynamicSystemPrompt(ctx: AgentContext): string {
+function buildDynamicSystemPrompt(ctx: AgentContext, availableTags: string[]): string {
   const TZ = "America/Sao_Paulo";
   const dateStr = new Intl.DateTimeFormat("pt-BR", {
     timeZone: TZ,
@@ -173,6 +211,12 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
 
   const cycleCount = ctx.history.filter((m) => m.role === "user").length;
 
+  // Filtra tags de "interesse" — heurística: contém "INTERESSE" ou "INTERES" no nome
+  const interestTags = availableTags.filter((t) =>
+    /interes|interess/i.test(t),
+  );
+  const otherTags = availableTags.filter((t) => !/interes|interess/i.test(t));
+
   return `# ESTADO ATUAL
 
 - Agora (BRT): ${dateStr}
@@ -182,7 +226,23 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
 ${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
 ${utm?.source ? `- UTM Source: ${utm.source}` : ""}
 ${utm?.medium ? `- UTM Medium: ${utm.medium}` : ""}
-${tags.length > 0 ? `- Tags atuais no CRM: ${tags.join(", ")}` : "- Sem tags ainda"}
+${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}
+
+# TAGS DISPONÍVEIS NO CRM (use APENAS estas — não invente nomes)
+
+Tags de interesse (escolha UMA quando o interesse principal estiver claro):
+${interestTags.length > 0 ? interestTags.map((t) => `- ${t}`).join("\n") : "  (nenhuma cadastrada no CRM)"}
+
+Outras tags disponíveis (NÃO chame de interesse — só listadas para contexto):
+${otherTags.length > 0 ? otherTags.map((t) => `- ${t}`).join("\n") : "  (nenhuma)"}
+
+## REGRA DE TAGS
+
+- Aplique APENAS UMA tag de interesse por contato (a mais alinhada com a conversa).
+- Quando aplicar, use o NOME EXATO da lista acima — sem alterar caixa, acento ou pontuação.
+- Se nenhuma tag de interesse bate, NÃO invente outra: deixe sem tag de interesse.
+- A tag "N/A Não Agendado" já é aplicada automaticamente — você não precisa pedir.
+- Tags de status ("Agendado", "IA Desligada") são gerenciadas em outros estágios — não aplique aqui.
 
 # LEAD_DATA JÁ COLETADO
 
@@ -212,13 +272,28 @@ Toda mensagem precisa terminar com uma PERGUNTA que mantenha o lead engajado e o
 const MAX_TOOL_LOOPS = 3; // qualifier raramente precisa de mais de 1 tool
 
 export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult> {
+  // 1) Lista tags disponíveis no CRM (cacheado por 1min)
+  // 2) Aplica tag inicial "N/A Não Agendado" se ainda não aplicada
+  let availableTags: string[] = [];
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    availableTags = await getAvailableTagNames(helena);
+  } catch (e) {
+    console.warn("[qualifier] falha ao listar tags Helena:", e);
+  }
+  let initialTagApplied = ctx.leadData.initial_tag_applied ?? false;
+  if (!initialTagApplied) {
+    await ensureInitialNotScheduledTag(ctx);
+    initialTagApplied = true; // marca mesmo se a tag não existe no CRM, evita re-tentar
+  }
+
   const cached = buildCachedSystemPrompt(ctx);
-  const dynamic = buildDynamicSystemPrompt(ctx);
+  const dynamic = buildDynamicSystemPrompt(ctx, availableTags);
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
 
   let workingMessages: LlmMessage[] = [...history];
   const toolsCalled: string[] = [];
-  let accumulatedPatch: Partial<LeadData> = {};
+  let accumulatedPatch: Partial<LeadData> = { initial_tag_applied: initialTagApplied };
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let totalCostUsd = 0;
@@ -286,7 +361,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     {
       model: ctx.model,
       systemCached: cached,
-      systemDynamic: buildDynamicSystemPrompt(ctx),
+      systemDynamic: buildDynamicSystemPrompt(ctx, availableTags),
       messages:
         workingMessages.length === history.length
           ? // não houve tools — chama direto pedindo JSON

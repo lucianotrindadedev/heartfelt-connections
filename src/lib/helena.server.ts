@@ -163,6 +163,50 @@ export async function loadHelenaContactFromSession(
 }
 
 /**
+ * Lista as tags disponíveis no CRM Helena.
+ * Endpoint: GET /core/v1/tag
+ * Usado para o agente conhecer os nomes EXATOS das tags antes de aplicar.
+ */
+export interface HelenaTag {
+  id: string;
+  name: string;
+}
+
+export async function listHelenaTags(
+  account: HelenaAccount,
+): Promise<HelenaTag[]> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const res = await fetch(`${base}/core/v1/tag`, {
+    headers: {
+      Authorization: account.token,
+      accept: "application/json",
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    console.error(
+      `[helena] listHelenaTags falhou ${res.status} body=${body.slice(0, 300)}`,
+    );
+    return [];
+  }
+  const json = (await res.json()) as unknown;
+  // Aceita formatos: array direto, { items: [...] }, { tags: [...] }
+  let rows: Record<string, unknown>[] = [];
+  if (Array.isArray(json)) rows = json as Record<string, unknown>[];
+  else if (json && typeof json === "object") {
+    const obj = json as Record<string, unknown>;
+    const arr = obj.items ?? obj.tags ?? obj.data ?? [];
+    if (Array.isArray(arr)) rows = arr as Record<string, unknown>[];
+  }
+  return rows
+    .map((r) => ({
+      id: String(r.id ?? r.Id ?? r._id ?? ""),
+      name: String(r.name ?? r.Name ?? r.tagName ?? ""),
+    }))
+    .filter((t) => t.name);
+}
+
+/**
  * Adiciona ou remove tags do contato Helena.
  * Endpoint: POST /core/v1/contact/{contactId}/tags
  * Body: { tagNames: string[], operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" }
