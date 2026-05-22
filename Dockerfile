@@ -3,12 +3,16 @@ FROM node:22-bookworm-slim AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci
+# package-lock.json costuma estar no .gitignore local — usa ci se existir, senão install
+COPY package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY . .
 
-# Variáveis do browser (build-time — configure na Coolify como Build Args)
+# Build do Vite precisa de devDependencies (não usar NODE_ENV=production aqui)
+ENV NODE_ENV=development
+
+# Somente VITE_* devem ser build args na Coolify (não CRON_SECRET, PGCRYPTO, etc.)
 ARG VITE_SUPABASE_URL
 ARG VITE_SUPABASE_PUBLISHABLE_KEY
 ENV VITE_SUPABASE_URL=$VITE_SUPABASE_URL

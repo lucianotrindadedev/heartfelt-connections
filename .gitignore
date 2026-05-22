@@ -8,7 +8,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-package-lock.json
+.vps-migrate-key
+.vps-migrate-key.pub
 dist
 dist-ssr
 .output
