@@ -909,6 +909,56 @@ const TEXT_COLORS = [
   { label: "Cinza", color: "#64748b" },
 ];
 
+/** Catálogo de tools disponíveis no sistema, agrupadas por integração. */
+const PROMPT_TOOLS: { group: string; tools: { name: string; desc: string }[] }[] = [
+  {
+    group: "Clinicorp — Agendamento",
+    tools: [
+      { name: "buscar_paciente",               desc: "Verifica se o lead já é paciente cadastrado" },
+      { name: "listar_horarios",                desc: "Lista horários disponíveis nos próximos dias" },
+      { name: "criar_agendamento",              desc: "Cria a consulta com os dados coletados" },
+      { name: "buscar_agendamentos_clinicorp",  desc: "Lista agendamentos futuros do paciente" },
+      { name: "cancelar_agendamento_clinicorp", desc: "Cancela um agendamento existente" },
+    ],
+  },
+  {
+    group: "Clinup — Agendamento",
+    tools: [
+      { name: "clinup_buscar_horarios",  desc: "Lista horários disponíveis no Clinup" },
+      { name: "clinup_agendar",          desc: "Cria consulta no Clinup" },
+      { name: "clinup_buscar_consultas", desc: "Lista consultas futuras do paciente" },
+      { name: "clinup_gerir_consulta",   desc: "Confirma, cancela ou reagenda consulta" },
+    ],
+  },
+  {
+    group: "Google Agenda",
+    tools: [
+      { name: "listar_horarios_google_calendar", desc: "Lista horários livres no Google Calendar" },
+      { name: "agendar_google_calendar",         desc: "Cria evento no Google Calendar" },
+    ],
+  },
+  {
+    group: "Qualificação",
+    tools: [
+      { name: "aplicar_tag_interesse", desc: "Aplica tag de qualificação no contato (Helena CRM)" },
+    ],
+  },
+  {
+    group: "Escalada Humana",
+    tools: [
+      { name: "escalar_humano", desc: "Pausa a IA e alerta equipe via Evolution API" },
+    ],
+  },
+  {
+    group: "Helena CRM",
+    tools: [
+      { name: "helena_listar_tags",  desc: "Lista as tags atuais do contato" },
+      { name: "helena_add_tags",     desc: "Adiciona tags ao contato" },
+      { name: "salvar_telefone_lead", desc: "Salva/confirma o telefone WhatsApp do lead" },
+    ],
+  },
+];
+
 const HIGHLIGHT_COLORS = [
   { label: "Sem destaque", color: null },
   { label: "🔴 Atenção", color: "#fee2e2" },
@@ -936,6 +986,7 @@ function PromptEditor({
   onSave: () => void;
 }) {
   const [showColorPicker, setShowColorPicker] = useState<"text" | "highlight" | null>(null);
+  const [showToolsPicker, setShowToolsPicker] = useState(false);
 
   const editor = useEditor({
     extensions: [
@@ -1156,6 +1207,53 @@ function PromptEditor({
 
         <div className="mx-1 h-4 w-px bg-slate-200" />
 
+        {/* Tools inserter */}
+        <div className="relative">
+          <button
+            title="Inserir tool no prompt"
+            onClick={() => { setShowToolsPicker((v) => !v); setShowColorPicker(null); }}
+            className={`flex items-center gap-1 rounded px-2 py-1.5 text-xs font-semibold transition-colors ${showToolsPicker ? "bg-primary/10 text-primary" : "text-slate-600 hover:bg-slate-100"}`}
+          >
+            <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 fill-none stroke-current stroke-[1.75]"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            Tools
+            <span className="text-slate-400">▾</span>
+          </button>
+
+          {showToolsPicker && (
+            <div className="absolute left-0 top-full z-30 mt-1 w-64 rounded-xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+              <div className="max-h-80 overflow-y-auto">
+                {PROMPT_TOOLS.map((group) => (
+                  <div key={group.group}>
+                    <div className="sticky top-0 bg-slate-50 px-3 py-1.5 border-b border-slate-100">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{group.group}</p>
+                    </div>
+                    {group.tools.map((tool) => (
+                      <button
+                        key={tool.name}
+                        onClick={() => {
+                          editor.chain().focus().insertContent([
+                            { type: "text", marks: [{ type: "code" }], text: tool.name },
+                            { type: "text", text: " " },
+                          ]).run();
+                          setShowToolsPicker(false);
+                        }}
+                        className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-slate-50 transition-colors"
+                      >
+                        <code className="mt-0.5 shrink-0 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary">
+                          {tool.name}
+                        </code>
+                        <span className="text-[11px] text-slate-500 leading-snug">{tool.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mx-1 h-4 w-px bg-slate-200" />
+
         {/* AI Magic */}
         <button
           onClick={() => toast.info("AI Magic em breve!")}
@@ -1193,9 +1291,9 @@ function PromptEditor({
         <Switch checked={autosave} onCheckedChange={onAutosaveChange} />
       </div>
 
-      {/* Click outside color picker to close */}
-      {showColorPicker && (
-        <div className="fixed inset-0 z-10" onClick={() => setShowColorPicker(null)} />
+      {/* Click outside to close pickers */}
+      {(showColorPicker || showToolsPicker) && (
+        <div className="fixed inset-0 z-10" onClick={() => { setShowColorPicker(null); setShowToolsPicker(false); }} />
       )}
 
       {/* Editor area — code chips, headings e listas estilizados */}
