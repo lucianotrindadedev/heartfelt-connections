@@ -283,57 +283,40 @@ export async function sendHelenaText(
     phone?: string;
     text: string;
     sessionId?: string;
-    /** Usa /v1/message/send-sync (bolhas reais no WhatsApp). Necessário em envios multi-parte. */
+    /** Multi-parte (bolhas separadas no WhatsApp): usa o endpoint /message (não-sync)
+     *  que é o mesmo usado pelos workflows n8n e respeita a quebra em bolhas. */
     viaWhatsApp?: boolean;
   },
 ): Promise<{ ok: boolean; status: number; body: string }> {
   const base = account.baseUrl.replace(/\/$/, "");
 
-  if (params.sessionId && !params.viaWhatsApp) {
-    const url = `${base}/chat/v1/session/${params.sessionId}/message/sync`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${account.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text: params.text }),
-    });
-    const body = await res.text();
-    if (res.ok) return { ok: true, status: res.status, body };
-    console.warn(
-      `[helena] sessão ${params.sessionId} falhou (${res.status}) body=${body.slice(0, 500)} — tentando send-sync`,
-    );
-  }
-
-  const toPhone = normalizeBrazilPhone(params.phone);
-  if (!toPhone) {
+  if (!params.sessionId) {
     return {
       ok: false,
       status: 400,
-      body: "Telefone ausente e envio por sessão falhou ou sessionId não informado",
+      body: "sessionId obrigatório para envio Helena (endpoint /chat/v1/session/<id>/message)",
     };
   }
 
-  const url = `${base}/v1/message/send-sync`;
-  const requestBody = {
-    to: formatPhoneE164(toPhone),
-    from: null,
-    body: { text: params.text },
-    options: params.sessionId ? { sessionId: params.sessionId } : undefined,
-  };
+  // Workflows n8n usam SEMPRE /chat/v1/session/{sessionId}/message — apenas
+  // o /sync é variante para envio multi-parte (mantém bolhas separadas).
+  // O endpoint global /v1/message/send-sync NÃO existe e foi a causa do
+  // erro "400 badrequest" (Helena devolve isso para path desconhecido).
+  const path = params.viaWhatsApp ? "/message/sync" : "/message";
+  const url = `${base}/chat/v1/session/${params.sessionId}${path}`;
+
   const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${account.token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(requestBody),
+    body: JSON.stringify({ text: params.text }),
   });
   const body = await res.text();
   if (!res.ok) {
     console.error(
-      `[helena] send-sync falhou ${res.status} — endpoint=${url} to=${requestBody.to} sessionId=${params.sessionId ?? "-"} body=${body}`,
+      `[helena] send falhou ${res.status} — endpoint=${url} sessionId=${params.sessionId} body=${body}`,
     );
   }
   return { ok: res.ok, status: res.status, body };
@@ -345,38 +328,28 @@ export async function sendHelenaAudio(
 ): Promise<{ ok: boolean; status: number; body: string }> {
   const base = account.baseUrl.replace(/\/$/, "");
 
-  if (params.sessionId) {
-    const url = `${base}/chat/v1/session/${params.sessionId}/message/sync`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${account.token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ fileUrl: params.audioUrl }),
-    });
-    const body = await res.text();
-    if (res.ok) return { ok: true, status: res.status, body };
+  if (!params.sessionId) {
+    return {
+      ok: false,
+      status: 400,
+      body: "sessionId obrigatório para envio de áudio Helena",
+    };
   }
 
-  const toPhone = normalizeBrazilPhone(params.phone);
-  if (!toPhone) {
-    return { ok: false, status: 400, body: "Telefone ausente para envio de áudio" };
-  }
-
-  const url = `${base}/v1/message/send-sync`;
+  const url = `${base}/chat/v1/session/${params.sessionId}/message/sync`;
   const res = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${account.token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      to: formatPhoneE164(toPhone),
-      from: null,
-      body: { fileUrl: params.audioUrl },
-    }),
+    body: JSON.stringify({ fileUrl: params.audioUrl }),
   });
   const body = await res.text();
+  if (!res.ok) {
+    console.error(
+      `[helena] audio falhou ${res.status} — endpoint=${url} sessionId=${params.sessionId} body=${body}`,
+    );
+  }
   return { ok: res.ok, status: res.status, body };
 }
