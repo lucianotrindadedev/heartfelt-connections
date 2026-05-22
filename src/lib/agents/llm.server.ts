@@ -149,7 +149,10 @@ export async function callLlm(
   const body: Record<string, unknown> = {
     model: req.model,
     messages: buildMessages(req),
-    max_tokens: req.maxTokens ?? 1024,
+    // 2048 é seguro para output estruturado em PT-BR (reply + lead_data_patch +
+    // reasoning). 1024 podia truncar quando o reasoning vinha mais detalhado,
+    // fazendo o JSON quebrar no meio do campo lead_data_patch.
+    max_tokens: req.maxTokens ?? 2048,
     temperature: req.temperature ?? 0.5,
   };
 
@@ -209,6 +212,83 @@ export async function callLlm(
  * Faz UM retry automático com tool_choice="none" + jsonMode se o primeiro
  * retorno não for JSON parseável (acontece quando o modelo decide chamar tool).
  */
+/**
+ * Tenta recuperar um JSON truncado fechando strings/objetos abertos.
+ * Usado quando o LLM atinge max_tokens no meio de um objeto.
+ *
+ * Estratégia em duas fases:
+ *  1. Sanitiza o final: remove campos sem valor (`"foo":` no fim) e
+ *     fragmentos de string (`"valor incompl...`).
+ *  2. Conta `{` `[` abertos e fecha na ordem inversa.
+ *
+ * Se mesmo assim não parsear, vai removendo o último caractere até virar
+ * JSON válido (pior caso preserva pelo menos `reply` e `next_stage`).
+ */
+function recoverTruncatedJson(raw: string): unknown {
+  let s = raw.trim();
+
+  // ── Fase 1: contagem de estados ──
+  let inString = false;
+  let escapeNext = false;
+  const stack: string[] = []; // pares de fechamento (' }' ou ' ]')
+
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (escapeNext) { escapeNext = false; continue; }
+    if (c === "\\") { escapeNext = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === "{") stack.push("}");
+    else if (c === "[") stack.push("]");
+    else if (c === "}" || c === "]") stack.pop();
+  }
+
+  // Se ficou string aberta, fecha-a
+  if (inString) s += '"';
+
+  // ── Fase 2: limpeza de fragmentos no final ──
+  // Remove "field": "string-truncada (sem fechar) - mas só se string ESTAVA aberta
+  // OBS: já fechamos a string acima; agora removemos campos pendentes
+  // Vários padrões podem aparecer no final dependendo do truncamento:
+  s = s.replace(/,\s*$/, ""); // trailing comma solta
+  s = s.replace(/[,{[]?\s*"[^"]*"\s*:\s*$/, (m) => (m.startsWith("{") ? "{" : "")); // "campo": sem valor
+  s = s.replace(/[,{[]?\s*"[^"]*"\s*:\s*""\s*$/, (m) => (m.startsWith("{") ? "{" : "")); // "campo": ""
+  s = s.replace(/,\s*$/, ""); // trailing comma após cleanup
+
+  // ── Fase 3: fecha aberturas pendentes ──
+  while (stack.length > 0) s += stack.pop();
+
+  try {
+    return JSON.parse(s);
+  } catch {
+    // Último recurso: vai cortando do fim até parsear (preserva campos do começo)
+    for (let cut = s.length - 1; cut > 10; cut--) {
+      if (s[cut] !== "}" && s[cut] !== '"') continue;
+      const attempt = s.slice(0, cut + 1).replace(/,\s*$/, "");
+      // Fecha braces pendentes nessa fatia
+      const sub = stack.slice();
+      let inStr = false, esc = false;
+      const local: string[] = [];
+      for (let i = 0; i < attempt.length; i++) {
+        const c = attempt[i];
+        if (esc) { esc = false; continue; }
+        if (c === "\\") { esc = true; continue; }
+        if (c === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (c === "{") local.push("}");
+        else if (c === "[") local.push("]");
+        else if (c === "}" || c === "]") local.pop();
+      }
+      let closed = attempt;
+      while (local.length > 0) closed += local.pop();
+      try { return JSON.parse(closed); } catch { /* tenta próximo */ }
+      // unused
+      void sub;
+    }
+    throw new SyntaxError("Não foi possível recuperar JSON truncado");
+  }
+}
+
 export async function callLlmStructured<T>(
   orKey: string,
   req: LlmRequest,
@@ -225,12 +305,28 @@ export async function callLlmStructured<T>(
   try {
     parsed = JSON.parse(response.content);
   } catch {
-    // Tenta extrair JSON de bloco markdown ```json ... ```
+    // 1. Tenta extrair JSON de bloco markdown ```json ... ```
     const match = response.content.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (!match) {
-      throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 200)}`);
+    if (match) {
+      try { parsed = JSON.parse(match[1]); }
+      catch {
+        // 2. Tenta recuperar JSON truncado dentro do bloco
+        try { parsed = recoverTruncatedJson(match[1]); }
+        catch {
+          throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 300)}`);
+        }
+      }
+    } else {
+      // 3. Tenta recuperar JSON truncado direto
+      try {
+        parsed = recoverTruncatedJson(response.content);
+        console.warn(
+          `[llm] recovered truncated JSON (finish_reason=${response.finishReason}, tokens_out=${response.tokensOut})`,
+        );
+      } catch {
+        throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 300)}`);
+      }
     }
-    parsed = JSON.parse(match[1]);
   }
   const result = parse(parsed);
   return { result, response };
