@@ -1,9 +1,6 @@
 // Agenda execução do agente após debounce — não depende só do pg_cron.
 import { runAgentTurn, ConversationLockedError } from "@/lib/agent-turn.server";
 
-const LOCK_RETRY_DELAY_SEC = 4;
-const MAX_LOCK_RETRIES = 15;
-
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -26,6 +23,27 @@ function getWaitUntil(): WaitUntilFn | null {
   return null;
 }
 
+/** Vercel / runtimes com waitUntil — não precisam da fila pg_cron no mesmo evento. */
+export function hasBackgroundTaskSupport(): boolean {
+  return getWaitUntil() !== null;
+}
+
+/**
+ * Dispara UM único caminho de execução após debounce.
+ * Antes: enqueue + schedule rodavam juntos → dois turnos e mensagens duplicadas.
+ */
+export async function dispatchInboundAgentTurn(
+  conversationId: string,
+  delaySeconds: number,
+): Promise<void> {
+  if (hasBackgroundTaskSupport()) {
+    scheduleConversationAgentTurn(conversationId, delaySeconds);
+    return;
+  }
+  const { enqueueMessage } = await import("@/lib/message-queue.server");
+  await enqueueMessage(conversationId, delaySeconds);
+}
+
 async function runTurnWithLockRetries(
   conversationId: string,
   lockRetry: number,
@@ -33,15 +51,9 @@ async function runTurnWithLockRetries(
   try {
     await runAgentTurn(conversationId);
   } catch (e) {
-    if (e instanceof ConversationLockedError && lockRetry < MAX_LOCK_RETRIES) {
-      console.log(
-        `[schedule] lock ativo ${conversationId} — retry ${lockRetry + 1}/${MAX_LOCK_RETRIES} em ${LOCK_RETRY_DELAY_SEC}s`,
-      );
-      scheduleConversationAgentTurn(
-        conversationId,
-        LOCK_RETRY_DELAY_SEC,
-        lockRetry + 1,
-      );
+    if (e instanceof ConversationLockedError) {
+      // Outro turno já está rodando; o finally dele reagenda se chegou msg nova.
+      console.log(`[schedule] ${conversationId} ocupada — execução duplicada ignorada`);
       return;
     }
     console.error(`[schedule] turn falhou ${conversationId}:`, e);

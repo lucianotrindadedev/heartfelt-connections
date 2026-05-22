@@ -21,7 +21,11 @@ import {
   sendHelenaText,
   type HelenaContact,
 } from "@/lib/helena.server";
-import { enqueueMessage } from "@/lib/message-queue.server";
+import {
+  clearStaleConversationLock,
+  releaseConversationLock,
+  tryAcquireConversationLock,
+} from "@/lib/conversation-lock.server";
 import { splitMessage, typingDelayMs } from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 import type { AgentContext, AgentResult } from "./context";
@@ -38,7 +42,6 @@ import {
 } from "./stage";
 
 const MAX_HISTORY = 50;
-const STALE_LOCK_MS = 4 * 60 * 1000;
 
 export class ConversationLockedError extends Error {
   constructor(conversationId: string) {
@@ -55,26 +58,6 @@ interface MsgRow {
   role: string;
   content: string | null;
   meta: Record<string, unknown> | null;
-}
-
-async function clearStaleConversationLock(conversationId: string): Promise<void> {
-  const sb = getSelfhost();
-  const { data } = await sb
-    .from("conversation_state")
-    .select("lock_conversa, atualizado_em")
-    .eq("conversation_id", conversationId)
-    .maybeSingle();
-
-  if (!data?.lock_conversa) return;
-  const updatedAt = data.atualizado_em
-    ? new Date(data.atualizado_em as string).getTime()
-    : 0;
-  if (Date.now() - updatedAt < STALE_LOCK_MS) return;
-
-  console.warn(`[orch] lock obsoleto em ${conversationId} — liberando`);
-  await sb
-    .from("conversation_state")
-    .upsert({ conversation_id: conversationId, lock_conversa: false }, { onConflict: "conversation_id" });
 }
 
 // ── Persistência stage/lead_data em conversations.meta ────────────────────
@@ -194,16 +177,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       conversationPhone,
     }).phone ?? null;
 
-  // 2. Lock (com stale recovery)
+  // 2. Lock atômico (evita dois turnos em paralelo na mesma conversa)
   await clearStaleConversationLock(conversationId);
-  const stateCheck = await sb
-    .from("conversation_state")
-    .select("lock_conversa")
-    .eq("conversation_id", conversationId)
-    .maybeSingle();
-  if (stateCheck.data?.lock_conversa) {
-    const debounce = (agent.data.debounce_segundos as number | null) ?? 20;
-    await enqueueMessage(conversationId, Math.min(5, debounce));
+  const lockAcquired = await tryAcquireConversationLock(conversationId);
+  if (!lockAcquired) {
+    console.log(`[orch] lock ocupado ${conversationId} — turno duplicado ignorado`);
     throw new ConversationLockedError(conversationId);
   }
 
@@ -225,10 +203,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   const orKey = await decryptValue(secrets.data.openrouter_api_key_enc as unknown as string);
   if (!orKey) throw new Error("Falha ao descriptografar OpenRouter key");
 
-  // 4. Adquire lock + marca início
-  await sb
-    .from("conversation_state")
-    .upsert({ conversation_id: conversationId, lock_conversa: true }, { onConflict: "conversation_id" });
   const turnStartedAt = new Date().toISOString();
 
   try {
@@ -381,10 +355,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
   } finally {
-    // Libera lock
-    await sb
-      .from("conversation_state")
-      .upsert({ conversation_id: conversationId, lock_conversa: false }, { onConflict: "conversation_id" });
+    await releaseConversationLock(conversationId);
 
     // Re-run se nova mensagem chegou durante o turn
     const newer = await sb

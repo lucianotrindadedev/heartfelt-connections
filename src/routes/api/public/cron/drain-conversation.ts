@@ -46,11 +46,6 @@ export const Route = createFileRoute("/api/public/cron/drain-conversation")({
           return Response.json({ ok: true, conversation_id: conversationId });
         } catch (e) {
           if (e instanceof ConversationLockedError) {
-            scheduleConversationAgentTurn(
-              conversationId,
-              4,
-              lockRetry + 1,
-            );
             return Response.json({
               ok: true,
               deferred: "locked",
