@@ -5,17 +5,13 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 const accountIdInput = z.object({ accountId: z.string().min(1) });
 
 /**
- * Erro lançado quando a conta NÃO está cadastrada na plataforma.
- * O embed captura isso e exibe a tela de "Agente não disponível".
- */
-export const ACCOUNT_NOT_REGISTERED = "ACCOUNT_NOT_REGISTERED";
-
-/**
  * Verifica se a conta existe (sem auto-provisionar).
  * Se existir mas faltar agent / linhas filhas, cria-as.
- * Se NÃO existir, lança ACCOUNT_NOT_REGISTERED.
+ * Retorna `null` se a conta NÃO está cadastrada (em vez de lançar erro,
+ * para que o cliente possa exibir a tela "Agente não disponível" sem
+ * disparar o error boundary do TanStack Router).
  */
-async function ensureAccount(accountId: string) {
+async function ensureAccount(accountId: string): Promise<string | null> {
   const sb = getSelfhost();
 
   // 1. Verifica se a conta existe — NÃO cria automaticamente
@@ -24,7 +20,7 @@ async function ensureAccount(accountId: string) {
     .select("id")
     .eq("id", accountId)
     .maybeSingle();
-  if (!accountRow) throw new Error(ACCOUNT_NOT_REGISTERED);
+  if (!accountRow) return null;
 
   // 2. Conta existe — garante o agent e as linhas filhas (retrocompat)
   const { data: existing } = await sb
@@ -53,7 +49,18 @@ async function ensureAccount(accountId: string) {
       sb.from("account_voice_config").insert({ account_id: accountId }),
     ]);
   }
-  return agentId!;
+  return agentId;
+}
+
+/**
+ * Variante que lança quando a conta não existe.
+ * Usada por mutations (update*, reset*) — nesse caso o cliente envia uma
+ * mutação, que naturalmente esperaria um erro, e o `mutate` consegue tratar.
+ */
+async function ensureAccountOrThrow(accountId: string): Promise<string> {
+  const id = await ensureAccount(accountId);
+  if (!id) throw new Error("Conta não cadastrada na plataforma");
+  return id;
 }
 
 export const getAgent = createServerFn({ method: "GET" })
@@ -61,6 +68,13 @@ export const getAgent = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const sb = getSelfhost();
     const agentId = await ensureAccount(data.accountId);
+
+    // Conta não cadastrada: retorna flag dedicada — não lança para evitar
+    // disparar o error boundary do TanStack Router.
+    if (!agentId) {
+      return { registered: false as const };
+    }
+
     const [agent, llm, voice, audio, wa, fu, wu, secrets, clinicorp, clinup, gcal] = await Promise.all([
       sb.from("agents").select("*").eq("id", agentId).single(),
       sb.from("account_llm_config").select("*").eq("account_id", data.accountId).single(),
@@ -79,6 +93,7 @@ export const getAgent = createServerFn({ method: "GET" })
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", data.accountId).maybeSingle(),
     ]);
     return {
+      registered: true as const,
       agent: agent.data,
       llm: llm.data,
       voice: voice.data,
@@ -111,7 +126,7 @@ export const updateAgent = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const agentId = await ensureAccount(data.accountId);
+    const agentId = await ensureAccountOrThrow(data.accountId);
     const patch: Record<string, unknown> = {};
     if (data.nome !== undefined) patch.nome = data.nome;
     if (data.ativo !== undefined) patch.ativo = data.ativo;
@@ -134,7 +149,7 @@ export const mergeAgentSettings = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const agentId = await ensureAccount(data.accountId);
+    const agentId = await ensureAccountOrThrow(data.accountId);
     // Use jsonb || operator to merge without overwriting unrelated keys
     const { error } = await sb.rpc("merge_agent_settings", {
       p_agent_id: agentId,
@@ -162,7 +177,7 @@ export const updateLlmConfig = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    await ensureAccount(data.accountId);
+    await ensureAccountOrThrow(data.accountId);
     const { accountId, ...patch } = data;
     if (Object.keys(patch).length === 0) return { ok: true };
     const { error } = await sb
@@ -186,7 +201,7 @@ export const updateVoiceConfig = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    await ensureAccount(data.accountId);
+    await ensureAccountOrThrow(data.accountId);
     const { accountId, ...patch } = data;
     if (Object.keys(patch).length === 0) return { ok: true };
     const { error } = await sb
@@ -209,7 +224,7 @@ export const updateAudio = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const agentId = await ensureAccount(data.accountId);
+    const agentId = await ensureAccountOrThrow(data.accountId);
     const { accountId: _a, ...patch } = data;
     if (Object.keys(patch).length === 0) return { ok: true };
     const { error } = await sb.from("agent_audio").update(patch).eq("agent_id", agentId);
@@ -221,7 +236,7 @@ export const resetWebhookSecret = createServerFn({ method: "POST" })
   .inputValidator((d) => accountIdInput.parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const agentId = await ensureAccount(data.accountId);
+    const agentId = await ensureAccountOrThrow(data.accountId);
     const newSecret =
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? (crypto as Crypto).randomUUID().replace(/-/g, "") +

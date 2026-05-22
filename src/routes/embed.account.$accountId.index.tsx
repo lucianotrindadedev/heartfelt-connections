@@ -150,16 +150,14 @@ function EmbedHome() {
 
   const [openSheet, setOpenSheet] = useState<SheetKey>(null);
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["agent", accountId],
     queryFn: () => fetchAgent({ data: { accountId } }),
     retry: false,
   });
 
   // Conta não cadastrada → blocker em tela cheia
-  const notRegistered =
-    error instanceof Error && error.message.includes("ACCOUNT_NOT_REGISTERED");
-  if (notRegistered) {
+  if (data && data.registered === false) {
     return <AccountNotRegisteredBlocker accountId={accountId} />;
   }
 
