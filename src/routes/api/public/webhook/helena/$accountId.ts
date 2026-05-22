@@ -282,6 +282,20 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         const accountId = params.accountId;
         const sb = getSelfhost();
 
+        // Busca o helena_account_id da conta — usado para validar companyId
+        // (a Helena CRM envia o UUID dela, que pode ser diferente do
+        // accounts.id interno quando há múltiplos agentes Sarai por CRM).
+        const accountRow = await sb
+          .from("accounts")
+          .select("helena_account_id")
+          .eq("id", accountId)
+          .maybeSingle();
+        if (!accountRow.data) {
+          return new Response("Account not found", { status: 404 });
+        }
+        const helenaAccountId =
+          (accountRow.data.helena_account_id as string | null) ?? accountId;
+
         const agentRow = await sb
           .from("agents")
           .select("id, ativo, webhook_secret, debounce_segundos, settings")
@@ -311,7 +325,13 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         if (isHelenaNative) {
           const payloadCompanyId = c.companyId;
-          if (payloadCompanyId && payloadCompanyId !== accountId) {
+          // companyId vem da Helena → comparar com helena_account_id, não com
+          // o accounts.id interno (que pode ter sufixo -2, -3 etc).
+          if (
+            payloadCompanyId &&
+            payloadCompanyId !== helenaAccountId &&
+            payloadCompanyId !== accountId
+          ) {
             return new Response("Unauthorized: companyId mismatch", { status: 401 });
           }
         } else {
