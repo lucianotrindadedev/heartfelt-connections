@@ -375,6 +375,155 @@ function EmbedHome() {
 // Layout helpers
 // =================================================================
 
+// =================================================================
+// BusinessHoursEditor
+// =================================================================
+
+const BH_DAYS = [
+  { key: "dom", label: "Domingo" },
+  { key: "seg", label: "Segunda-feira" },
+  { key: "ter", label: "Terça-feira" },
+  { key: "qua", label: "Quarta-feira" },
+  { key: "qui", label: "Quinta-feira" },
+  { key: "sex", label: "Sexta-feira" },
+  { key: "sab", label: "Sábado" },
+];
+
+interface DaySchedule {
+  active: boolean;
+  start: string;
+  lunch_start: string;
+  lunch_end: string;
+  end: string;
+}
+
+type WeekSchedule = Record<string, DaySchedule>;
+
+const BH_DEFAULT: WeekSchedule = {
+  dom: { active: false, start: "08:00", lunch_start: "12:00", lunch_end: "13:00", end: "18:00" },
+  seg: { active: true,  start: "08:00", lunch_start: "12:00", lunch_end: "13:00", end: "18:00" },
+  ter: { active: true,  start: "08:00", lunch_start: "12:00", lunch_end: "13:00", end: "18:00" },
+  qua: { active: true,  start: "08:00", lunch_start: "12:00", lunch_end: "13:00", end: "18:00" },
+  qui: { active: true,  start: "08:00", lunch_start: "12:00", lunch_end: "13:00", end: "18:00" },
+  sex: { active: true,  start: "08:00", lunch_start: "12:00", lunch_end: "13:00", end: "18:00" },
+  sab: { active: false, start: "08:00", lunch_start: "12:00", lunch_end: "13:00", end: "13:00" },
+};
+
+/** Tenta carregar do JSON salvo; se não for JSON, retorna defaults. */
+function parseBhJson(jsonStr: string): WeekSchedule {
+  if (!jsonStr) return structuredClone(BH_DEFAULT);
+  try {
+    const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object" && "seg" in parsed) {
+      return { ...structuredClone(BH_DEFAULT), ...parsed } as WeekSchedule;
+    }
+  } catch { /* not JSON */ }
+  return structuredClone(BH_DEFAULT);
+}
+
+/** Converte WeekSchedule em string legível para o prompt do agente. */
+function bhToHuman(s: WeekSchedule): string {
+  const shortName: Record<string, string> = {
+    dom: "Dom", seg: "Seg", ter: "Ter", qua: "Qua", qui: "Qui", sex: "Sex", sab: "Sáb",
+  };
+  const parts: string[] = [];
+  let i = 0;
+  const active = BH_DAYS.filter((d) => s[d.key]?.active);
+  while (i < active.length) {
+    const cur = active[i];
+    const sch = s[cur.key];
+    let j = i + 1;
+    while (j < active.length) {
+      const nxt = s[active[j].key];
+      if (nxt.start === sch.start && nxt.end === sch.end && nxt.lunch_start === sch.lunch_start && nxt.lunch_end === sch.lunch_end) j++;
+      else break;
+    }
+    const range = j - i > 1
+      ? `${shortName[cur.key]}–${shortName[active[j - 1].key]}`
+      : shortName[cur.key];
+    parts.push(`${range}: ${sch.start}–${sch.end} (almoço ${sch.lunch_start}–${sch.lunch_end})`);
+    i = j;
+  }
+  return parts.length ? parts.join(" / ") : "Não definido";
+}
+
+function BusinessHoursEditor({
+  jsonValue,
+  onChange,
+}: {
+  /** Valor em JSON (business_hours_json). Pode ser string vazia para usar defaults. */
+  jsonValue: string;
+  /** Chama com (humanReadable, jsonStr) ao mudar */
+  onChange: (human: string, json: string) => void;
+}) {
+  const [schedule, setSchedule] = useState<WeekSchedule>(() => parseBhJson(jsonValue));
+
+  function update(day: string, field: keyof DaySchedule, value: string | boolean) {
+    setSchedule((prev) => {
+      const next = { ...prev, [day]: { ...prev[day], [field]: value } };
+      onChange(bhToHuman(next), JSON.stringify(next));
+      return next;
+    });
+  }
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+      <table className="w-full min-w-[540px] text-xs">
+        <thead>
+          <tr className="border-b border-slate-100 bg-slate-50">
+            <th className="px-3 py-2.5 text-left font-semibold text-slate-600 w-32">Dia da semana</th>
+            <th className="px-3 py-2.5 text-center font-semibold text-slate-600 w-16">Ativo</th>
+            <th className="px-3 py-2.5 text-center font-semibold text-slate-600">Início</th>
+            <th className="px-3 py-2.5 text-center font-semibold text-slate-600">Almoço início</th>
+            <th className="px-3 py-2.5 text-center font-semibold text-slate-600">Almoço fim</th>
+            <th className="px-3 py-2.5 text-center font-semibold text-slate-600">Fim</th>
+          </tr>
+        </thead>
+        <tbody>
+          {BH_DAYS.map((d, idx) => {
+            const row = schedule[d.key];
+            return (
+              <tr
+                key={d.key}
+                className={`border-b border-slate-100 last:border-0 transition-colors ${row.active ? "bg-white" : "bg-slate-50/60"} ${idx % 2 === 0 ? "" : "bg-slate-50/30"}`}
+              >
+                <td className="px-3 py-2">
+                  <span className={`font-medium ${row.active ? "text-slate-800" : "text-slate-400"}`}>
+                    {d.label}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <Switch
+                    checked={row.active}
+                    onCheckedChange={(v) => update(d.key, "active", v)}
+                  />
+                </td>
+                {(["start", "lunch_start", "lunch_end", "end"] as const).map((field) => (
+                  <td key={field} className="px-2 py-2 text-center">
+                    <input
+                      type="time"
+                      value={row[field] as string}
+                      onChange={(e) => update(d.key, field, e.target.value)}
+                      disabled={!row.active}
+                      className={`w-24 rounded-lg border px-2 py-1.5 text-center text-xs outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20 ${
+                        row.active
+                          ? "border-slate-200 bg-white text-slate-800 hover:border-slate-300"
+                          : "border-slate-100 bg-transparent text-slate-300 cursor-not-allowed"
+                      }`}
+                    />
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// =================================================================
+
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <h3 className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1125,6 +1274,10 @@ function TemplatesModal({
         settingsToSave[v.settings_key] = varValues[v.key].trim();
       }
     });
+    // Persistir JSON do horário de funcionamento quando preenchido via editor estruturado
+    if (varValues.business_hours_json) {
+      settingsToSave.business_hours_json = varValues.business_hours_json;
+    }
     if (Object.keys(settingsToSave).length > 0) {
       try {
         const merged = { ...agentSettings, ...settingsToSave };
@@ -1299,6 +1452,30 @@ function TemplatesModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
               {(selected.variables ?? []).map((v) => {
                 const prefilled = !!(v.settings_key && agentSettings[v.settings_key]);
+
+                // ── Editor estruturado de horários ──
+                if (v.key === "business_hours") {
+                  return (
+                    <div key={v.key} className="sm:col-span-2">
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 mb-2">
+                        {v.label}
+                        {v.required && <span className="text-destructive">*</span>}
+                        {prefilled && (
+                          <span className="ml-auto inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                            ✓ perfil
+                          </span>
+                        )}
+                      </label>
+                      <BusinessHoursEditor
+                        jsonValue={agentSettings.business_hours_json ?? ""}
+                        onChange={(human, json) => {
+                          setVarValues((p) => ({ ...p, [v.key]: human, business_hours_json: json }));
+                        }}
+                      />
+                    </div>
+                  );
+                }
+
                 return (
                   <div key={v.key} className={v.type === "textarea" ? "sm:col-span-2" : ""}>
                     <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 mb-1">
@@ -1961,7 +2138,7 @@ function AgentSettingsView({
                 </div>
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {["company_name", "company_type", "company_address", "business_hours", "payment_methods", "featured_services"].map((key) => {
+                {["company_name", "company_type", "company_address", "payment_methods", "featured_services"].map((key) => {
                   const f = SETTINGS_FIELDS.find((x) => x.key === key)!;
                   return (
                     <div key={key}>
@@ -1983,6 +2160,20 @@ function AgentSettingsView({
                     </div>
                   );
                 })}
+              </div>
+
+              {/* Horário de funcionamento — editor estruturado */}
+              <div className="mt-4">
+                <label className="block text-xs font-semibold text-slate-700 mb-2">
+                  Horário de funcionamento
+                </label>
+                <BusinessHoursEditor
+                  jsonValue={settings.business_hours_json ?? ""}
+                  onChange={(human, json) => {
+                    setSetting("business_hours", human);
+                    setSetting("business_hours_json", json);
+                  }}
+                />
               </div>
             </div>
 
