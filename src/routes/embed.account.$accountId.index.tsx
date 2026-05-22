@@ -523,6 +523,82 @@ function BusinessHoursEditor({
 }
 
 // =================================================================
+// PromptText — renderiza texto de prompt destacando tool names e headings
+// =================================================================
+
+/**
+ * Detecta e destaca dentro do texto do prompt:
+ * - Tool names em snake_case (ex: agendar_clinicorp, buscar_paciente)
+ * - Backticks `` `código` ``
+ * - Linhas que são headings (# ou TUDO EM MAIÚSCULAS)
+ */
+function PromptText({ text, className }: { text: string; className?: string }) {
+  // Divide por \n preservando linhas vazias
+  const lines = text.split("\n");
+
+  return (
+    <div className={className}>
+      {lines.map((line, li) => {
+        // Linha vazia → espaçamento
+        if (!line.trim()) return <div key={li} className="h-2" />;
+
+        // Detecta heading: começa com # ou é ALL_CAPS com pelo menos 3 chars
+        const isHeading =
+          /^#{1,3}\s/.test(line) ||
+          (/^[A-ZÀ-Ú0-9\s\-–_/()!?:]{3,}$/.test(line.trim()) && line.trim().length <= 80);
+
+        const content = isHeading ? line.replace(/^#+\s*/, "") : line;
+
+        if (isHeading) {
+          return (
+            <p key={li} className="mt-3 mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-700 first:mt-0">
+              {content}
+            </p>
+          );
+        }
+
+        // Para linhas normais, destaca snake_case e backticks
+        return (
+          <p key={li} className="text-xs leading-relaxed text-slate-700">
+            <PromptInline text={line} />
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Destaca tokens inline: snake_case e `backtick` dentro de uma linha. */
+function PromptInline({ text }: { text: string }) {
+  // Regex: captura `backtick` ou snake_case (mínimo 1 underscore)
+  const parts = text.split(/(``?[^`]+``?|`[^`]+`|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b)/g);
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (!part) return null;
+        const isCode =
+          /^``?[^`]+``?$/.test(part) ||
+          /^`[^`]+`$/.test(part) ||
+          /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(part);
+        if (isCode) {
+          const clean = part.replace(/^`+|`+$/g, "");
+          return (
+            <code
+              key={i}
+              className="mx-0.5 inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-primary"
+            >
+              {clean}
+            </code>
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+// =================================================================
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -1122,8 +1198,8 @@ function PromptEditor({
         <div className="fixed inset-0 z-10" onClick={() => setShowColorPicker(null)} />
       )}
 
-      {/* Editor area */}
-      <div className="flex-1 overflow-y-auto">
+      {/* Editor area — code chips, headings e listas estilizados */}
+      <div className="flex-1 overflow-y-auto [&_.ProseMirror_code]:mx-0.5 [&_.ProseMirror_code]:inline-flex [&_.ProseMirror_code]:items-center [&_.ProseMirror_code]:rounded-md [&_.ProseMirror_code]:border [&_.ProseMirror_code]:border-slate-200 [&_.ProseMirror_code]:bg-slate-100 [&_.ProseMirror_code]:px-1.5 [&_.ProseMirror_code]:py-0.5 [&_.ProseMirror_code]:font-mono [&_.ProseMirror_code]:text-[10px] [&_.ProseMirror_code]:font-semibold [&_.ProseMirror_code]:text-primary [&_.ProseMirror_code]:not-italic">
         <EditorContent editor={editor} />
       </div>
     </div>
@@ -1549,10 +1625,12 @@ function TemplatesModal({
             )}
             <p className="text-sm text-muted-foreground">{selected.descricao}</p>
             <div className="rounded-xl border bg-slate-50 p-4">
-              <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">Preview do prompt</p>
-              <p className="line-clamp-6 whitespace-pre-wrap text-xs leading-relaxed text-foreground">
-                {selected.system_prompt || "(sem prompt)"}
-              </p>
+              <p className="mb-3 text-xs font-semibold uppercase text-muted-foreground">Preview do prompt</p>
+              <div className="max-h-56 overflow-y-auto">
+                <PromptText
+                  text={selected.system_prompt || "(sem prompt)"}
+                />
+              </div>
             </div>
             <Button onClick={handleApply} className="w-full">
               Aplicar este template
