@@ -7,6 +7,8 @@
     "dev": "vite dev",
     "build": "vite build",
     "build:vercel": "node scripts/build-vercel.mjs",
+    "build:coolify": "node scripts/build-vercel.mjs",
+    "start": "node scripts/start-coolify.cjs",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
     "lint": "eslint .",
