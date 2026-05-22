@@ -44,7 +44,7 @@ export async function loadHelenaSession(
 ): Promise<HelenaSessionInfo | null> {
   const base = account.baseUrl.replace(/\/$/, "");
   const headers = {
-    Authorization: `Bearer ${account.token}`,
+    Authorization: account.token,
     accept: "application/json",
   };
   try {
@@ -138,7 +138,7 @@ export async function loadHelenaContactById(
   const base = account.baseUrl.replace(/\/$/, "");
   try {
     const contactRes = await fetch(`${base}/core/v1/contact/${contactId}`, {
-      headers: { Authorization: `Bearer ${account.token}`, accept: "application/json" },
+      headers: { Authorization: account.token, accept: "application/json" },
     });
     if (!contactRes.ok) return null;
     const raw = (await contactRes.json()) as Record<string, unknown>;
@@ -177,7 +177,7 @@ async function postHelenaContactTags(
   const res = await fetch(`${base}/core/v1/contact/${contactId}/tags`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${account.token}`,
+      Authorization: account.token,
       "Content-Type": "application/*+json",
       accept: "application/json",
     },
@@ -233,7 +233,7 @@ export async function resolveHelenaContactId(
     try {
       const res = await fetch(
         `${base}/core/v1/contact?phone=${encodeURIComponent(p)}`,
-        { headers: { Authorization: `Bearer ${account.token}`, accept: "application/json" } },
+        { headers: { Authorization: account.token, accept: "application/json" } },
       );
       if (!res.ok) continue;
       const json = (await res.json()) as
@@ -267,7 +267,7 @@ export async function updateHelenaContactPhone(
   const res = await fetch(`${base}/core/v1/contact/${contactId}`, {
     method: "PATCH",
     headers: {
-      Authorization: `Bearer ${account.token}`,
+      Authorization: account.token,
       "Content-Type": "application/json",
       accept: "application/json",
     },
@@ -308,8 +308,9 @@ export async function sendHelenaText(
   const res = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${account.token}`,
+      Authorization: account.token,
       "Content-Type": "application/json",
+      accept: "application/json",
     },
     body: JSON.stringify({ text: params.text }),
   });
@@ -340,7 +341,7 @@ export async function sendHelenaAudio(
   const res = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${account.token}`,
+      Authorization: account.token,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ fileUrl: params.audioUrl }),
