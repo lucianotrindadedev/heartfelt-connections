@@ -119,16 +119,28 @@ async function deliverReply(
 
   const helena = await loadHelenaAccount(accountId);
   const parts = await splitMessage(reply, accountId);
+  console.log(
+    `[orch] split ${parts.length} parte(s) — ${parts.map((p) => p.length).join("+")} chars (total ${reply.length})`,
+  );
+
+  let sentCount = 0;
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0) await delay(typingDelayMs(parts[i]));
+    if (i > 0) await delay(typingDelayMs(parts[i], i));
     const sendRes = await sendHelenaText(helena, {
       phone,
       text: parts[i],
       sessionId,
     });
     if (!sendRes.ok) {
-      console.error(`[orch] helena send falhou ${sendRes.status}: ${sendRes.body.slice(0, 200)}`);
+      console.error(
+        `[orch] helena parte ${i + 1}/${parts.length} falhou ${sendRes.status}: ${sendRes.body.slice(0, 200)}`,
+      );
+      continue;
     }
+    sentCount++;
+  }
+  if (parts.length > 1 && sentCount < parts.length) {
+    console.error(`[orch] envio parcial ${sentCount}/${parts.length} para ${conversationId}`);
   }
   // Mantém agentId/agent_run para retrocompat (UI mostra esse insight).
   await sb.from("agent_runs").insert({

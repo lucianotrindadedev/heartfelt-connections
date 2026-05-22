@@ -1,12 +1,8 @@
 // Quebra uma resposta longa em múltiplas mensagens para envio via WhatsApp.
 //
-// Estratégia:
-//  1. Splitter baseado em regras (sempre roda, zero dependência de LLM).
-//  2. Se houver chave OpenRouter configurada, usa LLM para refinar a divisão
-//     em textos > 500 chars onde o splitter de regras produz partes > 600 chars.
-//
-// O splitter de regras é o fallback confiável: separa nos paragráfos duplos
-// (\n\n), nunca quebra listas nem código, mantém cada parte ≤ MAX_CHARS.
+// Estratégia (igual espírito do n8n):
+//  1. Regras: \n\n, linhas simples, abertura+ corpo, primeira frase+resto
+//  2. LLM splitter quando ainda ficou 1 bloco e texto >= MIN_LLM_SPLIT_CHARS
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
@@ -14,66 +10,74 @@ import { decryptValue } from "@/lib/crypto.server";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_SPLITTER_MODEL = "openai/gpt-4.1-mini";
 
-// Tamanho máximo de cada parte (caracteres)
 const MAX_CHARS = 600;
-
-// ── Splitter baseado em regras ──────────────────────────────────────────────
-//
-// Regra principal: cada parágrafo duplo (\n\n) = mensagem separada, SEMPRE.
-// Isso garante que "Olá!\n\nSou a Mariana..." vira 2 mensagens independente
-// do tamanho total. Só não divide quando não há \n\n no texto.
-
-function ruleBasedSplit(text: string): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-
-  // 1. Divide em blocos por parágrafos duplos
-  const blocks = trimmed.split(/\n{2,}/);
-  const nonEmpty = blocks.map((b) => b.trim()).filter((b) => b.length > 0);
-
-  if (nonEmpty.length === 0) return [];
-
-  // 2. Cada bloco = mensagem separada.
-  //    Se algum bloco ainda for muito longo (sem \n\n interno),
-  //    divide por linha simples (\n).
-  const finalParts: string[] = [];
-
-  for (const block of nonEmpty) {
-    if (block.length <= MAX_CHARS) {
-      finalParts.push(block);
-      continue;
-    }
-
-    // Bloco longo: divide por linha simples
-    const lines = block.split("\n");
-    let cur = "";
-    for (const line of lines) {
-      const joined = cur ? cur + "\n" + line : line;
-      if (joined.length <= MAX_CHARS) {
-        cur = joined;
-      } else {
-        if (cur) finalParts.push(cur);
-        cur = line;
-      }
-    }
-    if (cur) finalParts.push(cur);
-  }
-
-  return finalParts.filter((p) => p.trim().length > 0).slice(0, 8);
-}
-
-// ── Splitter LLM (refinamento opcional) ────────────────────────────────────
+const MIN_LLM_SPLIT_CHARS = 120;
+const MAX_PARTS = 8;
 
 const SPLIT_PROMPT = `Você é especialista em WhatsApp. Divida a mensagem abaixo em partes para envio sequencial.
 
 Regras:
 1. Máximo 5 partes.
 2. Não quebre listas (bullets, numeração) no meio.
-3. Não quebre código ou templates no meio.
-4. Cada parte = unidade de sentido completa.
-5. Preserve toda formatação (negrito, itálico, emojis).
-6. Se for curta, retorne numa só parte.
-7. Responda SOMENTE com JSON: {"partes":["parte1","parte2",...]}`;
+3. Cada parte = unidade de sentido completa (saudação separada do corpo, pergunta separada do contexto).
+4. Preserve formatação (negrito, emojis).
+5. Se couber em uma bolha curta, retorne uma parte só.
+6. Responda SOMENTE com JSON: {"partes":["parte1","parte2",...]}`;
+
+function ruleBasedSplit(text: string): string[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  // 1. Parágrafos duplos (\n\n) — regra principal do template
+  if (/\n{2,}/.test(trimmed)) {
+    const blocks = trimmed.split(/\n{2,}/);
+    const parts = blocks.map((b) => b.trim()).filter((b) => b.length > 0);
+    if (parts.length > 1) return capParts(parts);
+  }
+
+  // 2. Linhas simples (\n) — comum em respostas do LLM sem \n\n
+  const lines = trimmed.split(/\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  if (lines.length >= 2 && lines.length <= 6 && lines.every((l) => l.length <= MAX_CHARS)) {
+    return capParts(lines);
+  }
+
+  // 3. Abertura curta + corpo (ex.: "Perfeito, Luciano! Para eu te dar...")
+  const opener = splitOpenerAndBody(trimmed);
+  if (opener) return capParts(opener);
+
+  // 4. Primeira frase + restante (textos longos em um parágrafo só)
+  if (trimmed.length >= MIN_LLM_SPLIT_CHARS) {
+    const sentences = splitFirstSentence(trimmed);
+    if (sentences) return capParts(sentences);
+  }
+
+  return [trimmed];
+}
+
+function capParts(parts: string[]): string[] {
+  return parts.filter((p) => p.trim().length > 0).slice(0, MAX_PARTS);
+}
+
+/** Saudação / reação curta separada do restante. */
+function splitOpenerAndBody(text: string): string[] | null {
+  const m = text.match(
+    /^((?:Oi|Olá|Ola|Poxa|Perfeito|Entendo|Compreendo|Certo)[!.]?(?:\s+[^.!?\n]{0,40})?[!.]?)\s+([\s\S]{25,})$/i,
+  );
+  if (m) return [m[1].trim(), m[2].trim()];
+
+  const named = text.match(/^([^!.?\n]{1,50}[!.?])\s+([\s\S]{40,})$/);
+  if (named && named[1].length <= 80) return [named[1].trim(), named[2].trim()];
+
+  return null;
+}
+
+/** Primeira frase (até . ! ?) + corpo. */
+function splitFirstSentence(text: string): string[] | null {
+  const m = text.match(/^(.{12,140}?[.!?])\s+(.{30,})$/s);
+  if (!m) return null;
+  if (m[1].length > 160) return null;
+  return [m[1].trim(), m[2].trim()];
+}
 
 async function llmSplit(text: string, orKey: string, model: string): Promise<string[] | null> {
   try {
@@ -89,10 +93,11 @@ async function llmSplit(text: string, orKey: string, model: string): Promise<str
           { role: "system", content: SPLIT_PROMPT },
           { role: "user", content: text },
         ],
-        max_tokens: 2048,
+        max_tokens: 1024,
         temperature: 0.1,
-        // Sem response_format — muitos modelos não suportam json_object
+        response_format: { type: "json_object" },
       }),
+      signal: AbortSignal.timeout(25_000),
     });
 
     if (!res.ok) return null;
@@ -101,23 +106,26 @@ async function llmSplit(text: string, orKey: string, model: string): Promise<str
       choices?: { message?: { content?: string } }[];
     };
     const raw = (json.choices?.[0]?.message?.content ?? "").trim();
+    if (!raw) return null;
 
-    // Extrai o JSON mesmo que o modelo adicione texto em volta
-    const match = raw.match(/\{[\s\S]*"partes"[\s\S]*\}/);
-    if (!match) return null;
-
-    const parsed = JSON.parse(match[0]) as { partes?: unknown };
-    if (Array.isArray(parsed.partes) && parsed.partes.length > 0) {
-      const parts = (parsed.partes as string[]).filter((p) => p?.trim());
-      return parts.length > 0 ? parts : null;
+    let parsed: { partes?: unknown };
+    try {
+      parsed = JSON.parse(raw) as { partes?: unknown };
+    } catch {
+      const match = raw.match(/\{[\s\S]*"partes"[\s\S]*\}/);
+      if (!match) return null;
+      parsed = JSON.parse(match[0]) as { partes?: unknown };
     }
-  } catch {
-    // ignora erros — usa fallback de regras
+
+    if (Array.isArray(parsed.partes) && parsed.partes.length > 0) {
+      const parts = (parsed.partes as string[]).map((p) => String(p).trim()).filter(Boolean);
+      return parts.length > 0 ? capParts(parts) : null;
+    }
+  } catch (e) {
+    console.warn("[split] LLM splitter falhou:", e instanceof Error ? e.message : e);
   }
   return null;
 }
-
-// ── Função principal ────────────────────────────────────────────────────────
 
 export async function splitMessage(
   text: string,
@@ -126,14 +134,12 @@ export async function splitMessage(
   const trimmed = text.trim();
   if (!trimmed) return [];
 
-  // Divide por regras (cada \n\n = mensagem separada)
   const ruleResult = ruleBasedSplit(trimmed);
+  if (ruleResult.length > 1) return ruleResult;
 
-  // Se gerou múltiplas partes ou uma única parte curta, não precisa do LLM
-  const needsLlm = ruleResult.length === 1 && ruleResult[0].length > MAX_CHARS;
-  if (!needsLlm) return ruleResult;
+  const shouldTryLlm = trimmed.length >= MIN_LLM_SPLIT_CHARS;
+  if (!shouldTryLlm) return ruleResult;
 
-  // Tenta refinamento via LLM (opcional — não bloqueia se falhar)
   try {
     const sb = getSelfhost();
     const [llmRow, secretsRow] = await Promise.all([
@@ -147,20 +153,21 @@ export async function splitMessage(
         const model =
           (llmRow.data as Record<string, unknown> | null)?.splitter_model as string | undefined
           || DEFAULT_SPLITTER_MODEL;
-        const llmResult = await llmSplit(text, orKey, model);
-        if (llmResult) return llmResult;
+        const llmResult = await llmSplit(trimmed, orKey, model);
+        if (llmResult && llmResult.length > 1) return llmResult;
       }
     }
   } catch {
-    // ignora — usa resultado das regras
+    // usa regras
   }
 
   return ruleResult;
 }
 
-// Delay de digitação simulando 230 WPM (entre 800 ms e 4 s)
-export function typingDelayMs(text: string): number {
+/** Delay entre bolhas (mais curto quando há várias partes). */
+export function typingDelayMs(text: string, partIndex = 0): number {
+  if (partIndex <= 0) return 0;
   const words = text.trim().split(/\s+/).length;
   const seconds = (words / 230) * 60;
-  return Math.min(Math.max(seconds * 1000, 800), 4000);
+  return Math.min(Math.max(Math.round(seconds * 1000), 500), 2200);
 }
