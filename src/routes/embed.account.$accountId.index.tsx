@@ -51,7 +51,6 @@ import {
 import {
   setOpenRouterKey,
   setElevenLabsKey,
-  setGroqKey,
   testOpenRouterKey,
   listOpenRouterModels,
   listElevenLabsVoices,
@@ -3539,13 +3538,11 @@ function SecretsSheet({
   const qc = useQueryClient();
   const setOR = useServerFn(setOpenRouterKey);
   const setEL = useServerFn(setElevenLabsKey);
-  const setGroq = useServerFn(setGroqKey);
   const test = useServerFn(testOpenRouterKey);
   const usage = useServerFn(getUsageSummary);
 
   const [orKey, setOrKey] = useState("");
   const [elKey, setElKey] = useState("");
-  const [grKey, setGrKey] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
 
@@ -3609,14 +3606,8 @@ function SecretsSheet({
             onChange={setElKey}
             onSave={() => saveKey(elKey, setEL, "ElevenLabs", () => setElKey(""))}
           />
-          <KeyBlock
-            label="Groq (transcrição de áudio)"
-            help={<a className="text-primary underline" href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys</a>}
-            current={last4.groq}
-            value={grKey}
-            onChange={setGrKey}
-            onSave={() => saveKey(grKey, setGroq, "Groq", () => setGrKey(""))}
-          />
+          {/* Groq é gerenciado centralmente pelo servidor (GROQ_API_KEY).
+              Não exposto na UI a partir de 2026-05. */}
           <div className="rounded-md border p-3">
             <p className="text-xs uppercase text-muted-foreground">Custo estimado (30 dias)</p>
             <p className="mt-1 text-2xl font-semibold">${totalUsd.toFixed(4)}</p>
