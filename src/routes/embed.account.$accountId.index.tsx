@@ -89,7 +89,6 @@ type SheetKey =
   | null
   | "training"
   | "settings"
-  | "secrets"
   | "followup"
   | "warmup"
   | "escalation";
@@ -168,6 +167,10 @@ function EmbedHome() {
         audioTranscrever={!!(data.audio?.transcrever_in)}
         audioResponder={!!(data.audio?.responder_out)}
         configuredIntegrations={data.configured_integrations ?? { clinicorp: false, clinup: false, google_calendar: false }}
+        secretsLast4={{
+          openrouter: (data.secrets?.openrouter_last4 as string | null) ?? null,
+          elevenlabs: (data.secrets?.elevenlabs_last4 as string | null) ?? null,
+        }}
         onClose={() => setOpenSheet(null)}
       />
     );
@@ -319,39 +322,28 @@ function EmbedHome() {
           </div>
         </section>
 
-        {/* ── Mini custo ── */}
-        <CostMiniCard accountId={accountId} />
-
-        {/* ── Conexões e Custos ── */}
-        <section>
-          <button
-            onClick={() => setOpenSheet("secrets")}
-            className="group w-full overflow-hidden rounded-2xl border border-amber-200/60 bg-gradient-to-r from-amber-50 to-orange-50 p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-amber-500/10"
-          >
-            <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-white shadow-md shadow-amber-500/30">
-                <KeyRound className="h-5 w-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-foreground">Conexões e custos</p>
-                <div className="mt-1 flex flex-wrap gap-2">
-                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${data.secrets?.openrouter_last4 ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-600"}`}>
-                    <span className={`h-1 w-1 rounded-full ${data.secrets?.openrouter_last4 ? "bg-emerald-500" : "bg-red-500"}`} />
-                    OpenRouter {data.secrets?.openrouter_last4 ? `••${data.secrets.openrouter_last4}` : "não configurado"}
-                  </span>
-                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${data.secrets?.elevenlabs_last4 ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
-                    <span className={`h-1 w-1 rounded-full ${data.secrets?.elevenlabs_last4 ? "bg-emerald-500" : "bg-zinc-400"}`} />
-                    ElevenLabs {data.secrets?.elevenlabs_last4 ? `••${data.secrets.elevenlabs_last4}` : "não configurado"}
-                  </span>
+        {/* ── Aviso enxuto: OpenRouter obrigatório ── */}
+        {!data.secrets?.openrouter_last4 && (
+          <section>
+            <button
+              onClick={() => setOpenSheet("settings")}
+              className="group w-full overflow-hidden rounded-2xl border border-amber-300/70 bg-gradient-to-r from-amber-50 to-orange-50 p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-amber-500/10"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-white shadow-md shadow-amber-500/30">
+                  <AlertCircle className="h-5 w-5" />
                 </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-foreground">Configure o OpenRouter para ativar o agente</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Sem a chave OpenRouter o assistente não responde. Configure em <strong>Personalize o Assistente → Integrações</strong>.
+                  </p>
+                </div>
+                <ArrowRight className="h-4 w-4 shrink-0 text-amber-600 transition-transform group-hover:translate-x-1" />
               </div>
-              {!data.secrets?.openrouter_last4 && (
-                <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
-              )}
-              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1" />
-            </div>
-          </button>
-        </section>
+            </button>
+          </section>
+        )}
 
         <p className="pb-2 text-center text-[10px] text-muted-foreground/60">
           {accountId} · {agentId.slice(0, 8)}
@@ -359,16 +351,7 @@ function EmbedHome() {
       </main>
 
       {/* SHEETS */}
-      <SecretsSheet
-        open={openSheet === "secrets"}
-        onClose={() => setOpenSheet(null)}
-        accountId={accountId}
-        last4={{
-          openrouter: (data.secrets?.openrouter_last4 as string | null) ?? null,
-          elevenlabs: (data.secrets?.elevenlabs_last4 as string | null) ?? null,
-          groq: (data.secrets?.groq_last4 as string | null) ?? null,
-        }}
-      />
+      {/* SecretsSheet movido para dentro do IntegrationsTab (em Personalize o Assistente). */}
     </div>
   );
 }
@@ -2331,6 +2314,7 @@ function AgentSettingsView({
   audioTranscrever,
   audioResponder,
   configuredIntegrations,
+  secretsLast4,
   onClose,
 }: {
   accountId: string;
@@ -2345,6 +2329,7 @@ function AgentSettingsView({
   audioTranscrever: boolean;
   audioResponder: boolean;
   configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
+  secretsLast4: { openrouter: string | null; elevenlabs: string | null };
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -2778,6 +2763,7 @@ function AgentSettingsView({
             audioTranscrever={audioTranscrever}
             audioResponder={audioResponder}
             configuredIntegrations={configuredIntegrations}
+            secretsLast4={secretsLast4}
           />
         )}
       </div>
@@ -2796,6 +2782,7 @@ function IntegrationsTab({
   audioTranscrever,
   audioResponder,
   configuredIntegrations,
+  secretsLast4,
 }: {
   accountId: string;
   agentId: string;
@@ -2803,11 +2790,14 @@ function IntegrationsTab({
   audioTranscrever: boolean;
   audioResponder: boolean;
   configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
+  secretsLast4?: { openrouter: string | null; elevenlabs: string | null };
 }) {
   const hasAny =
     configuredIntegrations.clinicorp ||
     configuredIntegrations.clinup ||
     configuredIntegrations.google_calendar;
+
+  const [showSecrets, setShowSecrets] = useState(false);
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-8 space-y-4">
@@ -2816,6 +2806,49 @@ function IntegrationsTab({
           <strong className="text-primary">Dica:</strong> Configure aqui os canais e ferramentas que seu assistente usa. Apenas as integrações do seu template estão disponíveis.
         </p>
       </div>
+
+      {/* Custo de IA — últimos 30 dias */}
+      <CostMiniCard accountId={accountId} />
+
+      {/* Conexões (OpenRouter / ElevenLabs) */}
+      <button
+        onClick={() => setShowSecrets(true)}
+        className="group w-full overflow-hidden rounded-2xl border border-amber-200/60 bg-gradient-to-r from-amber-50 to-orange-50 p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-amber-500/10"
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-white shadow-md shadow-amber-500/30">
+            <KeyRound className="h-5 w-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-foreground">Conexões de IA</p>
+            <div className="mt-1 flex flex-wrap gap-2">
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${secretsLast4?.openrouter ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-600"}`}>
+                <span className={`h-1 w-1 rounded-full ${secretsLast4?.openrouter ? "bg-emerald-500" : "bg-red-500"}`} />
+                OpenRouter {secretsLast4?.openrouter ? `••${secretsLast4.openrouter}` : "não configurado"}
+              </span>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${secretsLast4?.elevenlabs ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+                <span className={`h-1 w-1 rounded-full ${secretsLast4?.elevenlabs ? "bg-emerald-500" : "bg-zinc-400"}`} />
+                ElevenLabs {secretsLast4?.elevenlabs ? `••${secretsLast4.elevenlabs}` : "não configurado"}
+              </span>
+            </div>
+          </div>
+          {!secretsLast4?.openrouter && (
+            <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
+          )}
+          <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1" />
+        </div>
+      </button>
+
+      <SecretsSheet
+        open={showSecrets}
+        onClose={() => setShowSecrets(false)}
+        accountId={accountId}
+        last4={{
+          openrouter: secretsLast4?.openrouter ?? null,
+          elevenlabs: secretsLast4?.elevenlabs ?? null,
+          groq: null,
+        }}
+      />
 
       {/* Helena CRM — sempre visível */}
       <HelenaConfigPanel accountId={accountId} />
@@ -2842,7 +2875,7 @@ function IntegrationsTab({
       {/* Nenhuma integração configurada ainda */}
       {!hasAny && (
         <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-5 py-6 text-center">
-          <p className="text-sm font-medium text-slate-500">Nenhuma integração configurada</p>
+          <p className="text-sm font-medium text-slate-500">Nenhuma integração de agendamento configurada</p>
           <p className="mt-1 text-xs text-slate-400">
             Aplique um template com integração (Clinicorp, Clinup ou Google Agenda) para ativar as ferramentas de agendamento.
           </p>
