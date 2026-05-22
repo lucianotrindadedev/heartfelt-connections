@@ -3,14 +3,14 @@ FROM node:22-bookworm-slim AS builder
 
 WORKDIR /app
 
-# package-lock.json costuma estar no .gitignore local — usa ci se existir, senão install
+# Coolify pode injetar NODE_ENV=production no build — força instalar devDependencies (vite, esbuild)
+ENV NPM_CONFIG_PRODUCTION=false
+ENV NODE_ENV=development
+
 COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY . .
-
-# Build do Vite precisa de devDependencies (não usar NODE_ENV=production aqui)
-ENV NODE_ENV=development
 
 # Somente VITE_* devem ser build args na Coolify (não CRON_SECRET, PGCRYPTO, etc.)
 ARG VITE_SUPABASE_URL
