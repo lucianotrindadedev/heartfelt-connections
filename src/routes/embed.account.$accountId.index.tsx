@@ -156,25 +156,32 @@ function EmbedHome() {
     retry: false,
   });
 
-  // Conta não cadastrada → blocker em tela cheia
-  if (data && data.registered === false) {
-    return <AccountNotRegisteredBlocker accountId={accountId} />;
-  }
-
+  // IMPORTANTE: TODOS os hooks (useMutation incluso) precisam ser chamados
+  // ANTES de qualquer early return — senão violamos as Rules of Hooks e o
+  // React lança o erro #300 ("Rendered fewer hooks than expected").
   const toggleAtivo = useMutation({
     mutationFn: (ativo: boolean) => updateAgentFn({ data: { accountId, ativo } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["agent", accountId] }),
   });
 
   const doReset = useMutation({
-    mutationFn: () => resetAgentFn({ data: { agentId: data!.agent!.id as string } }),
+    mutationFn: () => {
+      const aid = data && data.registered ? (data.agent?.id as string | undefined) : undefined;
+      if (!aid) throw new Error("Agente indisponível");
+      return resetAgentFn({ data: { agentId: aid } });
+    },
     onSuccess: () => {
       toast.success("Histórico do agente limpo.");
       qc.invalidateQueries({ queryKey: ["agent", accountId] });
     },
   });
 
-  if (isLoading || !data?.agent) {
+  // Conta não cadastrada → blocker em tela cheia
+  if (data && data.registered === false) {
+    return <AccountNotRegisteredBlocker accountId={accountId} />;
+  }
+
+  if (isLoading || !data || !data.registered || !data.agent) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-50 to-white">
         <div className="flex flex-col items-center gap-3">
