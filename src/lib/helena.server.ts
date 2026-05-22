@@ -279,11 +279,17 @@ export async function updateHelenaContactPhone(
 
 export async function sendHelenaText(
   account: HelenaAccount,
-  params: { phone?: string; text: string; sessionId?: string },
+  params: {
+    phone?: string;
+    text: string;
+    sessionId?: string;
+    /** Usa /v1/message/send-sync (bolhas reais no WhatsApp). Necessário em envios multi-parte. */
+    viaWhatsApp?: boolean;
+  },
 ): Promise<{ ok: boolean; status: number; body: string }> {
   const base = account.baseUrl.replace(/\/$/, "");
 
-  if (params.sessionId) {
+  if (params.sessionId && !params.viaWhatsApp) {
     const url = `${base}/chat/v1/session/${params.sessionId}/message/sync`;
     const res = await fetch(url, {
       method: "POST",

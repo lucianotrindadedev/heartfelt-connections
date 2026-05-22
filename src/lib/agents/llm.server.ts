@@ -69,6 +69,10 @@ export interface LlmResponse {
   tokensIn: number;
   tokensOut: number;
   cachedTokens: number;
+  /** Custo em USD retornado pela OpenRouter (campo usage.cost). 0 quando não disponível. */
+  costUsd: number;
+  /** ID da geração OpenRouter (ex: "gen-abc123"). Útil para buscar custo via /api/v1/generation. */
+  generationId?: string;
   latencyMs: number;
   rawJson?: unknown;
 }
@@ -92,9 +96,13 @@ interface OpenRouterUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
   prompt_tokens_details?: { cached_tokens?: number };
+  /** Custo em USD retornado diretamente pela OpenRouter (ex: 0.000015). */
+  cost?: number;
 }
 
 interface OpenRouterResponseRaw {
+  /** ID da geração (ex: "gen-abc123") — usado para buscar custo via /api/v1/generation */
+  id?: string;
   choices?: OpenRouterChoice[];
   usage?: OpenRouterUsage;
 }
@@ -187,6 +195,8 @@ export async function callLlm(
     tokensIn: usage.prompt_tokens ?? 0,
     tokensOut: usage.completion_tokens ?? 0,
     cachedTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+    costUsd: usage.cost ?? 0,
+    generationId: json.id,
     latencyMs,
     rawJson: json,
   };

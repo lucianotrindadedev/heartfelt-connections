@@ -210,6 +210,9 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   let workingMessages: LlmMessage[] = [...history];
   const toolsCalled: string[] = [];
   let accumulatedPatch: Partial<LeadData> = {};
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+  let totalCostUsd = 0;
 
   // No 1º ciclo, força tool_choice=none (sem tools).
   const cycleCount = ctx.history.filter((m) => m.role === "user").length;
@@ -227,6 +230,10 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       temperature: ctx.temperature,
       enableCaching: ctx.model.startsWith("anthropic/"),
     });
+
+    totalTokensIn += turn.tokensIn;
+    totalTokensOut += turn.tokensOut;
+    totalCostUsd += turn.costUsd;
 
     if (turn.toolCalls.length === 0) break;
 
@@ -265,7 +272,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   }
 
   // Resposta final estruturada (sem tools).
-  const { result } = await callLlmStructured<QualifierJsonResult>(
+  const { result, response: finalResponse } = await callLlmStructured<QualifierJsonResult>(
     ctx.orKey,
     {
       model: ctx.model,
@@ -291,6 +298,10 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
   );
 
+  totalTokensIn += finalResponse.tokensIn;
+  totalTokensOut += finalResponse.tokensOut;
+  totalCostUsd += finalResponse.costUsd;
+
   const mergedPatch = {
     ...accumulatedPatch,
     ...stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>),
@@ -302,5 +313,8 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     lead_data_patch: mergedPatch,
     reasoning: result.reasoning,
     tools_called: toolsCalled,
+    tokens_in: totalTokensIn,
+    tokens_out: totalTokensOut,
+    cost_usd: totalCostUsd,
   };
 }

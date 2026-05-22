@@ -61,4 +61,10 @@ export interface AgentResult {
   is_fallback?: boolean;
   /** Tools executadas neste turn (para logging). */
   tools_called?: string[];
+  /** Total de tokens de entrada consumidos em todas as chamadas LLM deste turn. */
+  tokens_in?: number;
+  /** Total de tokens de saída gerados em todas as chamadas LLM deste turn. */
+  tokens_out?: number;
+  /** Custo total em USD de todas as chamadas LLM deste turn (via usage.cost da OpenRouter). */
+  cost_usd?: number;
 }

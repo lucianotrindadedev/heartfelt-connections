@@ -46,10 +46,16 @@ export const Route = createFileRoute("/api/public/cron/drain-conversation")({
           return Response.json({ ok: true, conversation_id: conversationId });
         } catch (e) {
           if (e instanceof ConversationLockedError) {
+            const maxLockRetries = 5;
+            if (lockRetry < maxLockRetries) {
+              scheduleConversationAgentTurn(conversationId, 2, lockRetry + 1);
+            }
             return Response.json({
               ok: true,
               deferred: "locked",
               conversation_id: conversationId,
+              lock_retry: lockRetry,
+              rescheduled: lockRetry < maxLockRetries,
             });
           }
           console.error("[drain-conversation] falhou:", e);

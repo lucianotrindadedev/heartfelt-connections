@@ -15,6 +15,7 @@ import { Route as AuthenticatedRouteImport } from './routes/_authenticated'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as EmbedIndexRouteImport } from './routes/embed.index'
 import { Route as EmbedAccountIdRouteImport } from './routes/embed.$accountId'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated.admin'
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated.admin.index'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
@@ -58,6 +59,11 @@ const EmbedAccountIdRoute = EmbedAccountIdRouteImport.update({
   id: '/$accountId',
   path: '/$accountId',
   getParentRoute: () => EmbedRoute,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AuthenticatedAdminRoute = AuthenticatedAdminRouteImport.update({
   id: '/admin',
@@ -143,6 +149,7 @@ export interface FileRoutesByFullPath {
   '/embed': typeof EmbedRouteWithChildren
   '/login': typeof LoginRoute
   '/admin': typeof AuthenticatedAdminRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
   '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
@@ -162,6 +169,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/login': typeof LoginRoute
+  '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed': typeof EmbedIndexRoute
   '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
@@ -184,6 +192,7 @@ export interface FileRoutesById {
   '/embed': typeof EmbedRouteWithChildren
   '/login': typeof LoginRoute
   '/_authenticated/admin': typeof AuthenticatedAdminRouteWithChildren
+  '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
   '/_authenticated/admin/templates': typeof AuthenticatedAdminTemplatesRoute
@@ -207,6 +216,7 @@ export interface FileRouteTypes {
     | '/embed'
     | '/login'
     | '/admin'
+    | '/api/health'
     | '/embed/$accountId'
     | '/embed/'
     | '/admin/templates'
@@ -226,6 +236,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/login'
+    | '/api/health'
     | '/embed/$accountId'
     | '/embed'
     | '/admin/templates'
@@ -247,6 +258,7 @@ export interface FileRouteTypes {
     | '/embed'
     | '/login'
     | '/_authenticated/admin'
+    | '/api/health'
     | '/embed/$accountId'
     | '/embed/'
     | '/_authenticated/admin/templates'
@@ -269,6 +281,7 @@ export interface RootRouteChildren {
   AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
   EmbedRoute: typeof EmbedRouteWithChildren
   LoginRoute: typeof LoginRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   ApiPublicCronDrainConversationRoute: typeof ApiPublicCronDrainConversationRoute
   ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
@@ -322,6 +335,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/embed/$accountId'
       preLoaderRoute: typeof EmbedAccountIdRouteImport
       parentRoute: typeof EmbedRoute
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_authenticated/admin': {
       id: '/_authenticated/admin'
@@ -484,6 +504,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthenticatedRoute: AuthenticatedRouteWithChildren,
   EmbedRoute: EmbedRouteWithChildren,
   LoginRoute: LoginRoute,
+  ApiHealthRoute: ApiHealthRoute,
   ApiPublicCronDrainConversationRoute: ApiPublicCronDrainConversationRoute,
   ApiPublicCronFollowupRoute: ApiPublicCronFollowupRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,

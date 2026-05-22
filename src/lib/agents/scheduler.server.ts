@@ -306,6 +306,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   let workingMessages: LlmMessage[] = [...history];
   const toolsCalled: string[] = [];
   let accumulatedPatch: Partial<LeadData> = {};
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
+  let totalCostUsd = 0;
 
   // Loop de tools: primeiro deixa o modelo decidir (tool_choice=auto).
   // Quando ele parar de chamar tools, força um turno final com jsonMode.
@@ -321,6 +324,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       temperature: ctx.temperature,
       enableCaching: ctx.model.startsWith("anthropic/"),
     });
+
+    totalTokensIn += turn.tokensIn;
+    totalTokensOut += turn.tokensOut;
+    totalCostUsd += turn.costUsd;
 
     if (turn.toolCalls.length === 0) {
       // LLM não chamou tool. Vai para o passo de structured output (próximo).
@@ -380,7 +387,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
 
   // Após tools (ou se não chamou nenhuma), pede a resposta estruturada final.
   const finalDynamic = buildDynamicSystemPrompt(ctx); // reflete patches acumulados
-  const { result } = await callLlmStructured<SchedulerJsonResult>(
+  const { result, response: finalResponse } = await callLlmStructured<SchedulerJsonResult>(
     ctx.orKey,
     {
       model: ctx.model,
@@ -402,6 +409,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
   );
 
+  totalTokensIn += finalResponse.tokensIn;
+  totalTokensOut += finalResponse.tokensOut;
+  totalCostUsd += finalResponse.costUsd;
+
   // Merge final do patch: o que o LLM declarou + o que veio de tools.
   const mergedPatch = {
     ...accumulatedPatch,
@@ -414,5 +425,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     lead_data_patch: mergedPatch,
     reasoning: result.reasoning,
     tools_called: toolsCalled,
+    tokens_in: totalTokensIn,
+    tokens_out: totalTokensOut,
+    cost_usd: totalCostUsd,
   };
 }

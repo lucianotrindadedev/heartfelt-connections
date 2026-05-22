@@ -27,7 +27,11 @@ import {
   tryAcquireConversationLock,
 } from "@/lib/conversation-lock.server";
 import { conversationNeedsAgentReply } from "@/lib/conversation-reply.server";
-import { splitMessage, typingDelayMs } from "@/lib/message-splitter.server";
+import {
+  MIN_INTER_PART_DELAY_MS,
+  splitMessage,
+  typingDelayMs,
+} from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 import type { AgentContext, AgentResult } from "./context";
 import { stripNullishFields } from "./parse-llm-json.server";
@@ -110,27 +114,35 @@ async function deliverReply(
   phone: string | undefined,
 ): Promise<void> {
   const sb = getSelfhost();
-  await sb.from("messages").insert({
-    conversation_id: conversationId,
-    role: "assistant",
-    content: reply,
-    meta: { origem: "agente", ...meta },
-  });
-
-  const helena = await loadHelenaAccount(accountId);
   const parts = await splitMessage(reply, accountId);
   console.log(
     `[orch] split ${parts.length} parte(s) — ${parts.map((p) => p.length).join("+")} chars (total ${reply.length})`,
   );
 
+  const helena = await loadHelenaAccount(accountId);
+  const multiPart = parts.length > 1;
+
   let sentCount = 0;
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0) await delay(typingDelayMs(parts[i], i));
-    const sendRes = await sendHelenaText(helena, {
+    if (i > 0) {
+      const pauseMs = Math.max(typingDelayMs(parts[i], i), MIN_INTER_PART_DELAY_MS);
+      await delay(pauseMs);
+    }
+    let sendRes = await sendHelenaText(helena, {
       phone,
       text: parts[i],
       sessionId,
+      viaWhatsApp: multiPart,
     });
+    if (!sendRes.ok) {
+      await delay(500);
+      sendRes = await sendHelenaText(helena, {
+        phone,
+        text: parts[i],
+        sessionId,
+        viaWhatsApp: multiPart,
+      });
+    }
     if (!sendRes.ok) {
       console.error(
         `[orch] helena parte ${i + 1}/${parts.length} falhou ${sendRes.status}: ${sendRes.body.slice(0, 200)}`,
@@ -139,9 +151,28 @@ async function deliverReply(
     }
     sentCount++;
   }
+  if (sentCount === 0) {
+    console.error(`[orch] Helena: nenhuma parte enviada para ${conversationId}`);
+    throw new Error("Falha ao enviar resposta pelo Helena");
+  }
   if (parts.length > 1 && sentCount < parts.length) {
     console.error(`[orch] envio parcial ${sentCount}/${parts.length} para ${conversationId}`);
   }
+
+  await sb.from("messages").insert({
+    conversation_id: conversationId,
+    role: "assistant",
+    content: reply,
+    meta: {
+      origem: "agente",
+      delivery_status: sentCount === parts.length ? "delivered" : "partial",
+      delivered_parts: sentCount,
+      split_parts: parts.length,
+      split_preview: parts.map((p) => p.slice(0, 80)),
+      ...meta,
+    },
+  });
+
   // Mantém agentId/agent_run para retrocompat (UI mostra esse insight).
   await sb.from("agent_runs").insert({
     account_id: accountId,
@@ -152,6 +183,7 @@ async function deliverReply(
     latency_ms: meta.latency_ms ?? null,
     tokens_in: meta.tokens_in ?? null,
     tokens_out: meta.tokens_out ?? null,
+    cost_usd_estimate: meta.cost_usd_estimate ?? 0,
   });
 }
 
@@ -217,6 +249,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     .single();
   if (!secrets.data?.openrouter_api_key_enc) {
     console.warn(`[orch] sem chave OpenRouter para ${accountId}`);
+    await releaseConversationLock(conversationId);
     return;
   }
   const orKey = await decryptValue(secrets.data.openrouter_api_key_enc as unknown as string);
@@ -353,6 +386,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       {
         model: ctx.model,
         latency_ms: latencyMs,
+        tokens_in: result.tokens_in ?? null,
+        tokens_out: result.tokens_out ?? null,
+        cost_usd_estimate: result.cost_usd ?? null,
         stage_from: stage,
         stage_to: newStage,
         agent: route,
