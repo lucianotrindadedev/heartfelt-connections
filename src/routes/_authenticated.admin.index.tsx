@@ -1,7 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { createAccount, listAccounts } from "@/lib/admin.functions";
 import { helenaWebhookUrl } from "@/lib/app-base-url";
 import { Card } from "@/components/ui/card";
@@ -17,12 +17,18 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Check, ChevronRight, Copy, Loader2, Plus } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Copy, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/admin/")({
   component: AdminIndex,
 });
+
+type AccountRow = {
+  id: string;
+  nome: string;
+  helena_account_id?: string | null;
+};
 
 function AdminIndex() {
   const fetchAccounts = useServerFn(listAccounts);
@@ -30,6 +36,18 @@ function AdminIndex() {
     queryKey: ["admin", "accounts"],
     queryFn: () => fetchAccounts(),
   });
+
+  // Agrupa contas pelo helena_account_id
+  const groups = useMemo(() => {
+    const accounts: AccountRow[] = q.data?.accounts ?? [];
+    const map = new Map<string, AccountRow[]>();
+    for (const a of accounts) {
+      const key = a.helena_account_id ?? a.id;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(a);
+    }
+    return Array.from(map.entries()); // [ [helenaId, [account, ...]], ... ]
+  }, [q.data]);
 
   return (
     <div className="space-y-6">
@@ -63,23 +81,16 @@ function AdminIndex() {
       )}
 
       <div className="grid gap-3">
-        {q.data?.accounts.map((a: { id: string; nome: string }) => (
-          <Link
-            key={a.id}
-            to="/admin/account/$accountId"
-            params={{ accountId: a.id }}
-            className="block"
-          >
-            <Card className="flex items-center justify-between p-4 hover:bg-accent/40 transition">
-              <div>
-                <div className="font-medium">{a.nome}</div>
-                <div className="text-xs text-muted-foreground font-mono">{a.id}</div>
-              </div>
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            </Card>
-          </Link>
-        ))}
-        {q.data && q.data.accounts.length === 0 && (
+        {groups.map(([helenaId, accounts]) =>
+          accounts.length === 1 ? (
+            /* Conta única para esse Helena ID — card simples */
+            <SingleAccountCard key={helenaId} account={accounts[0]} />
+          ) : (
+            /* Múltiplas contas para o mesmo Helena ID — card agrupado */
+            <MultiAccountGroup key={helenaId} helenaId={helenaId} accounts={accounts} />
+          ),
+        )}
+        {q.data && groups.length === 0 && (
           <Card className="p-6 text-center text-sm text-muted-foreground">
             Nenhuma conta ainda. Clique em "Nova conta" para criar a primeira.
           </Card>
@@ -89,6 +100,75 @@ function AdminIndex() {
   );
 }
 
+function SingleAccountCard({ account }: { account: AccountRow }) {
+  return (
+    <Link to="/admin/account/$accountId" params={{ accountId: account.id }} className="block">
+      <Card className="flex items-center justify-between p-4 hover:bg-accent/40 transition">
+        <div>
+          <div className="font-medium">{account.nome}</div>
+          <div className="text-xs text-muted-foreground font-mono">{account.id}</div>
+        </div>
+        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+      </Card>
+    </Link>
+  );
+}
+
+function MultiAccountGroup({ helenaId, accounts }: { helenaId: string; accounts: AccountRow[] }) {
+  const [open, setOpen] = useState(true);
+
+  return (
+    <div className="rounded-lg border overflow-hidden">
+      {/* Cabeçalho do grupo */}
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between bg-muted/50 px-4 py-3 hover:bg-muted/80 transition"
+      >
+        <div className="text-left">
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+            Helena CRM
+          </span>
+          <p className="font-mono text-xs text-foreground mt-0.5">{helenaId}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+            {accounts.length} agentes
+          </span>
+          {open ? (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          )}
+        </div>
+      </button>
+
+      {/* Lista de contas do grupo */}
+      {open && (
+        <div className="divide-y">
+          {accounts.map((a) => (
+            <Link
+              key={a.id}
+              to="/admin/account/$accountId"
+              params={{ accountId: a.id }}
+              className="flex items-center justify-between px-4 py-3 hover:bg-accent/40 transition"
+            >
+              <div>
+                <div className="font-medium text-sm">{a.nome}</div>
+                <div className="text-xs text-muted-foreground font-mono">{a.id}</div>
+              </div>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================
+// Dialog de criação
+// =============================================================
+
 interface CreatedAccount {
   accountId: string;
   agentId: string;
@@ -97,7 +177,7 @@ interface CreatedAccount {
 
 function CreateAccountDialog() {
   const [open, setOpen] = useState(false);
-  const [id, setId] = useState("");
+  const [helenaAccountId, setHelenaAccountId] = useState("");
   const [nome, setNome] = useState("");
   const [helenaToken, setHelenaToken] = useState("");
   const [helenaBaseUrl, setHelenaBaseUrl] = useState("");
@@ -107,7 +187,7 @@ function CreateAccountDialog() {
   const createFn = useServerFn(createAccount);
 
   const reset = () => {
-    setId("");
+    setHelenaAccountId("");
     setNome("");
     setHelenaToken("");
     setHelenaBaseUrl("");
@@ -116,7 +196,7 @@ function CreateAccountDialog() {
 
   const m = useMutation({
     mutationFn: (input: {
-      id: string;
+      helenaAccountId: string;
       nome: string;
       helenaToken: string;
       helenaBaseUrl?: string;
@@ -150,7 +230,7 @@ function CreateAccountDialog() {
             onSubmit={(e) => {
               e.preventDefault();
               m.mutate({
-                id: id.trim(),
+                helenaAccountId: helenaAccountId.trim(),
                 nome: nome.trim(),
                 helenaToken: helenaToken.trim(),
                 helenaBaseUrl: helenaBaseUrl.trim() || undefined,
@@ -161,6 +241,7 @@ function CreateAccountDialog() {
               <DialogTitle>Criar nova conta</DialogTitle>
               <DialogDescription>
                 Conecta uma conta do CRM Helena. O webhook é gerado automaticamente.
+                Você pode criar múltiplos agentes para a mesma conta Helena.
               </DialogDescription>
             </DialogHeader>
 
@@ -171,22 +252,23 @@ function CreateAccountDialog() {
                   id="acc-nome"
                   value={nome}
                   onChange={(e) => setNome(e.target.value)}
-                  placeholder="ex: Clínica Magnum"
+                  placeholder="ex: Clínica Magnum — Agente Principal"
                   required
                 />
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="acc-id">ID da conta no Helena</Label>
+                <Label htmlFor="acc-helena-id">ID da conta no Helena</Label>
                 <Input
-                  id="acc-id"
-                  value={id}
-                  onChange={(e) => setId(e.target.value)}
-                  placeholder="ex: magnum"
+                  id="acc-helena-id"
+                  value={helenaAccountId}
+                  onChange={(e) => setHelenaAccountId(e.target.value)}
+                  placeholder="ex: 8b8c63cf-c6d3-4e78-b2df-6fbbc732fb1b"
                   required
                 />
                 <p className="text-xs text-muted-foreground">
-                  Letras, números, _ ou -. Deve bater com <code>id_conta</code> no Helena.
+                  UUID da conta no CRM Helena. Pode repetir se você quiser múltiplos
+                  agentes para a mesma conta.
                 </p>
               </div>
 
@@ -330,4 +412,3 @@ function SuccessStep({
     </>
   );
 }
-

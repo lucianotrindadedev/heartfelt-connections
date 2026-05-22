@@ -35,3 +35,7 @@ dist-ssr
 
 workflows/
 .vercel
+
+# Claude Code worktrees / sandboxes
+.claude/
+heart-felt-connections-test/

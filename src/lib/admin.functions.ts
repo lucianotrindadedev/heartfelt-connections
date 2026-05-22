@@ -13,10 +13,23 @@ export const listAccounts = createServerFn({ method: "GET" })
     const sb = getSelfhost();
     const { data, error } = await sb
       .from("accounts")
-      .select("id, nome, criado_em, atualizado_em")
+      .select("id, nome, helena_account_id, criado_em, atualizado_em")
       .order("criado_em", { ascending: false });
     if (error) throw new Error(error.message);
     return { accounts: data ?? [] };
+  });
+
+/** Público (sem auth) — usado pelo embed para resolver qual conta abrir pelo helena_account_id. */
+export const listAccountsByHelena = createServerFn({ method: "GET" })
+  .inputValidator((d) => z.object({ helenaAccountId: z.string().min(1) }).parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { data: accounts } = await sb
+      .from("accounts")
+      .select("id, nome")
+      .eq("helena_account_id", data.helenaAccountId)
+      .order("criado_em", { ascending: true });
+    return { accounts: accounts ?? [] };
   });
 
 export const getAccountDetail = createServerFn({ method: "GET" })
@@ -52,11 +65,7 @@ export const createAccount = createServerFn({ method: "POST" })
   .inputValidator((d) =>
     z
       .object({
-        id: z
-          .string()
-          .min(1)
-          .max(64)
-          .regex(/^[a-zA-Z0-9_-]+$/, "Use apenas letras, números, _ ou -"),
+        helenaAccountId: z.string().min(1).max(128),
         nome: z.string().min(1).max(120),
         helenaToken: z.string().min(8).max(1000),
         helenaBaseUrl: z
@@ -71,16 +80,59 @@ export const createAccount = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sb = getSelfhost();
 
-    const existing = await sb.from("accounts").select("id").eq("id", data.id).maybeSingle();
-    if (existing.data) throw new Error("Já existe uma conta com esse ID");
+    // Conta quantas contas Sarai já existem para este helena_account_id
+    const { count: existingCount } = await sb
+      .from("accounts")
+      .select("id", { count: "exact", head: true })
+      .eq("helena_account_id", data.helenaAccountId);
+
+    // Gera ID interno único:
+    //   - 1ª conta: usa o próprio helenaAccountId (backward compat)
+    //   - 2ª em diante: helenaAccountId-2, -3, etc.
+    let internalId = data.helenaAccountId;
+    if (existingCount && existingCount > 0) {
+      let suffix = existingCount + 1;
+      while (true) {
+        const candidate = `${data.helenaAccountId}-${suffix}`;
+        const { data: ex } = await sb
+          .from("accounts")
+          .select("id")
+          .eq("id", candidate)
+          .maybeSingle();
+        if (!ex) { internalId = candidate; break; }
+        suffix++;
+      }
+    } else {
+      // Mesmo para a 1ª conta, verifica se o ID base já foi tomado diretamente
+      const { data: ex } = await sb
+        .from("accounts")
+        .select("id")
+        .eq("id", internalId)
+        .maybeSingle();
+      if (ex) {
+        // Raro — ID já existe mas helena_account_id é diferente; adiciona sufixo
+        let suffix = 2;
+        while (true) {
+          const candidate = `${data.helenaAccountId}-${suffix}`;
+          const { data: ex2 } = await sb
+            .from("accounts")
+            .select("id")
+            .eq("id", candidate)
+            .maybeSingle();
+          if (!ex2) { internalId = candidate; break; }
+          suffix++;
+        }
+      }
+    }
 
     const tokenEnc = await encryptValue(data.helenaToken);
 
     const accIns = await sb
       .from("accounts")
       .insert({
-        id: data.id,
+        id: internalId,
         nome: data.nome,
+        helena_account_id: data.helenaAccountId,
         helena_base_url: data.helenaBaseUrl ?? "https://api.crmmentoriae7.com.br",
         helena_token_enc: tokenEnc,
       })
@@ -91,14 +143,14 @@ export const createAccount = createServerFn({ method: "POST" })
     const agentIns = await sb
       .from("agents")
       .insert({
-        account_id: data.id,
+        account_id: internalId,
         nome: "Assistente Virtual",
         system_prompt: "",
       })
       .select("id, webhook_secret")
       .single();
     if (agentIns.error) {
-      await sb.from("accounts").delete().eq("id", data.id);
+      await sb.from("accounts").delete().eq("id", internalId);
       throw new Error(agentIns.error.message);
     }
 
@@ -109,13 +161,13 @@ export const createAccount = createServerFn({ method: "POST" })
       sb.from("agent_warmup").insert({ agent_id: agentIns.data.id }),
       sb.from("channels_whatsapp").insert({ agent_id: agentIns.data.id }),
       sb.from("webchat_config").insert({ agent_id: agentIns.data.id }),
-      sb.from("account_secrets").insert({ account_id: data.id }),
-      sb.from("account_llm_config").insert({ account_id: data.id }),
-      sb.from("account_voice_config").insert({ account_id: data.id }),
+      sb.from("account_secrets").insert({ account_id: internalId }),
+      sb.from("account_llm_config").insert({ account_id: internalId }),
+      sb.from("account_voice_config").insert({ account_id: internalId }),
     ]);
 
     return {
-      accountId: data.id,
+      accountId: internalId,
       agentId: agentIns.data.id,
       webhookSecret: agentIns.data.webhook_secret as string,
     };
