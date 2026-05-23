@@ -86,6 +86,7 @@ import {
   listAiMagicHistory,
   getAiMagicSuggestions,
 } from "@/lib/ai-magic.functions";
+import { lineDiff, diffChangeBlocks, diffStats, type DiffOp } from "@/lib/text-diff";
 
 interface AccountSearch {
   picked?: string;
@@ -1068,11 +1069,144 @@ interface AiMagicMessage {
   role: "user" | "assistant";
   text: string;
   proposed_prompt?: string;
+  prompt_before?: string;
   sections_changed?: string[];
   reasoning?: string;
   request_id?: string;
   no_changes?: boolean;
   applied?: boolean;
+}
+
+// Componente: preview compacto + modal expandido com diff completo
+function DiffPreviewBlock({ before, after }: { before: string; after: string }) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const ops = useMemo(() => lineDiff(before, after), [before, after]);
+  const blocks = useMemo(() => diffChangeBlocks(ops, 1), [ops]);
+  const stats = useMemo(() => diffStats(ops), [ops]);
+
+  // Mostra no preview: primeiros 2 blocos OU primeiras ~8 linhas alteradas
+  const previewBlocks = blocks.slice(0, 2);
+  const restCount = blocks.length - previewBlocks.length;
+
+  if (stats.changed_lines === 0) {
+    return <p className="text-[11px] text-muted-foreground italic">Sem alterações de texto.</p>;
+  }
+
+  return (
+    <>
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+          {stats.added > 0 && (
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700">
+              +{stats.added} linha{stats.added > 1 ? "s" : ""}
+            </span>
+          )}
+          {stats.removed > 0 && (
+            <span className="rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-700">
+              −{stats.removed} linha{stats.removed > 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+
+        <div className="overflow-hidden rounded-md border border-slate-200 bg-slate-50 font-mono text-[10px] leading-relaxed">
+          {previewBlocks.map((block, bi) => (
+            <div key={bi} className={bi > 0 ? "border-t border-dashed border-slate-200" : ""}>
+              {block.slice(0, 8).map((op, oi) => (
+                <DiffLine key={oi} op={op} />
+              ))}
+              {block.length > 8 && (
+                <div className="bg-slate-100 px-2 py-0.5 text-[10px] text-muted-foreground italic">
+                  … +{block.length - 8} linhas
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {(restCount > 0 || blocks.some((b) => b.length > 8)) && (
+          <button
+            onClick={() => setModalOpen(true)}
+            className="text-[11px] text-primary hover:underline"
+          >
+            Ver alterações completas{restCount > 0 ? ` (${restCount} bloco${restCount > 1 ? "s" : ""} a mais)` : ""}
+          </button>
+        )}
+        {restCount === 0 && !blocks.some((b) => b.length > 8) && (
+          <button
+            onClick={() => setModalOpen(true)}
+            className="text-[11px] text-muted-foreground hover:text-primary"
+          >
+            Ver em tela cheia
+          </button>
+        )}
+      </div>
+
+      {/* Modal com diff completo */}
+      <Sheet open={modalOpen} onOpenChange={(v) => !v && setModalOpen(false)}>
+        <SheetContent side="right" className="w-full p-0 sm:max-w-2xl flex flex-col">
+          <SheetHeader className="border-b px-5 py-3">
+            <SheetTitle className="text-base">Alterações propostas</SheetTitle>
+            <div className="flex items-center gap-2 text-xs">
+              {stats.added > 0 && (
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-semibold text-emerald-700">
+                  +{stats.added}
+                </span>
+              )}
+              {stats.removed > 0 && (
+                <span className="rounded-full bg-rose-100 px-2 py-0.5 font-semibold text-rose-700">
+                  −{stats.removed}
+                </span>
+              )}
+              <span className="text-muted-foreground">{blocks.length} bloco{blocks.length > 1 ? "s" : ""} alterado{blocks.length > 1 ? "s" : ""}</span>
+            </div>
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto font-mono text-[11px] leading-relaxed">
+            {blocks.map((block, bi) => (
+              <div key={bi} className={bi > 0 ? "border-t-2 border-slate-200" : ""}>
+                <div className="sticky top-0 z-10 bg-slate-100 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                  Bloco {bi + 1} de {blocks.length}
+                </div>
+                {block.map((op, oi) => (
+                  <DiffLine key={oi} op={op} />
+                ))}
+              </div>
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
+  );
+}
+
+function DiffLine({ op }: { op: DiffOp }) {
+  if (op.type === "add") {
+    return (
+      <div className="flex border-l-2 border-emerald-500 bg-emerald-50">
+        <span className="select-none px-1.5 py-0.5 text-emerald-700">+</span>
+        <span className="flex-1 whitespace-pre-wrap break-words py-0.5 pr-2 text-emerald-900">
+          {op.text || " "}
+        </span>
+      </div>
+    );
+  }
+  if (op.type === "remove") {
+    return (
+      <div className="flex border-l-2 border-rose-500 bg-rose-50">
+        <span className="select-none px-1.5 py-0.5 text-rose-700">−</span>
+        <span className="flex-1 whitespace-pre-wrap break-words py-0.5 pr-2 text-rose-900 line-through decoration-rose-400/60">
+          {op.text || " "}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex">
+      <span className="select-none px-1.5 py-0.5 text-slate-400"> </span>
+      <span className="flex-1 whitespace-pre-wrap break-words py-0.5 pr-2 text-slate-500">
+        {op.text || " "}
+      </span>
+    </div>
+  );
 }
 
 function AiMagicSheet({
@@ -1157,6 +1291,7 @@ function AiMagicSheet({
         role: "assistant",
         text: res.summary || (res.no_changes ? "Sem alterações propostas." : "(resposta vazia)"),
         proposed_prompt: res.proposed_prompt,
+        prompt_before: res.prompt_before,
         sections_changed: res.sections_changed,
         reasoning: res.reasoning,
         request_id: res.request_id,
@@ -1270,6 +1405,11 @@ function AiMagicSheet({
                     <p className="ml-1 text-[10px] italic text-muted-foreground">
                       💡 {m.reasoning}
                     </p>
+                  )}
+                  {m.proposed_prompt && m.prompt_before && !m.no_changes && (
+                    <div className="ml-1">
+                      <DiffPreviewBlock before={m.prompt_before} after={m.proposed_prompt} />
+                    </div>
                   )}
                   {m.proposed_prompt && !m.no_changes && (
                     <div className="ml-1 flex gap-2">

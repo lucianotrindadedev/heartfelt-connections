@@ -219,6 +219,7 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
       request_id: ins.data?.id as string,
       summary,
       proposed_prompt: proposedPrompt,
+      prompt_before: promptBefore,
       sections_changed: sectionsChanged,
       reasoning,
       no_changes: proposedPrompt.trim() === promptBefore.trim(),
