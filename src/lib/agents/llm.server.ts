@@ -230,19 +230,67 @@ export async function callLlm(
  * retorno não for JSON parseável (acontece quando o modelo decide chamar tool).
  */
 /**
+ * Escapa quebras de linha literais (\n \r \t) que estão DENTRO de strings.
+ * Alguns LLMs (GPT, Gemini, etc.) às vezes geram JSON com newlines literais
+ * em campos de texto longo — JSON.parse rejeita isso. Esta função faz o
+ * escape sem quebrar JSON válido.
+ */
+function fixUnescapedNewlinesInStrings(raw: string): string {
+  let result = "";
+  let inString = false;
+  let escapeNext = false;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (escapeNext) {
+      result += c;
+      escapeNext = false;
+      continue;
+    }
+    if (c === "\\") {
+      result += c;
+      escapeNext = true;
+      continue;
+    }
+    if (c === '"') {
+      result += c;
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      if (c === "\n") {
+        result += "\\n";
+        continue;
+      }
+      if (c === "\r") {
+        result += "\\r";
+        continue;
+      }
+      if (c === "\t") {
+        result += "\\t";
+        continue;
+      }
+    }
+    result += c;
+  }
+  return result;
+}
+
+/**
  * Tenta recuperar um JSON truncado fechando strings/objetos abertos.
  * Usado quando o LLM atinge max_tokens no meio de um objeto.
  *
- * Estratégia em duas fases:
- *  1. Sanitiza o final: remove campos sem valor (`"foo":` no fim) e
+ * Estratégia em três fases:
+ *  1. Escapa newlines literais dentro de strings (LLMs às vezes esquecem).
+ *  2. Sanitiza o final: remove campos sem valor (`"foo":` no fim) e
  *     fragmentos de string (`"valor incompl...`).
- *  2. Conta `{` `[` abertos e fecha na ordem inversa.
+ *  3. Conta `{` `[` abertos e fecha na ordem inversa.
  *
  * Se mesmo assim não parsear, vai removendo o último caractere até virar
  * JSON válido (pior caso preserva pelo menos `reply` e `next_stage`).
  */
 function recoverTruncatedJson(raw: string): unknown {
-  let s = raw.trim();
+  // Fase 0: escapa newlines literais dentro de strings ANTES de tudo
+  let s = fixUnescapedNewlinesInStrings(raw).trim();
 
   // ── Fase 1: contagem de estados ──
   let inString = false;
@@ -346,26 +394,36 @@ export async function callLlmStructured<T>(
   try {
     parsed = JSON.parse(response.content);
   } catch {
-    // 1. Tenta extrair JSON de bloco markdown ```json ... ```
-    const match = response.content.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (match) {
-      try { parsed = JSON.parse(match[1]); }
-      catch {
-        // 2. Tenta recuperar JSON truncado dentro do bloco
-        try { parsed = recoverTruncatedJson(match[1]); }
+    // Antes de tudo: tenta escapar newlines literais dentro de strings
+    // (LLMs frequentemente esquecem disso em campos de texto longo).
+    try {
+      parsed = JSON.parse(fixUnescapedNewlinesInStrings(response.content));
+      console.warn("[llm] recovered JSON com newlines não-escapadas em strings");
+    } catch {
+      // 1. Tenta extrair JSON de bloco markdown ```json ... ```
+      const match = response.content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (match) {
+        try { parsed = JSON.parse(match[1]); }
         catch {
+          try { parsed = JSON.parse(fixUnescapedNewlinesInStrings(match[1])); }
+          catch {
+            // 2. Tenta recuperar JSON truncado dentro do bloco
+            try { parsed = recoverTruncatedJson(match[1]); }
+            catch {
+              throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 300)}`);
+            }
+          }
+        }
+      } else {
+        // 3. Tenta recuperar JSON truncado direto
+        try {
+          parsed = recoverTruncatedJson(response.content);
+          console.warn(
+            `[llm] recovered truncated JSON (finish_reason=${response.finishReason}, tokens_out=${response.tokensOut})`,
+          );
+        } catch {
           throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 300)}`);
         }
-      }
-    } else {
-      // 3. Tenta recuperar JSON truncado direto
-      try {
-        parsed = recoverTruncatedJson(response.content);
-        console.warn(
-          `[llm] recovered truncated JSON (finish_reason=${response.finishReason}, tokens_out=${response.tokensOut})`,
-        );
-      } catch {
-        throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 300)}`);
       }
     }
   }
