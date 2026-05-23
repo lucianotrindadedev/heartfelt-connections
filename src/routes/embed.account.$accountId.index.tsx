@@ -80,6 +80,11 @@ import {
   resetAgent,
 } from "@/lib/integrations.functions";
 import { listTemplates } from "@/lib/templates.functions";
+import {
+  requestPromptEdit,
+  applyPromptEdit,
+  listAiMagicHistory,
+} from "@/lib/ai-magic.functions";
 
 interface AccountSearch {
   picked?: string;
@@ -284,6 +289,7 @@ function EmbedHome() {
     return (
       <TrainingView
         accountId={accountId}
+        agentId={agentId}
         initialPrompt={(agent.system_prompt as string | null) ?? ""}
         initialNome={(agent.nome as string) ?? ""}
         agentSettings={(agent.settings as Record<string, string> | null) ?? {}}
@@ -798,6 +804,7 @@ type TrainingTab = "instrucoes" | "midia" | "neural";
 
 function TrainingView({
   accountId,
+  agentId,
   initialPrompt,
   initialNome,
   agentSettings,
@@ -805,6 +812,7 @@ function TrainingView({
   onClose,
 }: {
   accountId: string;
+  agentId: string;
   initialPrompt: string;
   initialNome: string;
   agentSettings: Record<string, string>;
@@ -822,6 +830,7 @@ function TrainingView({
   const [saveState, setSaveState] = useState<"saved" | "unsaved" | "saving">("saved");
   const [autosave, setAutosave] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
+  const [showAiMagic, setShowAiMagic] = useState(false);
 
   const doSave = useCallback(async (content?: string) => {
     const text = content ?? promptContent;
@@ -981,7 +990,7 @@ function TrainingView({
 
           {/* Rich text editor */}
           <PromptEditor
-            key={promptContent === initialPrompt ? "init" : undefined}
+            key={promptContent === initialPrompt ? "init" : promptContent.length === initialPrompt.length ? undefined : "ai-magic-applied-" + promptContent.length}
             initialContent={promptContent}
             onChange={handleChange}
             charCount={charCount}
@@ -989,7 +998,22 @@ function TrainingView({
             autosave={autosave}
             onAutosaveChange={setAutosave}
             onSave={() => void doSave()}
+            onAiMagic={() => setShowAiMagic(true)}
             configuredIntegrations={configuredIntegrations}
+          />
+
+          <AiMagicSheet
+            open={showAiMagic}
+            onClose={() => setShowAiMagic(false)}
+            accountId={accountId}
+            agentId={agentId}
+            onApplied={(newPrompt) => {
+              setPromptContent(newPrompt);
+              setCharCount(newPrompt.length);
+              setSaveState("saved"); // applyPromptEdit já salvou no banco
+              qc.invalidateQueries({ queryKey: ["agent", accountId] });
+              toast.success("Prompt atualizado pelo AI Magic.");
+            }}
           />
         </>
       ) : (
@@ -1031,6 +1055,272 @@ function TrainingView({
         />
       )}
     </div>
+  );
+}
+
+// =================================================================
+// AI Magic Sheet — chat lateral para ajustar o prompt via GPT-4
+// =================================================================
+
+interface AiMagicMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  proposed_prompt?: string;
+  sections_changed?: string[];
+  reasoning?: string;
+  request_id?: string;
+  no_changes?: boolean;
+  applied?: boolean;
+}
+
+function AiMagicSheet({
+  open,
+  onClose,
+  accountId,
+  agentId,
+  onApplied,
+}: {
+  open: boolean;
+  onClose: () => void;
+  accountId: string;
+  agentId: string;
+  onApplied: (newPrompt: string) => void;
+}) {
+  const requestFn = useServerFn(requestPromptEdit);
+  const applyFn = useServerFn(applyPromptEdit);
+  const historyFn = useServerFn(listAiMagicHistory);
+
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<AiMagicMessage[]>([]);
+  const [pending, setPending] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Carrega histórico ao abrir
+  const historyQ = useQuery({
+    queryKey: ["ai-magic-history", agentId],
+    queryFn: () => historyFn({ data: { agentId, limit: 20 } }),
+    enabled: open,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    if (historyQ.data?.items && messages.length === 0) {
+      // Converte histórico em mensagens cronológicas
+      const past: AiMagicMessage[] = [];
+      const items = [...historyQ.data.items].reverse();
+      for (const it of items) {
+        past.push({ id: `u-${it.id}`, role: "user", text: it.user_message });
+        past.push({
+          id: `a-${it.id}`,
+          role: "assistant",
+          text: it.summary ?? (it.error ? `Erro: ${it.error}` : "(sem resposta)"),
+          sections_changed: (it.sections_changed as string[]) ?? [],
+          applied: !!it.applied,
+        });
+      }
+      if (past.length > 0) setMessages(past);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, historyQ.data]);
+
+  // Scroll para o fim quando mudam mensagens
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, pending]);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || pending) return;
+    setInput("");
+    const userMsg: AiMagicMessage = { id: `u-${Date.now()}`, role: "user", text };
+    setMessages((prev) => [...prev, userMsg]);
+    setPending(true);
+    try {
+      const res = await requestFn({
+        data: { accountId, agentId, userMessage: text },
+      });
+      const asstMsg: AiMagicMessage = {
+        id: `a-${Date.now()}`,
+        role: "assistant",
+        text: res.summary || (res.no_changes ? "Sem alterações propostas." : "(resposta vazia)"),
+        proposed_prompt: res.proposed_prompt,
+        sections_changed: res.sections_changed,
+        reasoning: res.reasoning,
+        request_id: res.request_id,
+        no_changes: res.no_changes,
+        applied: false,
+      };
+      setMessages((prev) => [...prev, asstMsg]);
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setMessages((prev) => [
+        ...prev,
+        { id: `e-${Date.now()}`, role: "assistant", text: `❌ ${errMsg}` },
+      ]);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function apply(msg: AiMagicMessage) {
+    if (!msg.request_id || !msg.proposed_prompt || msg.applied) return;
+    try {
+      await applyFn({ data: { requestId: msg.request_id } });
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msg.id ? { ...m, applied: true } : m)),
+      );
+      onApplied(msg.proposed_prompt);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao aplicar");
+    }
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
+      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
+        <SheetHeader className="border-b px-5 py-4">
+          <SheetTitle className="flex items-center gap-2">
+            <Zap className="h-4 w-4 text-primary" />
+            AI Magic
+            <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+              GPT-4
+            </span>
+          </SheetTitle>
+          <p className="text-xs text-muted-foreground">
+            Peça ajustes em linguagem natural. O assistente analisa o prompt e
+            mostra as mudanças antes de aplicar.
+          </p>
+        </SheetHeader>
+
+        {/* Mensagens */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          {messages.length === 0 && !pending && (
+            <div className="mt-6 text-center text-xs text-muted-foreground space-y-2">
+              <p className="font-medium text-foreground">Como posso ajudar?</p>
+              <p>Exemplos:</p>
+              <div className="space-y-1.5 mt-2">
+                {[
+                  "Mude o tom para mais formal",
+                  "Adicione regra: nunca enviar valores antes do agendamento",
+                  "Trocar 'consultor' por 'especialista' no fluxo",
+                  "Adicione objeção: 'Já tenho outro fornecedor'",
+                ].map((ex) => (
+                  <button
+                    key={ex}
+                    onClick={() => setInput(ex)}
+                    className="block w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-[11px] hover:bg-slate-100"
+                  >
+                    {ex}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {messages.map((m) =>
+            m.role === "user" ? (
+              <div key={m.id} className="flex justify-end">
+                <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-xs text-white">
+                  {m.text}
+                </div>
+              </div>
+            ) : (
+              <div key={m.id} className="flex justify-start">
+                <div className="max-w-[90%] space-y-2">
+                  <div className="rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800">
+                    {m.text}
+                  </div>
+                  {m.sections_changed && m.sections_changed.length > 0 && (
+                    <div className="ml-1 flex flex-wrap gap-1">
+                      {m.sections_changed.map((s) => (
+                        <span
+                          key={s}
+                          className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800"
+                        >
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {m.reasoning && (
+                    <p className="ml-1 text-[10px] italic text-muted-foreground">
+                      💡 {m.reasoning}
+                    </p>
+                  )}
+                  {m.proposed_prompt && !m.no_changes && (
+                    <div className="ml-1 flex gap-2">
+                      <Button
+                        size="sm"
+                        onClick={() => void apply(m)}
+                        disabled={m.applied}
+                        className="h-7 px-2 text-[11px]"
+                      >
+                        {m.applied ? (
+                          <>
+                            <Check className="mr-1 h-3 w-3" /> Aplicado
+                          </>
+                        ) : (
+                          "Aplicar"
+                        )}
+                      </Button>
+                      <button
+                        onClick={() => setMessages((prev) => prev.filter((x) => x.id !== m.id))}
+                        className="text-[11px] text-muted-foreground hover:text-foreground"
+                      >
+                        Descartar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ),
+          )}
+
+          {pending && (
+            <div className="flex justify-start">
+              <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm border border-slate-200 bg-white px-3 py-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Analisando o prompt…
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Input */}
+        <div className="border-t bg-white p-3">
+          <div className="flex gap-2">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder="O que quer ajustar no prompt?"
+              rows={2}
+              disabled={pending}
+              className="flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 disabled:opacity-60"
+            />
+            <Button
+              onClick={() => void send()}
+              disabled={!input.trim() || pending}
+              size="sm"
+              className="self-end"
+            >
+              {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Enviar"}
+            </Button>
+          </div>
+          <p className="mt-1.5 text-[10px] text-muted-foreground">
+            ⏎ envia · Shift+⏎ nova linha · GPT-4 analisa e propõe a edição
+          </p>
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -1117,6 +1407,7 @@ function PromptEditor({
   autosave,
   onAutosaveChange,
   onSave,
+  onAiMagic,
   configuredIntegrations,
 }: {
   initialContent: string;
@@ -1126,6 +1417,7 @@ function PromptEditor({
   autosave: boolean;
   onAutosaveChange: (v: boolean) => void;
   onSave: () => void;
+  onAiMagic?: () => void;
   configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
 }) {
   const [showColorPicker, setShowColorPicker] = useState<"text" | "highlight" | null>(null);
@@ -1437,7 +1729,7 @@ function PromptEditor({
 
         {/* AI Magic */}
         <button
-          onClick={() => toast.info("AI Magic em breve!")}
+          onClick={onAiMagic ?? (() => toast.info("AI Magic indisponível"))}
           className="flex items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-white shadow-sm shadow-primary/30 hover:bg-primary/90"
         >
           <Zap className="h-3 w-3" /> AI Magic
