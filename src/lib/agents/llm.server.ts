@@ -88,6 +88,9 @@ interface OpenRouterChoice {
   message?: {
     content?: string | null;
     tool_calls?: LlmToolCall[];
+    /** DeepSeek-Reasoner e Grok colocam chain-of-thought aqui. */
+    reasoning?: string | null;
+    reasoning_content?: string | null;
   };
   finish_reason?: string;
 }
@@ -191,8 +194,22 @@ export async function callLlm(
   const message = choice?.message;
   const usage = json.usage ?? {};
 
+  // Alguns modelos (DeepSeek-Reasoner, Grok com thinking) colocam o output em
+  // message.reasoning ou message.reasoning_content em vez de message.content.
+  // Se o content vier vazio mas o reasoning tem texto, usamos o reasoning.
+  const primaryContent = message?.content?.trim() ?? "";
+  const reasoning =
+    (message?.reasoning ?? "").trim() || (message?.reasoning_content ?? "").trim();
+  const finalContent = primaryContent || reasoning || null;
+
+  if (!primaryContent && reasoning) {
+    console.warn(
+      `[llm] content vazio mas reasoning preenchido (${reasoning.length} chars) — usando reasoning como fallback. model=${req.model}`,
+    );
+  }
+
   return {
-    content: message?.content?.trim() ?? null,
+    content: finalContent,
     toolCalls: message?.tool_calls ?? [],
     finishReason: choice?.finish_reason,
     tokensIn: usage.prompt_tokens ?? 0,
@@ -294,7 +311,31 @@ export async function callLlmStructured<T>(
   req: LlmRequest,
   parse: (raw: unknown) => T,
 ): Promise<{ result: T; response: LlmResponse }> {
-  const response = await callLlm(orKey, { ...req, jsonMode: true });
+  let response = await callLlm(orKey, { ...req, jsonMode: true });
+
+  // Retry quando o modelo retorna content vazio (alguns modelos travam em
+  // response_format: json_object, ou erram a 1ª chamada). Retry sem jsonMode
+  // e com prompt mais explícito permite recuperar o turno.
+  if (!response.content) {
+    console.warn(
+      `[llm] retry após content vazio: model=${req.model} finish_reason=${response.finishReason} tokens_out=${response.tokensOut}`,
+    );
+    const retryMessages = [
+      ...req.messages,
+      {
+        role: "user" as const,
+        content:
+          "Sua última resposta veio vazia. Responda agora APENAS com o JSON exigido pelo schema, em uma única linha — sem texto antes nem depois, sem markdown, sem ```json.",
+      },
+    ];
+    response = await callLlm(orKey, {
+      ...req,
+      messages: retryMessages,
+      jsonMode: false, // libera o modelo de tentar montar o response_format
+      temperature: Math.max(0.3, (req.temperature ?? 0.5) - 0.2),
+    });
+  }
+
   if (!response.content) {
     throw new LlmError(
       200,
