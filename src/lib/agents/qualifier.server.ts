@@ -17,7 +17,9 @@ import type { LeadData, Stage } from "./stage";
 import { loadHelenaAccount } from "@/lib/helena.server";
 import {
   applyTagByApproxName,
-  getAvailableTagNames,
+  applyOneOfTags,
+  getInterestCandidateTagNames,
+  NOT_SCHEDULED_SYNONYMS,
 } from "@/lib/helena-tags.server";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
@@ -105,17 +107,20 @@ async function execAplicarTag(
 /**
  * Aplica a tag inicial de "lead recebido / não agendado" no primeiro contato.
  * Roda automaticamente (não é tool — o LLM não precisa pedir).
- * Procura no CRM uma tag que case com "N/A Não Agendado" (qualquer variante).
+ * Procura no CRM a primeira tag que case com a lista de sinônimos
+ * NOT_SCHEDULED_SYNONYMS ("N/A", "Não Agendado", "Lead", "Aguardando", etc).
+ * Funciona para qualquer tipo de negócio (clínica, escola, etc) — desde que
+ * uma das variantes esteja cadastrada no CRM.
  */
 async function ensureInitialNotScheduledTag(ctx: AgentContext): Promise<void> {
   if (!ctx.helenaContact?.id) return;
   if (ctx.leadData.initial_tag_applied) return; // idempotente
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
-    const res = await applyTagByApproxName(
+    const res = await applyOneOfTags(
       helena,
       ctx.helenaContact.id,
-      "N/A Não Agendado",
+      NOT_SCHEDULED_SYNONYMS,
       "InsertIfNotExists",
     );
     if (res.ok) {
@@ -193,7 +198,7 @@ Responda APENAS em JSON válido:
 }`;
 }
 
-function buildDynamicSystemPrompt(ctx: AgentContext, availableTags: string[]): string {
+function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): string {
   const TZ = "America/Sao_Paulo";
   const dateStr = new Intl.DateTimeFormat("pt-BR", {
     timeZone: TZ,
@@ -211,12 +216,6 @@ function buildDynamicSystemPrompt(ctx: AgentContext, availableTags: string[]): s
 
   const cycleCount = ctx.history.filter((m) => m.role === "user").length;
 
-  // Filtra tags de "interesse" — heurística: contém "INTERESSE" ou "INTERES" no nome
-  const interestTags = availableTags.filter((t) =>
-    /interes|interess/i.test(t),
-  );
-  const otherTags = availableTags.filter((t) => !/interes|interess/i.test(t));
-
   return `# ESTADO ATUAL
 
 - Agora (BRT): ${dateStr}
@@ -228,21 +227,27 @@ ${utm?.source ? `- UTM Source: ${utm.source}` : ""}
 ${utm?.medium ? `- UTM Medium: ${utm.medium}` : ""}
 ${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}
 
-# TAGS DISPONÍVEIS NO CRM (use APENAS estas — não invente nomes)
+# TAGS DE INTERESSE DISPONÍVEIS NO CRM
 
-Tags de interesse (escolha UMA quando o interesse principal estiver claro):
-${interestTags.length > 0 ? interestTags.map((t) => `- ${t}`).join("\n") : "  (nenhuma cadastrada no CRM)"}
+A lista abaixo foi consultada AGORA via GET /core/v1/tag. São as tags de
+interesse cadastradas neste CRM (já excluídas as de status N/A/AGENDADO/IA
+Desligada que são gerenciadas pelo sistema). Escolha UMA que case com o
+interesse identificado na conversa. Use o NOME EXATO — não altere caixa,
+acento, pontuação. Não invente nomes novos.
 
-Outras tags disponíveis (NÃO chame de interesse — só listadas para contexto):
-${otherTags.length > 0 ? otherTags.map((t) => `- ${t}`).join("\n") : "  (nenhuma)"}
+${candidateTags.length > 0 ? candidateTags.map((t) => `- ${t}`).join("\n") : "  (nenhuma tag de interesse cadastrada no CRM — peça ao proprietário para criar)"}
 
 ## REGRA DE TAGS
 
-- Aplique APENAS UMA tag de interesse por contato (a mais alinhada com a conversa).
-- Quando aplicar, use o NOME EXATO da lista acima — sem alterar caixa, acento ou pontuação.
-- Se nenhuma tag de interesse bate, NÃO invente outra: deixe sem tag de interesse.
-- A tag "N/A Não Agendado" já é aplicada automaticamente — você não precisa pedir.
-- Tags de status ("Agendado", "IA Desligada") são gerenciadas em outros estágios — não aplique aqui.
+- O agente atende negócios variados (clínicas, escolas, cursos, etc.) —
+  use a tag que melhor represente o interesse, independente do nicho.
+- Aplique APENAS UMA tag de interesse por contato.
+- Se nenhuma tag bate com o interesse identificado, NÃO invente — deixe sem
+  tag de interesse (melhor sem tag do que com a tag errada).
+- A tag de status inicial ("N/A Não Agendado" ou equivalente) já é aplicada
+  automaticamente — você não precisa pedir.
+- A tag "Agendado" é aplicada automaticamente quando o agendamento conclui
+  — você também não precisa pedir.
 
 # LEAD_DATA JÁ COLETADO
 
@@ -272,12 +277,13 @@ Toda mensagem precisa terminar com uma PERGUNTA que mantenha o lead engajado e o
 const MAX_TOOL_LOOPS = 3; // qualifier raramente precisa de mais de 1 tool
 
 export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult> {
-  // 1) Lista tags disponíveis no CRM (cacheado por 1min)
-  // 2) Aplica tag inicial "N/A Não Agendado" se ainda não aplicada
-  let availableTags: string[] = [];
+  // 1) Lista tags CANDIDATAS A INTERESSE (cacheado por 1min) — exclui as de
+  //    sistema (N/A, AGENDADO, IA Desligada) que são gerenciadas pelo código
+  // 2) Aplica tag inicial "não agendado" se ainda não aplicada
+  let candidateTags: string[] = [];
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
-    availableTags = await getAvailableTagNames(helena);
+    candidateTags = await getInterestCandidateTagNames(helena);
   } catch (e) {
     console.warn("[qualifier] falha ao listar tags Helena:", e);
   }
@@ -288,7 +294,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   }
 
   const cached = buildCachedSystemPrompt(ctx);
-  const dynamic = buildDynamicSystemPrompt(ctx, availableTags);
+  const dynamic = buildDynamicSystemPrompt(ctx, candidateTags);
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
 
   let workingMessages: LlmMessage[] = [...history];
@@ -361,7 +367,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     {
       model: ctx.model,
       systemCached: cached,
-      systemDynamic: buildDynamicSystemPrompt(ctx, availableTags),
+      systemDynamic: buildDynamicSystemPrompt(ctx, candidateTags),
       messages:
         workingMessages.length === history.length
           ? // não houve tools — chama direto pedindo JSON

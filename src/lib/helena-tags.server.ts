@@ -4,12 +4,17 @@
 // 3. Se encontrar, aplica o nome EXATO (não cria nova)
 // 4. Se não encontrar, NÃO aplica e retorna erro (evita poluir o CRM)
 //
-// Regras de fluxo do agente (qualifier + scheduler):
-//   • Início do atendimento:    aplicar "N/A Não Agendado" (ou compatível)
+// AGNÓSTICO DE NEGÓCIO: os agentes atendem clínicas, escolas, e qualquer
+// outro nicho. As ÚNICAS tags com nome fixo são as 2 de status do funil:
+//   • "Não Agendado" (sinônimos: N/A, NA, "Lead", "Aguardando")
+//   • "Agendado" (sinônimos: Confirmado, Matriculado, Compatível)
+// Tags de interesse são totalmente abertas — dependem do CRM da clínica/escola.
+//
+// Regras de fluxo:
+//   • Início do atendimento:    aplicar tag "não agendado" (sinônimo do CRM)
 //   • Durante a qualificação:   aplicar UMA tag de interesse principal
-//   • Ao confirmar agendamento: remover "N/A Não Agendado" + adicionar
-//                                "Agendado" (ou compatível). MANTÉM a tag
-//                                de interesse.
+//   • Ao confirmar agendamento: remover "não agendado" + adicionar "agendado"
+//                                MANTÉM a tag de interesse.
 
 import {
   listHelenaTags,
@@ -17,6 +22,48 @@ import {
   type HelenaAccount,
   type HelenaTag,
 } from "@/lib/helena.server";
+
+/**
+ * Sinônimos prováveis para a tag de "lead recebido / ainda não agendado".
+ * O resolver procura no CRM da conta qual desses está cadastrado.
+ */
+export const NOT_SCHEDULED_SYNONYMS = [
+  "N/A Não Agendado",
+  "N/A",
+  "NA",
+  "Não Agendado",
+  "Nao Agendado",
+  "Não Compareceu",
+  "Lead",
+  "Aguardando",
+] as const;
+
+/**
+ * Sinônimos prováveis para a tag de "agendamento confirmado".
+ */
+export const SCHEDULED_SYNONYMS = [
+  "Agendado",
+  "AGENDADO",
+  "Confirmado",
+  "Matriculado",
+  "Compatível",
+  "Compativel",
+  "IA Agendou",
+] as const;
+
+/**
+ * Tags de "controle do sistema" — gerenciadas automaticamente pelo orquestrador.
+ * Excluídas da lista mostrada ao LLM (que escolhe só tags de INTERESSE).
+ */
+const SYSTEM_TAG_KEYWORDS = [
+  ...NOT_SCHEDULED_SYNONYMS,
+  ...SCHEDULED_SYNONYMS,
+  "IA Desligada",
+  "IA Off",
+  "Bot Off",
+  "FALTOSOS",
+  "FUF FINANCEIRO",
+];
 
 function normalize(s: string): string {
   return (s ?? "")
@@ -66,6 +113,23 @@ export async function resolveTagName(
 }
 
 /**
+ * Tenta resolver um conjunto de sinônimos contra o CRM, retornando o primeiro
+ * que existe. Útil para encontrar o nome EXATO da tag de status:
+ *   resolveOneOf(account, ["N/A", "Não Agendado", "Lead"])
+ *   → "N/A Não Agendado" (se for esse o nome cadastrado nessa conta)
+ */
+export async function resolveOneOf(
+  account: HelenaAccount,
+  synonyms: readonly string[],
+): Promise<string | null> {
+  for (const syn of synonyms) {
+    const found = await resolveTagName(account, syn);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
  * Aplica UMA tag (resolvida pelo nome aproximado) ao contato.
  * Se a tag não existe no CRM, NÃO cria — retorna { ok: false, reason: "not_found" }.
  */
@@ -87,28 +151,26 @@ export async function applyTagByApproxName(
 }
 
 /**
- * Operação "swap": remove uma tag e adiciona outra na mesma chamada lógica.
- * Útil ao confirmar agendamento (remove "N/A Não Agendado", adiciona "Agendado").
+ * Operação "swap" usando listas de sinônimos: remove a primeira tag do CRM
+ * que casar com `removeSynonyms` e adiciona a primeira que casar com
+ * `addSynonyms`. Atomicidade lógica via 2 chamadas REST.
  */
-export async function swapTag(
+export async function swapTagBySynonyms(
   account: HelenaAccount,
   contactId: string,
-  removeName: string,
-  addName: string,
+  removeSynonyms: readonly string[],
+  addSynonyms: readonly string[],
 ): Promise<{ ok: boolean; removed?: string; added?: string; reason?: string }> {
-  // Resolve ambos antes — se nenhum existir, evita parcial
   const [removeExact, addExact] = await Promise.all([
-    resolveTagName(account, removeName),
-    resolveTagName(account, addName),
+    resolveOneOf(account, removeSynonyms),
+    resolveOneOf(account, addSynonyms),
   ]);
 
   if (!addExact) return { ok: false, reason: "add_tag_not_found" };
 
-  // Remove a tag de status anterior (se existir no CRM)
   if (removeExact) {
     await setHelenaContactTags(account, contactId, [removeExact], "DeleteIfExists");
   }
-  // Adiciona a nova
   const res = await setHelenaContactTags(account, contactId, [addExact], "InsertIfNotExists");
   if (!res.ok) {
     return { ok: false, reason: "helena_error" };
@@ -117,10 +179,46 @@ export async function swapTag(
 }
 
 /**
- * Retorna lista de tags disponíveis para mostrar ao LLM (apenas nomes).
- * Cacheado por 1 min para evitar requisições repetidas.
+ * Aplica a primeira tag dos sinônimos que estiver cadastrada no CRM.
+ * Útil para a tag de "ainda não agendado" no início do funil — cada cliente
+ * pode ter um nome diferente ("N/A", "Lead", "Aguardando"...).
  */
-export async function getAvailableTagNames(account: HelenaAccount): Promise<string[]> {
+export async function applyOneOfTags(
+  account: HelenaAccount,
+  contactId: string,
+  synonyms: readonly string[],
+  operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
+): Promise<{ ok: boolean; tag?: string; reason?: string }> {
+  const exact = await resolveOneOf(account, synonyms);
+  if (!exact) return { ok: false, reason: "no_synonym_found" };
+
+  const res = await setHelenaContactTags(account, contactId, [exact], operation);
+  if (!res.ok) return { ok: false, reason: "helena_error" };
+  return { ok: true, tag: exact };
+}
+
+/** Verifica se uma tag é "tag de sistema" (status, controle) e deve ser
+ *  ESCONDIDA do prompt — o LLM só escolhe entre tags de interesse. */
+function isSystemTag(name: string): boolean {
+  const n = normalize(name);
+  return SYSTEM_TAG_KEYWORDS.some((kw) => n === normalize(kw) || n.includes(normalize(kw)));
+}
+
+/**
+ * Retorna lista de tags disponíveis para o LLM escolher como TAG DE INTERESSE.
+ * Exclui tags conhecidas do funil/sistema (N/A, AGENDADO, IA Desligada,
+ * FALTOSOS, etc.) — o LLM só deve aplicar tags de interesse do negócio.
+ * Cacheado por 1 min.
+ */
+export async function getInterestCandidateTagNames(
+  account: HelenaAccount,
+): Promise<string[]> {
+  const tags = await getTags(account);
+  return tags.map((t) => t.name).filter((name) => !isSystemTag(name));
+}
+
+/** Lista TODAS as tags do CRM — sem filtro. Para diagnóstico ou logs. */
+export async function getAllTagNames(account: HelenaAccount): Promise<string[]> {
   const tags = await getTags(account);
   return tags.map((t) => t.name);
 }

@@ -24,26 +24,32 @@ import {
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
 import { loadHelenaAccount } from "@/lib/helena.server";
-import { swapTag } from "@/lib/helena-tags.server";
+import {
+  swapTagBySynonyms,
+  NOT_SCHEDULED_SYNONYMS,
+  SCHEDULED_SYNONYMS,
+} from "@/lib/helena-tags.server";
 import type { AgentContext, AgentResult } from "./context";
 import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
 import type { LeadData, Stage } from "./stage";
 
 /**
- * Após agendamento confirmado: remove "N/A Não Agendado" e adiciona "Agendado"
- * (ou tags compatíveis existentes no CRM). MANTÉM a tag de interesse —
- * o swap só toca as 2 tags de status.
+ * Após agendamento confirmado: remove a tag de "não agendado" e adiciona a
+ * de "agendado" — usando os sinônimos cadastrados no CRM da conta.
+ * Funciona para clínicas ("N/A Não Agendado" → "Agendado") e para escolas
+ * ("Lead" → "Matriculado") sem mudar código — só depende do CRM.
+ * MANTÉM a tag de interesse (o swap só toca as 2 tags de status).
  */
 async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
   if (!ctx.helenaContact?.id) return;
   if (ctx.leadData.booked_tag_applied) return; // idempotente
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
-    const res = await swapTag(
+    const res = await swapTagBySynonyms(
       helena,
       ctx.helenaContact.id,
-      "N/A Não Agendado",
-      "Agendado",
+      NOT_SCHEDULED_SYNONYMS,
+      SCHEDULED_SYNONYMS,
     );
     if (res.ok) {
       console.log(
