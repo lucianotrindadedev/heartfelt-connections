@@ -11,6 +11,10 @@ import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
 import { splitMessage } from "@/lib/message-splitter.server";
+import type { AgentContext } from "@/lib/agents/context";
+import { runQualifierAgent } from "@/lib/agents/qualifier.server";
+import { runSchedulerAgent } from "@/lib/agents/scheduler.server";
+import { routeForStage, type Stage, type LeadData } from "@/lib/agents/stage";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const AI_MAGIC_MODEL = "openai/gpt-4.1";
@@ -22,6 +26,18 @@ const trainerMessageSchema = z.object({
   content: z.string(),
 });
 
+const trainerStageSchema = z
+  .enum([
+    "RECEPTION",
+    "QUALIFICATION",
+    "SLOT_OFFER",
+    "NAME_COLLECT",
+    "BOOKING",
+    "CONFIRMED",
+    "ESCALATED",
+  ])
+  .default("RECEPTION");
+
 export const runTrainerTurn = createServerFn({ method: "POST" })
   .inputValidator((d) =>
     z
@@ -30,6 +46,8 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         agentId: z.string().uuid(),
         history: z.array(trainerMessageSchema).default([]),
         userMessage: z.string().min(1).max(4000),
+        currentStage: trainerStageSchema,
+        leadData: z.record(z.string(), z.unknown()).default({}),
       })
       .parse(d),
   )
@@ -48,8 +66,8 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
     const orKey = await decryptValue(secrets.data.openrouter_api_key_enc as unknown as string);
     if (!orKey) throw new Error("Falha ao descriptografar chave OpenRouter.");
 
-    // 2. Carrega agente + LLM config
-    const [agent, llm] = await Promise.all([
+    // 2. Carrega agente + LLM config + integrações
+    const [agent, llm, clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
       sb
         .from("agents")
         .select("id, system_prompt, settings, llm_model_override")
@@ -60,6 +78,10 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         .select("default_model, max_tokens, temperature")
         .eq("account_id", data.accountId)
         .single(),
+      sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      sb.from("clinup_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      sb.from("google_calendar_tokens").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      sb.from("agent_escalation").select("ativo").eq("agent_id", data.agentId).maybeSingle(),
     ]);
     if (agent.error || !agent.data) throw new Error("Agente não encontrado.");
 
@@ -70,95 +92,88 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
     const maxTokens = (llm.data?.max_tokens as number | undefined) ?? 2048;
     const temperature = (llm.data?.temperature as number | undefined) ?? 0.5;
 
-    const systemPrompt = (agent.data.system_prompt as string) || "";
-    const settings = (agent.data.settings as Record<string, string> | null) ?? {};
+    // 3. Monta AgentContext mockado, com dryRun=true (sem efeitos colaterais)
+    const ctx: AgentContext = {
+      accountId: data.accountId,
+      agentId: data.agentId,
+      conversationId: `trainer-${Date.now()}`,
+      sessionId: undefined,
+      stage: data.currentStage as Stage,
+      leadData: data.leadData as LeadData,
+      conversationPhone: "5500000000000",
+      effectivePhone: "5500000000000",
+      channel: "whatsapp",
+      helenaContact: null, // trainer não tem contato real
+      agentSettings: (agent.data.settings as Record<string, string> | null) ?? {},
+      basePrompt: (agent.data.system_prompt as string) || "",
+      model,
+      maxTokens,
+      temperature,
+      orKey,
+      integrations: {
+        clinicorp: !!clinicorpCfg.data?.ativo,
+        clinup: !!clinupCfg.data?.ativo,
+        googleCalendar: !!gcalCfg.data?.ativo,
+        escalation: !!escCfg.data?.ativo,
+      },
+      history: data.history.map((m) => ({ role: m.role, content: m.content })),
+      dryRun: true, // NÃO tocar Helena/Calendar/Clinicorp
+    };
 
-    // 3. Monta contexto: data atual + dados do agente + system prompt
-    const now = new Date();
-    const dateStr = new Intl.DateTimeFormat("pt-BR", {
-      timeZone: "America/Sao_Paulo",
-      weekday: "long",
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }).format(now);
+    // Adiciona a mensagem do user ao history (qualifier lê cycleCount, M1, etc)
+    ctx.history.push({ role: "user", content: data.userMessage });
 
-    const trainerContext = `# ⚙️ MODO TREINADOR (simulação)
-
-Você está no Modo Treinador — uma SIMULAÇÃO do atendimento real. Responda
-exatamente como faria no WhatsApp do agente, seguindo TODAS as regras do
-prompt. Sem fugir do papel, sem mencionar que é simulação.
-
-# CONTEXTO ATUAL
-
-- Data/hora (BRT): ${dateStr}
-- Nome do agente: ${settings.assistant_name || "Assistente"}
-- Empresa: ${settings.company_name || "(não informado)"}
-- Horários da empresa: ${settings.business_hours || "(não informado)"}
-
-`;
-
-    const messages = [
-      { role: "system" as const, content: trainerContext + systemPrompt },
-      ...data.history.map((m) => ({ role: m.role, content: m.content })),
-      { role: "user" as const, content: data.userMessage },
-    ];
-
-    // 4. Chama o LLM
+    // 4. Roteia pelo stage atual — usa o MESMO comportamento de produção
+    const route = routeForStage(ctx.stage);
     const t0 = Date.now();
-    let replyText = "";
-    let tokensIn = 0;
-    let tokensOut = 0;
-    let costUsd = 0;
 
     try {
-      const res = await fetch(OPENROUTER_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${orKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+      let result;
+      if (route === "qualifier") {
+        result = await runQualifierAgent(ctx);
+      } else if (route === "scheduler") {
+        result = await runSchedulerAgent(ctx);
+      } else {
+        // ESCALATED — não responde nada em produção; no trainer só avisa
+        return {
+          reply: "(Modo treinador: stage ESCALATED — em produção o agente silencia e o lead é transferido.)",
+          parts: [],
+          next_stage: ctx.stage,
+          lead_data: ctx.leadData,
           model,
-          messages,
-          temperature,
-          max_tokens: maxTokens,
-        }),
-        signal: AbortSignal.timeout(60_000),
-      });
-      const body = await res.text();
-      if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${body.slice(0, 300)}`);
-      const json = JSON.parse(body) as {
-        choices?: { message?: { content?: string | null; reasoning?: string | null } }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
+          tokens_in: 0,
+          tokens_out: 0,
+          cost_usd: 0,
+          latency_ms: Date.now() - t0,
+        };
+      }
+
+      // 5. Split em bolhas (mesma lib do orquestrador real)
+      const parts = await splitMessage(result.reply, data.accountId);
+
+      // Merge leadData (igual ao orchestrator)
+      const newLeadData: LeadData = {
+        ...ctx.leadData,
+        ...(result.lead_data_patch ?? {}),
       };
-      tokensIn = json.usage?.prompt_tokens ?? 0;
-      tokensOut = json.usage?.completion_tokens ?? 0;
-      costUsd = json.usage?.cost ?? 0;
-      const choice = json.choices?.[0]?.message;
-      replyText = (choice?.content?.trim() ?? "") || (choice?.reasoning?.trim() ?? "");
+      const newStage = result.next_stage;
+
+      return {
+        reply: result.reply,
+        parts,
+        next_stage: newStage,
+        lead_data: newLeadData,
+        model,
+        tokens_in: result.tokens_in ?? 0,
+        tokens_out: result.tokens_out ?? 0,
+        cost_usd: result.cost_usd ?? 0,
+        latency_ms: Date.now() - t0,
+        tools_called: result.tools_called ?? [],
+        route,
+      };
     } catch (e) {
-      throw new Error(`LLM falhou: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`Trainer (${route}) falhou: ${e instanceof Error ? e.message : String(e)}`);
     }
-
-    if (!replyText) {
-      throw new Error("LLM retornou resposta vazia.");
-    }
-
-    // 5. Faz o split em bolhas (mesma lib do orquestrador real)
-    const parts = await splitMessage(replyText, data.accountId);
-
-    return {
-      reply: replyText,
-      parts,
-      model,
-      tokens_in: tokensIn,
-      tokens_out: tokensOut,
-      cost_usd: costUsd,
-      latency_ms: Date.now() - t0,
-    };
   });
 
 // ── requestTrainerImprovement — gera melhorias do prompt a partir da sessão ──

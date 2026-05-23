@@ -1124,6 +1124,9 @@ function TrainerMode({
   const [annotatingFor, setAnnotatingFor] = useState<TrainerMessage | null>(null);
   const [annotationDraft, setAnnotationDraft] = useState("");
   const [generating, setGenerating] = useState(false);
+  // Estado de máquina (igual à produção) — começa em RECEPTION
+  const [currentStage, setCurrentStage] = useState<string>("RECEPTION");
+  const [leadData, setLeadData] = useState<Record<string, unknown>>({});
   const [proposal, setProposal] = useState<{
     request_id: string;
     summary: string;
@@ -1166,7 +1169,21 @@ function TrainerMode({
 
     try {
       const res = await turnFn({
-        data: { accountId, agentId, history, userMessage: text },
+        data: {
+          accountId,
+          agentId,
+          history,
+          userMessage: text,
+          currentStage: currentStage as
+            | "RECEPTION"
+            | "QUALIFICATION"
+            | "SLOT_OFFER"
+            | "NAME_COLLECT"
+            | "BOOKING"
+            | "CONFIRMED"
+            | "ESCALATED",
+          leadData,
+        },
       });
       const idxAsst = idxUser + 1;
       const asstMsg: TrainerMessage = {
@@ -1176,6 +1193,9 @@ function TrainerMode({
         at: nowTime(),
       };
       setMessages((prev) => [...prev, asstMsg]);
+      // Avança o estado (igual à máquina de produção)
+      if (res.next_stage) setCurrentStage(res.next_stage);
+      if (res.lead_data) setLeadData(res.lead_data as Record<string, unknown>);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Falha no agente");
       setMessages((prev) => [
@@ -1278,6 +1298,22 @@ function TrainerMode({
           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
             simulação · não envia pelo WhatsApp
           </span>
+          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+            stage: {currentStage}
+          </span>
+          {messages.length > 0 && (
+            <button
+              onClick={() => {
+                setMessages([]);
+                setCurrentStage("RECEPTION");
+                setLeadData({});
+                setAnnotations([]);
+              }}
+              className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-medium text-slate-500 hover:bg-slate-50"
+            >
+              ↺ Reiniciar
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">
@@ -1305,24 +1341,27 @@ function TrainerMode({
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* ── Chat estilo WhatsApp ── */}
-        <div className="flex flex-1 flex-col bg-[#0b141a]">
+        {/* ── Chat estilo WhatsApp (tema claro) ── */}
+        <div className="flex flex-1 flex-col bg-[#efeae2]">
           <div
             ref={scrollRef}
             className="flex-1 overflow-y-auto px-4 py-4"
             style={{
               backgroundImage:
-                "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><g fill='%23ffffff' fill-opacity='0.02'><circle cx='50' cy='50' r='1'/><circle cx='150' cy='80' r='1'/><circle cx='250' cy='120' r='1'/><circle cx='350' cy='60' r='1'/><circle cx='80' cy='200' r='1'/><circle cx='200' cy='250' r='1'/><circle cx='320' cy='280' r='1'/></g></svg>\")",
+                "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><g fill='%23000000' fill-opacity='0.03'><circle cx='50' cy='50' r='1'/><circle cx='150' cy='80' r='1'/><circle cx='250' cy='120' r='1'/><circle cx='350' cy='60' r='1'/><circle cx='80' cy='200' r='1'/><circle cx='200' cy='250' r='1'/><circle cx='320' cy='280' r='1'/></g></svg>\")",
             }}
           >
             {messages.length === 0 && (
-              <div className="mx-auto mt-12 max-w-md text-center text-slate-400">
-                <Bot className="mx-auto mb-3 h-12 w-12 opacity-40" />
-                <p className="text-sm">Inicie uma conversa para testar o agente</p>
+              <div className="mx-auto mt-12 max-w-md text-center text-slate-500">
+                <Bot className="mx-auto mb-3 h-12 w-12 opacity-30" />
+                <p className="text-sm font-medium">Inicie uma conversa para testar o agente</p>
                 <p className="mt-1 text-xs">
                   Use mensagens reais (saudação, dúvidas, objeções).
                   <br />
                   Selecione respostas que precisem de correção.
+                </p>
+                <p className="mt-3 text-[10px] text-slate-400">
+                  Stage: <strong>{currentStage}</strong>
                 </p>
               </div>
             )}
@@ -1337,17 +1376,15 @@ function TrainerMode({
                       return (
                         <div
                           key={pi}
-                          className={`group relative rounded-lg px-3 py-1.5 text-sm shadow ${
+                          className={`group relative rounded-lg px-3 py-1.5 text-sm shadow-sm ${
                             m.role === "user"
-                              ? "rounded-br-none bg-[#005c4b] text-white"
-                              : `rounded-bl-none bg-[#202c33] text-slate-100 ${hasAnnotation ? "ring-2 ring-amber-400" : ""}`
+                              ? "rounded-br-none bg-[#d9fdd3] text-slate-900"
+                              : `rounded-bl-none bg-white text-slate-900 ${hasAnnotation ? "ring-2 ring-amber-400" : ""}`
                           }`}
                         >
                           <p className="whitespace-pre-wrap break-words">{part}</p>
                           {isLast && (
-                            <span
-                              className={`mt-0.5 block text-right text-[10px] ${m.role === "user" ? "text-emerald-200" : "text-slate-400"}`}
-                            >
+                            <span className="mt-0.5 block text-right text-[10px] text-slate-500">
                               {m.at}
                             </span>
                           )}
@@ -1372,7 +1409,7 @@ function TrainerMode({
 
               {pending && (
                 <div className="flex justify-start">
-                  <div className="flex items-center gap-1 rounded-lg rounded-bl-none bg-[#202c33] px-3 py-2 text-slate-400 shadow">
+                  <div className="flex items-center gap-1 rounded-lg rounded-bl-none bg-white px-3 py-2 shadow-sm">
                     <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400 [animation-delay:0ms]" />
                     <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400 [animation-delay:150ms]" />
                     <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400 [animation-delay:300ms]" />
@@ -1383,7 +1420,7 @@ function TrainerMode({
           </div>
 
           {/* Input WhatsApp */}
-          <div className="flex items-center gap-2 bg-[#202c33] px-3 py-2.5">
+          <div className="flex items-center gap-2 bg-[#f0f2f5] px-3 py-2.5">
             <input
               type="text"
               value={input}
@@ -1396,12 +1433,12 @@ function TrainerMode({
               }}
               placeholder="Digite uma mensagem"
               disabled={pending}
-              className="flex-1 rounded-full bg-[#2a3942] px-4 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 disabled:opacity-60"
+              className="flex-1 rounded-full bg-white px-4 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 disabled:opacity-60"
             />
             <button
               onClick={() => void send()}
               disabled={!input.trim() || pending}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700 disabled:bg-slate-600"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700 disabled:bg-slate-300"
             >
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
             </button>

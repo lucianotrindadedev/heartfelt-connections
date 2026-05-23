@@ -41,6 +41,7 @@ import type { LeadData, Stage } from "./stage";
  * MANTÉM a tag de interesse (o swap só toca as 2 tags de status).
  */
 async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
+  if (ctx.dryRun) return;
   if (!ctx.helenaContact?.id) return;
   if (ctx.leadData.booked_tag_applied) return; // idempotente
   try {

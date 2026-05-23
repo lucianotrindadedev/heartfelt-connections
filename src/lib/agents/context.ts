@@ -45,6 +45,11 @@ export interface AgentContext {
 
   /** Histórico de mensagens já filtrado (sem fallbacks determinísticos). */
   history: { role: "user" | "assistant"; content: string }[];
+
+  /** Modo treinador: pula efeitos colaterais (não aplica tags Helena, não
+   *  cria eventos no GCal/Clinicorp). Usado para simular o agente sem tocar
+   *  em nada externo. */
+  dryRun?: boolean;
 }
 
 /** Resultado padronizado de um sub-agente. */
