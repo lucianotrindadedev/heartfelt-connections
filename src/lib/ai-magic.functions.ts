@@ -269,6 +269,114 @@ export const applyPromptEdit = createServerFn({ method: "POST" })
     return { ok: true, already_applied: false };
   });
 
+// ── Server function: gerar sugestões contextuais ──────────────────────────
+
+const SUGGESTIONS_SYSTEM = `Você é um curador de melhorias para prompts de agentes de atendimento.
+Você lê o prompt completo do agente e devolve 4 SUGESTÕES DE AJUSTE
+ESPECÍFICAS e CONTEXTUAIS — não genéricas. Cada sugestão deve:
+
+1. Tocar uma seção concreta do prompt (PASSO X, OBJEÇÕES, etc.).
+2. Estar redigida como instrução para o AI Magic editar (ex.:
+   "Adicione objeção: ...", "Reforce que ...", "Troque ... por ...").
+3. Ser CURTA (máximo 80 caracteres por sugestão).
+4. Ser ACIONÁVEL — algo que o dono do agente possa querer ajustar.
+5. NÃO repetir o que já existe no prompt. Aponte oportunidades reais
+   de melhoria, não óbvias.
+
+Considere especialmente:
+- Pontos que parecem mecânicos / pouco humanos no fluxo
+- Objeções que podem aparecer e não estão tratadas
+- Tons que poderiam ser ajustados
+- Regras que poderiam ser mais explícitas
+
+# FORMATO DE SAÍDA (JSON puro)
+
+{ "suggestions": ["sugestão 1", "sugestão 2", "sugestão 3", "sugestão 4"] }
+
+Responda APENAS com esse JSON.`;
+
+export const getAiMagicSuggestions = createServerFn({ method: "GET" })
+  .inputValidator((d) =>
+    z
+      .object({
+        accountId: z.string().min(1),
+        agentId: z.string().uuid(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+
+    // 1. Chave OpenRouter
+    const secrets = await sb
+      .from("account_secrets")
+      .select("openrouter_api_key_enc")
+      .eq("account_id", data.accountId)
+      .single();
+    if (!secrets.data?.openrouter_api_key_enc) {
+      return { suggestions: [] as string[] };
+    }
+    const orKey = await decryptValue(secrets.data.openrouter_api_key_enc as unknown as string);
+    if (!orKey) return { suggestions: [] as string[] };
+
+    // 2. Prompt atual
+    const agent = await sb
+      .from("agents")
+      .select("system_prompt")
+      .eq("id", data.agentId)
+      .single();
+    const promptText = (agent.data?.system_prompt as string | null) ?? "";
+    if (!promptText.trim()) return { suggestions: [] as string[] };
+
+    // 3. GPT-4.1-mini (sugestões são curtas, não precisa do flagship)
+    try {
+      const res = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${orKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4.1-mini",
+          messages: [
+            { role: "system", content: SUGGESTIONS_SYSTEM },
+            {
+              role: "user",
+              content: `# PROMPT ATUAL DO AGENTE\n\n${promptText}\n\n---\n\nGere 4 sugestões contextuais de ajuste para esse prompt.`,
+            },
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.7, // alguma diversidade
+          max_tokens: 600,
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!res.ok) {
+        console.warn(`[ai-magic-suggestions] OpenRouter ${res.status}`);
+        return { suggestions: [] as string[] };
+      }
+
+      const json = (await res.json()) as {
+        choices?: { message?: { content?: string } }[];
+      };
+      const content = (json.choices?.[0]?.message?.content ?? "").trim();
+      if (!content) return { suggestions: [] as string[] };
+
+      const parsed = JSON.parse(content) as { suggestions?: string[] };
+      const suggestions = Array.isArray(parsed.suggestions)
+        ? parsed.suggestions
+            .map((s) => String(s).trim())
+            .filter((s) => s.length > 5 && s.length <= 120)
+            .slice(0, 4)
+        : [];
+      return { suggestions };
+    } catch (e) {
+      console.warn("[ai-magic-suggestions] falha:", e);
+      return { suggestions: [] as string[] };
+    }
+  });
+
 // ── Server function: histórico ─────────────────────────────────────────────
 
 export const listAiMagicHistory = createServerFn({ method: "GET" })

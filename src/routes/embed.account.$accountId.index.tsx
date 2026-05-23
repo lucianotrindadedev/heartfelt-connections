@@ -84,6 +84,7 @@ import {
   requestPromptEdit,
   applyPromptEdit,
   listAiMagicHistory,
+  getAiMagicSuggestions,
 } from "@/lib/ai-magic.functions";
 
 interface AccountSearch {
@@ -1090,6 +1091,7 @@ function AiMagicSheet({
   const requestFn = useServerFn(requestPromptEdit);
   const applyFn = useServerFn(applyPromptEdit);
   const historyFn = useServerFn(listAiMagicHistory);
+  const suggestionsFn = useServerFn(getAiMagicSuggestions);
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<AiMagicMessage[]>([]);
@@ -1101,6 +1103,14 @@ function AiMagicSheet({
     queryKey: ["ai-magic-history", agentId],
     queryFn: () => historyFn({ data: { agentId, limit: 20 } }),
     enabled: open,
+  });
+
+  // Carrega sugestões contextuais (cache de 10min para evitar custo repetido)
+  const suggestionsQ = useQuery({
+    queryKey: ["ai-magic-suggestions", agentId],
+    queryFn: () => suggestionsFn({ data: { accountId, agentId } }),
+    enabled: open && messages.length === 0,
+    staleTime: 10 * 60 * 1000,
   });
 
   useEffect(() => {
@@ -1200,23 +1210,34 @@ function AiMagicSheet({
           {messages.length === 0 && !pending && (
             <div className="mt-6 text-center text-xs text-muted-foreground space-y-2">
               <p className="font-medium text-foreground">Como posso ajudar?</p>
-              <p>Exemplos:</p>
-              <div className="space-y-1.5 mt-2">
-                {[
-                  "Mude o tom para mais formal",
-                  "Adicione regra: nunca enviar valores antes do agendamento",
-                  "Trocar 'consultor' por 'especialista' no fluxo",
-                  "Adicione objeção: 'Já tenho outro fornecedor'",
-                ].map((ex) => (
-                  <button
-                    key={ex}
-                    onClick={() => setInput(ex)}
-                    className="block w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-[11px] hover:bg-slate-100"
-                  >
-                    {ex}
-                  </button>
-                ))}
-              </div>
+              {suggestionsQ.isLoading ? (
+                <div className="flex flex-col items-center gap-2 py-4">
+                  <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                  <p className="text-[11px]">Analisando seu prompt para sugerir ajustes…</p>
+                </div>
+              ) : suggestionsQ.data?.suggestions && suggestionsQ.data.suggestions.length > 0 ? (
+                <>
+                  <p>Sugestões baseadas no seu prompt:</p>
+                  <div className="space-y-1.5 mt-2">
+                    {suggestionsQ.data.suggestions.map((ex) => (
+                      <button
+                        key={ex}
+                        onClick={() => setInput(ex)}
+                        className="block w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-left text-[11px] hover:bg-slate-100 hover:border-primary/40 transition-colors"
+                      >
+                        {ex}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/70 mt-2">
+                    💡 Clique numa sugestão para usar como ponto de partida
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px]">
+                  Descreva o que quer ajustar — ex: "mude o tom", "adicione objeção sobre preço"…
+                </p>
+              )}
             </div>
           )}
 
