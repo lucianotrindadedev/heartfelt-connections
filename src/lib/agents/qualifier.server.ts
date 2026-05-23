@@ -143,11 +143,28 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
-- **RECEPTION**: primeira mensagem do lead. Cumprimente, identifique-se e pergunte como pode ajudar. Se UTM Content já indicar o interesse, demonstre que sabe (sem mencionar UTM/sistemas).
+- **RECEPTION**: primeira mensagem do lead. Comportamento depende do que ele enviou:
+
+  **CASO A — M1 vaga ("Oi", "Tudo bem?", "Bom dia")**: cumprimente, identifique-se
+  e pergunte como pode ajudar. Use UTM Content se disponível para insinuar o
+  interesse sem mencionar UTM/sistemas.
+
+  **CASO B — M1 com interesse explícito ("quero saber sobre tráfego pago",
+  "tô com dor no dente", "quero matricular minha filha")**: NÃO pergunte
+  "como posso te ajudar?" — isso ignora o que o lead já disse. Em vez disso:
+    1. Cumprimente brevemente reconhecendo o interesse ("Oi! Que ótimo que se
+       interessou por X — fico feliz em te ajudar.")
+    2. Faça JÁ a primeira pergunta SPIN de descoberta sobre esse interesse
+       (ex.: "Como você prefere que eu te chame?" + "Você já trabalhou com
+       tráfego pago antes ou está começando agora?")
+    3. Aplique a tag de interesse correspondente neste mesmo turno (regra #7
+       é flexibilizada para M1 com interesse claro).
+    4. next_stage="QUALIFICATION" (não fica em RECEPTION).
+
 - **QUALIFICATION**: faça perguntas SPIN para entender:
   • Situação atual (há quanto tempo está com a queixa, contexto)
-  • Problema específico (dor, estética, função)
-  • Impacto (como afeta o dia a dia, autoestima)
+  • Problema específico (dor, estética, função, necessidade)
+  • Impacto (como afeta o dia a dia, autoestima, decisão)
   • Necessidade declarada (o que está procurando)
 
 # REGRAS ABSOLUTAS
@@ -161,7 +178,9 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
    • O interesse principal estiver identificado com clareza
    • O lead manifestar disposição (explícita ou implícita) de avançar
 7. Se o lead pedir explicitamente humano, atendente, "falar com a doutora", reclamação delicada → next_stage="ESCALATED" + lead_data_patch.escalation_reason
-8. Tags de interesse SÓ no 2º ciclo em diante. No 1º ciclo (uma mensagem inbound apenas), JAMAIS chame aplicar_tag_interesse.
+8. Tags de interesse:
+   • Se a M1 do lead JÁ contém interesse claro (caso B do RECEPTION) → APLIQUE a tag de interesse JÁ no 1º ciclo.
+   • Se a M1 é vaga ("Oi", "Tudo bem?") → não aplique tag ainda; aguarde o 2º ciclo, quando o interesse ficar claro.
 9. **NÃO repita pedaços do prompt em sequência sem evolução.** Se o lead respondeu "sim", "ok", "uhum", "blz" — avance: faça a próxima pergunta SPIN ou ofereça horário. NUNCA fique repetindo o mesmo discurso de valor.
 10. **Após 3-4 ciclos com interesse claro e lead responsivo, transite para SLOT_OFFER.** Não fique infinitamente em QUALIFICATION.
 
@@ -216,6 +235,19 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
 
   const cycleCount = ctx.history.filter((m) => m.role === "user").length;
 
+  // Detecta se a M1 (primeira mensagem do lead) já carrega interesse explícito.
+  // Heurística: >= 20 caracteres E não é saudação genérica E contém palavras
+  // de intenção ("quero", "preciso", "gostaria", "tô com", "estou com",
+  // "informações", "matrícula", "sobre", "preço", "valor", "horário")
+  // OU já temos UTM Content (que sempre carrega o interesse da campanha).
+  const firstUserMsg = ctx.history.find((m) => m.role === "user")?.content ?? "";
+  const m1Trimmed = firstUserMsg.trim().toLowerCase();
+  const isGreetingOnly = /^(oi|ola|olá|bom dia|boa tarde|boa noite|hey|opa|e aí|eai|tudo bem\??)[!.\s]*$/i.test(m1Trimmed);
+  const hasIntentWords = /\b(quero|gostaria|preciso|to com|tô com|estou com|sobre|interesse|informaç|matric|preço|valor|horário|horario|orçament|orcament|consulta|atend|servic|servi[çc]o|curso|aula)\b/i.test(m1Trimmed);
+  const hasExplicitInterestInM1 =
+    !!utm?.content ||
+    (m1Trimmed.length >= 20 && !isGreetingOnly && hasIntentWords);
+
   return `# ESTADO ATUAL
 
 - Agora (BRT): ${dateStr}
@@ -226,6 +258,22 @@ ${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UT
 ${utm?.source ? `- UTM Source: ${utm.source}` : ""}
 ${utm?.medium ? `- UTM Medium: ${utm.medium}` : ""}
 ${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}
+
+${
+  cycleCount <= 1 && hasExplicitInterestInM1
+    ? `# ⚡ ATENÇÃO — M1 com interesse explícito
+
+A primeira mensagem do lead foi: "${firstUserMsg.slice(0, 200)}"
+
+Ele JÁ disse o que quer. NÃO pergunte "como posso te ajudar?" — isso ignora
+o que ele acabou de dizer e gera fricção. Em vez disso:
+  1. Cumprimente reconhecendo o tema ("Oi! Que ótimo seu interesse em X...")
+  2. Pergunte o NOME do lead
+  3. Sinalize que vai te ajudar com isso
+  4. Aplique a tag de interesse compatível NESTE turno (chame aplicar_tag_interesse)
+`
+    : ""
+}
 
 # TAGS DE INTERESSE DISPONÍVEIS NO CRM
 
@@ -263,7 +311,13 @@ ${JSON.stringify(
 
 # REGRA DE CICLOS
 
-${cycleCount <= 1 ? "**1º CICLO** — proibido chamar tools. Só saudação + 1 pergunta de descoberta." : "Pode usar aplicar_tag_interesse se o interesse estiver identificado com segurança."}
+${
+  cycleCount <= 1
+    ? hasExplicitInterestInM1
+      ? "**1º CICLO COM INTERESSE EXPLÍCITO** — o lead já disse o que quer. Reconheça o interesse, aplique a tag de interesse correspondente JÁ neste turno (caso B do RECEPTION). NÃO pergunte 'como posso ajudar' — pule direto para descoberta SPIN."
+      : "**1º CICLO M1 VAGA** — só saudação + 1 pergunta de descoberta. Não aplique tags ainda."
+    : "Pode usar aplicar_tag_interesse se o interesse estiver identificado com segurança."
+}
 
 ${cycleCount >= 4 && ld.interest ? `**ALERTA**: já são ${cycleCount} ciclos com interest=${ld.interest} identificado. Avance: faça a oferta de horário transitando para next_stage="SLOT_OFFER". O scheduler assume a partir daí.` : ""}
 
@@ -304,9 +358,18 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   let totalTokensOut = 0;
   let totalCostUsd = 0;
 
-  // No 1º ciclo, força tool_choice=none (sem tools).
+  // No 1º ciclo, tools são proibidas — EXCETO quando a M1 já carrega interesse
+  // explícito ("quero saber sobre tráfego pago", "tô com dor no dente").
+  // Nesses casos, faz sentido aplicar a tag de interesse JÁ no 1º turno.
   const cycleCount = ctx.history.filter((m) => m.role === "user").length;
-  const allowTools = cycleCount > 1;
+  const firstUserMsg = ctx.history.find((m) => m.role === "user")?.content ?? "";
+  const m1Lower = firstUserMsg.trim().toLowerCase();
+  const isGreetingOnly = /^(oi|ola|olá|bom dia|boa tarde|boa noite|hey|opa|e aí|eai|tudo bem\??)[!.\s]*$/i.test(m1Lower);
+  const hasIntentWords = /\b(quero|gostaria|preciso|to com|tô com|estou com|sobre|interesse|informaç|matric|preço|valor|horário|horario|orçament|orcament|consulta|atend|servic|servi[çc]o|curso|aula)\b/i.test(m1Lower);
+  const hasExplicitInterestInM1 =
+    !!ctx.helenaContact?.utm?.content ||
+    (m1Lower.length >= 20 && !isGreetingOnly && hasIntentWords);
+  const allowTools = cycleCount > 1 || hasExplicitInterestInM1;
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS && allowTools; loop++) {
     const turn = await callLlm(ctx.orKey, {
