@@ -15,6 +15,65 @@ import { decryptValue } from "@/lib/crypto.server";
 const AI_MAGIC_MODEL = "openai/gpt-4.1"; // GPT-4 estável + bom em edição estruturada
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
+/**
+ * Detecta se o LLM cortou o prompt usando atalhos tipo
+ * '(restante do prompt permanece igual)' em vez de reescrever inteiro.
+ */
+const PLACEHOLDER_PATTERNS = [
+  /\(\s*restante\s+do\s+prompt/i,
+  /\(\s*demais\s+seções/i,
+  /\(\s*\.\.\.\s*\)/i,
+  /\[\s*restante\s+do\s+prompt/i,
+  /\[\s*demais\s+seções/i,
+  /\[\s*continue\s+como\s+antes/i,
+  /\[\s*continua\s+igual/i,
+  /\bpermanece\s+igual\b/i,
+  /\bpermanecem\s+iguais\b/i,
+  /\[\s*\.\.\.\s*\]/i,
+  /\(\s*continua\s+inalterad/i,
+];
+
+function detectTruncationOrShortcut(
+  before: string,
+  proposed: string,
+  sectionsChanged: string[],
+): { ok: boolean; reason?: string } {
+  // 1) Detecta placeholders explícitos
+  for (const re of PLACEHOLDER_PATTERNS) {
+    if (re.test(proposed)) {
+      return {
+        ok: false,
+        reason: `O GPT inseriu um placeholder ("${proposed.match(re)?.[0]}") em vez de reescrever o prompt completo. Tente reformular o pedido — talvez mais específico.`,
+      };
+    }
+  }
+
+  // 2) Se o proposed é < 70% do tamanho original E < 5 seções
+  //    foram declaradas como alteradas, provavelmente o GPT cortou.
+  const beforeLen = before.length;
+  const proposedLen = proposed.length;
+  if (beforeLen > 1000 && proposedLen < beforeLen * 0.7) {
+    return {
+      ok: false,
+      reason: `O proposed_prompt (${proposedLen} chars) é muito menor que o original (${beforeLen} chars). O GPT provavelmente cortou seções. Tente um pedido mais específico ou edite manualmente.`,
+    };
+  }
+
+  // 3) Mais de 3 seções alteradas com prompt encurtado >30%: suspeito
+  if (
+    sectionsChanged.length > 3 &&
+    beforeLen > 1000 &&
+    proposedLen < beforeLen * 0.85
+  ) {
+    return {
+      ok: false,
+      reason: `O GPT mudou ${sectionsChanged.length} seções e encurtou o prompt em ${Math.round((1 - proposedLen / beforeLen) * 100)}% — possível corte indevido. Tente uma alteração mais focada.`,
+    };
+  }
+
+  return { ok: true };
+}
+
 // ── System prompt do AI Magic ────────────────────────────────────────────
 
 const AI_MAGIC_SYSTEM = `Você é o **AI Magic**, um assistente especialista em ajustar prompts de agentes
@@ -22,7 +81,26 @@ de atendimento ao cliente (SDR, recepção, agendamento). Seu papel é interpret
 solicitações em linguagem natural e propor edições cirúrgicas no prompt existente
 SEM perder a qualidade estrutural.
 
-# REGRAS ABSOLUTAS
+# 🚨 REGRA #0 — A MAIS IMPORTANTE 🚨
+
+**O campo \`proposed_prompt\` DEVE conter o PROMPT INTEIRO REESCRITO, do começo
+ao fim, com TODAS as seções originais presentes e completas.**
+
+❌ É **TERMINANTEMENTE PROIBIDO** usar atalhos como:
+  - "(restante do prompt permanece igual)"
+  - "(...)" ou "..."
+  - "[demais seções inalteradas]"
+  - "[continue como antes]"
+  - Qualquer placeholder que sugira "o resto continua igual"
+
+Se o prompt original tem 14.000 caracteres e você só está mudando 100 deles,
+mesmo assim o proposed_prompt DEVE ter ~14.000 caracteres — o restante
+literalmente copiado e colado.
+
+Por quê: a aplicação SALVA O proposed_prompt INTEIRO no banco. Se você usar
+atalho, o agente perde 99% das instruções e fica quebrado.
+
+# DEMAIS REGRAS ABSOLUTAS
 
 1. **NUNCA remova seções inteiras** sem instrução explícita. Toda seção do prompt
    tem propósito: identidade do agente, regras de tom, fluxo SPIN, objeções,
@@ -38,14 +116,12 @@ SEM perder a qualidade estrutural.
 
 4. **DELTAS MÍNIMOS**. Faça a menor mudança necessária para atender o pedido. Se
    é trocar "10h" por "11h" em 2 lugares, faça só isso — não reescreva o passo.
+   MAS reescreva o prompt COMPLETO no JSON, com a troca aplicada.
 
 5. **EXPLIQUE O QUE VAI MUDAR** no \`summary\` em PT-BR, conciso (1-3 frases).
    Liste em \`sections_changed\` cada seção tocada (ex: "PASSO 7", "OBJEÇÕES").
 
-6. **RETORNE O PROMPT INTEIRO PROPOSTO** em \`proposed_prompt\` — não envie apenas
-   o trecho alterado.
-
-7. **SE O PEDIDO FOR AMBÍGUO ou inseguro** (ex: "deixa mais agressivo"), responda
+6. **SE O PEDIDO FOR AMBÍGUO ou inseguro** (ex: "deixa mais agressivo"), responda
    com uma pergunta de clarificação em \`summary\` e devolva \`proposed_prompt\`
    IGUAL ao original (sem alteração).
 
@@ -53,7 +129,7 @@ SEM perder a qualidade estrutural.
 
 {
   "summary": "Resumo em PT-BR do que vai mudar (1-3 frases).",
-  "proposed_prompt": "O PROMPT INTEIRO, com as alterações aplicadas.",
+  "proposed_prompt": "O PROMPT INTEIRO REESCRITO, do início ao fim, sem placeholders.",
   "sections_changed": ["PASSO 7", "REGRAS DE OURO — etc"],
   "reasoning": "1 frase explicando a decisão por trás da mudança."
 }
@@ -181,6 +257,13 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
       if (!proposedPrompt) {
         proposedPrompt = promptBefore; // sem alteração
         if (!summary) summary = "(Sem alterações propostas.)";
+      } else {
+        // Validação contra atalhos do GPT ("(restante do prompt permanece igual)")
+        const check = detectTruncationOrShortcut(promptBefore, proposedPrompt, sectionsChanged);
+        if (!check.ok) {
+          console.warn(`[ai-magic] proposta rejeitada: ${check.reason}`);
+          throw new Error(check.reason);
+        }
       }
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : String(e);
@@ -401,4 +484,110 @@ export const listAiMagicHistory = createServerFn({ method: "GET" })
       .limit(data.limit);
     if (res.error) throw new Error(res.error.message);
     return { items: res.data ?? [] };
+  });
+
+// ── Server function: versões aplicadas (para restaurar) ────────────────────
+
+export const listPromptVersions = createServerFn({ method: "GET" })
+  .inputValidator((d) => z.object({ agentId: z.string().uuid() }).parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const res = await sb
+      .from("ai_magic_requests")
+      .select(
+        "id, user_message, summary, sections_changed, prompt_before, proposed_prompt, applied, applied_at, criado_em",
+      )
+      .eq("agent_id", data.agentId)
+      .eq("applied", true)
+      .order("applied_at", { ascending: false })
+      .limit(50);
+    if (res.error) throw new Error(res.error.message);
+
+    // Carrega também o prompt atual (versão "agora") para mostrar como referência
+    const currentAgent = await sb
+      .from("agents")
+      .select("system_prompt")
+      .eq("id", data.agentId)
+      .single();
+
+    return {
+      current_prompt: (currentAgent.data?.system_prompt as string) ?? "",
+      versions: res.data ?? [],
+    };
+  });
+
+/**
+ * Restaura o prompt do agente para uma versão anterior.
+ * Cria uma nova entrada em ai_magic_requests com a operação de restauração
+ * para manter o rastro de auditoria.
+ */
+export const restorePromptVersion = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    z
+      .object({
+        agentId: z.string().uuid(),
+        // Pode restaurar para o estado ANTES de uma edição (prompt_before)
+        // ou para o estado DEPOIS de uma edição (proposed_prompt).
+        sourceRequestId: z.string().uuid(),
+        target: z.enum(["before", "after"]),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+
+    // 1. Carrega a request fonte
+    const src = await sb
+      .from("ai_magic_requests")
+      .select("account_id, agent_id, prompt_before, proposed_prompt, summary")
+      .eq("id", data.sourceRequestId)
+      .single();
+    if (src.error || !src.data) throw new Error("Versão fonte não encontrada.");
+    if ((src.data.agent_id as string) !== data.agentId) {
+      throw new Error("Versão pertence a outro agente.");
+    }
+
+    const targetPrompt =
+      data.target === "before"
+        ? (src.data.prompt_before as string)
+        : (src.data.proposed_prompt as string | null) ?? "";
+
+    if (!targetPrompt) {
+      throw new Error("Versão alvo está vazia.");
+    }
+
+    // 2. Pega o prompt atual para snapshot da nova entrada
+    const currentAgent = await sb
+      .from("agents")
+      .select("system_prompt")
+      .eq("id", data.agentId)
+      .single();
+    const currentPrompt = (currentAgent.data?.system_prompt as string) ?? "";
+
+    if (currentPrompt === targetPrompt) {
+      return { ok: true, already_current: true };
+    }
+
+    // 3. Atualiza o agente
+    const upd = await sb
+      .from("agents")
+      .update({ system_prompt: targetPrompt })
+      .eq("id", data.agentId);
+    if (upd.error) throw new Error(`Falha ao restaurar: ${upd.error.message}`);
+
+    // 4. Cria entrada de auditoria
+    await sb.from("ai_magic_requests").insert({
+      account_id: src.data.account_id,
+      agent_id: data.agentId,
+      user_message: `[RESTORE] Versão restaurada (${data.target === "before" ? "antes" : "depois"} de "${(src.data.summary as string | null)?.slice(0, 80) ?? "edição"}")`,
+      prompt_before: currentPrompt,
+      proposed_prompt: targetPrompt,
+      summary: `Restaurada versão anterior do prompt.`,
+      sections_changed: [],
+      applied: true,
+      applied_at: new Date().toISOString(),
+      model: "system",
+    });
+
+    return { ok: true, restored_prompt: targetPrompt };
   });

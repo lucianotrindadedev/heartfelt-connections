@@ -85,6 +85,8 @@ import {
   applyPromptEdit,
   listAiMagicHistory,
   getAiMagicSuggestions,
+  listPromptVersions,
+  restorePromptVersion,
 } from "@/lib/ai-magic.functions";
 import {
   runTrainerTurn,
@@ -838,6 +840,7 @@ function TrainingView({
   const [showTemplates, setShowTemplates] = useState(false);
   const [showAiMagic, setShowAiMagic] = useState(false);
   const [showTrainer, setShowTrainer] = useState(false);
+  const [showVersions, setShowVersions] = useState(false);
 
   const doSave = useCallback(async (content?: string) => {
     const text = content ?? promptContent;
@@ -1006,7 +1009,21 @@ function TrainingView({
             onAutosaveChange={setAutosave}
             onSave={() => void doSave()}
             onAiMagic={() => setShowAiMagic(true)}
+            onHistory={() => setShowVersions(true)}
             configuredIntegrations={configuredIntegrations}
+          />
+
+          <PromptVersionsSheet
+            open={showVersions}
+            onClose={() => setShowVersions(false)}
+            agentId={agentId}
+            onRestored={(newPrompt) => {
+              setPromptContent(newPrompt);
+              setCharCount(newPrompt.length);
+              setSaveState("saved");
+              qc.invalidateQueries({ queryKey: ["agent", accountId] });
+              toast.success("Versão restaurada.");
+            }}
           />
 
           <AiMagicSheet
@@ -1578,6 +1595,211 @@ function TrainerMode({
 }
 
 // =================================================================
+// PromptVersionsSheet — histórico de versões com restauração
+// =================================================================
+
+function PromptVersionsSheet({
+  open,
+  onClose,
+  agentId,
+  onRestored,
+}: {
+  open: boolean;
+  onClose: () => void;
+  agentId: string;
+  onRestored: (newPrompt: string) => void;
+}) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listPromptVersions);
+  const restoreFn = useServerFn(restorePromptVersion);
+
+  const q = useQuery({
+    queryKey: ["prompt-versions", agentId],
+    queryFn: () => listFn({ data: { agentId } }),
+    enabled: open,
+  });
+
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState<{
+    summary: string;
+    before: string;
+    after: string;
+    appliedAt: string | null;
+  } | null>(null);
+
+  async function restore(requestId: string, target: "before" | "after") {
+    if (!confirm(`Restaurar versão "${target === "before" ? "anterior" : "deste ponto"}"? O prompt atual será substituído.`)) return;
+    setRestoring(requestId + ":" + target);
+    try {
+      const res = await restoreFn({ data: { agentId, sourceRequestId: requestId, target } });
+      if (res.restored_prompt) {
+        onRestored(res.restored_prompt);
+      } else if (res.already_current) {
+        toast.info("Essa versão já é a atual.");
+      }
+      qc.invalidateQueries({ queryKey: ["prompt-versions", agentId] });
+      qc.invalidateQueries({ queryKey: ["ai-magic-history", agentId] });
+      onClose();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao restaurar");
+    } finally {
+      setRestoring(null);
+    }
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
+      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-lg">
+        <SheetHeader className="border-b px-5 py-3">
+          <SheetTitle className="flex items-center gap-2">
+            <RotateCcw className="h-4 w-4 text-primary" />
+            Histórico de versões
+          </SheetTitle>
+          <p className="text-xs text-muted-foreground">
+            Cada vez que uma alteração foi aplicada no prompt. Você pode restaurar
+            qualquer versão anterior.
+          </p>
+        </SheetHeader>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {q.isLoading && (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+
+          {q.data && q.data.versions.length === 0 && (
+            <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-xs text-muted-foreground">
+              Ainda não há versões salvas.
+              <br />
+              Cada vez que você aplicar uma alteração via AI Magic ou Modo Treinador,
+              ela aparecerá aqui.
+            </div>
+          )}
+
+          {q.data?.versions.map((v, idx) => {
+            const userMsg = v.user_message as string;
+            const isRestore = userMsg.startsWith("[RESTORE]");
+            const isTrainer = userMsg.startsWith("[TRAINER]");
+            const dt = v.applied_at
+              ? new Date(v.applied_at as string).toLocaleString("pt-BR", {
+                  day: "2-digit",
+                  month: "2-digit",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "-";
+            return (
+              <div
+                key={v.id as string}
+                className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
+              >
+                <div className="mb-1 flex items-start justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-slate-700">
+                    {idx === 0 ? "✨ Versão atual" : `#${q.data.versions.length - idx}`}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">{dt}</span>
+                </div>
+
+                {(isRestore || isTrainer) && (
+                  <span
+                    className={`mb-1 inline-block rounded-full px-2 py-0.5 text-[9px] font-semibold ${
+                      isRestore
+                        ? "bg-violet-100 text-violet-700"
+                        : "bg-emerald-100 text-emerald-700"
+                    }`}
+                  >
+                    {isRestore ? "RESTAURAÇÃO" : "TREINADOR"}
+                  </span>
+                )}
+
+                <p className="text-xs text-foreground line-clamp-2 mb-1">
+                  {(v.summary as string) ?? userMsg}
+                </p>
+
+                {Array.isArray(v.sections_changed) && (v.sections_changed as string[]).length > 0 && (
+                  <div className="mb-2 flex flex-wrap gap-1">
+                    {(v.sections_changed as string[]).slice(0, 4).map((s) => (
+                      <span
+                        key={s}
+                        className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-medium text-amber-800"
+                      >
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() =>
+                      setPreviewing({
+                        summary: (v.summary as string) ?? userMsg,
+                        before: v.prompt_before as string,
+                        after: (v.proposed_prompt as string) ?? "",
+                        appliedAt: v.applied_at as string | null,
+                      })
+                    }
+                    className="text-[10px] font-medium text-primary hover:underline"
+                  >
+                    Ver alterações
+                  </button>
+                  {idx > 0 && (
+                    <button
+                      disabled={restoring !== null}
+                      onClick={() => void restore(v.id as string, "before")}
+                      className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60"
+                    >
+                      ↶ Restaurar estado anterior a essa edição
+                    </button>
+                  )}
+                  {idx > 0 && (
+                    <button
+                      disabled={restoring !== null}
+                      onClick={() => void restore(v.id as string, "after")}
+                      className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                    >
+                      Restaurar para esta versão
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Modal: preview de uma versão antiga */}
+        {previewing && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+            <div className="flex max-h-[90vh] w-full max-w-2xl flex-col rounded-xl border bg-white shadow-2xl">
+              <div className="flex items-center justify-between border-b px-5 py-3">
+                <div>
+                  <h3 className="text-base font-semibold">Alterações desta versão</h3>
+                  {previewing.appliedAt && (
+                    <p className="text-[11px] text-muted-foreground">
+                      {new Date(previewing.appliedAt).toLocaleString("pt-BR")}
+                    </p>
+                  )}
+                </div>
+                <button onClick={() => setPreviewing(null)} className="text-muted-foreground hover:text-foreground">
+                  ✕
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                <div className="rounded-md border bg-slate-50 p-3 text-sm text-slate-800">
+                  {previewing.summary}
+                </div>
+                <DiffPreviewBlock before={previewing.before} after={previewing.after} />
+              </div>
+            </div>
+          </div>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// =================================================================
 // AI Magic Sheet — chat lateral para ajustar o prompt via GPT-4
 // =================================================================
 
@@ -2086,6 +2308,7 @@ function PromptEditor({
   onAutosaveChange,
   onSave,
   onAiMagic,
+  onHistory,
   configuredIntegrations,
 }: {
   initialContent: string;
@@ -2096,6 +2319,7 @@ function PromptEditor({
   onAutosaveChange: (v: boolean) => void;
   onSave: () => void;
   onAiMagic?: () => void;
+  onHistory?: () => void;
   configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
 }) {
   const [showColorPicker, setShowColorPicker] = useState<"text" | "highlight" | null>(null);
@@ -2404,6 +2628,18 @@ function PromptEditor({
         </div>
 
         <div className="mx-1 h-4 w-px bg-slate-200" />
+
+        {/* Histórico de versões */}
+        {onHistory && (
+          <button
+            onClick={onHistory}
+            title="Histórico de versões — restaurar estado anterior"
+            className="flex items-center gap-1 rounded-full border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Histórico
+          </button>
+        )}
 
         {/* AI Magic */}
         <button

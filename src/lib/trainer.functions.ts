@@ -19,6 +19,45 @@ import { routeForStage, type Stage, type LeadData } from "@/lib/agents/stage";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const AI_MAGIC_MODEL = "openai/gpt-4.1";
 
+// Compartilhada com ai-magic.functions.ts — detecta atalhos do GPT.
+const PLACEHOLDER_PATTERNS = [
+  /\(\s*restante\s+do\s+prompt/i,
+  /\(\s*demais\s+seções/i,
+  /\(\s*\.\.\.\s*\)/i,
+  /\[\s*restante\s+do\s+prompt/i,
+  /\[\s*demais\s+seções/i,
+  /\[\s*continue\s+como\s+antes/i,
+  /\[\s*continua\s+igual/i,
+  /\bpermanece\s+igual\b/i,
+  /\bpermanecem\s+iguais\b/i,
+  /\[\s*\.\.\.\s*\]/i,
+  /\(\s*continua\s+inalterad/i,
+];
+
+function detectTruncationOrShortcut(before: string, proposed: string, sectionsChanged: string[]) {
+  for (const re of PLACEHOLDER_PATTERNS) {
+    if (re.test(proposed)) {
+      return {
+        ok: false,
+        reason: `GPT inseriu placeholder ("${proposed.match(re)?.[0]}") em vez de reescrever inteiro.`,
+      };
+    }
+  }
+  if (before.length > 1000 && proposed.length < before.length * 0.7) {
+    return {
+      ok: false,
+      reason: `proposed_prompt (${proposed.length}) é muito menor que original (${before.length}) — GPT cortou seções.`,
+    };
+  }
+  if (sectionsChanged.length > 3 && before.length > 1000 && proposed.length < before.length * 0.85) {
+    return {
+      ok: false,
+      reason: `GPT mudou ${sectionsChanged.length} seções e encurtou ${Math.round((1 - proposed.length / before.length) * 100)}%.`,
+    };
+  }
+  return { ok: true as const };
+}
+
 // ── runTrainerTurn — simula 1 turn do agente sem efeitos ─────────────────
 
 const trainerMessageSchema = z.object({
@@ -184,29 +223,39 @@ const TRAINER_FEEDBACK_SYSTEM = `Você é o **AI Magic** em modo **TREINADOR**. 
   3. Anotações pontuais do dono do agente apontando o que precisa melhorar
      em respostas específicas do agente
 
-Sua missão é propor um NOVO prompt que corrija essas falhas, mantendo:
+Sua missão é propor um NOVO prompt que corrija essas falhas, mantendo a
+qualidade estrutural.
 
-- Toda a estrutura do prompt existente (cabeçalhos, numeração, blockquotes).
-- Tom e identidade do agente já estabelecidos.
-- Outras regras já presentes.
+# 🚨 REGRA #0 — A MAIS IMPORTANTE 🚨
 
-# REGRAS
+**O campo \`proposed_prompt\` DEVE conter o PROMPT INTEIRO REESCRITO, do começo
+ao fim, com TODAS as seções originais presentes e completas.**
 
-1. Foque CIRURGICAMENTE nos pontos anotados pelo treinador. Não reescreva
-   o prompt inteiro — faça delta mínimo.
+❌ É **TERMINANTEMENTE PROIBIDO** usar atalhos como:
+  - "(restante do prompt permanece igual)"
+  - "(...)" ou "..."
+  - "[demais seções inalteradas]"
+  - Qualquer placeholder
+
+Se o prompt tem 14.000 chars e a correção muda 100 chars, o proposed_prompt
+DEVE ter ~14.000 chars — você copia LITERALMENTE o restante.
+
+# DEMAIS REGRAS
+
+1. Foque CIRURGICAMENTE nos pontos anotados pelo treinador.
 2. Se a anotação diz "deveria ter perguntado X aqui", inclua a pergunta X
    no momento adequado do fluxo (PASSO X).
 3. Se diz "tom muito robótico nessa parte", suavize as frases relacionadas.
 4. Não invente informações novas que o treinador não autorizou.
 5. Se múltiplas anotações apontarem o mesmo problema, agrupe a correção.
 6. PRESERVE todas as seções: ROLE, TASK, REGRAS DE OURO, FLUXO, OBJEÇÕES,
-   FERRAMENTAS, etc.
+   FERRAMENTAS, etc. Cada uma delas DEVE aparecer completa no proposed_prompt.
 
 # FORMATO DE SAÍDA (JSON puro, sem markdown)
 
 {
   "summary": "Resumo em PT-BR do que foi ajustado (1-3 frases).",
-  "proposed_prompt": "O PROMPT INTEIRO já corrigido.",
+  "proposed_prompt": "O PROMPT INTEIRO REESCRITO, do início ao fim, sem placeholders.",
   "sections_changed": ["PASSO 7", "OBJEÇÕES — ...", ...],
   "reasoning": "1-2 frases explicando como as correções endereçam os pontos do treinador."
 }
@@ -341,7 +390,15 @@ remover regras que não foram criticadas.`;
       proposedPrompt = (parsed.proposed_prompt ?? "").trim();
       sectionsChanged = Array.isArray(parsed.sections_changed) ? parsed.sections_changed : [];
       reasoning = (parsed.reasoning ?? "").trim();
-      if (!proposedPrompt) proposedPrompt = promptBefore;
+      if (!proposedPrompt) {
+        proposedPrompt = promptBefore;
+      } else {
+        const check = detectTruncationOrShortcut(promptBefore, proposedPrompt, sectionsChanged);
+        if (!check.ok) {
+          console.warn(`[trainer-improve] proposta rejeitada: ${check.reason}`);
+          throw new Error(check.reason);
+        }
+      }
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : String(e);
       console.error("[trainer-improve] falha:", errorMsg);
