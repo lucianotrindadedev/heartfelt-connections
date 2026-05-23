@@ -86,6 +86,10 @@ import {
   listAiMagicHistory,
   getAiMagicSuggestions,
 } from "@/lib/ai-magic.functions";
+import {
+  runTrainerTurn,
+  requestTrainerImprovement,
+} from "@/lib/trainer.functions";
 import { lineDiff, diffChangeBlocks, diffStats, type DiffOp } from "@/lib/text-diff";
 
 interface AccountSearch {
@@ -833,6 +837,7 @@ function TrainingView({
   const [autosave, setAutosave] = useState(true);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showAiMagic, setShowAiMagic] = useState(false);
+  const [showTrainer, setShowTrainer] = useState(false);
 
   const doSave = useCallback(async (content?: string) => {
     const text = content ?? promptContent;
@@ -923,7 +928,7 @@ function TrainingView({
 
         <button
           className="flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-emerald-500/30 transition-opacity hover:opacity-90"
-          onClick={() => toast.info("Modo Treinador em breve!")}
+          onClick={() => setShowTrainer(true)}
         >
           <MessageCircle className="h-3 w-3" />
           Modo Treinador
@@ -1055,6 +1060,481 @@ function TrainingView({
           onApply={applyTemplate}
           agentSettings={agentSettings}
         />
+      )}
+
+      {/* Modo Treinador — chat de teste em tela cheia */}
+      {showTrainer && (
+        <TrainerMode
+          accountId={accountId}
+          agentId={agentId}
+          assistantName={agentSettings.assistant_name || nome || "Assistente"}
+          onClose={() => setShowTrainer(false)}
+          onPromptUpdated={(newPrompt) => {
+            setPromptContent(newPrompt);
+            setCharCount(newPrompt.length);
+            setSaveState("saved");
+            qc.invalidateQueries({ queryKey: ["agent", accountId] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// =================================================================
+// Modo Treinador — chat estilo WhatsApp para testar o agente
+// =================================================================
+
+interface TrainerMessage {
+  idx: number;
+  role: "user" | "assistant";
+  parts: string[]; // bolhas (split)
+  pending?: boolean;
+  at: string; // HH:MM
+}
+
+interface TrainerAnnotation {
+  id: string;
+  messageIdx: number;
+  assistantText: string;
+  comment: string;
+}
+
+function TrainerMode({
+  accountId,
+  agentId,
+  assistantName,
+  onClose,
+  onPromptUpdated,
+}: {
+  accountId: string;
+  agentId: string;
+  assistantName: string;
+  onClose: () => void;
+  onPromptUpdated: (newPrompt: string) => void;
+}) {
+  const turnFn = useServerFn(runTrainerTurn);
+  const improveFn = useServerFn(requestTrainerImprovement);
+  const applyFn = useServerFn(applyPromptEdit);
+
+  const [messages, setMessages] = useState<TrainerMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [pending, setPending] = useState(false);
+  const [annotations, setAnnotations] = useState<TrainerAnnotation[]>([]);
+  const [annotatingFor, setAnnotatingFor] = useState<TrainerMessage | null>(null);
+  const [annotationDraft, setAnnotationDraft] = useState("");
+  const [generating, setGenerating] = useState(false);
+  const [proposal, setProposal] = useState<{
+    request_id: string;
+    summary: string;
+    proposed_prompt: string;
+    prompt_before: string;
+    sections_changed: string[];
+    reasoning: string;
+  } | null>(null);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, pending]);
+
+  function nowTime() {
+    return new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  async function send() {
+    const text = input.trim();
+    if (!text || pending) return;
+    setInput("");
+    const idxUser = messages.length;
+    const userMsg: TrainerMessage = {
+      idx: idxUser,
+      role: "user",
+      parts: [text],
+      at: nowTime(),
+    };
+    setMessages((prev) => [...prev, userMsg]);
+    setPending(true);
+
+    // history para o backend = todas as mensagens anteriores (cada role com content
+    // = parts.join('\n\n') reflete bolhas do agente)
+    const history = messages.map((m) => ({
+      role: m.role,
+      content: m.parts.join("\n\n"),
+    }));
+
+    try {
+      const res = await turnFn({
+        data: { accountId, agentId, history, userMessage: text },
+      });
+      const idxAsst = idxUser + 1;
+      const asstMsg: TrainerMessage = {
+        idx: idxAsst,
+        role: "assistant",
+        parts: res.parts.length > 0 ? res.parts : [res.reply],
+        at: nowTime(),
+      };
+      setMessages((prev) => [...prev, asstMsg]);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Falha no agente");
+      setMessages((prev) => [
+        ...prev,
+        {
+          idx: idxUser + 1,
+          role: "assistant",
+          parts: [`❌ ${e instanceof Error ? e.message : "erro desconhecido"}`],
+          at: nowTime(),
+        },
+      ]);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  function saveAnnotation() {
+    if (!annotatingFor || !annotationDraft.trim()) {
+      setAnnotatingFor(null);
+      setAnnotationDraft("");
+      return;
+    }
+    setAnnotations((prev) => [
+      ...prev,
+      {
+        id: `ann-${Date.now()}`,
+        messageIdx: annotatingFor.idx,
+        assistantText: annotatingFor.parts.join("\n\n"),
+        comment: annotationDraft.trim(),
+      },
+    ]);
+    setAnnotatingFor(null);
+    setAnnotationDraft("");
+    toast.success("Correção adicionada");
+  }
+
+  async function generateImprovements() {
+    if (annotations.length === 0) {
+      toast.info("Adicione pelo menos 1 correção primeiro");
+      return;
+    }
+    setGenerating(true);
+    try {
+      // Transcript = todas as mensagens em formato linear
+      const transcript = messages.map((m) => ({
+        role: m.role,
+        content: m.parts.join("\n\n"),
+      }));
+      const res = await improveFn({
+        data: {
+          accountId,
+          agentId,
+          transcript,
+          annotations: annotations.map((a) => ({
+            messageIdx: a.messageIdx,
+            assistantText: a.assistantText,
+            comment: a.comment,
+          })),
+        },
+      });
+      setProposal({
+        request_id: res.request_id,
+        summary: res.summary,
+        proposed_prompt: res.proposed_prompt,
+        prompt_before: res.prompt_before,
+        sections_changed: res.sections_changed,
+        reasoning: res.reasoning,
+      });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao gerar correções");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function applyProposal() {
+    if (!proposal) return;
+    try {
+      await applyFn({ data: { requestId: proposal.request_id } });
+      onPromptUpdated(proposal.proposed_prompt);
+      toast.success("Prompt atualizado com base na sessão de treino");
+      setProposal(null);
+      setAnnotations([]);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao aplicar");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-slate-100">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b bg-white px-5 py-3 shadow-sm">
+        <div className="flex items-center gap-2">
+          <button onClick={onClose} className="text-xs font-semibold text-primary hover:text-primary/80">
+            ← VOLTAR
+          </button>
+          <div className="mx-2 h-4 w-px bg-slate-200" />
+          <MessageCircle className="h-4 w-4 text-emerald-600" />
+          <span className="text-sm font-semibold">Modo Treinador</span>
+          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+            simulação · não envia pelo WhatsApp
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">
+            {annotations.length} correç{annotations.length === 1 ? "ão" : "ões"}
+          </span>
+          <Button
+            onClick={() => void generateImprovements()}
+            disabled={annotations.length === 0 || generating}
+            size="sm"
+            className="bg-primary"
+          >
+            {generating ? (
+              <>
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                Gerando…
+              </>
+            ) : (
+              <>
+                <Zap className="mr-1.5 h-3.5 w-3.5" />
+                Aplicar correções no prompt
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-1 overflow-hidden">
+        {/* ── Chat estilo WhatsApp ── */}
+        <div className="flex flex-1 flex-col bg-[#0b141a]">
+          <div
+            ref={scrollRef}
+            className="flex-1 overflow-y-auto px-4 py-4"
+            style={{
+              backgroundImage:
+                "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='400' viewBox='0 0 400 400'><g fill='%23ffffff' fill-opacity='0.02'><circle cx='50' cy='50' r='1'/><circle cx='150' cy='80' r='1'/><circle cx='250' cy='120' r='1'/><circle cx='350' cy='60' r='1'/><circle cx='80' cy='200' r='1'/><circle cx='200' cy='250' r='1'/><circle cx='320' cy='280' r='1'/></g></svg>\")",
+            }}
+          >
+            {messages.length === 0 && (
+              <div className="mx-auto mt-12 max-w-md text-center text-slate-400">
+                <Bot className="mx-auto mb-3 h-12 w-12 opacity-40" />
+                <p className="text-sm">Inicie uma conversa para testar o agente</p>
+                <p className="mt-1 text-xs">
+                  Use mensagens reais (saudação, dúvidas, objeções).
+                  <br />
+                  Selecione respostas que precisem de correção.
+                </p>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {messages.map((m) => (
+                <div key={m.idx} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`flex max-w-[75%] flex-col gap-1 ${m.role === "user" ? "items-end" : "items-start"}`}>
+                    {m.parts.map((part, pi) => {
+                      const isLast = pi === m.parts.length - 1;
+                      const hasAnnotation = annotations.some((a) => a.messageIdx === m.idx);
+                      return (
+                        <div
+                          key={pi}
+                          className={`group relative rounded-lg px-3 py-1.5 text-sm shadow ${
+                            m.role === "user"
+                              ? "rounded-br-none bg-[#005c4b] text-white"
+                              : `rounded-bl-none bg-[#202c33] text-slate-100 ${hasAnnotation ? "ring-2 ring-amber-400" : ""}`
+                          }`}
+                        >
+                          <p className="whitespace-pre-wrap break-words">{part}</p>
+                          {isLast && (
+                            <span
+                              className={`mt-0.5 block text-right text-[10px] ${m.role === "user" ? "text-emerald-200" : "text-slate-400"}`}
+                            >
+                              {m.at}
+                            </span>
+                          )}
+                          {m.role === "assistant" && isLast && (
+                            <button
+                              onClick={() => {
+                                setAnnotatingFor(m);
+                                setAnnotationDraft("");
+                              }}
+                              className="absolute -bottom-2 -right-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-white opacity-0 shadow-md transition-opacity hover:bg-amber-600 group-hover:opacity-100"
+                              title="Adicionar correção"
+                            >
+                              <AlertCircle className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+
+              {pending && (
+                <div className="flex justify-start">
+                  <div className="flex items-center gap-1 rounded-lg rounded-bl-none bg-[#202c33] px-3 py-2 text-slate-400 shadow">
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400 [animation-delay:0ms]" />
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400 [animation-delay:150ms]" />
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-slate-400 [animation-delay:300ms]" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Input WhatsApp */}
+          <div className="flex items-center gap-2 bg-[#202c33] px-3 py-2.5">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder="Digite uma mensagem"
+              disabled={pending}
+              className="flex-1 rounded-full bg-[#2a3942] px-4 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 disabled:opacity-60"
+            />
+            <button
+              onClick={() => void send()}
+              disabled={!input.trim() || pending}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700 disabled:bg-slate-600"
+            >
+              {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+
+        {/* ── Sidebar de Correções ── */}
+        <aside className="hidden w-80 flex-col border-l bg-white sm:flex">
+          <div className="border-b px-4 py-3">
+            <h3 className="text-sm font-semibold">Correções</h3>
+            <p className="text-[11px] text-muted-foreground">
+              Clique no balão amarelo (canto da mensagem do agente) para anotar.
+            </p>
+          </div>
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {annotations.length === 0 ? (
+              <div className="mt-6 text-center text-[11px] text-muted-foreground">
+                Nenhuma correção ainda.
+                <br />
+                Passe o mouse sobre as respostas do agente e clique no ícone para comentar.
+              </div>
+            ) : (
+              annotations.map((a, i) => (
+                <div key={a.id} className="rounded-lg border border-slate-200 bg-amber-50/40 p-2.5">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                      #{i + 1} · mensagem {a.messageIdx}
+                    </span>
+                    <button
+                      onClick={() => setAnnotations((prev) => prev.filter((x) => x.id !== a.id))}
+                      className="text-[10px] text-muted-foreground hover:text-destructive"
+                    >
+                      Remover
+                    </button>
+                  </div>
+                  <p className="line-clamp-2 text-[10px] italic text-slate-500">
+                    "{a.assistantText.slice(0, 120)}{a.assistantText.length > 120 ? "…" : ""}"
+                  </p>
+                  <p className="mt-1.5 text-xs text-slate-800">{a.comment}</p>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+      </div>
+
+      {/* Modal: nova anotação */}
+      {annotatingFor && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-xl border bg-white p-5 shadow-2xl">
+            <div className="mb-3 flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+              <div>
+                <p className="text-sm font-semibold">Adicionar correção</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Mensagem do agente {annotatingFor.idx}
+                </p>
+              </div>
+            </div>
+            <div className="mb-3 max-h-32 overflow-y-auto rounded-md border bg-slate-50 p-2.5 text-[11px] italic text-slate-600 whitespace-pre-wrap">
+              "{annotatingFor.parts.join("\n\n")}"
+            </div>
+            <Label className="text-xs">O que precisa melhorar?</Label>
+            <textarea
+              value={annotationDraft}
+              onChange={(e) => setAnnotationDraft(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder="Ex: deveria ter perguntado o tamanho da clínica antes de oferecer horário"
+              className="mt-1 w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setAnnotatingFor(null);
+                  setAnnotationDraft("");
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button size="sm" onClick={saveAnnotation} disabled={!annotationDraft.trim()}>
+                Salvar correção
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: proposta gerada */}
+      {proposal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+          <div className="flex w-full max-w-2xl flex-col rounded-xl border bg-white shadow-2xl max-h-[90vh]">
+            <div className="border-b px-5 py-3">
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-base font-semibold">
+                  <Zap className="h-4 w-4 text-primary" />
+                  Correções propostas
+                </h3>
+                <button onClick={() => setProposal(null)} className="text-muted-foreground hover:text-foreground">
+                  ✕
+                </button>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">{assistantName} · GPT-4 analisou {annotations.length} correção(ões)</p>
+            </div>
+            <div className="flex-1 space-y-3 overflow-y-auto p-5">
+              <div className="rounded-md border bg-slate-50 p-3 text-sm text-slate-800">{proposal.summary}</div>
+              {proposal.sections_changed.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {proposal.sections_changed.map((s) => (
+                    <span key={s} className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800">
+                      {s}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {proposal.reasoning && (
+                <p className="text-[11px] italic text-muted-foreground">💡 {proposal.reasoning}</p>
+              )}
+              <DiffPreviewBlock before={proposal.prompt_before} after={proposal.proposed_prompt} />
+            </div>
+            <div className="flex justify-end gap-2 border-t px-5 py-3">
+              <Button variant="outline" size="sm" onClick={() => setProposal(null)}>
+                Descartar
+              </Button>
+              <Button size="sm" onClick={() => void applyProposal()}>
+                <Check className="mr-1.5 h-3.5 w-3.5" />
+                Aplicar no prompt
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
