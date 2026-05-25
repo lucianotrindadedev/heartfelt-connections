@@ -1094,6 +1094,14 @@ interface TrainerMessage {
   parts: string[]; // bolhas (split)
   pending?: boolean;
   at: string; // HH:MM
+  /** Mídia anexada (quando o agente envia uma mídia simulada). */
+  media?: {
+    slug: string;
+    title: string;
+    media_type: "image" | "video" | "audio" | "document";
+    file_url: string;
+    caption?: string;
+  };
 }
 
 interface TrainerAnnotation {
@@ -1119,6 +1127,7 @@ function TrainerMode({
   const turnFn = useServerFn(runTrainerTurn);
   const improveFn = useServerFn(requestTrainerImprovement);
   const applyFn = useServerFn(applyPromptEdit);
+  const listMediaFn = useServerFn(listAgentMedia);
 
   const [messages, setMessages] = useState<TrainerMessage[]>([]);
   const [input, setInput] = useState("");
@@ -1127,9 +1136,17 @@ function TrainerMode({
   const [annotatingFor, setAnnotatingFor] = useState<TrainerMessage | null>(null);
   const [annotationDraft, setAnnotationDraft] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
   // Estado de máquina (igual à produção) — começa em RECEPTION
   const [currentStage, setCurrentStage] = useState<string>("RECEPTION");
   const [leadData, setLeadData] = useState<Record<string, unknown>>({});
+
+  // Lista mídias do agente (cache 5min)
+  const mediaQ = useQuery({
+    queryKey: ["agent-media", agentId],
+    queryFn: () => listMediaFn({ data: { agentId } }),
+    staleTime: 5 * 60 * 1000,
+  });
   const [proposal, setProposal] = useState<{
     request_id: string;
     summary: string;
@@ -1213,6 +1230,26 @@ function TrainerMode({
     } finally {
       setPending(false);
     }
+  }
+
+  function sendMediaManually(media: {
+    slug: string;
+    title: string;
+    media_type: "image" | "video" | "audio" | "document";
+    file_url: string;
+  }) {
+    const idxAsst = messages.length;
+    setMessages((prev) => [
+      ...prev,
+      {
+        idx: idxAsst,
+        role: "assistant",
+        parts: [`📎 [Mídia enviada: ${media.title}]`],
+        at: nowTime(),
+        media,
+      },
+    ]);
+    setShowMediaPicker(false);
   }
 
   function saveAnnotation() {
@@ -1373,6 +1410,31 @@ function TrainerMode({
               {messages.map((m) => (
                 <div key={m.idx} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
                   <div className={`flex max-w-[75%] flex-col gap-1 ${m.role === "user" ? "items-end" : "items-start"}`}>
+                    {/* Mídia (apenas em mensagens do agente que carregam media) */}
+                    {m.role === "assistant" && m.media && (
+                      <div className="overflow-hidden rounded-lg rounded-bl-none border border-slate-200 bg-white shadow-sm">
+                        {m.media.media_type === "image" ? (
+                          <img src={m.media.file_url} alt={m.media.title} className="max-h-48 w-auto object-cover" />
+                        ) : m.media.media_type === "video" ? (
+                          <video src={m.media.file_url} controls className="max-h-48 w-auto" />
+                        ) : m.media.media_type === "audio" ? (
+                          <audio src={m.media.file_url} controls className="w-64" />
+                        ) : (
+                          <div className="flex items-center gap-2 p-3">
+                            <GraduationCap className="h-8 w-8 text-slate-400" />
+                            <div>
+                              <p className="text-sm font-medium">{m.media.title}</p>
+                              <p className="text-[10px] text-muted-foreground">{m.media.slug}</p>
+                            </div>
+                          </div>
+                        )}
+                        {m.media.caption && (
+                          <p className="border-t border-slate-100 px-3 py-1.5 text-sm text-slate-700">
+                            {m.media.caption}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {m.parts.map((part, pi) => {
                       const isLast = pi === m.parts.length - 1;
                       const hasAnnotation = annotations.some((a) => a.messageIdx === m.idx);
@@ -1423,7 +1485,16 @@ function TrainerMode({
           </div>
 
           {/* Input WhatsApp */}
-          <div className="flex items-center gap-2 bg-[#f0f2f5] px-3 py-2.5">
+          <div className="relative flex items-center gap-2 bg-[#f0f2f5] px-3 py-2.5">
+            {/* Botão 📎 (mídia manual) */}
+            <button
+              onClick={() => setShowMediaPicker((v) => !v)}
+              title="Enviar mídia do agente"
+              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700"
+            >
+              📎
+            </button>
+
             <input
               type="text"
               value={input}
@@ -1445,6 +1516,62 @@ function TrainerMode({
             >
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
             </button>
+
+            {/* Popover de mídias */}
+            {showMediaPicker && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowMediaPicker(false)} />
+                <div className="absolute bottom-full left-3 z-20 mb-2 w-80 rounded-xl border border-slate-200 bg-white p-2 shadow-2xl">
+                  <p className="border-b border-slate-100 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                    Mídias do agente
+                  </p>
+                  <div className="max-h-72 overflow-y-auto">
+                    {!mediaQ.data?.media || mediaQ.data.media.length === 0 ? (
+                      <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                        Nenhuma mídia cadastrada.<br />
+                        Adicione em <strong>Mídias</strong>.
+                      </p>
+                    ) : (
+                      mediaQ.data.media.map((m) => {
+                        const item = m as AgentMediaItem;
+                        return (
+                          <button
+                            key={item.id}
+                            onClick={() =>
+                              sendMediaManually({
+                                slug: item.slug,
+                                title: item.title,
+                                media_type: item.media_type,
+                                file_url: item.file_url,
+                              })
+                            }
+                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-slate-50"
+                          >
+                            <div className="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100">
+                              {item.media_type === "image" ? (
+                                <img src={item.file_url} alt="" className="h-full w-full object-cover" />
+                              ) : item.media_type === "video" ? (
+                                <video src={item.file_url} className="h-full w-full object-cover" />
+                              ) : (
+                                <div className="flex h-full w-full items-center justify-center text-slate-400">
+                                  {item.media_type === "audio" ? "🎵" : "📄"}
+                                </div>
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-xs font-medium text-foreground">{item.title}</p>
+                              <p className="truncate text-[10px] font-mono text-muted-foreground">
+                                {item.slug}
+                              </p>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
 
