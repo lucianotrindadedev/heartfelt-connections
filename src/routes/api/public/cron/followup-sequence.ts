@@ -158,32 +158,48 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 .maybeSingle();
               if (!lastMsg) continue;
               // Follow-up dispara quando o LEAD ficou inativo após a IA responder.
-              // Se a última msg é do user, ele ainda está "ativo" / aguardando IA → não é caso de follow-up.
-              // Se é do assistant (resposta da IA ou follow-up anterior), a IA está esperando volta.
+              // Se a última msg é do user → lead acabou de responder, reinicia o ciclo
+              // (não envia agora; quando IA responder e ele ficar inativo de novo, começa do step 1).
               if (lastMsg.role === "user") continue;
 
               const lastMsgAt = new Date(lastMsg.criado_em as string);
 
-              // Quais steps JÁ FORAM disparados nessa conversa?
+              // CICLO REINICIÁVEL: pegamos a última msg do LEAD (role=user) na conversa.
+              // Step_runs anteriores a essa msg pertencem a um ciclo antigo e não contam.
+              // Se o lead NUNCA mandou msg → ciclo único desde o início da conversa.
+              const { data: lastUserMsg } = await sb
+                .from("messages")
+                .select("criado_em")
+                .eq("conversation_id", convId)
+                .eq("role", "user")
+                .order("criado_em", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              const cycleStartAt = lastUserMsg
+                ? new Date(lastUserMsg.criado_em as string)
+                : new Date(0);
+
+              // Steps disparados DENTRO do ciclo atual (após a última resposta do lead)
               const { data: alreadySent } = await sb
                 .from("followup_step_runs")
-                .select("step_id, sent_at")
-                .eq("conversation_id", convId);
+                .select("step_id, sent_at, status")
+                .eq("conversation_id", convId)
+                .eq("status", "sent")
+                .gt("sent_at", cycleStartAt.toISOString());
               const sentStepIds = new Set(
                 (alreadySent ?? []).map((r) => r.step_id as string),
               );
 
-              // Próximo step pendente (mais baixo ordem que ainda não foi enviado)
+              // Próximo step pendente no ciclo atual
               const pendingSteps = agentSteps.filter((s) => !sentStepIds.has(s.id));
-              if (pendingSteps.length === 0) continue;
-              const nextStep = pendingSteps[0]; // já ordenados por ordem asc
+              if (pendingSteps.length === 0) continue; // sequência inteira já rodou neste ciclo
+              const nextStep = pendingSteps[0];
 
-              // Qual é a "interação anterior" (anchor) a partir da qual contamos o delay?
-              //   - step 1: última msg da IA (lead está inativo desde então)
-              //   - step N > 1: último envio bem-sucedido (ou a última msg da IA, o que for mais recente)
+              // Anchor a partir do qual contamos o delay:
+              //   - step 1 do ciclo: última msg da IA (lead inativo desde então)
+              //   - step N > 1: último envio bem-sucedido do MESMO ciclo
               let anchorAt: Date;
               if (alreadySent && alreadySent.length > 0) {
-                // Pega o envio mais recente
                 const latestSend = alreadySent
                   .map((r) => new Date(r.sent_at as string))
                   .sort((a, b) => b.getTime() - a.getTime())[0];

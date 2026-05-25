@@ -154,10 +154,26 @@ export const Route = createFileRoute("/api/public/diag/followup")({
           }
 
           const lastMsgAt = new Date(lastMsg.criado_em as string);
+
+          // Ciclo atual: começa após a última msg do lead (role=user)
+          const { data: lastUserMsg } = await sb
+            .from("messages")
+            .select("criado_em")
+            .eq("conversation_id", conv.id)
+            .eq("role", "user")
+            .order("criado_em", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          const cycleStartAt = lastUserMsg
+            ? new Date(lastUserMsg.criado_em as string)
+            : new Date(0);
+
           const { data: alreadySent } = await sb
             .from("followup_step_runs")
             .select("step_id, sent_at, status")
-            .eq("conversation_id", conv.id);
+            .eq("conversation_id", conv.id)
+            .eq("status", "sent")
+            .gt("sent_at", cycleStartAt.toISOString());
           const sentIds = new Set((alreadySent ?? []).map((r: any) => r.step_id));
           const pending = agentSteps.filter((s) => !sentIds.has(s.id));
           if (pending.length === 0) {
