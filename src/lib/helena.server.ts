@@ -398,6 +398,106 @@ export async function sendHelenaMediaUrl(
   return { ok: res.ok, status: res.status, body };
 }
 
+// ============================================================
+// Helena Templates (API Oficial WhatsApp Business)
+// ============================================================
+
+export interface HelenaTemplate {
+  id: string;
+  name: string;
+  channelId: string;
+  type?: string;
+  content?: string;
+  parameters?: string[];
+  status?: string;
+}
+
+/**
+ * Lista templates ATTENDANCE de um channel (canal WhatsApp Oficial).
+ * O channelId vem da sessão Helena (loadHelenaSession).
+ */
+export async function listHelenaTemplates(
+  account: HelenaAccount,
+  channelId: string,
+  options: { type?: string } = {},
+): Promise<HelenaTemplate[]> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const url = new URL(`${base}/chat/v1/template`);
+  url.searchParams.set("ChannelId", channelId);
+  url.searchParams.set("Type", options.type ?? "ATTENDANCE");
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: account.token, accept: "application/json" },
+  });
+  if (!res.ok) {
+    console.error(`[helena] listTemplates falhou ${res.status} — ${await res.text()}`);
+    return [];
+  }
+  const json = (await res.json()) as { items?: HelenaTemplate[] };
+  return json.items ?? [];
+}
+
+/**
+ * Busca template pelo Name (ex.: "WU1", "lembrete-24h").
+ * Retorna null se não encontrar.
+ */
+export async function findHelenaTemplateByName(
+  account: HelenaAccount,
+  channelId: string,
+  name: string,
+): Promise<HelenaTemplate | null> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const url = new URL(`${base}/chat/v1/template`);
+  url.searchParams.set("ChannelId", channelId);
+  url.searchParams.set("Type", "ATTENDANCE");
+  url.searchParams.set("Name", name);
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: account.token, accept: "application/json" },
+  });
+  if (!res.ok) {
+    console.error(`[helena] findTemplate falhou ${res.status} — ${await res.text()}`);
+    return null;
+  }
+  const json = (await res.json()) as { items?: HelenaTemplate[] };
+  return json.items?.[0] ?? null;
+}
+
+/**
+ * Envia um template (mensagem oficial WhatsApp) numa sessão.
+ * O Helena substitui os {{variáveis}} pelo conteúdo de `parameters`.
+ */
+export async function sendHelenaTemplate(
+  account: HelenaAccount,
+  params: {
+    sessionId: string;
+    templateId: string;
+    parameters?: Record<string, string>;
+  },
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const url = `${base}/chat/v1/session/${params.sessionId}/message/sync`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: account.token,
+      accept: "application/json",
+      "Content-Type": "application/*+json",
+    },
+    body: JSON.stringify({
+      templateId: params.templateId,
+      parameters: params.parameters ?? {},
+    }),
+  });
+  const body = await res.text();
+  if (!res.ok) {
+    console.error(
+      `[helena] template send falhou ${res.status} — sessionId=${params.sessionId} templateId=${params.templateId} body=${body}`,
+    );
+  }
+  return { ok: res.ok, status: res.status, body };
+}
+
 export async function sendHelenaAudio(
   account: HelenaAccount,
   params: { phone?: string; audioUrl: string; sessionId?: string },
