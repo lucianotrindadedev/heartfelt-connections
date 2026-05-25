@@ -76,8 +76,6 @@ import {
   saveAgentEscalation,
   getFollowupConfig,
   saveFollowupConfig,
-  getWarmupConfig,
-  saveWarmupConfig,
   resetAgent,
 } from "@/lib/integrations.functions";
 import { listTemplates } from "@/lib/templates.functions";
@@ -105,6 +103,13 @@ import {
   updateFollowupStep,
   deleteFollowupStep,
 } from "@/lib/followup-sequence.functions";
+import {
+  listWarmupSteps,
+  createWarmupStep,
+  updateWarmupStep,
+  deleteWarmupStep,
+  listAccountHelenaTemplates,
+} from "@/lib/warmup-steps.functions";
 import {
   uploadAgentMedia,
   listAgentMedia,
@@ -358,7 +363,7 @@ function EmbedHome() {
 
   // Full-screen Warm-up view
   if (openSheet === "warmup") {
-    return <WarmupView agentId={agentId} onClose={() => setOpenSheet(null)} />;
+    return <WarmupView agentId={agentId} accountId={accountId} onClose={() => setOpenSheet(null)} />;
   }
 
   // Full-screen Escalation view
@@ -479,7 +484,7 @@ function EmbedHome() {
             <ActionCard
               icon={<Flame className="h-6 w-6" />}
               title="Warm-up"
-              subtitle={data.warmup?.ativo ? "Ativo · Mensagens pré-consulta" : "Inativo · Mensagens pré-consulta"}
+              subtitle="Lembretes pré-consulta · Templates oficiais"
               label="Configurar"
               onClick={() => setOpenSheet("warmup")}
               iconClass="bg-gradient-to-br from-red-400 to-rose-600 text-white shadow-rose-500/30"
@@ -6212,76 +6217,105 @@ function FollowupStepCard({
 // Full-screen: Warm-up View
 // =================================================================
 
-function WarmupView({ agentId, onClose }: { agentId: string; onClose: () => void }) {
-  const qc = useQueryClient();
-  const getCfg = useServerFn(getWarmupConfig);
-  const saveCfg = useServerFn(saveWarmupConfig);
+interface WarmupStep {
+  id: string;
+  agent_id: string;
+  ordem: number;
+  enabled: boolean;
+  time_before_value: number;
+  time_before_unit: "minutes" | "hours" | "days";
+  helena_template_name: string;
+  window_minutes: number;
+  appointment_status_filter: string[] | null;
+}
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["warmup-config", agentId],
-    queryFn: () => getCfg({ data: { agentId } }),
+interface HelenaTemplateOption {
+  id: string;
+  name: string;
+  channelId: string;
+  content?: string;
+}
+
+function WarmupView({
+  agentId,
+  accountId,
+  onClose,
+}: {
+  agentId: string;
+  accountId: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listWarmupSteps);
+  const createFn = useServerFn(createWarmupStep);
+  const updateFn = useServerFn(updateWarmupStep);
+  const deleteFn = useServerFn(deleteWarmupStep);
+  const templatesFn = useServerFn(listAccountHelenaTemplates);
+
+  const q = useQuery({
+    queryKey: ["warmup-steps", agentId],
+    queryFn: () => listFn({ data: { agentId } }),
   });
 
-  const [ativo, setAtivo] = useState(false);
-  const [wu, setWu] = useState({ h1: "96", h2: "72", h3: "48", h4: "24", h5: "2" });
-  const [prompts, setPrompts] = useState({ p1: "", p2: "", p3: "", p4: "", p5: "" });
+  const templatesQ = useQuery({
+    queryKey: ["helena-templates", accountId],
+    queryFn: () => templatesFn({ data: { accountId } }),
+  });
 
-  useEffect(() => {
-    if (data) {
-      setAtivo(data.ativo ?? false);
-      setWu({
-        h1: String(data.tempo_wu1_h ?? 96),
-        h2: String(data.tempo_wu2_h ?? 72),
-        h3: String(data.tempo_wu3_h ?? 48),
-        h4: String(data.tempo_wu4_h ?? 24),
-        h5: String(data.tempo_wu5_h ?? 2),
-      });
-      setPrompts({
-        p1: data.prompt_wu1 ?? "",
-        p2: data.prompt_wu2 ?? "",
-        p3: data.prompt_wu3 ?? "",
-        p4: data.prompt_wu4 ?? "",
-        p5: data.prompt_wu5 ?? "",
-      });
-    }
-  }, [data]);
+  const steps = (q.data?.steps ?? []) as WarmupStep[];
+  const templates = (templatesQ.data?.templates ?? []) as HelenaTemplateOption[];
+  const templatesError = templatesQ.data?.ok === false ? templatesQ.data.error : null;
 
-  const save = useMutation({
-    mutationFn: () =>
-      saveCfg({
+  async function addStep() {
+    const nextOrdem = steps.length > 0 ? Math.max(...steps.map((s) => s.ordem)) + 1 : 1;
+    const defaultsByOrdem: Record<number, { value: number; unit: "minutes" | "hours" | "days" }> = {
+      1: { value: 96, unit: "hours" },
+      2: { value: 72, unit: "hours" },
+      3: { value: 48, unit: "hours" },
+      4: { value: 24, unit: "hours" },
+      5: { value: 2, unit: "hours" },
+    };
+    const defaults = defaultsByOrdem[nextOrdem] ?? { value: 2, unit: "hours" };
+    try {
+      await createFn({
         data: {
           agentId,
-          ativo,
-          tempo_wu1_h: Number(wu.h1),
-          tempo_wu2_h: Number(wu.h2),
-          tempo_wu3_h: Number(wu.h3),
-          tempo_wu4_h: Number(wu.h4),
-          tempo_wu5_h: Number(wu.h5),
-          prompt_wu1: prompts.p1,
-          prompt_wu2: prompts.p2,
-          prompt_wu3: prompts.p3,
-          prompt_wu4: prompts.p4,
-          prompt_wu5: prompts.p5,
+          ordem: nextOrdem,
+          enabled: true,
+          time_before_value: defaults.value,
+          time_before_unit: defaults.unit,
+          helena_template_name: templates[0]?.name ?? "",
+          window_minutes: 30,
+          appointment_status_filter: null,
         },
-      }),
-    onSuccess: () => {
-      toast.success("Warm-up salvo.");
-      qc.invalidateQueries({ queryKey: ["warmup-config", agentId] });
-    },
-    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar."),
-  });
+      });
+      qc.invalidateQueries({ queryKey: ["warmup-steps", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao adicionar passo");
+    }
+  }
 
-  const wuLevels = [
-    { key: "1" as const, hKey: "h1" as const, pKey: "p1" as const },
-    { key: "2" as const, hKey: "h2" as const, pKey: "p2" as const },
-    { key: "3" as const, hKey: "h3" as const, pKey: "p3" as const },
-    { key: "4" as const, hKey: "h4" as const, pKey: "p4" as const },
-    { key: "5" as const, hKey: "h5" as const, pKey: "p5" as const },
-  ];
+  async function updateStep(step: WarmupStep, patch: Partial<WarmupStep>) {
+    try {
+      await updateFn({ data: { id: step.id, ...patch } });
+      qc.invalidateQueries({ queryKey: ["warmup-steps", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao atualizar");
+    }
+  }
+
+  async function removeStep(id: string) {
+    if (!confirm("Remover esse passo da sequência?")) return;
+    try {
+      await deleteFn({ data: { id } });
+      qc.invalidateQueries({ queryKey: ["warmup-steps", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao remover");
+    }
+  }
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
-      {/* Title bar */}
       <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-5 py-3">
         <button onClick={onClose} className="flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary/80">
           ← VOLTAR
@@ -6291,75 +6325,210 @@ function WarmupView({ agentId, onClose }: { agentId: string; onClose: () => void
           <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-rose-100">
             <Flame className="h-3.5 w-3.5 text-rose-600" />
           </span>
-          <span className="text-sm font-semibold text-foreground">Warm-up de consultas</span>
+          <span className="text-sm font-semibold text-foreground">Warm-up — Lembretes de consulta</span>
         </div>
-        <div className="flex-1" />
-        <button
-          onClick={() => save.mutate()}
-          disabled={save.isPending}
-          className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-white shadow-sm shadow-primary/30 transition-opacity hover:opacity-90 disabled:opacity-60"
-        >
-          {save.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-          Salvar
-        </button>
       </div>
 
-      {isLoading ? (
+      {q.isLoading ? (
         <div className="flex flex-1 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-primary" />
         </div>
       ) : (
-        <div className="mx-auto w-full max-w-2xl px-6 py-8 space-y-5">
-          {/* Info banner */}
+        <div className="mx-auto w-full max-w-3xl px-6 py-8 space-y-4">
           <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
-            <p className="text-sm font-semibold text-rose-800">Mensagens pré-consulta</p>
+            <p className="text-sm font-semibold text-rose-800">Lembretes pré-consulta com templates oficiais</p>
             <p className="mt-1 text-xs text-rose-700">
-              Envia mensagens automáticas antes de consultas agendadas no Clinicorp. Use{" "}
+              Cada passo dispara <strong>X tempo antes</strong> da consulta agendada — em qualquer sistema ativo (Clinicorp, Google Calendar, Clinup).
+              A mensagem é um <strong>template aprovado do Helena</strong> (API Oficial WhatsApp). O Helena substitui as variáveis
+              {" "}<code className="rounded bg-rose-100 px-1">{"{{horario}}"}</code>,{" "}
               <code className="rounded bg-rose-100 px-1">{"{{nome}}"}</code>,{" "}
-              <code className="rounded bg-rose-100 px-1">{"{{data_consulta}}"}</code> e{" "}
-              <code className="rounded bg-rose-100 px-1">{"{{hora_consulta}}"}</code> nos templates.
+              <code className="rounded bg-rose-100 px-1">{"{{data}}"}</code>,{" "}
+              <code className="rounded bg-rose-100 px-1">{"{{hora}}"}</code> no momento do envio.
             </p>
           </div>
 
-          {/* Toggle */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <ToggleRow label="Ativar warm-up automático" value={ativo} onChange={setAtivo} />
-          </div>
+          {templatesError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-xs text-amber-800">
+                <strong>Templates não carregados:</strong> {templatesError}. Você ainda consegue criar passos, mas precisa digitar o nome do template manualmente.
+              </p>
+            </div>
+          )}
 
-          {/* WU levels */}
-          <div className="space-y-3">
-            {wuLevels.map((l) => (
-              <div key={l.key} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
-                <div className="flex items-center gap-3">
-                  <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-rose-100 text-xs font-bold text-rose-700">
-                    WU{l.key}
-                  </span>
-                  <Label className="flex-1 text-sm font-semibold">Horas antes da consulta</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    value={wu[l.hKey]}
-                    onChange={(e) => setWu((p) => ({ ...p, [l.hKey]: e.target.value }))}
-                    className="w-24 text-center"
-                  />
-                </div>
-                <Textarea
-                  rows={3}
-                  value={prompts[l.pKey]}
-                  onChange={(e) => setPrompts((p) => ({ ...p, [l.pKey]: e.target.value }))}
-                  placeholder={`Mensagem WU${l.key} — ${wu[l.hKey]}h antes da consulta…`}
-                  className="resize-none"
-                />
-              </div>
-            ))}
-          </div>
+          {steps.length === 0 && (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center">
+              <Flame className="mx-auto mb-2 h-8 w-8 text-slate-300" />
+              <p className="text-sm font-medium text-foreground">Nenhum passo configurado</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Adicione o primeiro lembrete abaixo para começar.
+              </p>
+            </div>
+          )}
 
-          <Button onClick={() => save.mutate()} disabled={save.isPending} className="w-full py-3">
-            {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Salvar configurações
-          </Button>
+          {steps.map((step) => (
+            <WarmupStepCard
+              key={step.id}
+              step={step}
+              templates={templates}
+              templatesLoading={templatesQ.isLoading}
+              onUpdate={(patch) => void updateStep(step, patch)}
+              onRemove={() => void removeStep(step.id)}
+            />
+          ))}
+
+          <button
+            onClick={() => void addStep()}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white py-4 text-sm font-medium text-slate-600 transition-colors hover:border-primary hover:bg-primary/5 hover:text-primary"
+          >
+            <Plus className="h-4 w-4" />
+            Adicionar passo de warm-up
+          </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function WarmupStepCard({
+  step,
+  templates,
+  templatesLoading,
+  onUpdate,
+  onRemove,
+}: {
+  step: WarmupStep;
+  templates: HelenaTemplateOption[];
+  templatesLoading: boolean;
+  onUpdate: (patch: Partial<WarmupStep>) => void;
+  onRemove: () => void;
+}) {
+  const [timeValue, setTimeValue] = useState(step.time_before_value);
+  const [timeUnit, setTimeUnit] = useState(step.time_before_unit);
+  const [templateName, setTemplateName] = useState(step.helena_template_name);
+  const [windowMin, setWindowMin] = useState(step.window_minutes);
+  const [manualMode, setManualMode] = useState(
+    templates.length > 0 && !templates.find((t) => t.name === step.helena_template_name),
+  );
+
+  function commit(patch: Partial<WarmupStep>) {
+    onUpdate(patch);
+  }
+
+  return (
+    <div className={`rounded-2xl border bg-white p-5 shadow-sm ${step.enabled ? "border-slate-200" : "border-slate-200 opacity-70"}`}>
+      <div className="mb-4 flex items-start gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 text-sm font-bold text-rose-600">
+          {step.ordem}
+        </span>
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-foreground">Passo {step.ordem}</p>
+          <p className="text-[11px] text-muted-foreground">
+            Dispara antes da consulta agendada
+          </p>
+        </div>
+        <Switch checked={step.enabled} onCheckedChange={(v) => commit({ enabled: v })} />
+        <button onClick={onRemove} className="text-[10px] font-semibold text-rose-500 hover:text-rose-700">
+          Remover
+        </button>
+      </div>
+
+      {/* Tempo antes da consulta */}
+      <div className="mb-4 flex items-center gap-2">
+        <Label className="text-xs font-semibold text-slate-700">Disparar</Label>
+        <input
+          type="number"
+          min={1}
+          value={timeValue}
+          onChange={(e) => setTimeValue(Number(e.target.value))}
+          onBlur={() => commit({ time_before_value: timeValue })}
+          className="w-20 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:border-primary"
+        />
+        <select
+          value={timeUnit}
+          onChange={(e) => {
+            const v = e.target.value as WarmupStep["time_before_unit"];
+            setTimeUnit(v);
+            commit({ time_before_unit: v });
+          }}
+          className="rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:border-primary"
+        >
+          <option value="minutes">minutos</option>
+          <option value="hours">horas</option>
+          <option value="days">dias</option>
+        </select>
+        <span className="text-xs text-muted-foreground">antes da consulta</span>
+      </div>
+
+      {/* Template Helena */}
+      <div className="mb-4">
+        <div className="mb-1.5 flex items-center justify-between">
+          <Label className="text-xs font-semibold text-slate-700">Template Helena</Label>
+          {templates.length > 0 && (
+            <button
+              onClick={() => setManualMode((m) => !m)}
+              className="text-[10px] font-medium text-primary hover:underline"
+            >
+              {manualMode ? "Escolher da lista" : "Digitar nome manualmente"}
+            </button>
+          )}
+        </div>
+        {templatesLoading ? (
+          <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Carregando templates do Helena…
+          </div>
+        ) : manualMode || templates.length === 0 ? (
+          <input
+            type="text"
+            value={templateName}
+            onChange={(e) => setTemplateName(e.target.value)}
+            onBlur={() => commit({ helena_template_name: templateName })}
+            placeholder="Ex: WU1, lembrete-24h, ..."
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+        ) : (
+          <select
+            value={templateName}
+            onChange={(e) => {
+              setTemplateName(e.target.value);
+              commit({ helena_template_name: e.target.value });
+            }}
+            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary"
+          >
+            <option value="">— escolha um template —</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.name}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          O Helena resolve o templateId pelo nome no momento do envio. Variáveis usadas: <code>horario</code>, <code>nome</code>, <code>data</code>, <code>hora</code>.
+        </p>
+      </div>
+
+      {/* Janela de tolerância */}
+      <div>
+        <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">
+          Janela de tolerância
+        </Label>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            max={720}
+            value={windowMin}
+            onChange={(e) => setWindowMin(Number(e.target.value))}
+            onBlur={() => commit({ window_minutes: windowMin })}
+            className="w-24 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:border-primary"
+          />
+          <span className="text-xs text-muted-foreground">minutos</span>
+        </div>
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          Se o cron rodar atrasado, ainda dispara dentro dessa janela. Padrão: 30 min.
+        </p>
+      </div>
     </div>
   );
 }
