@@ -95,8 +95,26 @@ order by start_time desc
 limit 10;
 
 -- d) últimas chamadas HTTP feitas pelo pg_net (resposta do servidor)
-select id, created, url, status_code, content_type,
-       left(content::text, 200) as content_preview, timed_out, error_msg
-from net._http_response
-order by created desc
+--    Versão 1: pg_net moderno (>= 0.8) usa net._http_response + join na fila
+select
+  r.id,
+  r.created,
+  q.url,
+  r.status_code,
+  r.content_type,
+  left(r.content::text, 200) as content_preview,
+  r.timed_out,
+  r.error_msg
+from net._http_response r
+left join net.http_request_queue q on q.id = r.id
+order by r.created desc
 limit 10;
+
+-- Se a query acima der erro de coluna/tabela inexistente, use UMA das alternativas:
+-- (sem informação de URL — só pra confirmar que houve resposta HTTP)
+--   select id, created, status_code, timed_out, error_msg,
+--          left(coalesce(content::text, ''), 200) as content_preview
+--   from net._http_response order by created desc limit 10;
+-- ou descubra as colunas reais com:
+--   select column_name from information_schema.columns
+--   where table_schema='net' and table_name='_http_response';
