@@ -2673,11 +2673,56 @@ function AiMagicSheet({
   const applyFn = useServerFn(applyPromptEdit);
   const historyFn = useServerFn(listAiMagicHistory);
   const suggestionsFn = useServerFn(getAiMagicSuggestions);
+  const uploadMediaFn = useServerFn(uploadAgentMedia);
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<AiMagicMessage[]>([]);
   const [pending, setPending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+
+  // Dialog de upload de mídia (acionado pelo botão 📎)
+  const [pendingMedia, setPendingMedia] = useState<{
+    file: File;
+    title: string;
+    description: string;
+    moment: string;
+  } | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+
+  async function confirmMediaUpload() {
+    if (!pendingMedia || !pendingMedia.title.trim() || uploadingMedia) return;
+    setUploadingMedia(true);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = reject;
+        r.readAsDataURL(pendingMedia.file);
+      });
+      const result = await uploadMediaFn({
+        data: {
+          agentId,
+          filename: pendingMedia.file.name,
+          fileBase64: base64,
+          title: pendingMedia.title.trim(),
+          description: pendingMedia.description.trim() || undefined,
+        },
+      });
+
+      // Monta o pedido de edição de prompt pré-preenchido para o AI Magic
+      const moment = pendingMedia.moment.trim() || "no momento adequado da conversa";
+      const promptRequest = `Acabei de cadastrar uma nova mídia para esse agente. Slug: \`${result.slug}\`. Título: "${pendingMedia.title.trim()}". ${pendingMedia.description.trim() ? `Quando usar: ${pendingMedia.description.trim()}.` : ""} Por favor, ajuste o prompt do agente para que ele chame a tool \`enviar_midia\` com o slug \`${result.slug}\` ${moment}. Mantenha o fluxo natural — a tool deve ser acionada quando fizer sentido na conversa, sem soar forçado.`;
+
+      setInput(promptRequest);
+      setPendingMedia(null);
+      toast.success(`Mídia "${pendingMedia.title.trim()}" enviada.`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro no upload");
+    } finally {
+      setUploadingMedia(false);
+    }
+  }
 
   // Carrega histórico ao abrir
   const historyQ = useQuery({
@@ -2900,6 +2945,31 @@ function AiMagicSheet({
         {/* Input */}
         <div className="border-t bg-white p-3">
           <div className="flex gap-2">
+            <input
+              ref={mediaInputRef}
+              type="file"
+              accept="image/*,video/*,audio/*,application/pdf"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) {
+                  setPendingMedia({
+                    file: f,
+                    title: f.name.replace(/\.[^.]+$/, ""),
+                    description: "",
+                    moment: "",
+                  });
+                }
+              }}
+            />
+            <button
+              onClick={() => mediaInputRef.current?.click()}
+              title="Anexar mídia para o agente enviar"
+              disabled={pending}
+              className="flex h-9 w-9 items-end justify-center self-end rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:opacity-60"
+            >
+              <span className="pb-1.5 text-lg">📎</span>
+            </button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -2924,9 +2994,87 @@ function AiMagicSheet({
             </Button>
           </div>
           <p className="mt-1.5 text-[10px] text-muted-foreground">
-            ⏎ envia · Shift+⏎ nova linha · GPT-4 analisa e propõe a edição
+            ⏎ envia · Shift+⏎ nova linha · 📎 anexa mídia · GPT-4 analisa e propõe a edição
           </p>
         </div>
+
+        {/* Dialog: upload de mídia (acionado pelo 📎) */}
+        {pendingMedia && (
+          <div className="absolute inset-0 z-30 flex items-end justify-center bg-black/50 p-4 sm:items-center">
+            <div className="w-full max-w-md rounded-xl border bg-white p-5 shadow-2xl">
+              <div className="mb-3 flex items-start gap-2">
+                <span className="text-xl">📎</span>
+                <div>
+                  <p className="text-sm font-semibold">Anexar mídia ao prompt</p>
+                  <p className="text-[11px] text-muted-foreground truncate">
+                    {pendingMedia.file.name}
+                  </p>
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <Label className="text-xs">Título *</Label>
+                  <Input
+                    value={pendingMedia.title}
+                    onChange={(e) =>
+                      setPendingMedia((p) => (p ? { ...p, title: e.target.value } : p))
+                    }
+                    placeholder="Ex: Antes e depois implante"
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs">Quando enviar essa mídia? *</Label>
+                  <textarea
+                    value={pendingMedia.moment}
+                    onChange={(e) =>
+                      setPendingMedia((p) => (p ? { ...p, moment: e.target.value } : p))
+                    }
+                    placeholder="Ex: quando o lead demonstrar interesse em ver casos reais"
+                    rows={2}
+                    className="mt-1 w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                  <p className="mt-0.5 text-[10px] text-muted-foreground">
+                    O AI Magic vai usar isso para inserir a chamada da tool no momento certo do prompt.
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-xs">Descrição (opcional)</Label>
+                  <textarea
+                    value={pendingMedia.description}
+                    onChange={(e) =>
+                      setPendingMedia((p) => (p ? { ...p, description: e.target.value } : p))
+                    }
+                    placeholder="Detalhe adicional sobre o conteúdo da mídia"
+                    rows={2}
+                    className="mt-1 w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+                  />
+                </div>
+              </div>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPendingMedia(null)}
+                  disabled={uploadingMedia}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => void confirmMediaUpload()}
+                  disabled={!pendingMedia.title.trim() || !pendingMedia.moment.trim() || uploadingMedia}
+                >
+                  {uploadingMedia && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                  Anexar e gerar ajuste
+                </Button>
+              </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                A mídia será salva na biblioteca do agente, e um pedido será preenchido no chat para o GPT-4 inserir a chamada da tool <code>enviar_midia</code> no momento certo do prompt.
+              </p>
+            </div>
+          </div>
+        )}
       </SheetContent>
     </Sheet>
   );
