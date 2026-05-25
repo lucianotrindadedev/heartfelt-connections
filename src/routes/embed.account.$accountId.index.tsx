@@ -1011,9 +1011,10 @@ function TrainingView({
             />
           </div>
 
-          {/* Rich text editor */}
+          {/* Rich text editor — sem key dinâmico: o próprio editor sincroniza
+              o conteúdo via useEffect preservando o cursor. Key dinâmico
+              causava remount a cada caractere e fazia o cursor pular. */}
           <PromptEditor
-            key={promptContent === initialPrompt ? "init" : promptContent.length === initialPrompt.length ? undefined : "ai-magic-applied-" + promptContent.length}
             initialContent={promptContent}
             onChange={handleChange}
             charCount={charCount}
