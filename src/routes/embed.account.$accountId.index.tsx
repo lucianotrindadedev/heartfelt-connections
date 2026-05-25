@@ -92,6 +92,12 @@ import {
   runTrainerTurn,
   requestTrainerImprovement,
 } from "@/lib/trainer.functions";
+import {
+  addUrlDocument,
+  addPdfDocument,
+  listKnowledgeDocuments,
+  deleteKnowledgeDocument,
+} from "@/lib/knowledge.functions";
 import { lineDiff, diffChangeBlocks, diffStats, type DiffOp } from "@/lib/text-diff";
 
 interface AccountSearch {
@@ -841,6 +847,7 @@ function TrainingView({
   const [showAiMagic, setShowAiMagic] = useState(false);
   const [showTrainer, setShowTrainer] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
+  const [showKnowledge, setShowKnowledge] = useState(false);
 
   const doSave = useCallback(async (content?: string) => {
     const text = content ?? promptContent;
@@ -936,6 +943,15 @@ function TrainingView({
           <MessageCircle className="h-3 w-3" />
           Modo Treinador
           <span className="flex h-4 w-4 items-center justify-center rounded-full bg-white/20 text-[9px]">▶</span>
+        </button>
+
+        <button
+          className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50"
+          onClick={() => setShowKnowledge(true)}
+        >
+          <GraduationCap className="h-3 w-3" />
+          Base de Conhecimento
+          <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[9px]">▶</span>
         </button>
 
         <button
@@ -1094,6 +1110,13 @@ function TrainingView({
           }}
         />
       )}
+
+      {/* Base de Conhecimento — sheet com upload + lista */}
+      <KnowledgeSheet
+        open={showKnowledge}
+        onClose={() => setShowKnowledge(false)}
+        agentId={agentId}
+      />
     </div>
   );
 }
@@ -1591,6 +1614,267 @@ function TrainerMode({
         </div>
       )}
     </div>
+  );
+}
+
+// =================================================================
+// KnowledgeSheet — base de conhecimento (RAG) do agente
+// =================================================================
+
+function KnowledgeSheet({
+  open,
+  onClose,
+  agentId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  agentId: string;
+}) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listKnowledgeDocuments);
+  const addUrl = useServerFn(addUrlDocument);
+  const addPdf = useServerFn(addPdfDocument);
+  const delFn = useServerFn(deleteKnowledgeDocument);
+
+  const q = useQuery({
+    queryKey: ["knowledge-docs", agentId],
+    queryFn: () => listFn({ data: { agentId } }),
+    enabled: open,
+    refetchInterval: open ? 5000 : false, // polling para ver status mudar
+  });
+
+  const [tab, setTab] = useState<"url" | "pdf">("url");
+  const [urlInput, setUrlInput] = useState("");
+  const [pending, setPending] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  async function submitUrl() {
+    const url = urlInput.trim();
+    if (!url || pending) return;
+    setPending(true);
+    try {
+      await addUrl({ data: { agentId, url } });
+      setUrlInput("");
+      toast.success("Documento indexado.");
+      qc.invalidateQueries({ queryKey: ["knowledge-docs", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao adicionar URL");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function submitPdf(file: File) {
+    if (pending) return;
+    if (file.size > 25 * 1024 * 1024) {
+      toast.error("Arquivo maior que 25MB.");
+      return;
+    }
+    setPending(true);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+      await addPdf({ data: { agentId, filename: file.name, fileBase64: base64 } });
+      toast.success(`${file.name} indexado.`);
+      qc.invalidateQueries({ queryKey: ["knowledge-docs", agentId] });
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao adicionar PDF");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function deleteDoc(id: string, title: string) {
+    if (!confirm(`Apagar "${title}"? Os chunks indexados também serão removidos.`)) return;
+    try {
+      await delFn({ data: { documentId: id, agentId } });
+      qc.invalidateQueries({ queryKey: ["knowledge-docs", agentId] });
+      toast.success("Documento removido.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao remover");
+    }
+  }
+
+  const docs = q.data?.documents ?? [];
+  const totalChunks = docs.reduce((s, d) => s + ((d.total_chunks as number) ?? 0), 0);
+
+  return (
+    <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
+      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-xl">
+        <SheetHeader className="border-b px-5 py-3">
+          <SheetTitle className="flex items-center gap-2">
+            <GraduationCap className="h-4 w-4 text-primary" />
+            Base de Conhecimento
+          </SheetTitle>
+          <p className="text-xs text-muted-foreground">
+            Suba PDFs ou cole URLs. O agente vai consultar esse conteúdo a cada
+            mensagem do lead para responder com mais precisão.
+            {totalChunks > 0 && (
+              <> · <strong>{totalChunks}</strong> trecho{totalChunks > 1 ? "s" : ""} indexado{totalChunks > 1 ? "s" : ""}</>
+            )}
+          </p>
+        </SheetHeader>
+
+        {/* Tabs URL / PDF */}
+        <div className="flex border-b bg-slate-50 px-3 pt-2">
+          <button
+            onClick={() => setTab("url")}
+            className={`relative px-3 py-2 text-xs font-medium transition-colors ${
+              tab === "url" ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            🔗 Link / URL
+            {tab === "url" && <span className="absolute inset-x-1 -bottom-px h-0.5 bg-primary" />}
+          </button>
+          <button
+            onClick={() => setTab("pdf")}
+            className={`relative px-3 py-2 text-xs font-medium transition-colors ${
+              tab === "pdf" ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            📄 PDF
+            {tab === "pdf" && <span className="absolute inset-x-1 -bottom-px h-0.5 bg-primary" />}
+          </button>
+        </div>
+
+        {/* Formulário */}
+        <div className="border-b bg-slate-50/50 px-4 py-3">
+          {tab === "url" ? (
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !pending) {
+                    e.preventDefault();
+                    void submitUrl();
+                  }
+                }}
+                placeholder="https://site.com/sobre-nos"
+                disabled={pending}
+                className="flex-1 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+              />
+              <Button onClick={() => void submitUrl()} disabled={!urlInput.trim() || pending}>
+                {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Indexar"}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void submitPdf(f);
+                }}
+                disabled={pending}
+                className="flex-1 cursor-pointer rounded-md border border-slate-200 bg-white px-3 py-2 text-sm file:mr-3 file:rounded-md file:border-0 file:bg-primary file:px-3 file:py-1 file:text-xs file:font-semibold file:text-white hover:file:bg-primary/90 disabled:opacity-60"
+              />
+              {pending && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+            </div>
+          )}
+          <p className="mt-1.5 text-[10px] text-muted-foreground">
+            {tab === "url"
+              ? "Suporta páginas HTML. JavaScript-only (SPA) pode não funcionar."
+              : "Até 25MB. PDFs com texto extraível (não funcionará para PDFs só de imagens sem OCR)."}
+          </p>
+        </div>
+
+        {/* Lista de documentos */}
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {q.isLoading && (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+
+          {!q.isLoading && docs.length === 0 && (
+            <div className="rounded-lg border border-dashed border-slate-200 p-6 text-center text-xs text-muted-foreground">
+              Nenhum documento ainda.
+              <br />
+              Cole uma URL ou faça upload de PDF acima para começar.
+            </div>
+          )}
+
+          {docs.map((d) => {
+            const status = d.status as string;
+            const statusColor =
+              status === "ready"
+                ? "bg-emerald-100 text-emerald-700"
+                : status === "failed"
+                  ? "bg-rose-100 text-rose-700"
+                  : "bg-amber-100 text-amber-700";
+            const dt = new Date(d.criado_em as string).toLocaleString("pt-BR", {
+              day: "2-digit",
+              month: "2-digit",
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            return (
+              <div key={d.id as string} className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="mb-1 flex items-start justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="truncate text-sm font-medium text-foreground" title={d.title as string}>
+                      {(d.source_type as string) === "url" ? "🔗" : "📄"} {(d.title as string) || (d.source_ref as string) || "Sem título"}
+                    </p>
+                    {d.source_type === "url" && (
+                      <p className="truncate text-[10px] text-muted-foreground" title={d.source_ref as string}>
+                        {d.source_ref as string}
+                      </p>
+                    )}
+                  </div>
+                  <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold ${statusColor}`}>
+                    {status === "ready"
+                      ? "PRONTO"
+                      : status === "failed"
+                        ? "FALHOU"
+                        : status === "indexing"
+                          ? "INDEXANDO…"
+                          : "PENDENTE"}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                  <span>
+                    {d.total_chunks ? `${d.total_chunks} trecho${(d.total_chunks as number) > 1 ? "s" : ""}` : "0 trechos"} ·
+                    {" "}{d.total_chars ? `${((d.total_chars as number) / 1000).toFixed(1)}k chars` : ""}
+                  </span>
+                  <span>{dt}</span>
+                </div>
+
+                {d.error && (
+                  <p className="mt-1.5 rounded-md bg-rose-50 px-2 py-1 text-[10px] text-rose-700">
+                    {d.error as string}
+                  </p>
+                )}
+
+                {d.content_preview && status === "ready" && (
+                  <p className="mt-1.5 line-clamp-2 text-[10px] italic text-muted-foreground">
+                    "{(d.content_preview as string).slice(0, 200)}…"
+                  </p>
+                )}
+
+                <div className="mt-2 flex justify-end">
+                  <button
+                    onClick={() => void deleteDoc(d.id as string, (d.title as string) || "documento")}
+                    className="text-[10px] text-muted-foreground hover:text-destructive"
+                  >
+                    Remover
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
