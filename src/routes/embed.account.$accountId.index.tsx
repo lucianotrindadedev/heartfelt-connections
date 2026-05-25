@@ -32,6 +32,7 @@ import {
   AlertCircle,
   ArrowRight,
   Zap,
+  Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -98,6 +99,12 @@ import {
   listKnowledgeDocuments,
   deleteKnowledgeDocument,
 } from "@/lib/knowledge.functions";
+import {
+  listFollowupSteps,
+  createFollowupStep,
+  updateFollowupStep,
+  deleteFollowupStep,
+} from "@/lib/followup-sequence.functions";
 import { lineDiff, diffChangeBlocks, diffStats, type DiffOp } from "@/lib/text-diff";
 
 interface AccountSearch {
@@ -5287,53 +5294,76 @@ function SecretsSheet({
 // Full-screen: Follow-up View
 // =================================================================
 
+interface FollowupStep {
+  id: string;
+  ordem: number;
+  enabled: boolean;
+  delay_value: number;
+  delay_unit: "minutes" | "hours" | "days";
+  mode: "message" | "contextual";
+  message_text: string | null;
+  contextual_instruction: string | null;
+  window_start_hour: number | null;
+  window_end_hour: number | null;
+  allowed_days: string[] | null;
+}
+
 function FollowupView({ agentId, onClose }: { agentId: string; onClose: () => void }) {
   const qc = useQueryClient();
-  const getCfg = useServerFn(getFollowupConfig);
-  const saveCfg = useServerFn(saveFollowupConfig);
+  const listFn = useServerFn(listFollowupSteps);
+  const createFn = useServerFn(createFollowupStep);
+  const updateFn = useServerFn(updateFollowupStep);
+  const deleteFn = useServerFn(deleteFollowupStep);
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["followup-config", agentId],
-    queryFn: () => getCfg({ data: { agentId } }),
+  const q = useQuery({
+    queryKey: ["followup-steps", agentId],
+    queryFn: () => listFn({ data: { agentId } }),
   });
 
-  const [ativo, setAtivo] = useState(false);
-  const [maxTent, setMaxTent] = useState("2");
-  const [delay1, setDelay1] = useState("1");
-  const [delay2, setDelay2] = useState("5");
-  const [prompt1, setPrompt1] = useState("");
-  const [prompt2, setPrompt2] = useState("");
+  const steps = (q.data?.steps ?? []) as FollowupStep[];
 
-  useEffect(() => {
-    if (data) {
-      setAtivo(data.ativo ?? false);
-      setMaxTent(String(data.max_tentativas ?? 2));
-      const delays = data.delay_horas ?? [1, 5];
-      setDelay1(String(delays[0] ?? 1));
-      setDelay2(String(delays[1] ?? 5));
-      setPrompt1(data.prompt_fu1 ?? "");
-      setPrompt2(data.prompt_fu2 ?? "");
-    }
-  }, [data]);
-
-  const save = useMutation({
-    mutationFn: () =>
-      saveCfg({
+  async function addStep() {
+    const nextOrdem = steps.length > 0 ? Math.max(...steps.map((s) => s.ordem)) + 1 : 1;
+    try {
+      await createFn({
         data: {
           agentId,
-          ativo,
-          max_tentativas: Number(maxTent),
-          delay_horas: [Number(delay1), Number(delay2)],
-          prompt_fu1: prompt1,
-          prompt_fu2: prompt2,
+          ordem: nextOrdem,
+          enabled: true,
+          delay_value: nextOrdem === 1 ? 60 : 1,
+          delay_unit: nextOrdem === 1 ? "minutes" : "days",
+          mode: "message",
+          message_text: "",
+          contextual_instruction: null,
+          window_start_hour: 8,
+          window_end_hour: 20,
+          allowed_days: ["seg", "ter", "qua", "qui", "sex"],
         },
-      }),
-    onSuccess: () => {
-      toast.success("Follow-up salvo.");
-      qc.invalidateQueries({ queryKey: ["followup-config", agentId] });
-    },
-    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar."),
-  });
+      });
+      qc.invalidateQueries({ queryKey: ["followup-steps", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao adicionar passo");
+    }
+  }
+
+  async function updateStep(step: FollowupStep, patch: Partial<FollowupStep>) {
+    try {
+      await updateFn({ data: { id: step.id, ...patch } });
+      qc.invalidateQueries({ queryKey: ["followup-steps", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao atualizar");
+    }
+  }
+
+  async function removeStep(id: string) {
+    if (!confirm("Remover esse passo da sequência?")) return;
+    try {
+      await deleteFn({ data: { id } });
+      qc.invalidateQueries({ queryKey: ["followup-steps", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao remover");
+    }
+  }
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
@@ -5347,78 +5377,268 @@ function FollowupView({ agentId, onClose }: { agentId: string; onClose: () => vo
           <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-orange-100">
             <Bell className="h-3.5 w-3.5 text-orange-600" />
           </span>
-          <span className="text-sm font-semibold text-foreground">Follow-up automático</span>
+          <span className="text-sm font-semibold text-foreground">Follow-up automático — Sequência</span>
         </div>
-        <div className="flex-1" />
-        <button
-          onClick={() => save.mutate()}
-          disabled={save.isPending}
-          className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-white shadow-sm shadow-primary/30 transition-opacity hover:opacity-90 disabled:opacity-60"
-        >
-          {save.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-          Salvar
-        </button>
       </div>
 
-      {isLoading ? (
+      {q.isLoading ? (
         <div className="flex flex-1 items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-primary" />
         </div>
       ) : (
-        <div className="mx-auto w-full max-w-2xl px-6 py-8 space-y-5">
+        <div className="mx-auto w-full max-w-3xl px-6 py-8 space-y-4">
           {/* Info banner */}
           <div className="rounded-xl border border-orange-200 bg-orange-50 p-4">
-            <p className="text-sm font-semibold text-orange-800">Reengajamento automático</p>
+            <p className="text-sm font-semibold text-orange-800">Reengajamento em sequência</p>
             <p className="mt-1 text-xs text-orange-700">
-              Envia mensagens automáticas para leads que não responderam após um determinado tempo. Recupere oportunidades perdidas sem esforço manual.
+              Cada passo dispara após o tempo configurado de inatividade.
+              O 1º conta a partir da última mensagem do lead; os seguintes contam a partir do envio do passo anterior.
             </p>
           </div>
 
-          {/* Toggle */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <ToggleRow label="Ativar follow-up automático" value={ativo} onChange={setAtivo} />
-          </div>
-
-          {/* Timings */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-            <p className="text-sm font-semibold text-foreground">Configurações de tempo</p>
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <Label className="text-xs font-semibold text-slate-700">Máx. tentativas</Label>
-                <Input type="number" min={1} max={5} value={maxTent} onChange={(e) => setMaxTent(e.target.value)} className="mt-1.5" />
-              </div>
-              <div>
-                <Label className="text-xs font-semibold text-slate-700">Delay FU1 (horas)</Label>
-                <Input type="number" min={0} value={delay1} onChange={(e) => setDelay1(e.target.value)} className="mt-1.5" />
-              </div>
-              <div>
-                <Label className="text-xs font-semibold text-slate-700">Delay FU2 (horas)</Label>
-                <Input type="number" min={0} value={delay2} onChange={(e) => setDelay2(e.target.value)} className="mt-1.5" />
-              </div>
+          {/* Steps list */}
+          {steps.length === 0 && (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-white p-8 text-center">
+              <Bell className="mx-auto mb-2 h-8 w-8 text-slate-300" />
+              <p className="text-sm font-medium text-foreground">Nenhum passo configurado</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Adicione o primeiro passo abaixo para começar.
+              </p>
             </div>
-          </div>
+          )}
 
-          {/* Messages */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-            <p className="text-sm font-semibold text-foreground">Mensagens de follow-up</p>
-            <div>
-              <Label className="text-xs font-semibold text-slate-700">Mensagem FU1</Label>
-              <p className="mb-1.5 text-[11px] text-muted-foreground">Enviada após {delay1}h sem resposta</p>
-              <Textarea rows={4} value={prompt1} onChange={(e) => setPrompt1(e.target.value)} placeholder="Oi! Tudo bem? Vi que você se interessou em nossos serviços..." className="resize-none" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-700">Mensagem FU2</Label>
-              <p className="mb-1.5 text-[11px] text-muted-foreground">Enviada após {delay2}h sem resposta</p>
-              <Textarea rows={4} value={prompt2} onChange={(e) => setPrompt2(e.target.value)} placeholder="Olá! Ainda posso ajudar com mais informações ou agendamento..." className="resize-none" />
-            </div>
-          </div>
+          {steps.map((step) => (
+            <FollowupStepCard
+              key={step.id}
+              step={step}
+              onUpdate={(patch) => void updateStep(step, patch)}
+              onRemove={() => void removeStep(step.id)}
+            />
+          ))}
 
-          <Button onClick={() => save.mutate()} disabled={save.isPending} className="w-full py-3">
-            {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Salvar configurações
-          </Button>
+          <button
+            onClick={() => void addStep()}
+            className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white py-4 text-sm font-medium text-slate-600 transition-colors hover:border-primary hover:bg-primary/5 hover:text-primary"
+          >
+            <Plus className="h-4 w-4" />
+            Adicionar passo de follow-up
+          </button>
         </div>
       )}
+    </div>
+  );
+}
+
+const DAY_OPTIONS = [
+  { key: "seg", label: "Seg" },
+  { key: "ter", label: "Ter" },
+  { key: "qua", label: "Qua" },
+  { key: "qui", label: "Qui" },
+  { key: "sex", label: "Sex" },
+  { key: "sab", label: "Sáb" },
+  { key: "dom", label: "Dom" },
+];
+
+function FollowupStepCard({
+  step,
+  onUpdate,
+  onRemove,
+}: {
+  step: FollowupStep;
+  onUpdate: (patch: Partial<FollowupStep>) => void;
+  onRemove: () => void;
+}) {
+  // Estado local com debounce simples para evitar request a cada tecla
+  const [delay, setDelay] = useState(step.delay_value);
+  const [unit, setUnit] = useState(step.delay_unit);
+  const [mode, setMode] = useState(step.mode);
+  const [msgText, setMsgText] = useState(step.message_text ?? "");
+  const [ctxInstr, setCtxInstr] = useState(step.contextual_instruction ?? "");
+  const [winStart, setWinStart] = useState(step.window_start_hour ?? 8);
+  const [winEnd, setWinEnd] = useState(step.window_end_hour ?? 20);
+  const [days, setDays] = useState<string[]>(step.allowed_days ?? []);
+
+  // Salva quando o input perde foco (onBlur) — evita request por tecla
+  function commit(patch: Partial<FollowupStep>) {
+    onUpdate(patch);
+  }
+
+  function toggleDay(key: string) {
+    const next = days.includes(key) ? days.filter((d) => d !== key) : [...days, key];
+    setDays(next);
+    commit({ allowed_days: next });
+  }
+
+  return (
+    <div className={`rounded-2xl border bg-white p-5 shadow-sm ${step.enabled ? "border-slate-200" : "border-slate-200 opacity-70"}`}>
+      <div className="mb-4 flex items-start gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-sm font-bold text-primary">
+          {step.ordem}
+        </span>
+        <div className="flex-1">
+          <p className="text-sm font-semibold text-foreground">Passo {step.ordem}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {step.ordem === 1
+              ? "Dispara após inatividade do lead"
+              : `Dispara depois do envio do passo ${step.ordem - 1}`}
+          </p>
+        </div>
+        <Switch
+          checked={step.enabled}
+          onCheckedChange={(v) => commit({ enabled: v })}
+        />
+        <button
+          onClick={onRemove}
+          className="text-[10px] font-semibold text-rose-500 hover:text-rose-700"
+        >
+          Remover
+        </button>
+      </div>
+
+      {/* Tempo */}
+      <div className="mb-4 flex items-center gap-2">
+        <Label className="text-xs font-semibold text-slate-700">Após</Label>
+        <input
+          type="number"
+          min={1}
+          value={delay}
+          onChange={(e) => setDelay(Number(e.target.value))}
+          onBlur={() => commit({ delay_value: delay })}
+          className="w-20 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:border-primary"
+        />
+        <select
+          value={unit}
+          onChange={(e) => {
+            const v = e.target.value as FollowupStep["delay_unit"];
+            setUnit(v);
+            commit({ delay_unit: v });
+          }}
+          className="rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:border-primary"
+        >
+          <option value="minutes">minutos</option>
+          <option value="hours">horas</option>
+          <option value="days">dias</option>
+        </select>
+      </div>
+
+      {/* Modo */}
+      <div className="mb-4">
+        <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">Como gerar a mensagem?</Label>
+        <div className="flex gap-2">
+          <button
+            onClick={() => {
+              setMode("message");
+              commit({ mode: "message" });
+            }}
+            className={`flex-1 rounded-lg border-2 px-3 py-2 text-left transition-colors ${
+              mode === "message"
+                ? "border-primary bg-primary/5"
+                : "border-slate-200 bg-white hover:border-slate-300"
+            }`}
+          >
+            <p className="text-xs font-semibold text-foreground">📝 Mensagem fixa</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">Texto exato que será enviado</p>
+          </button>
+          <button
+            onClick={() => {
+              setMode("contextual");
+              commit({ mode: "contextual" });
+            }}
+            className={`flex-1 rounded-lg border-2 px-3 py-2 text-left transition-colors ${
+              mode === "contextual"
+                ? "border-primary bg-primary/5"
+                : "border-slate-200 bg-white hover:border-slate-300"
+            }`}
+          >
+            <p className="text-xs font-semibold text-foreground">🤖 Contextual (IA)</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">Agente gera baseado na conversa</p>
+          </button>
+        </div>
+      </div>
+
+      {/* Conteúdo (mensagem fixa OU instrução contextual) */}
+      {mode === "message" ? (
+        <div className="mb-4">
+          <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">
+            Texto da mensagem
+          </Label>
+          <textarea
+            value={msgText}
+            onChange={(e) => setMsgText(e.target.value)}
+            onBlur={() => commit({ message_text: msgText })}
+            rows={3}
+            placeholder="Oi! Tudo bem? Vi que ficamos sem falar — ainda quer ajuda com o assunto?"
+            className="w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+        </div>
+      ) : (
+        <div className="mb-4">
+          <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">
+            Instrução para o agente
+          </Label>
+          <textarea
+            value={ctxInstr}
+            onChange={(e) => setCtxInstr(e.target.value)}
+            onBlur={() => commit({ contextual_instruction: ctxInstr })}
+            rows={3}
+            placeholder="Reengaje o lead trazendo de volta o tema que ele tinha comentado. Seja leve, ofereça ajuda sem cobrar resposta."
+            className="w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            O agente vai usar essa instrução + histórico da conversa para gerar uma mensagem única.
+          </p>
+        </div>
+      )}
+
+      {/* Janela horária + dias */}
+      <div className="grid grid-cols-2 gap-4 mb-3">
+        <div>
+          <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">Janela horária</Label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              max={23}
+              value={winStart}
+              onChange={(e) => setWinStart(Number(e.target.value))}
+              onBlur={() => commit({ window_start_hour: winStart })}
+              className="w-16 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:border-primary"
+            />
+            <span className="text-xs text-muted-foreground">às</span>
+            <input
+              type="number"
+              min={0}
+              max={23}
+              value={winEnd}
+              onChange={(e) => setWinEnd(Number(e.target.value))}
+              onBlur={() => commit({ window_end_hour: winEnd })}
+              className="w-16 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm outline-none focus:border-primary"
+            />
+            <span className="text-xs text-muted-foreground">h</span>
+          </div>
+        </div>
+        <div>
+          <Label className="text-xs font-semibold text-slate-700 mb-1.5 block">Dias permitidos</Label>
+          <div className="flex flex-wrap gap-1">
+            {DAY_OPTIONS.map((d) => {
+              const active = days.includes(d.key);
+              return (
+                <button
+                  key={d.key}
+                  onClick={() => toggleDay(d.key)}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+                    active
+                      ? "bg-primary text-white"
+                      : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                  }`}
+                >
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
