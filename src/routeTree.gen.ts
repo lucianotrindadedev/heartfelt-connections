@@ -21,9 +21,13 @@ import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authentic
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
 import { Route as AuthenticatedAdminTemplatesRouteImport } from './routes/_authenticated.admin.templates'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
+import { Route as ApiPublicDiagRunTurnRouteImport } from './routes/api/public/diag/run-turn'
+import { Route as ApiPublicDiagQueueRouteImport } from './routes/api/public/diag/queue'
+import { Route as ApiPublicDiagHelenaSendRouteImport } from './routes/api/public/diag/helena-send'
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
 import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/cron/followup'
+import { Route as ApiPublicCronFollowupSequenceRouteImport } from './routes/api/public/cron/followup-sequence'
 import { Route as ApiPublicCronDrainConversationRouteImport } from './routes/api/public/cron/drain-conversation'
 import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
 import { Route as ApiPublicWebhookHelenaAccountIdRouteImport } from './routes/api/public/webhook/helena/$accountId'
@@ -92,6 +96,21 @@ const EmbedAccountAccountIdIndexRoute =
     path: '/',
     getParentRoute: () => EmbedAccountAccountIdRoute,
   } as any)
+const ApiPublicDiagRunTurnRoute = ApiPublicDiagRunTurnRouteImport.update({
+  id: '/api/public/diag/run-turn',
+  path: '/api/public/diag/run-turn',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicDiagQueueRoute = ApiPublicDiagQueueRouteImport.update({
+  id: '/api/public/diag/queue',
+  path: '/api/public/diag/queue',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicDiagHelenaSendRoute = ApiPublicDiagHelenaSendRouteImport.update({
+  id: '/api/public/diag/helena-send',
+  path: '/api/public/diag/helena-send',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicCronWarmupRoute = ApiPublicCronWarmupRouteImport.update({
   id: '/api/public/cron/warmup',
   path: '/api/public/cron/warmup',
@@ -158,8 +177,12 @@ export interface FileRoutesByFullPath {
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
+  '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
+  '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
+  '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
@@ -177,8 +200,12 @@ export interface FileRoutesByTo {
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
+  '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
+  '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
+  '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
@@ -201,8 +228,12 @@ export interface FileRoutesById {
   '/_authenticated/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
+  '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
+  '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
+  '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
@@ -225,8 +256,12 @@ export interface FileRouteTypes {
     | '/admin/account/$accountId'
     | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
+    | '/api/public/cron/followup-sequence'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/diag/helena-send'
+    | '/api/public/diag/queue'
+    | '/api/public/diag/run-turn'
     | '/embed/account/$accountId/'
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
@@ -244,8 +279,12 @@ export interface FileRouteTypes {
     | '/admin/account/$accountId'
     | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
+    | '/api/public/cron/followup-sequence'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/diag/helena-send'
+    | '/api/public/diag/queue'
+    | '/api/public/diag/run-turn'
     | '/embed/account/$accountId'
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
@@ -267,8 +306,12 @@ export interface FileRouteTypes {
     | '/_authenticated/admin/account/$accountId'
     | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
+    | '/api/public/cron/followup-sequence'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/diag/helena-send'
+    | '/api/public/diag/queue'
+    | '/api/public/diag/run-turn'
     | '/embed/account/$accountId/'
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
@@ -283,9 +326,13 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiPublicCronDrainConversationRoute: typeof ApiPublicCronDrainConversationRoute
-  ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute
+  ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute,
+  ApiPublicCronFollowupSequenceRoute: typeof ApiPublicCronFollowupSequenceRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
+  ApiPublicDiagHelenaSendRoute: typeof ApiPublicDiagHelenaSendRoute
+  ApiPublicDiagQueueRoute: typeof ApiPublicDiagQueueRoute
+  ApiPublicDiagRunTurnRoute: typeof ApiPublicDiagRunTurnRoute
   ApiPublicAuthGoogleCallbackRoute: typeof ApiPublicAuthGoogleCallbackRoute
   ApiPublicWebhookAutomacoesFaltososRoute: typeof ApiPublicWebhookAutomacoesFaltososRoute
   ApiPublicWebhookAutomacoesFufFinanceiroRoute: typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
@@ -378,6 +425,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EmbedAccountAccountIdIndexRouteImport
       parentRoute: typeof EmbedAccountAccountIdRoute
     }
+    '/api/public/diag/run-turn': {
+      id: '/api/public/diag/run-turn'
+      path: '/api/public/diag/run-turn'
+      fullPath: '/api/public/diag/run-turn'
+      preLoaderRoute: typeof ApiPublicDiagRunTurnRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/diag/queue': {
+      id: '/api/public/diag/queue'
+      path: '/api/public/diag/queue'
+      fullPath: '/api/public/diag/queue'
+      preLoaderRoute: typeof ApiPublicDiagQueueRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/diag/helena-send': {
+      id: '/api/public/diag/helena-send'
+      path: '/api/public/diag/helena-send'
+      fullPath: '/api/public/diag/helena-send'
+      preLoaderRoute: typeof ApiPublicDiagHelenaSendRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron/warmup': {
       id: '/api/public/cron/warmup'
       path: '/api/public/cron/warmup'
@@ -397,6 +465,13 @@ declare module '@tanstack/react-router' {
       path: '/api/public/cron/followup'
       fullPath: '/api/public/cron/followup'
       preLoaderRoute: typeof ApiPublicCronFollowupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/cron/followup-sequence': {
+      id: '/api/public/cron/followup'
+      path: '/api/public/cron/followup'
+      fullPath: '/api/public/cron/followup'
+      preLoaderRoute: typeof ApiPublicCronFollowupSequenceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/cron/drain-conversation': {
@@ -507,8 +582,12 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   ApiPublicCronDrainConversationRoute: ApiPublicCronDrainConversationRoute,
   ApiPublicCronFollowupRoute: ApiPublicCronFollowupRoute,
+  ApiPublicCronFollowupSequenceRoute: ApiPublicCronFollowupSequenceRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,
+  ApiPublicDiagHelenaSendRoute: ApiPublicDiagHelenaSendRoute,
+  ApiPublicDiagQueueRoute: ApiPublicDiagQueueRoute,
+  ApiPublicDiagRunTurnRoute: ApiPublicDiagRunTurnRoute,
   ApiPublicAuthGoogleCallbackRoute: ApiPublicAuthGoogleCallbackRoute,
   ApiPublicWebhookAutomacoesFaltososRoute:
     ApiPublicWebhookAutomacoesFaltososRoute,
