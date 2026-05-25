@@ -439,31 +439,65 @@ function normalizeHelenaTemplate(raw: Record<string, unknown>): HelenaTemplate {
   };
 }
 
+/**
+ * Tenta os dois paths conhecidos do Helena (os docs novos usam /v1/template,
+ * mas instâncias mais antigas — e o N8N workflows — usam /chat/v1/template).
+ * Para no primeiro que devolver itens.
+ */
+async function fetchHelenaTemplatesEndpoint(
+  account: HelenaAccount,
+  channelId: string,
+  type: string,
+  name?: string,
+): Promise<{ items: Record<string, unknown>[]; pathTried: string; status: number; rawBody: string }> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const paths = ["/chat/v1/template", "/v1/template"];
+  let last: { items: Record<string, unknown>[]; pathTried: string; status: number; rawBody: string } = {
+    items: [], pathTried: "", status: 0, rawBody: "",
+  };
+  for (const path of paths) {
+    const url = new URL(`${base}${path}`);
+    url.searchParams.set("ChannelId", channelId);
+    url.searchParams.set("Type", type);
+    if (name) url.searchParams.set("Name", name);
+    let res: Response;
+    try {
+      res = await fetch(url.toString(), {
+        headers: { Authorization: account.token, accept: "application/json" },
+      });
+    } catch (e) {
+      last = { items: [], pathTried: path, status: 0, rawBody: String(e) };
+      continue;
+    }
+    const text = await res.text();
+    if (!res.ok) {
+      last = { items: [], pathTried: path, status: res.status, rawBody: text.slice(0, 400) };
+      continue;
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { parsed = null; }
+    const items: Record<string, unknown>[] = Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>[])
+      : ((parsed as { items?: Record<string, unknown>[] })?.items ?? []);
+    last = { items, pathTried: path, status: res.status, rawBody: text.slice(0, 400) };
+    if (items.length > 0) {
+      console.log(`[helena] templates path=${path} status=${res.status} count=${items.length}`);
+      return last;
+    }
+    console.warn(`[helena] templates path=${path} status=${res.status} retornou 0 itens`);
+  }
+  return last;
+}
+
 export async function listHelenaTemplates(
   account: HelenaAccount,
   channelId: string,
   options: { type?: string } = {},
 ): Promise<HelenaTemplate[]> {
-  const base = account.baseUrl.replace(/\/$/, "");
-  const url = new URL(`${base}/chat/v1/template`);
-  url.searchParams.set("ChannelId", channelId);
-  url.searchParams.set("Type", options.type ?? "ATTENDANCE");
-
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: account.token, accept: "application/json" },
-  });
-  if (!res.ok) {
-    console.error(`[helena] listTemplates falhou ${res.status} — ${await res.text()}`);
-    return [];
-  }
-  // Aceita { items: [...] } OU array direto (algumas rotas variam)
-  const json = (await res.json()) as
-    | { items?: Record<string, unknown>[] }
-    | Record<string, unknown>[];
-  const items: Record<string, unknown>[] = Array.isArray(json)
-    ? json
-    : (json.items ?? []);
-  return items.map(normalizeHelenaTemplate);
+  const r = await fetchHelenaTemplatesEndpoint(
+    account, channelId, options.type ?? "ATTENDANCE",
+  );
+  return r.items.map(normalizeHelenaTemplate);
 }
 
 /**
@@ -475,26 +509,8 @@ export async function findHelenaTemplateByName(
   channelId: string,
   name: string,
 ): Promise<HelenaTemplate | null> {
-  const base = account.baseUrl.replace(/\/$/, "");
-  const url = new URL(`${base}/chat/v1/template`);
-  url.searchParams.set("ChannelId", channelId);
-  url.searchParams.set("Type", "ATTENDANCE");
-  url.searchParams.set("Name", name);
-
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: account.token, accept: "application/json" },
-  });
-  if (!res.ok) {
-    console.error(`[helena] findTemplate falhou ${res.status} — ${await res.text()}`);
-    return null;
-  }
-  const json = (await res.json()) as
-    | { items?: Record<string, unknown>[] }
-    | Record<string, unknown>[];
-  const items: Record<string, unknown>[] = Array.isArray(json)
-    ? json
-    : (json.items ?? []);
-  return items.length > 0 ? normalizeHelenaTemplate(items[0]) : null;
+  const r = await fetchHelenaTemplatesEndpoint(account, channelId, "ATTENDANCE", name);
+  return r.items.length > 0 ? normalizeHelenaTemplate(r.items[0]) : null;
 }
 
 /**

@@ -99,23 +99,28 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const sb = getSelfhost();
 
-    // Pega qualquer conversa da conta pra extrair channelId
     const { data: convs } = await sb
       .from("conversations")
       .select("helena_session_id, agents!inner(account_id)")
       .eq("agents.account_id", data.accountId)
       .not("helena_session_id", "is", null)
-      .limit(5);
+      .limit(20);
 
     const helena = await loadHelenaAccount(data.accountId).catch(() => null);
     if (!helena) {
-      return { ok: false, error: "Conta Helena não configurada", templates: [] };
+      return {
+        ok: false as const,
+        error: "Conta Helena não configurada para essa account.",
+        templates: [] as never[],
+      };
     }
 
     let channelId: string | null = null;
+    let sessionsTried = 0;
     for (const c of convs ?? []) {
       const sid = c.helena_session_id as string | null;
       if (!sid) continue;
+      sessionsTried++;
       const session = await loadHelenaSession(helena, sid).catch(() => null);
       if (session?.channelId) {
         channelId = session.channelId;
@@ -124,12 +129,20 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
     }
     if (!channelId) {
       return {
-        ok: false,
-        error: "Nenhuma sessão Helena ativa encontrada para detectar o channelId.",
-        templates: [],
+        ok: false as const,
+        error: `Nenhuma sessão Helena com channelId encontrada (testei ${sessionsTried}). Garanta que pelo menos um lead já mandou msg pelo WhatsApp.`,
+        templates: [] as never[],
       };
     }
 
     const templates = await listHelenaTemplates(helena, channelId);
-    return { ok: true, channelId, templates };
+    if (templates.length === 0) {
+      return {
+        ok: false as const,
+        error: `channelId ${channelId} OK, mas Helena retornou 0 templates. Verifique se há templates ATTENDANCE aprovados pra esse canal no painel do CRM.`,
+        templates: [] as never[],
+        channelId,
+      };
+    }
+    return { ok: true as const, channelId, templates };
   });

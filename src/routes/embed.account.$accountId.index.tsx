@@ -6577,9 +6577,7 @@ function WarmupStepCard({
   const [timeUnit, setTimeUnit] = useState(step.time_before_unit);
   const [templateName, setTemplateName] = useState(step.helena_template_name);
   const [windowMin, setWindowMin] = useState(step.window_minutes);
-  const [manualMode, setManualMode] = useState(
-    templates.length > 0 && !templates.find((t) => t.name === step.helena_template_name),
-  );
+  const [manualMode, setManualMode] = useState(false);
 
   function commit(patch: Partial<WarmupStep>) {
     onUpdate(patch);
@@ -6634,21 +6632,19 @@ function WarmupStepCard({
       <div className="mb-4">
         <div className="mb-1.5 flex items-center justify-between">
           <Label className="text-xs font-semibold text-slate-700">Template Helena</Label>
-          {templates.length > 0 && (
-            <button
-              onClick={() => setManualMode((m) => !m)}
-              className="text-[10px] font-medium text-primary hover:underline"
-            >
-              {manualMode ? "Escolher da lista" : "Digitar nome manualmente"}
-            </button>
-          )}
+          <button
+            onClick={() => setManualMode((m) => !m)}
+            className="text-[10px] font-medium text-primary hover:underline"
+          >
+            {manualMode ? "Escolher da lista" : "Digitar nome manualmente"}
+          </button>
         </div>
         {templatesLoading ? (
           <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-muted-foreground">
             <Loader2 className="h-3 w-3 animate-spin" />
             Carregando templates do Helena…
           </div>
-        ) : manualMode || templates.length === 0 ? (
+        ) : manualMode ? (
           <input
             type="text"
             value={templateName}
