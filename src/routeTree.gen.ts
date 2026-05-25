@@ -23,6 +23,7 @@ import { Route as AuthenticatedAdminTemplatesRouteImport } from './routes/_authe
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as ApiPublicDiagRunTurnRouteImport } from './routes/api/public/diag/run-turn'
 import { Route as ApiPublicDiagQueueRouteImport } from './routes/api/public/diag/queue'
+import { Route as ApiPublicDiagFollowupRouteImport } from './routes/api/public/diag/followup'
 import { Route as ApiPublicDiagHelenaSendRouteImport } from './routes/api/public/diag/helena-send'
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
@@ -106,6 +107,11 @@ const ApiPublicDiagQueueRoute = ApiPublicDiagQueueRouteImport.update({
   path: '/api/public/diag/queue',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicDiagFollowupRoute = ApiPublicDiagFollowupRouteImport.update({
+  id: '/api/public/diag/followup',
+  path: '/api/public/diag/followup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicDiagHelenaSendRoute = ApiPublicDiagHelenaSendRouteImport.update({
   id: '/api/public/diag/helena-send',
   path: '/api/public/diag/helena-send',
@@ -180,6 +186,7 @@ export interface FileRoutesByFullPath {
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
@@ -203,6 +210,7 @@ export interface FileRoutesByTo {
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
@@ -231,6 +239,7 @@ export interface FileRoutesById {
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
@@ -259,6 +268,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/diag/followup'
     | '/api/public/diag/helena-send'
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
@@ -282,6 +292,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/diag/followup'
     | '/api/public/diag/helena-send'
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
@@ -309,6 +320,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/diag/followup'
     | '/api/public/diag/helena-send'
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
@@ -330,6 +342,7 @@ export interface RootRouteChildren {
   ApiPublicCronFollowupSequenceRoute: typeof ApiPublicCronFollowupSequenceRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
+  ApiPublicDiagFollowupRoute: typeof ApiPublicDiagFollowupRoute
   ApiPublicDiagHelenaSendRoute: typeof ApiPublicDiagHelenaSendRoute
   ApiPublicDiagQueueRoute: typeof ApiPublicDiagQueueRoute
   ApiPublicDiagRunTurnRoute: typeof ApiPublicDiagRunTurnRoute
@@ -430,6 +443,13 @@ declare module '@tanstack/react-router' {
       path: '/api/public/diag/run-turn'
       fullPath: '/api/public/diag/run-turn'
       preLoaderRoute: typeof ApiPublicDiagRunTurnRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/diag/followup': {
+      id: '/api/public/diag/followup'
+      path: '/api/public/diag/followup'
+      fullPath: '/api/public/diag/followup'
+      preLoaderRoute: typeof ApiPublicDiagFollowupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/diag/queue': {
@@ -585,6 +605,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicCronFollowupSequenceRoute: ApiPublicCronFollowupSequenceRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,
+  ApiPublicDiagFollowupRoute: ApiPublicDiagFollowupRoute,
   ApiPublicDiagHelenaSendRoute: ApiPublicDiagHelenaSendRoute,
   ApiPublicDiagQueueRoute: ApiPublicDiagQueueRoute,
   ApiPublicDiagRunTurnRoute: ApiPublicDiagRunTurnRoute,

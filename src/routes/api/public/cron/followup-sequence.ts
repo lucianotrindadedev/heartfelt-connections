@@ -157,8 +157,10 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 .limit(1)
                 .maybeSingle();
               if (!lastMsg) continue;
-              // Só seguimos se a última msg foi do LEAD (user)
-              if (lastMsg.role !== "user") continue;
+              // Follow-up dispara quando o LEAD ficou inativo após a IA responder.
+              // Se a última msg é do user, ele ainda está "ativo" / aguardando IA → não é caso de follow-up.
+              // Se é do assistant (resposta da IA ou follow-up anterior), a IA está esperando volta.
+              if (lastMsg.role === "user") continue;
 
               const lastMsgAt = new Date(lastMsg.criado_em as string);
 
@@ -176,9 +178,9 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
               if (pendingSteps.length === 0) continue;
               const nextStep = pendingSteps[0]; // já ordenados por ordem asc
 
-              // Qual é a "interação anterior"?
-              //   - step 1 (ou se não tem nenhum step enviado ainda): última msg do lead
-              //   - step N > 1: último envio bem-sucedido
+              // Qual é a "interação anterior" (anchor) a partir da qual contamos o delay?
+              //   - step 1: última msg da IA (lead está inativo desde então)
+              //   - step N > 1: último envio bem-sucedido (ou a última msg da IA, o que for mais recente)
               let anchorAt: Date;
               if (alreadySent && alreadySent.length > 0) {
                 // Pega o envio mais recente
