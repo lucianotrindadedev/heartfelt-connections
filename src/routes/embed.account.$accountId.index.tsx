@@ -105,6 +105,12 @@ import {
   updateFollowupStep,
   deleteFollowupStep,
 } from "@/lib/followup-sequence.functions";
+import {
+  uploadAgentMedia,
+  listAgentMedia,
+  updateAgentMedia,
+  deleteAgentMedia,
+} from "@/lib/media.functions";
 import { lineDiff, diffChangeBlocks, diffStats, type DiffOp } from "@/lib/text-diff";
 
 interface AccountSearch {
@@ -821,7 +827,7 @@ function ActionCard({
 // Full-screen: Training View
 // =================================================================
 
-type TrainingTab = "instrucoes" | "midia" | "neural";
+type TrainingTab = "instrucoes" | "midia";
 
 function TrainingView({
   accountId,
@@ -901,12 +907,7 @@ function TrainingView({
     },
     {
       id: "midia",
-      label: "CONTEÚDOS EM MÍDIA",
-      icon: <span className="flex h-4 w-4 items-center justify-center rounded-full border border-current text-[9px] font-bold">●</span>,
-    },
-    {
-      id: "neural",
-      label: "NEURAL CHAINS",
+      label: "MÍDIAS",
       icon: <span className="flex h-4 w-4 items-center justify-center rounded-full border border-current text-[9px] font-bold">●</span>,
     },
   ];
@@ -930,18 +931,6 @@ function TrainingView({
         </button>
 
         <div className="mx-1 h-4 w-px bg-slate-200" />
-
-        <button
-          onClick={() => void doSave()}
-          disabled={saveState === "saving"}
-          className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50 disabled:opacity-60"
-        >
-          {saveState === "saving"
-            ? <Loader2 className="h-3 w-3 animate-spin" />
-            : <RotateCcw className="h-3 w-3" />}
-          Atualizar instruções
-          <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[9px]">▶</span>
-        </button>
 
         <button
           className="flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm shadow-emerald-500/30 transition-opacity hover:opacity-90"
@@ -1056,32 +1045,7 @@ function TrainingView({
           />
         </>
       ) : (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-12 text-center">
-          {tab === "midia" ? (
-            <>
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-100">
-                <GraduationCap className="h-7 w-7 text-sky-500" />
-              </div>
-              <p className="text-sm font-semibold text-foreground">Conteúdos em Mídia</p>
-              <p className="max-w-xs text-xs text-muted-foreground">
-                Envie documentos, PDFs e imagens para treinar o agente com conteúdo visual. Em breve!
-              </p>
-            </>
-          ) : (
-            <>
-              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-violet-100">
-                <Settings className="h-7 w-7 text-violet-500" />
-              </div>
-              <p className="text-sm font-semibold text-foreground">Neural Chains</p>
-              <p className="max-w-xs text-xs text-muted-foreground">
-                Crie fluxos de raciocínio encadeados para guiar o agente em situações complexas. Em breve!
-              </p>
-            </>
-          )}
-          <span className="mt-2 rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-500">
-            Em breve
-          </span>
-        </div>
+        <MediaLibrary agentId={agentId} />
       )}
 
       {/* Templates modal */}
@@ -1612,6 +1576,340 @@ function TrainerMode({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// =================================================================
+// MediaLibrary — galeria de mídias do agente (tab dentro do Treinamento)
+// =================================================================
+
+interface AgentMediaItem {
+  id: string;
+  slug: string;
+  title: string;
+  description: string | null;
+  file_url: string;
+  media_type: "image" | "video" | "audio" | "document";
+  mime_type: string | null;
+  file_size: number | null;
+  criado_em: string;
+}
+
+function MediaLibrary({ agentId }: { agentId: string }) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listAgentMedia);
+  const uploadFn = useServerFn(uploadAgentMedia);
+  const updateFn = useServerFn(updateAgentMedia);
+  const delFn = useServerFn(deleteAgentMedia);
+
+  const q = useQuery({
+    queryKey: ["agent-media", agentId],
+    queryFn: () => listFn({ data: { agentId } }),
+  });
+
+  const [pending, setPending] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftDesc, setDraftDesc] = useState("");
+  const [draftSlug, setDraftSlug] = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function openUploadDialog(file: File) {
+    setPendingFile(file);
+    setDraftTitle(file.name.replace(/\.[^.]+$/, ""));
+    setDraftDesc("");
+    setDraftSlug("");
+    setShowUpload(true);
+  }
+
+  async function confirmUpload() {
+    if (!pendingFile || !draftTitle.trim() || pending) return;
+    setPending(true);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = reject;
+        r.readAsDataURL(pendingFile);
+      });
+      await uploadFn({
+        data: {
+          agentId,
+          filename: pendingFile.name,
+          fileBase64: base64,
+          title: draftTitle.trim(),
+          description: draftDesc.trim() || undefined,
+          slug: draftSlug.trim() || undefined,
+        },
+      });
+      toast.success("Mídia adicionada.");
+      qc.invalidateQueries({ queryKey: ["agent-media", agentId] });
+      setShowUpload(false);
+      setPendingFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro no upload");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function removeMedia(id: string, title: string) {
+    if (!confirm(`Remover "${title}"?`)) return;
+    try {
+      await delFn({ data: { id } });
+      qc.invalidateQueries({ queryKey: ["agent-media", agentId] });
+      toast.success("Mídia removida.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao remover");
+    }
+  }
+
+  async function saveEdit(item: AgentMediaItem, patch: Partial<AgentMediaItem>) {
+    try {
+      await updateFn({
+        data: {
+          id: item.id,
+          title: patch.title,
+          description: patch.description,
+          slug: patch.slug,
+        },
+      });
+      qc.invalidateQueries({ queryKey: ["agent-media", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar");
+    }
+  }
+
+  const items = (q.data?.media ?? []) as AgentMediaItem[];
+
+  return (
+    <div className="flex flex-1 flex-col gap-4 p-6">
+      <div className="rounded-xl border border-primary/20 bg-primary/5 px-5 py-3.5">
+        <p className="text-sm font-semibold text-primary">📎 Biblioteca de Mídias</p>
+        <p className="mt-1 text-xs text-primary/80">
+          Suba imagens, vídeos, áudios ou PDFs. O agente vai poder enviar essas mídias
+          durante a conversa através da tool <code className="rounded bg-white/60 px-1 py-0.5 font-mono">enviar_midia</code>.
+          Use no AI Magic ou Modo Treinador para acionar manualmente.
+        </p>
+      </div>
+
+      {/* Upload zone */}
+      <div className="rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 px-6 py-4">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/*,audio/*,application/pdf"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) openUploadDialog(f);
+          }}
+          className="hidden"
+        />
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-medium text-slate-700">Adicionar nova mídia</p>
+            <p className="text-[11px] text-muted-foreground">
+              Imagens (JPG/PNG/WebP), vídeos (MP4/WebM), áudios (MP3/OGG) ou PDF. Até 50MB.
+            </p>
+          </div>
+          <Button onClick={() => fileInputRef.current?.click()}>
+            <Plus className="mr-1 h-4 w-4" />
+            Escolher arquivo
+          </Button>
+        </div>
+      </div>
+
+      {/* Lista */}
+      {q.isLoading && (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      )}
+
+      {!q.isLoading && items.length === 0 && (
+        <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center">
+          <p className="text-sm font-medium text-foreground">Nenhuma mídia cadastrada</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Suba a primeira para que o agente possa enviá-la durante o atendimento.
+          </p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {items.map((m) => (
+          <MediaCard
+            key={m.id}
+            item={m}
+            onRemove={() => void removeMedia(m.id, m.title)}
+            onSave={(patch) => void saveEdit(m, patch)}
+          />
+        ))}
+      </div>
+
+      {/* Dialog de upload */}
+      {showUpload && pendingFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-xl border bg-white p-5 shadow-2xl">
+            <div className="mb-3">
+              <p className="text-sm font-semibold">Nova mídia</p>
+              <p className="text-[11px] text-muted-foreground truncate">{pendingFile.name}</p>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs">Título *</Label>
+                <Input
+                  value={draftTitle}
+                  onChange={(e) => setDraftTitle(e.target.value)}
+                  placeholder="Ex: Vídeo de localização"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Slug (opcional)</Label>
+                <Input
+                  value={draftSlug}
+                  onChange={(e) => setDraftSlug(e.target.value.replace(/[^a-zA-Z0-9_-]/g, "_"))}
+                  placeholder="ex: localizacao (gerado do título se vazio)"
+                  className="mt-1 font-mono text-xs"
+                />
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  Identificador que o agente usa para chamar (apenas letras, números, _).
+                </p>
+              </div>
+              <div>
+                <Label className="text-xs">Quando usar?</Label>
+                <textarea
+                  value={draftDesc}
+                  onChange={(e) => setDraftDesc(e.target.value)}
+                  placeholder="Ex: Envie ao confirmar agendamento, junto com o resumo."
+                  rows={3}
+                  className="mt-1 w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  Essa descrição entra no contexto do LLM — ele decide quando usar baseado no que você descrever.
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowUpload(false)} disabled={pending}>
+                Cancelar
+              </Button>
+              <Button onClick={() => void confirmUpload()} disabled={!draftTitle.trim() || pending}>
+                {pending && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                Adicionar
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MediaCard({
+  item,
+  onRemove,
+  onSave,
+}: {
+  item: AgentMediaItem;
+  onRemove: () => void;
+  onSave: (patch: Partial<AgentMediaItem>) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(item.title);
+  const [desc, setDesc] = useState(item.description ?? "");
+  const [slug, setSlug] = useState(item.slug);
+
+  const sizeKb = item.file_size ? Math.round(item.file_size / 1024) : 0;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="aspect-video bg-slate-100 flex items-center justify-center">
+        {item.media_type === "image" ? (
+          <img src={item.file_url} alt={item.title} className="h-full w-full object-cover" />
+        ) : item.media_type === "video" ? (
+          <video src={item.file_url} className="h-full w-full object-cover" />
+        ) : item.media_type === "audio" ? (
+          <Headphones className="h-12 w-12 text-slate-400" />
+        ) : (
+          <GraduationCap className="h-12 w-12 text-slate-400" />
+        )}
+      </div>
+      <div className="p-3">
+        {editing ? (
+          <div className="space-y-2">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} className="text-xs" />
+            <Input
+              value={slug}
+              onChange={(e) => setSlug(e.target.value.replace(/[^a-zA-Z0-9_-]/g, "_"))}
+              className="text-xs font-mono"
+            />
+            <textarea
+              value={desc}
+              onChange={(e) => setDesc(e.target.value)}
+              rows={2}
+              className="w-full resize-none rounded-md border border-slate-200 px-2 py-1 text-xs outline-none focus:border-primary"
+            />
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                className="h-7 flex-1 text-xs"
+                onClick={() => {
+                  onSave({ title: title.trim(), slug: slug.trim(), description: desc.trim() || null });
+                  setEditing(false);
+                }}
+              >
+                Salvar
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setTitle(item.title);
+                  setSlug(item.slug);
+                  setDesc(item.description ?? "");
+                  setEditing(false);
+                }}
+              >
+                Cancelar
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <p className="truncate text-sm font-medium text-foreground" title={item.title}>
+              {item.title}
+            </p>
+            <p className="truncate text-[10px] font-mono text-muted-foreground" title={item.slug}>
+              {item.slug}
+            </p>
+            {item.description && (
+              <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
+                {item.description}
+              </p>
+            )}
+            <div className="mt-2 flex items-center justify-between text-[10px] text-muted-foreground">
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold">
+                {item.media_type}
+              </span>
+              <span>{sizeKb >= 1024 ? `${(sizeKb / 1024).toFixed(1)}MB` : `${sizeKb}KB`}</span>
+            </div>
+            <div className="mt-2 flex justify-between text-[10px]">
+              <button onClick={() => setEditing(true)} className="text-primary hover:underline">
+                Editar
+              </button>
+              <button onClick={onRemove} className="text-rose-500 hover:text-rose-700">
+                Remover
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

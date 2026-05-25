@@ -367,6 +367,37 @@ export async function sendHelenaText(
   return { ok: res.ok, status: res.status, body };
 }
 
+/**
+ * Envia arquivo via URL pública (imagem, vídeo, áudio, PDF). Mesmo endpoint
+ * do n8n workflow '03. Baixar e enviar arquivo do Google Drive'.
+ */
+export async function sendHelenaMediaUrl(
+  account: HelenaAccount,
+  params: { sessionId: string; fileUrl: string; text?: string },
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const url = `${base}/chat/v1/session/${params.sessionId}/message`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: account.token,
+      "Content-Type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      fileUrl: params.fileUrl,
+      ...(params.text ? { text: params.text } : {}),
+    }),
+  });
+  const body = await res.text();
+  if (!res.ok) {
+    console.error(
+      `[helena] media falhou ${res.status} — endpoint=${url} fileUrl=${params.fileUrl} body=${body}`,
+    );
+  }
+  return { ok: res.ok, status: res.status, body };
+}
+
 export async function sendHelenaAudio(
   account: HelenaAccount,
   params: { phone?: string; audioUrl: string; sessionId?: string },

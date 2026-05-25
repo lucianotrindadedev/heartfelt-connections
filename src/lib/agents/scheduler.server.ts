@@ -33,6 +33,10 @@ import {
   searchKnowledge,
   formatChunksAsContext,
 } from "@/lib/knowledge/retrieval.server";
+import {
+  sendMediaBySlug,
+  getAvailableMediaForPrompt,
+} from "./send-media.server";
 import type { AgentContext, AgentResult } from "./context";
 import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
 import type { LeadData, Stage } from "./stage";
@@ -144,6 +148,30 @@ const SCHEDULER_TOOLS: LlmTool[] = [
         type: "object",
         properties: {},
         required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "enviar_midia",
+      description:
+        "Envia uma mídia cadastrada (imagem, vídeo, áudio ou PDF) para o lead via WhatsApp. " +
+        "Use quando fizer sentido no fluxo (ex: vídeo de localização ao confirmar agendamento, " +
+        "foto da fachada da clínica). As mídias disponíveis estão na seção 'MÍDIAS DISPONÍVEIS'.",
+      parameters: {
+        type: "object",
+        properties: {
+          slug: {
+            type: "string",
+            description: "Slug EXATO da mídia (ex: 'localizacao', 'fachada').",
+          },
+          caption: {
+            type: "string",
+            description: "Legenda opcional.",
+          },
+        },
+        required: ["slug"],
       },
     },
   },
@@ -435,9 +463,13 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     console.log(`[scheduler] RAG: ${ragChunks.length} chunks injetados`);
   }
 
+  // Mídias disponíveis (para a tool enviar_midia)
+  const mediaContext = await getAvailableMediaForPrompt(ctx.agentId);
+  const extras = [ragContext, mediaContext].filter(Boolean).join("\n\n");
+
   const cached = buildCachedSystemPrompt(ctx);
   const baseDynamic = buildDynamicSystemPrompt(ctx);
-  const dynamic = ragContext ? baseDynamic + "\n\n" + ragContext : baseDynamic;
+  const dynamic = extras ? baseDynamic + "\n\n" + extras : baseDynamic;
 
   // Histórico convertido para LlmMessage.
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
@@ -500,6 +532,19 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "criar_agendamento":
             outcome = await execCriarAgendamento(ctx);
             break;
+          case "enviar_midia": {
+            const slug = typeof args.slug === "string" ? args.slug : "";
+            const caption = typeof args.caption === "string" ? args.caption : undefined;
+            const res = await sendMediaBySlug(ctx, slug, caption);
+            outcome = {
+              result: JSON.stringify(
+                res.ok
+                  ? { ok: true, media_title: res.media_title }
+                  : { ok: false, error: res.error },
+              ),
+            };
+            break;
+          }
           default:
             outcome = { result: JSON.stringify({ error: "tool desconhecida" }) };
         }
@@ -526,7 +571,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
 
   // Após tools (ou se não chamou nenhuma), pede a resposta estruturada final.
   const finalBaseDynamic = buildDynamicSystemPrompt(ctx); // reflete patches acumulados
-  const finalDynamic = ragContext ? finalBaseDynamic + "\n\n" + ragContext : finalBaseDynamic;
+  const finalDynamic = extras ? finalBaseDynamic + "\n\n" + extras : finalBaseDynamic;
   const { result, response: finalResponse } = await callLlmStructured<SchedulerJsonResult>(
     ctx.orKey,
     {

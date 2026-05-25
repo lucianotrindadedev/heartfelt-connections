@@ -25,6 +25,10 @@ import {
   searchKnowledge,
   formatChunksAsContext,
 } from "@/lib/knowledge/retrieval.server";
+import {
+  sendMediaBySlug,
+  getAvailableMediaForPrompt,
+} from "./send-media.server";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -65,6 +69,31 @@ const QUALIFIER_TOOLS: LlmTool[] = [
           },
         },
         required: ["tag"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "enviar_midia",
+      description:
+        "Envia uma das mídias cadastradas (imagem, vídeo, áudio ou PDF) para o lead via WhatsApp. " +
+        "Use somente quando fizer sentido no fluxo: ex. enviar antes/depois ao discutir um caso, " +
+        "vídeo de localização ao confirmar agendamento, foto da equipe. " +
+        "As mídias disponíveis estão listadas na seção 'MÍDIAS DISPONÍVEIS' do contexto.",
+      parameters: {
+        type: "object",
+        properties: {
+          slug: {
+            type: "string",
+            description: "Slug EXATO da mídia (ex: 'antes_depois_implante', 'localizacao').",
+          },
+          caption: {
+            type: "string",
+            description: "Legenda opcional que acompanha o arquivo (ex: 'Aqui está nossa localização!')",
+          },
+        },
+        required: ["slug"],
       },
     },
   },
@@ -364,10 +393,13 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     console.log(`[qualifier] RAG: ${ragChunks.length} chunks injetados`);
   }
 
+  // Mídias disponíveis (para a tool enviar_midia)
+  const mediaContext = await getAvailableMediaForPrompt(ctx.agentId);
+
   const cached = buildCachedSystemPrompt(ctx);
-  const dynamic = ragContext
-    ? buildDynamicSystemPrompt(ctx, candidateTags) + "\n\n" + ragContext
-    : buildDynamicSystemPrompt(ctx, candidateTags);
+  const baseDynamic = buildDynamicSystemPrompt(ctx, candidateTags);
+  const extras = [ragContext, mediaContext].filter(Boolean).join("\n\n");
+  const dynamic = extras ? baseDynamic + "\n\n" + extras : baseDynamic;
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
 
   let workingMessages: LlmMessage[] = [...history];
@@ -426,6 +458,19 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       let outcome: ToolOutcome = { result: JSON.stringify({ error: "tool desconhecida" }) };
       if (tc.function.name === "aplicar_tag_interesse" && typeof args.tag === "string") {
         outcome = await execAplicarTag(ctx, args.tag);
+      } else if (tc.function.name === "enviar_midia" && typeof args.slug === "string") {
+        const res = await sendMediaBySlug(
+          ctx,
+          args.slug,
+          typeof args.caption === "string" ? args.caption : undefined,
+        );
+        outcome = {
+          result: JSON.stringify(
+            res.ok
+              ? { ok: true, media_title: res.media_title }
+              : { ok: false, error: res.error },
+          ),
+        };
       }
 
       toolsCalled.push(tc.function.name);
@@ -449,9 +494,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     {
       model: ctx.model,
       systemCached: cached,
-      systemDynamic: ragContext
-        ? buildDynamicSystemPrompt(ctx, candidateTags) + "\n\n" + ragContext
-        : buildDynamicSystemPrompt(ctx, candidateTags),
+      systemDynamic: dynamic,
       messages:
         workingMessages.length === history.length
           ? // não houve tools — chama direto pedindo JSON
