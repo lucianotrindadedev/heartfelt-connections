@@ -29,6 +29,10 @@ import {
   NOT_SCHEDULED_SYNONYMS,
   SCHEDULED_SYNONYMS,
 } from "@/lib/helena-tags.server";
+import {
+  searchKnowledge,
+  formatChunksAsContext,
+} from "@/lib/knowledge/retrieval.server";
 import type { AgentContext, AgentResult } from "./context";
 import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
 import type { LeadData, Stage } from "./stage";
@@ -423,8 +427,17 @@ ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n`
 const MAX_TOOL_LOOPS = 6;
 
 export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult> {
+  // RAG: busca conhecimento relevante para a última mensagem (best effort)
+  const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
+  const ragChunks = lastUserMsg ? await searchKnowledge(ctx.agentId, lastUserMsg, 5) : [];
+  const ragContext = formatChunksAsContext(ragChunks);
+  if (ragChunks.length > 0) {
+    console.log(`[scheduler] RAG: ${ragChunks.length} chunks injetados`);
+  }
+
   const cached = buildCachedSystemPrompt(ctx);
-  const dynamic = buildDynamicSystemPrompt(ctx);
+  const baseDynamic = buildDynamicSystemPrompt(ctx);
+  const dynamic = ragContext ? baseDynamic + "\n\n" + ragContext : baseDynamic;
 
   // Histórico convertido para LlmMessage.
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
@@ -512,7 +525,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   }
 
   // Após tools (ou se não chamou nenhuma), pede a resposta estruturada final.
-  const finalDynamic = buildDynamicSystemPrompt(ctx); // reflete patches acumulados
+  const finalBaseDynamic = buildDynamicSystemPrompt(ctx); // reflete patches acumulados
+  const finalDynamic = ragContext ? finalBaseDynamic + "\n\n" + ragContext : finalBaseDynamic;
   const { result, response: finalResponse } = await callLlmStructured<SchedulerJsonResult>(
     ctx.orKey,
     {

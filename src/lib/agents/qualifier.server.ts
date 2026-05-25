@@ -21,6 +21,10 @@ import {
   getInterestCandidateTagNames,
   NOT_SCHEDULED_SYNONYMS,
 } from "@/lib/helena-tags.server";
+import {
+  searchKnowledge,
+  formatChunksAsContext,
+} from "@/lib/knowledge/retrieval.server";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -338,6 +342,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   // 1) Lista tags CANDIDATAS A INTERESSE (cacheado por 1min) — exclui as de
   //    sistema (N/A, AGENDADO, IA Desligada) que são gerenciadas pelo código
   // 2) Aplica tag inicial "não agendado" se ainda não aplicada
+  // 3) Busca conhecimento relevante (RAG) — best effort, não bloqueia
   let candidateTags: string[] = [];
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
@@ -351,8 +356,18 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     initialTagApplied = true; // marca mesmo se a tag não existe no CRM, evita re-tentar
   }
 
+  // RAG: busca os top-5 chunks mais relevantes à última mensagem do lead
+  const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
+  const ragChunks = lastUserMsg ? await searchKnowledge(ctx.agentId, lastUserMsg, 5) : [];
+  const ragContext = formatChunksAsContext(ragChunks);
+  if (ragChunks.length > 0) {
+    console.log(`[qualifier] RAG: ${ragChunks.length} chunks injetados`);
+  }
+
   const cached = buildCachedSystemPrompt(ctx);
-  const dynamic = buildDynamicSystemPrompt(ctx, candidateTags);
+  const dynamic = ragContext
+    ? buildDynamicSystemPrompt(ctx, candidateTags) + "\n\n" + ragContext
+    : buildDynamicSystemPrompt(ctx, candidateTags);
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
 
   let workingMessages: LlmMessage[] = [...history];
@@ -434,7 +449,9 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     {
       model: ctx.model,
       systemCached: cached,
-      systemDynamic: buildDynamicSystemPrompt(ctx, candidateTags),
+      systemDynamic: ragContext
+        ? buildDynamicSystemPrompt(ctx, candidateTags) + "\n\n" + ragContext
+        : buildDynamicSystemPrompt(ctx, candidateTags),
       messages:
         workingMessages.length === history.length
           ? // não houve tools — chama direto pedindo JSON
