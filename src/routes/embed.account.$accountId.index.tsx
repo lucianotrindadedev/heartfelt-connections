@@ -963,14 +963,6 @@ function TrainingView({
 
         <button
           className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50"
-          onClick={() => toast.info("Follow Up em breve!")}
-        >
-          Follow Up
-          <span className="flex h-4 w-4 items-center justify-center rounded-full border border-slate-300 text-[9px]">▶</span>
-        </button>
-
-        <button
-          className="flex items-center gap-1.5 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-slate-50"
           onClick={() => setShowTemplates(true)}
         >
           Templates
