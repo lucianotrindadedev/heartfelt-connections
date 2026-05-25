@@ -416,6 +416,29 @@ export interface HelenaTemplate {
  * Lista templates ATTENDANCE de um channel (canal WhatsApp Oficial).
  * O channelId vem da sessão Helena (loadHelenaSession).
  */
+/**
+ * Normaliza uma row do Helena. O CRM ora devolve `content`, ora `text`/`body`,
+ * dependendo do tipo do template. Aqui consolidamos pra `content`.
+ */
+function normalizeHelenaTemplate(raw: Record<string, unknown>): HelenaTemplate {
+  const r = raw as Record<string, unknown>;
+  const content =
+    (r.content as string | undefined) ??
+    (r.text as string | undefined) ??
+    (r.body as string | undefined) ??
+    (r.message as string | undefined) ??
+    "";
+  return {
+    id: String(r.id ?? ""),
+    name: String(r.name ?? r.Name ?? ""),
+    channelId: String(r.channelId ?? r.ChannelId ?? ""),
+    type: r.type as string | undefined,
+    status: r.status as string | undefined,
+    content,
+    parameters: r.parameters as string[] | undefined,
+  };
+}
+
 export async function listHelenaTemplates(
   account: HelenaAccount,
   channelId: string,
@@ -433,8 +456,14 @@ export async function listHelenaTemplates(
     console.error(`[helena] listTemplates falhou ${res.status} — ${await res.text()}`);
     return [];
   }
-  const json = (await res.json()) as { items?: HelenaTemplate[] };
-  return json.items ?? [];
+  // Aceita { items: [...] } OU array direto (algumas rotas variam)
+  const json = (await res.json()) as
+    | { items?: Record<string, unknown>[] }
+    | Record<string, unknown>[];
+  const items: Record<string, unknown>[] = Array.isArray(json)
+    ? json
+    : (json.items ?? []);
+  return items.map(normalizeHelenaTemplate);
 }
 
 /**
@@ -459,8 +488,13 @@ export async function findHelenaTemplateByName(
     console.error(`[helena] findTemplate falhou ${res.status} — ${await res.text()}`);
     return null;
   }
-  const json = (await res.json()) as { items?: HelenaTemplate[] };
-  return json.items?.[0] ?? null;
+  const json = (await res.json()) as
+    | { items?: Record<string, unknown>[] }
+    | Record<string, unknown>[];
+  const items: Record<string, unknown>[] = Array.isArray(json)
+    ? json
+    : (json.items ?? []);
+  return items.length > 0 ? normalizeHelenaTemplate(items[0]) : null;
 }
 
 /**

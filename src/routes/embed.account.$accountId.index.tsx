@@ -33,6 +33,9 @@ import {
   ArrowRight,
   Zap,
   Plus,
+  ChevronDown,
+  Search,
+  FileText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -41,6 +44,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "sonner";
 import {
   getAgent,
@@ -6389,6 +6393,173 @@ function WarmupView({
   );
 }
 
+// Seletor rico de templates Helena: lista à esquerda + preview à direita
+// no mesmo popover. Hover na lista atualiza o preview imediatamente.
+function TemplatePicker({
+  templates,
+  selectedName,
+  onSelect,
+}: {
+  templates: HelenaTemplateOption[];
+  selectedName: string;
+  onSelect: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [hoverId, setHoverId] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return templates;
+    return templates.filter(
+      (t) =>
+        t.name.toLowerCase().includes(q) ||
+        (t.content ?? "").toLowerCase().includes(q),
+    );
+  }, [templates, query]);
+
+  const previewTemplate =
+    templates.find((t) => t.id === hoverId) ??
+    templates.find((t) => t.name === selectedName) ??
+    filtered[0] ??
+    null;
+
+  const selected = templates.find((t) => t.name === selectedName);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="flex w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition-colors hover:border-slate-300 focus:border-primary"
+        >
+          <span className={selected ? "text-foreground" : "text-muted-foreground"}>
+            {selected ? selected.name : "— escolha um template —"}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        sideOffset={4}
+        className="w-[640px] max-w-[92vw] p-0"
+      >
+        <div className="flex h-[400px]">
+          {/* Lista (esquerda) */}
+          <div className="flex w-[260px] flex-col border-r border-slate-100">
+            <div className="border-b border-slate-100 p-2">
+              <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5">
+                <Search className="h-3 w-3 text-slate-400" />
+                <input
+                  autoFocus
+                  type="text"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Buscar template…"
+                  className="flex-1 bg-transparent text-xs outline-none placeholder:text-slate-400"
+                />
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto py-1">
+              {filtered.length === 0 ? (
+                <p className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  Nenhum template encontrado.
+                </p>
+              ) : (
+                filtered.map((t) => {
+                  const isSelected = t.name === selectedName;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onMouseEnter={() => setHoverId(t.id)}
+                      onFocus={() => setHoverId(t.id)}
+                      onClick={() => {
+                        onSelect(t.name);
+                        setOpen(false);
+                      }}
+                      className={`group flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-primary/5 ${
+                        isSelected ? "bg-primary/10" : ""
+                      }`}
+                    >
+                      <FileText
+                        className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
+                          isSelected ? "text-primary" : "text-slate-400 group-hover:text-primary"
+                        }`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={`truncate text-xs font-medium ${
+                            isSelected ? "text-primary" : "text-foreground"
+                          }`}
+                        >
+                          {t.name}
+                        </p>
+                        {t.content && (
+                          <p className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                            {t.content.replace(/\s+/g, " ").trim()}
+                          </p>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Preview (direita) */}
+          <div className="flex flex-1 flex-col bg-slate-50/50">
+            {previewTemplate ? (
+              <>
+                <div className="border-b border-slate-100 bg-white px-4 py-2">
+                  <p className="text-xs font-semibold text-foreground">
+                    {previewTemplate.name}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Channel: {previewTemplate.channelId || "—"}
+                    {previewTemplate.status && ` · ${previewTemplate.status}`}
+                  </p>
+                </div>
+                <div className="flex-1 overflow-y-auto p-4">
+                  {previewTemplate.content ? (
+                    <div className="rounded-lg bg-white p-3 shadow-sm">
+                      <p className="whitespace-pre-wrap text-xs leading-relaxed text-foreground">
+                        {previewTemplate.content}
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-center text-xs text-muted-foreground">
+                      Esse template não retornou conteúdo de preview.
+                    </p>
+                  )}
+                </div>
+                <div className="border-t border-slate-100 bg-white px-4 py-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSelect(previewTemplate.name);
+                      setOpen(false);
+                    }}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                  >
+                    <Check className="h-3 w-3" />
+                    Usar este template
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-muted-foreground">
+                Passe o mouse sobre um template para ver o preview.
+              </div>
+            )}
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function WarmupStepCard({
   step,
   templates,
@@ -6487,24 +6658,17 @@ function WarmupStepCard({
             className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
           />
         ) : (
-          <select
-            value={templateName}
-            onChange={(e) => {
-              setTemplateName(e.target.value);
-              commit({ helena_template_name: e.target.value });
+          <TemplatePicker
+            templates={templates}
+            selectedName={templateName}
+            onSelect={(name) => {
+              setTemplateName(name);
+              commit({ helena_template_name: name });
             }}
-            className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary"
-          >
-            <option value="">— escolha um template —</option>
-            {templates.map((t) => (
-              <option key={t.id} value={t.name}>
-                {t.name}
-              </option>
-            ))}
-          </select>
+          />
         )}
         <p className="mt-1 text-[10px] text-muted-foreground">
-          O Helena resolve o templateId pelo nome no momento do envio. Variáveis usadas: <code>horario</code>, <code>nome</code>, <code>data</code>, <code>hora</code>.
+          Variáveis substituídas no envio: <code>horario</code>, <code>nome</code>, <code>data</code>, <code>hora</code>.
         </p>
       </div>
 
