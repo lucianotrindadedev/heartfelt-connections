@@ -124,6 +124,10 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
 
           for (const appt of appointments) {
             for (const step of agentSteps) {
+              // Step ainda sem template configurado? pula silenciosamente.
+              if (!step.helena_template_name || !step.helena_template_name.trim()) {
+                continue;
+              }
               // Filtro de status?
               if (
                 step.appointment_status_filter &&

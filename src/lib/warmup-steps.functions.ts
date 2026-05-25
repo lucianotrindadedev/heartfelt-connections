@@ -22,7 +22,7 @@ const stepInputSchema = z.object({
   enabled: z.boolean().default(true),
   time_before_value: z.number().int().min(1).max(10000),
   time_before_unit: z.enum(["minutes", "hours", "days"]),
-  helena_template_name: z.string().min(1).max(200),
+  helena_template_name: z.string().max(200).default(""),
   window_minutes: z.number().int().min(1).max(720).default(30),
   appointment_status_filter: z.array(z.string()).nullable().optional(),
 });
