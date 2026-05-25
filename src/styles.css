@@ -2,15 +2,23 @@
 @source "../src";
 @import "tw-animate-css";
 
+html {
+  /* Bump global font-size para todo o app (default 16px → 17.5px).
+     Todas as classes Tailwind baseadas em rem (text-xs, text-sm, text-base,
+     paddings, etc.) escalam proporcionalmente. */
+  font-size: 17.5px;
+}
 html, body {
   font-family: 'Poppins', system-ui, -apple-system, sans-serif;
 }
 
-/* ── TipTap / ProseMirror Rich Text Editor ── */
+/* ── TipTap / ProseMirror Rich Text Editor ──
+   Mantém o tamanho do prompt EXATAMENTE como antes (fonte 14px fixos),
+   independentemente do bump global acima. */
 .ProseMirror {
   outline: none;
   min-height: 100%;
-  font-size: 0.875rem;
+  font-size: 14px;
   line-height: 1.75;
   color: hsl(var(--foreground));
 }
