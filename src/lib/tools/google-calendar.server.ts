@@ -335,12 +335,16 @@ export async function listGoogleCalendarSlots(
 
   // 1. Gera janelas candidatas
   // Snap o inicio para o proximo limite de granularidade NO FUSO BR.
-  // Sem isso, se inicio=11:29 com gran=30 gera slots em :29, :59, :29...
-  // Com snap, vira 11:30, 12:00, 12:30... — horarios "redondos" pro paciente.
+  // Sem isso, se inicio=11:29:16 com gran=30 gera slots em :29:16, :59:16, ...
+  // Com snap, vira 11:30:00, 12:00:00... — horarios "redondos" pro paciente.
   const inicioMin = minutosNoDia(inicio);
   const snappedMin = Math.ceil(inicioMin / gran) * gran;
   const ajusteMin = snappedMin - inicioMin;
-  const inicioSnapped = new Date(inicio.getTime() + ajusteMin * 60_000);
+  // Zera segundos+ms para slots ficarem em HH:MM:00 exato.
+  const segundosMs = inicio.getSeconds() * 1000 + inicio.getMilliseconds();
+  const inicioSnapped = new Date(
+    inicio.getTime() + ajusteMin * 60_000 - segundosMs,
+  );
 
   const totalMin = (fim.getTime() - inicioSnapped.getTime()) / 60_000;
   const quantidadeJanelas = Math.floor(totalMin / gran);
