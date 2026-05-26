@@ -201,6 +201,27 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         ...(result.lead_data_patch ?? {}),
       };
       const newStage = result.next_stage;
+      const latencyMs = Date.now() - t0;
+
+      // 6. Registra em agent_runs — trainer GASTA OpenRouter de verdade.
+      //    conversation_id=null distingue de runs de produção. O dashboard
+      //    de custo e o feed de logs do admin somam essas linhas normalmente.
+      try {
+        await sb.from("agent_runs").insert({
+          account_id: data.accountId,
+          agent_id: data.agentId,
+          conversation_id: null, // trainer não tem conversa real
+          provider: "openrouter",
+          model,
+          latency_ms: latencyMs,
+          tokens_in: result.tokens_in ?? null,
+          tokens_out: result.tokens_out ?? null,
+          cost_usd_estimate: result.cost_usd ?? 0,
+          error: null,
+        });
+      } catch (logErr) {
+        console.warn("[trainer] falha ao gravar agent_runs:", logErr);
+      }
 
       return {
         reply: result.reply,
@@ -211,12 +232,25 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         tokens_in: result.tokens_in ?? 0,
         tokens_out: result.tokens_out ?? 0,
         cost_usd: result.cost_usd ?? 0,
-        latency_ms: Date.now() - t0,
+        latency_ms: latencyMs,
         tools_called: result.tools_called ?? [],
         route,
       };
     } catch (e) {
-      throw new Error(`Trainer (${route}) falhou: ${e instanceof Error ? e.message : String(e)}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      // Tambem registra falhas pra aparecer nos logs
+      try {
+        await sb.from("agent_runs").insert({
+          account_id: data.accountId,
+          agent_id: data.agentId,
+          conversation_id: null,
+          provider: "openrouter",
+          model,
+          latency_ms: Date.now() - t0,
+          error: `[trainer ${route}] ${msg.slice(0, 500)}`,
+        });
+      } catch { /* swallow secondary log error */ }
+      throw new Error(`Trainer (${route}) falhou: ${msg}`);
     }
   });
 
