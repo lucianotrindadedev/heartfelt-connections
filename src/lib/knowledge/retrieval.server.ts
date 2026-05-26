@@ -54,7 +54,10 @@ export async function searchKnowledge(
              1 - (c.embedding <=> '${qLiteral}'::vector) as similarity
       from public.knowledge_chunks c
       join public.knowledge_documents d on d.id = c.document_id
-      where c.agent_id = '${agentId}' and d.status = 'ready'
+      where c.agent_id = '${agentId}'
+        and d.status = 'ready'
+        and (d.review_status = 'approved' or
+             (d.review_status = 'quarantine' and d.quarantine_until is not null and d.quarantine_until <= now()))
       order by c.embedding <=> '${qLiteral}'::vector
       limit ${topK};
     `;
