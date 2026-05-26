@@ -290,6 +290,30 @@ async function execListarHorarios(
       businessHoursJson: ctx.agentSettings.business_hours_json,
     });
     const formatted = slots.map(formatGCalSlot);
+
+    // Quando vier vazio, devolve diagnostico p/ o LLM decidir bem
+    // (ex: pedir pra suporte, sugerir janela maior, etc.) e nao alucinar.
+    if (formatted.length === 0) {
+      const hasBusinessHours = !!(ctx.agentSettings.business_hours_json?.trim());
+      const diag = {
+        count: 0,
+        slots: [],
+        debug: {
+          duracao_consulta_min: duracao,
+          dias_consultados: diasAFrente ?? 7,
+          tem_horario_funcionamento: hasBusinessHours,
+          possivel_causa: !hasBusinessHours
+            ? "Horario de funcionamento da clinica nao esta configurado nas Settings."
+            : "Todos os horarios no periodo consultado estao ocupados na agenda Google. Tente um periodo maior OU verifique se a clinica realmente tem disponibilidade.",
+        },
+      };
+      console.warn("[scheduler] listar_horarios retornou 0 slots:", diag.debug);
+      return {
+        result: JSON.stringify(diag),
+        patch: { offered_slots: [] },
+      };
+    }
+
     return {
       result: JSON.stringify({ count: formatted.length, slots: formatted }),
       patch: { offered_slots: formatted },
