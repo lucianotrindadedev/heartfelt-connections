@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, Navigate } from "@tanstack/react-router";
 import { helenaWebhookUrl } from "@/lib/app-base-url";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -190,6 +190,59 @@ function AccountNotRegisteredBlocker({ accountId }: { accountId: string }) {
 }
 
 // =================================================================
+// Seletor exibido quando o usuário acessa a URL antiga (ID exato não
+// existe mais, mas há contas-irmãs sob o mesmo helena_account_id).
+// =================================================================
+function AliasAccountSelector({
+  accounts,
+}: {
+  accounts: { id: string; nome: string }[];
+}) {
+  const navigate = useNavigate();
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <div className="w-full max-w-sm">
+        <div className="mb-6 text-center">
+          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
+            <Bot className="h-6 w-6 text-primary" />
+          </div>
+          <h1 className="text-lg font-semibold">Selecionar agente</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Esta conta do CRM tem {accounts.length} agentes configurados.
+            Selecione qual deseja gerenciar.
+          </p>
+        </div>
+        <div className="space-y-2">
+          {accounts.map((a, i) => (
+            <button
+              key={a.id}
+              onClick={() =>
+                navigate({
+                  to: "/embed/account/$accountId",
+                  params: { accountId: a.id },
+                })
+              }
+              className="flex w-full items-center justify-between rounded-xl border bg-card p-4 text-left transition hover:bg-accent/50 hover:border-primary/30"
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                  {i + 1}
+                </div>
+                <div>
+                  <p className="text-sm font-medium">{a.nome}</p>
+                  <p className="font-mono text-[11px] text-muted-foreground">{a.id}</p>
+                </div>
+              </div>
+              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =================================================================
 // Seletor inline quando a conta tem múltiplos agentes Sarai irmãos
 // (mesmo helena_account_id). Renderizado direto no embed.
 // =================================================================
@@ -275,8 +328,24 @@ function EmbedHome() {
     },
   });
 
-  // Conta não cadastrada → blocker em tela cheia
+  // Conta não cadastrada → mas pode ser alias do helena_account_id.
+  // Se o servidor retornou siblings, redireciona/mostra seletor em vez do blocker.
   if (data && data.registered === false) {
+    const aliasSiblings = "siblings" in data ? data.siblings : undefined;
+    if (aliasSiblings && aliasSiblings.length === 1) {
+      return (
+        <Navigate
+          to="/embed/account/$accountId"
+          params={{ accountId: aliasSiblings[0].id }}
+          replace
+        />
+      );
+    }
+    if (aliasSiblings && aliasSiblings.length > 1) {
+      return (
+        <AliasAccountSelector accounts={aliasSiblings} />
+      );
+    }
     return <AccountNotRegisteredBlocker accountId={accountId} />;
   }
 

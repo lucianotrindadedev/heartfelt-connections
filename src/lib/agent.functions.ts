@@ -69,9 +69,26 @@ export const getAgent = createServerFn({ method: "GET" })
     const sb = getSelfhost();
     const agentId = await ensureAccount(data.accountId);
 
-    // Conta não cadastrada: retorna flag dedicada — não lança para evitar
-    // disparar o error boundary do TanStack Router.
+    // Conta não cadastrada com esse ID exato.
+    // Pode ser que: o usuário deletou o agente "1" (que tinha id = helenaId
+    // sem sufixo) mas ficaram outros agentes (-2, -3) sob o mesmo
+    // helena_account_id. Tenta resolver pelo helena_account_id antes de
+    // mostrar o blocker.
     if (!agentId) {
+      const { data: siblings } = await sb
+        .from("accounts")
+        .select("id, nome")
+        .eq("helena_account_id", data.accountId)
+        .order("criado_em", { ascending: true });
+      if (siblings && siblings.length > 0) {
+        // Caso 1 conta: cliente redireciona automático
+        // Caso N contas: cliente mostra seletor
+        return {
+          registered: false as const,
+          aliasFor: data.accountId,
+          siblings: siblings as { id: string; nome: string }[],
+        };
+      }
       return { registered: false as const };
     }
 
