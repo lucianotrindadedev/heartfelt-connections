@@ -563,7 +563,7 @@ function SetupTab({
     <Card className="space-y-4 p-4">
       <h2 className="font-semibold">Configuração de Integração</h2>
       <CopyField
-        label="Webhook Helena (cole em: CRM → Gatilhos → URL)"
+        label="Webhook do CRM (cole em: CRM → Gatilhos → URL)"
         value={helenaWebhookUrl(accountId, appBaseUrl)}
       />
       <CopyField
@@ -575,8 +575,9 @@ function SetupTab({
         value={embedAccountUrl(accountId, appBaseUrl)}
       />
       <p className="text-xs text-muted-foreground">
-        No Helena: Configurações → Integrações → Webhook → URL acima + header{" "}
-        <code className="font-mono">X-Helena-Secret: &lt;valor acima&gt;</code>
+        No CRM: Configurações → Integrações → Webhook → URL acima + header{" "}
+        <code className="font-mono">X-Helena-Secret: &lt;valor acima&gt;</code>{" "}
+        (o nome do header é técnico — não altere).
       </p>
     </Card>
   );

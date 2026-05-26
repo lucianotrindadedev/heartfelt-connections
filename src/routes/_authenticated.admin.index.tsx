@@ -90,7 +90,7 @@ function AdminIndex() {
         <div>
           <h1 className="text-2xl font-bold">Contas</h1>
           <p className="text-sm text-muted-foreground">
-            Todas as contas Helena conectadas — clique para ver performance, logs e custos.
+            Todas as contas do CRM conectadas — clique para ver performance, logs e custos.
           </p>
         </div>
         <div className="flex gap-2">
@@ -137,7 +137,7 @@ function AdminIndex() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nome, ID interno ou Helena ID…"
+            placeholder="Buscar por nome, ID interno ou ID do CRM…"
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
           {search && (
@@ -269,7 +269,7 @@ function MultiAccountGroup({
       >
         <div className="text-left">
           <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Helena CRM
+            CRM
           </span>
           <p className="mt-0.5 font-mono text-xs text-foreground">{helenaId}</p>
         </div>
@@ -499,8 +499,8 @@ function CreateAccountDialog() {
             <DialogHeader>
               <DialogTitle>Criar nova conta</DialogTitle>
               <DialogDescription>
-                Conecta uma conta do CRM Helena. O webhook é gerado automaticamente.
-                Você pode criar múltiplos agentes para a mesma conta Helena.
+                Conecta uma conta do CRM. O webhook é gerado automaticamente.
+                Você pode criar múltiplos agentes para a mesma conta do CRM.
               </DialogDescription>
             </DialogHeader>
 
@@ -517,7 +517,7 @@ function CreateAccountDialog() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="acc-helena-id">ID da conta no Helena</Label>
+                <Label htmlFor="acc-helena-id">ID da conta no CRM</Label>
                 <Input
                   id="acc-helena-id"
                   value={helenaAccountId}
@@ -526,13 +526,13 @@ function CreateAccountDialog() {
                   required
                 />
                 <p className="text-xs text-muted-foreground">
-                  UUID da conta no CRM Helena. Pode repetir se você quiser múltiplos
+                  UUID da conta no CRM. Pode repetir se você quiser múltiplos
                   agentes para a mesma conta.
                 </p>
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="acc-token">Token do CRM Helena (Bearer)</Label>
+                <Label htmlFor="acc-token">Token do CRM (Bearer)</Label>
                 <Input
                   id="acc-token"
                   type="password"
@@ -542,7 +542,7 @@ function CreateAccountDialog() {
                   required
                 />
                 <p className="text-xs text-muted-foreground">
-                  Guardado criptografado. Usado para enviar mensagens de volta pelo Helena.
+                  Guardado criptografado. Usado para enviar mensagens de volta pelo CRM.
                 </p>
               </div>
 
@@ -609,7 +609,7 @@ function SuccessStep({
           Conta criada com sucesso
         </DialogTitle>
         <DialogDescription>
-          Cole o webhook abaixo no CRM Helena, nos eventos <strong>Mensagem recebida</strong> e{" "}
+          Cole o webhook abaixo no CRM, nos eventos <strong>Mensagem recebida</strong> e{" "}
           <strong>Mensagem enviada</strong>.
         </DialogDescription>
       </DialogHeader>

@@ -209,7 +209,7 @@ function MultiAgentSelector({
           </div>
           <h1 className="text-lg font-semibold">Selecionar agente</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Esta conta do Helena tem {accounts.length} agentes configurados.
+            Esta conta do CRM tem {accounts.length} agentes configurados.
             Selecione qual deseja gerenciar.
           </p>
         </div>
@@ -3137,7 +3137,7 @@ const PROMPT_TOOLS: { group: string; tools: { name: string; desc: string }[] }[]
   {
     group: "Qualificação",
     tools: [
-      { name: "aplicar_tag_interesse", desc: "Aplica tag de qualificação no contato (Helena CRM)" },
+      { name: "aplicar_tag_interesse", desc: "Aplica tag de qualificação no contato (CRM)" },
     ],
   },
   {
@@ -3147,7 +3147,7 @@ const PROMPT_TOOLS: { group: string; tools: { name: string; desc: string }[] }[]
     ],
   },
   {
-    group: "Helena CRM",
+    group: "CRM",
     tools: [
       { name: "helena_listar_tags",  desc: "Lista as tags atuais do contato" },
       { name: "helena_add_tags",     desc: "Adiciona tags ao contato" },
@@ -3212,7 +3212,7 @@ function PromptEditor({
       if (g.group.startsWith("Clinicorp")) return !!ci?.clinicorp;
       if (g.group.startsWith("Clinup"))    return !!ci?.clinup;
       if (g.group.startsWith("Google"))    return !!ci?.google_calendar;
-      return true; // Qualificação, Escalada, Helena — sempre
+      return true; // Qualificação, Escalada, CRM — sempre
     });
   }, [configuredIntegrations]);
 
@@ -4923,7 +4923,7 @@ function AgentSettingsView({
                 <Label className="text-sm font-semibold">Comandos para pausar a IA</Label>
                 <p className="mb-3 text-xs text-muted-foreground">
                   Defina <strong>qualquer frase</strong> que o lead envia no WhatsApp para pausar ou reativar a IA.
-                  Ao pausar, a tag <strong>&quot;IA Desligada&quot;</strong> é aplicada no Helena (pausa silenciosa, sem mensagem automática). A comparação ignora maiúsculas, acentos e barra inicial (<code>/pausar</code> = <code>pausar</code>).
+                  Ao pausar, a tag <strong>&quot;IA Desligada&quot;</strong> é aplicada no CRM (pausa silenciosa, sem mensagem automática). A comparação ignora maiúsculas, acentos e barra inicial (<code>/pausar</code> = <code>pausar</code>).
                   Vários comandos no mesmo campo: separe por vírgula (ex.: <code>/pausar, parar bot, stop</code>).
                   Se deixar vazio, o padrão é <code>/pausar</code> e <code>/ativar</code>.
                 </p>
@@ -5064,7 +5064,7 @@ function IntegrationsTab({
         }}
       />
 
-      {/* Helena CRM — sempre visível */}
+      {/* CRM — sempre visível */}
       <HelenaConfigPanel accountId={accountId} />
 
       {/* Áudio — sempre visível */}
@@ -5131,7 +5131,7 @@ function HelenaConfigPanel({ accountId }: { accountId: string }) {
       if (baseUrl) payload.base_url = baseUrl;
       if (token) payload.token = token;
       await setFn({ data: payload });
-      toast.success("Configuração Helena salva.");
+      toast.success("Configuração do CRM salva.");
       setToken("");
       qc.invalidateQueries({ queryKey: ["helena-config", accountId] });
       setOpen(false);
@@ -5152,7 +5152,7 @@ function HelenaConfigPanel({ accountId }: { accountId: string }) {
           <MessageCircle className="h-5 w-5" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-foreground">Helena CRM</p>
+          <p className="text-sm font-semibold text-foreground">CRM</p>
           <p className="text-xs text-muted-foreground">Token de envio de mensagens</p>
         </div>
         <div className="flex items-center gap-2">
@@ -5178,7 +5178,7 @@ function HelenaConfigPanel({ accountId }: { accountId: string }) {
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <p className="text-xs font-semibold text-amber-800">⚠ Token não configurado</p>
               <p className="mt-0.5 text-xs text-amber-700">
-                Sem o token Helena o agente não consegue enviar respostas. Insira o Bearer token da API Helena abaixo.
+                Sem o token do CRM o agente não consegue enviar respostas. Insira o Bearer token da API do CRM abaixo.
               </p>
             </div>
           )}
@@ -5193,9 +5193,9 @@ function HelenaConfigPanel({ accountId }: { accountId: string }) {
             />
           </div>
           <div>
-            <Label className="text-xs font-semibold">Bearer Token (API Helena)</Label>
+            <Label className="text-xs font-semibold">Bearer Token (API do CRM)</Label>
             <p className="mb-1 text-[11px] text-muted-foreground">
-              {configured ? "Token já salvo — preencha apenas para alterar" : "Cole aqui o token da sua conta Helena"}
+              {configured ? "Token já salvo — preencha apenas para alterar" : "Cole aqui o token da sua conta no CRM"}
             </p>
             <Input
               type="password"
@@ -5211,7 +5211,7 @@ function HelenaConfigPanel({ accountId }: { accountId: string }) {
             className="w-full bg-cyan-600 hover:bg-cyan-700"
           >
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Salvar configuração Helena
+            Salvar configuração do CRM
           </Button>
         </div>
       )}
@@ -6344,7 +6344,7 @@ function WarmupView({
             <p className="text-sm font-semibold text-rose-800">Lembretes pré-consulta com templates oficiais</p>
             <p className="mt-1 text-xs text-rose-700">
               Cada passo dispara <strong>X tempo antes</strong> da consulta agendada — em qualquer sistema ativo (Clinicorp, Google Calendar, Clinup).
-              A mensagem é um <strong>template aprovado do Helena</strong> (API Oficial WhatsApp). O Helena substitui as variáveis
+              A mensagem é um <strong>template aprovado do CRM</strong> (API Oficial WhatsApp). O CRM substitui as variáveis
               {" "}<code className="rounded bg-rose-100 px-1">{"{{horario}}"}</code>,{" "}
               <code className="rounded bg-rose-100 px-1">{"{{nome}}"}</code>,{" "}
               <code className="rounded bg-rose-100 px-1">{"{{data}}"}</code>,{" "}
@@ -6632,7 +6632,7 @@ function WarmupStepCard({
       {/* Template Helena */}
       <div className="mb-4">
         <div className="mb-1.5 flex items-center justify-between">
-          <Label className="text-xs font-semibold text-slate-700">Template Helena</Label>
+          <Label className="text-xs font-semibold text-slate-700">Template do CRM</Label>
           <button
             onClick={() => setManualMode((m) => !m)}
             className="text-[10px] font-medium text-primary hover:underline"
@@ -6778,7 +6778,7 @@ function EscalationView({ agentId, onClose }: { agentId: string; onClose: () => 
           <div className="rounded-xl border border-pink-200 bg-pink-50 p-4">
             <p className="text-sm font-semibold text-pink-800">Transferência para atendente humano</p>
             <p className="mt-1 text-xs text-pink-700">
-              Quando o agente escalar para humano, a tag <strong>"IA Desligada"</strong> é adicionada ao contato no Helena e um alerta é enviado ao grupo Evolution configurado abaixo.
+              Quando o agente escalar para humano, a tag <strong>"IA Desligada"</strong> é adicionada ao contato no CRM e um alerta é enviado ao grupo Evolution configurado abaixo.
             </p>
           </div>
 

@@ -110,7 +110,7 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
     if (!helena) {
       return {
         ok: false as const,
-        error: "Conta Helena não configurada para essa account.",
+        error: "Conta do CRM não configurada para essa account.",
         templates: [] as never[],
       };
     }
@@ -130,7 +130,7 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
     if (!channelId) {
       return {
         ok: false as const,
-        error: `Nenhuma sessão Helena com channelId encontrada (testei ${sessionsTried}). Garanta que pelo menos um lead já mandou msg pelo WhatsApp.`,
+        error: `Nenhuma sessão do CRM com channelId encontrada (testei ${sessionsTried}). Garanta que pelo menos um lead já mandou msg pelo WhatsApp.`,
         templates: [] as never[],
       };
     }
@@ -139,7 +139,7 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
     if (templates.length === 0) {
       return {
         ok: false as const,
-        error: `channelId ${channelId} OK, mas Helena retornou 0 templates. Verifique se há templates ATTENDANCE aprovados pra esse canal no painel do CRM.`,
+        error: `channelId ${channelId} OK, mas o CRM retornou 0 templates. Verifique se há templates ATTENDANCE aprovados pra esse canal no painel do CRM.`,
         templates: [] as never[],
         channelId,
       };
