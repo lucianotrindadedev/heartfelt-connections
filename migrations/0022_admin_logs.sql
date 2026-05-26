@@ -5,7 +5,9 @@
 -- Cada linha tem: tipo, status, timestamp, modelo, tokens, custo, erro.
 -- Usado pelo admin pra debugar conta sem precisar SSH no servidor.
 
-create or replace view public.admin_logs_view as
+drop view if exists public.admin_logs_view;
+
+create view public.admin_logs_view as
 -- 1. Turnos de agente (qualifier/scheduler)
 select
   ar.id::text                            as id,
@@ -80,8 +82,11 @@ from public.warmup_sends ws;
 grant select on public.admin_logs_view to anon, authenticated, service_role;
 
 -- View agregada de custo diário corrigida (a antiga usava nomes diferentes
--- dos que o painel admin lê). Mantém retrocompat criando alias dos campos.
-create or replace view public.llm_usage_daily as
+-- dos que o painel admin lê). DROP+CREATE porque CREATE OR REPLACE não
+-- permite renomear colunas existentes.
+drop view if exists public.llm_usage_daily;
+
+create view public.llm_usage_daily as
   select
     account_id,
     date_trunc('day', criado_em)::date as day,
