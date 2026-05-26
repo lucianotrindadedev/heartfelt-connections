@@ -3653,6 +3653,16 @@ function PromptEditor({
     });
   }, [configuredIntegrations]);
 
+  // Auto-wrap nomes de tools em backticks para destaque visual no editor.
+  // Aplica APENAS se nao estiverem ja envolvidos em ` ` ou ```.
+  // Tools conhecidas (snake_case usadas no scheduler/qualifier).
+  const TOOL_NAMES_RE =
+    /(?<![`\w])(listar_horarios(?:_clinicorp|_google_calendar|_clinup)?|agendar_(?:clinicorp|google_calendar|clinup)|criar_agendamento|buscar_paciente(?:_clinicorp|_clinup)?|buscar_agendamentos_google_calendar|atualizar_agendamento_google_calendar|cancelar_agendamento_google_calendar|escalar_humano|enviar_midia|aplicar_tag_interesse|listar_tags|clinup_buscar_horarios)(?!`)/g;
+  const highlightedInitialContent = useMemo(
+    () => initialContent.replace(TOOL_NAMES_RE, "`$1`"),
+    [initialContent],
+  );
+
   const editor = useEditor({
     extensions: [
       StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
@@ -3664,7 +3674,7 @@ function PromptEditor({
       }),
       Markdown.configure({ html: false, tightLists: true }),
     ],
-    content: initialContent,
+    content: highlightedInitialContent,
     onUpdate: ({ editor }) => {
       const mdStorage = editor.storage as { markdown?: { getMarkdown: () => string } };
       const md = mdStorage.markdown?.getMarkdown() ?? editor.getText();
@@ -3691,11 +3701,20 @@ function PromptEditor({
 
     const mdStorage = editor.storage as { markdown?: { getMarkdown: () => string } };
     const currentMd = mdStorage.markdown?.getMarkdown() ?? editor.getText();
-    if (currentMd.trim() === initialContent.trim()) return;
+    // Compara contra a versão highlightada também — onChange devolve com
+    // backticks, e ao receber de volta como initialContent não queremos
+    // re-setar (evita reset de cursor durante autosave).
+    const highlighted = initialContent.replace(TOOL_NAMES_RE, "`$1`");
+    if (
+      currentMd.trim() === initialContent.trim() ||
+      currentMd.trim() === highlighted.trim()
+    ) {
+      return;
+    }
 
     // Preserva a posição do cursor quando o conteúdo precisar ser realmente recarregado
     const { from, to } = editor.state.selection;
-    editor.commands.setContent(initialContent, { emitUpdate: false });
+    editor.commands.setContent(highlighted, { emitUpdate: false });
     try {
       editor.commands.setTextSelection({ from, to });
     } catch {

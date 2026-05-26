@@ -32,11 +32,15 @@ html, body {
 .ProseMirror em { font-style: italic; }
 .ProseMirror s { text-decoration: line-through; }
 .ProseMirror code {
-  background: #f1f5f9;
-  border-radius: 3px;
-  font-family: 'Courier New', monospace;
-  font-size: 0.8em;
-  padding: 0.15em 0.35em;
+  background: #ede9fe;            /* lilás claro */
+  color: #6d28d9;                  /* roxo escuro (primary tone) */
+  border: 1px solid #c4b5fd;
+  border-radius: 4px;
+  font-family: 'Courier New', 'Consolas', monospace;
+  font-size: 0.85em;
+  font-weight: 600;
+  padding: 0.1em 0.4em;
+  white-space: nowrap;
 }
 .ProseMirror pre {
   background: #1e293b;
