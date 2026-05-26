@@ -3747,13 +3747,32 @@ function TemplatesModal({
     }
   }
 
+  // Defaults para variáveis opcionais conhecidas — usados quando o usuário
+  // deixa o campo em branco, evitando placeholders [VAR] vazando pro paciente.
+  const VAR_FALLBACKS: Record<string, string> = {
+    CARGO_AVALIADOR: "Dentista Avaliador",
+    PONTO_REFERENCIA: "",
+    DIFERENCIAIS_CLINICA: "",
+    FORMAS_PAGAMENTO: "consulte a recepção",
+    IDADE_MINIMA: "12",
+  };
+
   function applyVariables(prompt: string, values: Record<string, string>): string {
     let result = prompt;
+    // Pass 1: substitui valores preenchidos
     Object.entries(values).forEach(([key, val]) => {
       if (val.trim()) {
         result = result.replaceAll(`[${key}]`, val.trim());
+      } else if (key in VAR_FALLBACKS) {
+        result = result.replaceAll(`[${key}]`, VAR_FALLBACKS[key]);
       }
     });
+    // Pass 2: limpa qualquer placeholder [VAR] restante (variáveis opcionais
+    // que não foram preenchidas e não têm fallback). Evita texto literal
+    // tipo "[GOOGLE_CALENDAR_ID]" vazar pro paciente.
+    result = result.replace(/\[[A-Z][A-Z0-9_]+\]/g, "");
+    // Limpa linhas vazias duplicadas resultantes da remoção
+    result = result.replace(/\n{3,}/g, "\n\n");
     return result;
   }
 

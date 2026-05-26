@@ -32,7 +32,7 @@ insert into public.prompt_templates (
     {"key":"NOME_ASSISTENTE","label":"Nome da assistente virtual","placeholder":"ex: Sarah","type":"text","required":true,"settings_key":"assistant_name"},
     {"key":"CARGO_ASSISTENTE","label":"Cargo da assistente","placeholder":"ex: atendente virtual, SDR e CRC","type":"text","required":true,"settings_key":"assistant_role"},
     {"key":"NOME_CLINICA","label":"Nome da clínica","placeholder":"ex: Costa Lima Odontologia Recreio","type":"text","required":true,"settings_key":"company_name"},
-    {"key":"CARGO_AVALIADOR","label":"Cargo do profissional avaliador","placeholder":"ex: Dentista Avaliador","type":"text","required":true},
+    {"key":"CARGO_AVALIADOR","label":"Cargo do profissional avaliador","placeholder":"ex: Dentista Avaliador","type":"text","required":false},
     {"key":"ENDERECO_CLINICA","label":"Endereço completo","placeholder":"ex: Av. das Américas, 13.685, Loja 149 - Barra da Tijuca, Rio de Janeiro - RJ","type":"textarea","required":true,"settings_key":"company_address"},
     {"key":"PONTO_REFERENCIA","label":"Ponto de referência (opcional)","placeholder":"ex: em frente ao terminal BRT, ao lado do Supermercado Mundial","type":"textarea","required":false},
     {"key":"HORARIOS_FUNCIONAMENTO","label":"Horários de funcionamento","placeholder":"ex:\nSegunda a sexta: 09h às 18h\nSábado: 09h às 12h","type":"textarea","required":true,"settings_key":"business_hours"},
@@ -505,14 +505,13 @@ insert into public.prompt_templates (
     {"key":"NOME_ASSISTENTE","label":"Nome da assistente virtual","placeholder":"ex: Sarah","type":"text","required":true,"settings_key":"assistant_name"},
     {"key":"CARGO_ASSISTENTE","label":"Cargo da assistente","placeholder":"ex: atendente virtual, SDR e CRC","type":"text","required":true,"settings_key":"assistant_role"},
     {"key":"NOME_CLINICA","label":"Nome da clínica","placeholder":"ex: Costa Lima Odontologia Recreio","type":"text","required":true,"settings_key":"company_name"},
-    {"key":"CARGO_AVALIADOR","label":"Cargo do profissional avaliador","placeholder":"ex: Dentista Avaliador","type":"text","required":true},
+    {"key":"CARGO_AVALIADOR","label":"Cargo do profissional avaliador (opcional)","placeholder":"ex: Dentista Avaliador","type":"text","required":false},
     {"key":"ENDERECO_CLINICA","label":"Endereço completo","placeholder":"ex: Av. das Américas, 13.685, Loja 149 - Barra da Tijuca, Rio de Janeiro - RJ","type":"textarea","required":true,"settings_key":"company_address"},
     {"key":"PONTO_REFERENCIA","label":"Ponto de referência (opcional)","placeholder":"ex: em frente ao terminal BRT","type":"textarea","required":false},
     {"key":"HORARIOS_FUNCIONAMENTO","label":"Horários de funcionamento","placeholder":"ex:\nSegunda a sexta: 09h às 18h\nSábado: 09h às 12h","type":"textarea","required":true,"settings_key":"business_hours"},
     {"key":"DIFERENCIAIS_CLINICA","label":"Diferenciais (1 por linha)","placeholder":"ex:\n11 anos de história\n1.000+ avaliações positivas\n1.000+ implantes realizados","type":"textarea","required":false,"settings_key":"featured_services"},
     {"key":"FORMAS_PAGAMENTO","label":"Formas de pagamento","placeholder":"ex: Dinheiro, Pix, cartão em até 21x, boleto e financeira","type":"text","required":false,"settings_key":"payment_methods"},
-    {"key":"IDADE_MINIMA","label":"Idade mínima","placeholder":"ex: 12","type":"text","required":false},
-    {"key":"GOOGLE_CALENDAR_ID","label":"ID da agenda no Google Calendar","placeholder":"ex: abc123@group.calendar.google.com","type":"text","required":true}
+    {"key":"IDADE_MINIMA","label":"Idade mínima","placeholder":"ex: 12","type":"text","required":false}
   ]'::jsonb,
   $PROMPT$
 # PAPEL
@@ -676,7 +675,7 @@ Use os diferenciais cadastrados quando fizer sentido.
 
 Antes de oferecer qualquer horário, consulte obrigatoriamente listar_horarios_google_calendar.
 
-Use sempre o calendar_id: [GOOGLE_CALENDAR_ID]
+A ferramenta já está vinculada à agenda correta da clínica via OAuth — você não precisa passar nenhum calendar_id.
 
 Nunca ofereça horário sem retorno real da ferramenta.
 
@@ -824,7 +823,6 @@ Endereço: [ENDERECO_CLINICA]
 Ponto de referência: [PONTO_REFERENCIA]
 Horários: [HORARIOS_FUNCIONAMENTO]
 Formas de pagamento: [FORMAS_PAGAMENTO]
-Agenda Google: [GOOGLE_CALENDAR_ID]
 
 
 # ENCERRAMENTO APÓS CONFIRMAÇÃO
