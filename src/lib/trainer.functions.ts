@@ -127,7 +127,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
     const model =
       (agent.data.llm_model_override as string | null) ||
       (llm.data?.default_model as string | undefined) ||
-      "anthropic/claude-sonnet-4.5";
+      "google/gemini-2.5-flash";
     const maxTokens = (llm.data?.max_tokens as number | undefined) ?? 2048;
     const temperature = (llm.data?.temperature as number | undefined) ?? 0.5;
 
@@ -148,9 +148,9 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       model,
       fallbackModels:
         (llm.data?.fallback_models as string[] | undefined) ??
-        ["openai/gpt-4o-mini", "x-ai/grok-4-fast"],
+        ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],
       ragGateModel:
-        (llm.data?.rag_gate_model as string | undefined) ?? "x-ai/grok-4-fast",
+        (llm.data?.rag_gate_model as string | undefined) ?? "google/gemini-2.5-flash",
       maxTokens,
       temperature,
       orKey,

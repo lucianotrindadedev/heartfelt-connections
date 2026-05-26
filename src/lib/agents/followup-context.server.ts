@@ -60,7 +60,7 @@ export async function generateContextualFollowup(
   const model =
     (agent.data.llm_model_override as string | null) ||
     (llmCfg.data?.default_model as string | undefined) ||
-    "anthropic/claude-sonnet-4.5";
+    "google/gemini-2.5-flash";
 
   const basePrompt = (agent.data.system_prompt as string) || "";
   const settings = (agent.data.settings as Record<string, string> | null) ?? {};
