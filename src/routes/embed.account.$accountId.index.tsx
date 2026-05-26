@@ -4819,6 +4819,34 @@ function AgentSettingsView({
                   }}
                 />
               </div>
+
+              {/* Duração da consulta (Google Calendar) */}
+              {configuredIntegrations?.google_calendar && (
+                <div className="mt-4">
+                  <label className="block text-xs font-semibold text-slate-700 mb-2">
+                    Duração / janela de agendamento
+                  </label>
+                  <select
+                    value={settings.duracao_consulta_minutos ?? "40"}
+                    onChange={(e) => setSetting("duracao_consulta_minutos", e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm outline-none transition-all hover:border-slate-300 focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  >
+                    <option value="15">15 minutos</option>
+                    <option value="20">20 minutos</option>
+                    <option value="30">30 minutos</option>
+                    <option value="40">40 minutos</option>
+                    <option value="45">45 minutos</option>
+                    <option value="60">1 hora</option>
+                    <option value="90">1 hora e 30 minutos</option>
+                    <option value="120">2 horas</option>
+                  </select>
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    Define a duração de cada consulta e o intervalo entre os horários
+                    oferecidos pelo Google Calendar. Com 30 min, os slots ficam 08:00,
+                    08:30, 09:00, 09:30… Com 40 min: 08:00, 08:40, 09:20…
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="border-t border-slate-200" />

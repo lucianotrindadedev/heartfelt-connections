@@ -277,11 +277,13 @@ async function execListarHorarios(
   // Google Calendar: usa lógica de janelas com expediente da clínica
   if (ctx.integrations.googleCalendar) {
     const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
+    // Granularidade IGUAL à duração → slots não sobrepostos. Ex: duração 30 min
+    // gera 08:00, 08:30, 09:00, 09:30... Duração 40 min gera 08:00, 08:40, 09:20...
     const slots = await listGoogleCalendarSlots(ctx.accountId, {
       periodoInicio: today.toISOString(),
       periodoFim: end.toISOString(),
       tamanhoJanelaMinutos: duracao,
-      granularidade: Math.min(duracao, 30),
+      granularidade: duracao,
       amostras: 6,
       businessHoursJson: ctx.agentSettings.business_hours_json,
     });
