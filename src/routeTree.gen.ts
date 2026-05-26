@@ -31,6 +31,7 @@ import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron
 import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/cron/followup'
 import { Route as ApiPublicCronFollowupSequenceRouteImport } from './routes/api/public/cron/followup-sequence'
 import { Route as ApiPublicCronWarmupSequenceRouteImport } from './routes/api/public/cron/warmup-sequence'
+import { Route as ApiPublicCronKnowledgeDistillerRouteImport } from './routes/api/public/cron/knowledge-distiller'
 import { Route as ApiPublicCronDrainConversationRouteImport } from './routes/api/public/cron/drain-conversation'
 import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
 import { Route as ApiPublicWebhookHelenaAccountIdRouteImport } from './routes/api/public/webhook/helena/$accountId'
@@ -192,6 +193,7 @@ export interface FileRoutesByFullPath {
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
+  '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
@@ -218,6 +220,7 @@ export interface FileRoutesByTo {
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
+  '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
@@ -249,6 +252,7 @@ export interface FileRoutesById {
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
+  '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
@@ -280,6 +284,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/warmup-sequence'
+    | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
     | '/api/public/diag/followup'
@@ -306,6 +311,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/warmup-sequence'
+    | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
     | '/api/public/diag/followup'
@@ -336,6 +342,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/warmup-sequence'
+    | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
     | '/api/public/diag/followup'
@@ -360,6 +367,7 @@ export interface RootRouteChildren {
   ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute,
   ApiPublicCronFollowupSequenceRoute: typeof ApiPublicCronFollowupSequenceRoute
   ApiPublicCronWarmupSequenceRoute: typeof ApiPublicCronWarmupSequenceRoute
+  ApiPublicCronKnowledgeDistillerRoute: typeof ApiPublicCronKnowledgeDistillerRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
   ApiPublicDiagFollowupRoute: typeof ApiPublicDiagFollowupRoute
@@ -529,6 +537,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicCronWarmupSequenceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/cron/knowledge-distiller': {
+      id: '/api/public/cron/knowledge-distiller'
+      path: '/api/public/cron/knowledge-distiller'
+      fullPath: '/api/public/cron/knowledge-distiller'
+      preLoaderRoute: typeof ApiPublicCronKnowledgeDistillerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron/drain-conversation': {
       id: '/api/public/cron/drain-conversation'
       path: '/api/public/cron/drain-conversation'
@@ -639,6 +654,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicCronFollowupRoute: ApiPublicCronFollowupRoute,
   ApiPublicCronFollowupSequenceRoute: ApiPublicCronFollowupSequenceRoute,
   ApiPublicCronWarmupSequenceRoute: ApiPublicCronWarmupSequenceRoute,
+  ApiPublicCronKnowledgeDistillerRoute: ApiPublicCronKnowledgeDistillerRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,
   ApiPublicDiagFollowupRoute: ApiPublicDiagFollowupRoute,
