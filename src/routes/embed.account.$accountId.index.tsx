@@ -220,6 +220,7 @@ function AliasAccountSelector({
                 navigate({
                   to: "/embed/account/$accountId",
                   params: { accountId: a.id },
+                  search: { picked: "1" }, // evita re-acionar MultiAgentSelector na pagina de destino
                 })
               }
               className="flex w-full items-center justify-between rounded-xl border bg-card p-4 text-left transition hover:bg-accent/50 hover:border-primary/30"
