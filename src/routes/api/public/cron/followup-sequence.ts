@@ -115,9 +115,35 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
           return Response.json({ ok: true, processed: 0, reason: "no steps" });
         }
 
+        // Detecta steps com config invalida (modo 'message' sem message_text)
+        // e auto-desabilita pra evitar log spam a cada minuto.
+        const invalidSteps = (steps as FollowupStep[]).filter(
+          (s) =>
+            s.mode === "message" &&
+            (!s.message_text || !s.message_text.trim()),
+        );
+        if (invalidSteps.length > 0) {
+          const ids = invalidSteps.map((s) => s.id);
+          await sb.from("followup_steps").update({ enabled: false }).in("id", ids);
+          console.warn(
+            `[followup-seq] auto-disabled ${ids.length} step(s) com config invalida (mode=message + message_text vazio): ${ids.join(", ")}`,
+          );
+        }
+        const validSteps = (steps as FollowupStep[]).filter(
+          (s) => !invalidSteps.includes(s),
+        );
+        if (validSteps.length === 0) {
+          return Response.json({
+            ok: true,
+            processed: 0,
+            reason: "all steps had invalid config and were auto-disabled",
+            disabled_steps: invalidSteps.map((s) => s.id),
+          });
+        }
+
         // Agrupa por agent_id
         const stepsByAgent = new Map<string, FollowupStep[]>();
-        for (const s of steps as FollowupStep[]) {
+        for (const s of validSteps) {
           const arr = stepsByAgent.get(s.agent_id) ?? [];
           arr.push(s);
           stepsByAgent.set(s.agent_id, arr);
@@ -231,7 +257,8 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
               if (nextStep.mode === "message") {
                 messageText = (nextStep.message_text ?? "").trim();
                 if (!messageText) {
-                  console.warn(`[followup-seq] step ${nextStep.id} message_text vazio`);
+                  // Step com config invalida — ja foi auto-desabilitado no
+                  // inicio do tick; este guard e so um safety net.
                   continue;
                 }
               } else {

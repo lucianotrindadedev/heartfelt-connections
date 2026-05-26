@@ -405,12 +405,15 @@ export async function callLlmWithFallback(
     const model = models[i];
     try {
       const r = await callLlm(orKey, { ...req, model });
-      // Content vazio sem reasoning é um falhanço silencioso. Se houver
-      // próximo modelo na cadeia, tenta. Senão, devolve mesmo vazio
-      // (parser fará retry interno em callLlmStructured).
-      if (!r.content && i < models.length - 1) {
+      // Content vazio + finish=tool_calls é COMPORTAMENTO CORRETO: o LLM
+      // decidiu chamar uma tool em vez de responder. Não pode ser tratado
+      // como falha — senão o fallback executa o mesmo prompt em outro
+      // modelo perdendo a tool call original (e o agendamento vira fake).
+      const hasToolCalls = (r.toolCalls?.length ?? 0) > 0;
+      const isEmptyTextNoTools = !r.content && !hasToolCalls;
+      if (isEmptyTextNoTools && i < models.length - 1) {
         console.warn(
-          `[llm-fallback] model=${model} retornou content vazio (finish=${r.finishReason}) — tentando próximo`,
+          `[llm-fallback] model=${model} retornou content vazio sem tool_calls (finish=${r.finishReason}) — tentando próximo`,
         );
         lastErr = new LlmError(200, `empty content from ${model}`);
         continue;
