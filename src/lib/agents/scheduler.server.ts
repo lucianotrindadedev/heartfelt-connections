@@ -125,9 +125,10 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "listar_horarios",
       description:
-        "Lista horários disponíveis para os próximos 7 dias no Clinicorp. " +
+        "Lista horários disponíveis para os próximos 7 dias na agenda da clínica (Clinicorp OU Google Calendar, conforme integração ativa da conta). " +
         "Use quando precisar oferecer slots ao lead (stage SLOT_OFFER). " +
-        "Retorna lista com no máximo 6 horários: cada um tem iso, date_label, time_label e dentist_person_id.",
+        "Retorna lista com no máximo 6 horários alinhados à duração da consulta configurada. " +
+        "Aliases reconhecidos (caso o prompt mencione): listar_horarios_clinicorp, listar_horarios_google_calendar, listar_horarios_clinup.",
       parameters: {
         type: "object",
         properties: {
@@ -540,12 +541,21 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       try {
         switch (tc.function.name) {
           case "buscar_paciente":
+          case "buscar_paciente_clinicorp":
+          case "buscar_paciente_clinup":
             outcome = await execBuscarPaciente(ctx);
             break;
           case "listar_horarios":
+          case "listar_horarios_clinicorp":
+          case "listar_horarios_google_calendar":
+          case "listar_horarios_clinup":
+          case "clinup_buscar_horarios":
             outcome = await execListarHorarios(ctx, args.dias_a_frente as number | undefined);
             break;
           case "criar_agendamento":
+          case "agendar_clinicorp":
+          case "agendar_google_calendar":
+          case "agendar_clinup":
             outcome = await execCriarAgendamento(ctx);
             break;
           case "enviar_midia": {
