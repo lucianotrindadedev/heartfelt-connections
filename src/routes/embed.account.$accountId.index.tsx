@@ -102,6 +102,15 @@ import {
   deleteKnowledgeDocument,
 } from "@/lib/knowledge.functions";
 import {
+  listDistilledFaqs,
+  approveDistilledFaq,
+  rejectDistilledFaq,
+  editDistilledFaq,
+  updateDistillationConfig,
+  getDistillationConfig,
+  listDistillationRuns,
+} from "@/lib/knowledge-distillation.functions";
+import {
   listFollowupSteps,
   createFollowupStep,
   updateFollowupStep,
@@ -2122,6 +2131,335 @@ function MediaCard({
 }
 
 // =================================================================
+// DistillationView — aba "Aprendizado" do Knowledge sheet
+// Lista FAQs auto-extraidas pela distillation + config + historico de runs.
+// =================================================================
+
+interface DistilledFaq {
+  id: string;
+  title: string | null;
+  distilled_question: string | null;
+  content_preview: string | null;
+  confidence: number | null;
+  frequency: number | null;
+  pii_detected: boolean;
+  review_status: "approved" | "auto_pending" | "quarantine" | "rejected";
+  quarantine_until: string | null;
+  criado_em: string;
+}
+
+function DistillationView({ agentId }: { agentId: string }) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listDistilledFaqs);
+  const approveFn = useServerFn(approveDistilledFaq);
+  const rejectFn = useServerFn(rejectDistilledFaq);
+  const editFn = useServerFn(editDistilledFaq);
+  const getCfg = useServerFn(getDistillationConfig);
+  const setCfg = useServerFn(updateDistillationConfig);
+  const listRuns = useServerFn(listDistillationRuns);
+
+  const [filter, setFilter] = useState<"all" | "auto_pending" | "quarantine" | "approved" | "rejected">("auto_pending");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+
+  const cfgQ = useQuery({
+    queryKey: ["distill-config", agentId],
+    queryFn: () => getCfg({ data: { agentId } }),
+  });
+  const faqsQ = useQuery({
+    queryKey: ["distill-faqs", agentId, filter],
+    queryFn: () => listFn({ data: { agentId, status: filter } }),
+  });
+  const runsQ = useQuery({
+    queryKey: ["distill-runs", agentId],
+    queryFn: () => listRuns({ data: { agentId } }),
+  });
+
+  const enabled = (cfgQ.data?.distillation_enabled as boolean | undefined) ?? false;
+  const faqs = (faqsQ.data?.faqs ?? []) as DistilledFaq[];
+
+  async function toggleEnabled(v: boolean) {
+    try {
+      await setCfg({ data: { agentId, distillation_enabled: v } });
+      qc.invalidateQueries({ queryKey: ["distill-config", agentId] });
+      toast.success(v ? "Aprendizado ativado." : "Aprendizado pausado.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro");
+    }
+  }
+
+  async function approve(id: string) {
+    try {
+      await approveFn({ data: { id } });
+      qc.invalidateQueries({ queryKey: ["distill-faqs", agentId, filter] });
+      toast.success("FAQ aprovada.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro");
+    }
+  }
+
+  async function reject(id: string) {
+    if (!confirm("Rejeitar essa FAQ? Ela não vai mais ser usada nas respostas.")) return;
+    try {
+      await rejectFn({ data: { id } });
+      qc.invalidateQueries({ queryKey: ["distill-faqs", agentId, filter] });
+      toast.success("FAQ rejeitada.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro");
+    }
+  }
+
+  async function saveEdit(id: string) {
+    try {
+      await editFn({ data: { id, chunk_text: editText } });
+      qc.invalidateQueries({ queryKey: ["distill-faqs", agentId, filter] });
+      setEditingId(null);
+      setEditText("");
+      toast.success("FAQ atualizada.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro");
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto bg-slate-50">
+      {/* Header explicativo + toggle */}
+      <div className="border-b bg-white px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1">
+            <p className="text-sm font-semibold">Aprendizado automático</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Um agente em segundo plano lê suas conversas semanalmente,
+              identifica perguntas frequentes e propõe FAQs para a base. Você
+              revisa antes de elas virarem ativas.
+            </p>
+          </div>
+          <Switch checked={enabled} onCheckedChange={toggleEnabled} />
+        </div>
+        {enabled && cfgQ.data && (
+          <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+            <span className="rounded-full bg-slate-100 px-2 py-0.5">
+              Schedule: {(cfgQ.data as { distillation_schedule?: string }).distillation_schedule ?? "weekly"}
+            </span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5">
+              Mín. {(cfgQ.data as { distillation_min_frequency?: number }).distillation_min_frequency} ocorrências
+            </span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5">
+              Quarentena: {(cfgQ.data as { distillation_quarantine_hours?: number }).distillation_quarantine_hours}h
+            </span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5">
+              Max auto-aprovação/run: {(cfgQ.data as { distillation_max_auto_approve_per_run?: number }).distillation_max_auto_approve_per_run}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Filtros */}
+      <div className="flex gap-1 border-b bg-white px-3 py-2">
+        {[
+          { v: "auto_pending", l: "Pendentes" },
+          { v: "quarantine", l: "Quarentena" },
+          { v: "approved", l: "Aprovadas" },
+          { v: "rejected", l: "Rejeitadas" },
+          { v: "all", l: "Todas" },
+        ].map((o) => (
+          <button
+            key={o.v}
+            onClick={() => setFilter(o.v as typeof filter)}
+            className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              filter === o.v
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-slate-100"
+            }`}
+          >
+            {o.l}
+          </button>
+        ))}
+      </div>
+
+      {/* Lista */}
+      <div className="p-3 space-y-2">
+        {faqsQ.isLoading && (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        )}
+        {!faqsQ.isLoading && faqs.length === 0 && (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-white p-6 text-center text-xs text-muted-foreground">
+            {filter === "auto_pending"
+              ? "Nenhuma FAQ pendente. O distiller roda automaticamente conforme o schedule configurado."
+              : "Nenhuma FAQ nesta categoria."}
+          </div>
+        )}
+        {faqs.map((f) => {
+          const inQuarantine =
+            f.review_status === "quarantine" &&
+            f.quarantine_until &&
+            new Date(f.quarantine_until).getTime() > Date.now();
+          const hoursLeft = inQuarantine
+            ? Math.ceil((new Date(f.quarantine_until!).getTime() - Date.now()) / 3_600_000)
+            : 0;
+          const editing = editingId === f.id;
+
+          return (
+            <div key={f.id} className="rounded-lg border border-slate-200 bg-white p-3">
+              <div className="mb-1 flex items-start justify-between gap-2">
+                <p className="flex-1 text-sm font-medium text-foreground">
+                  {f.distilled_question ?? f.title ?? "FAQ sem título"}
+                </p>
+                <StatusBadgeDistill faq={f} hoursLeft={hoursLeft} />
+              </div>
+
+              {!editing ? (
+                <p className="whitespace-pre-wrap text-[11px] text-muted-foreground line-clamp-4">
+                  {f.content_preview}
+                </p>
+              ) : (
+                <textarea
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  rows={5}
+                  className="w-full rounded-md border border-slate-200 px-2 py-1 text-[11px] outline-none focus:border-primary"
+                />
+              )}
+
+              <div className="mt-2 flex items-center gap-3 text-[10px] text-muted-foreground">
+                {f.frequency != null && <span>{f.frequency} ocorrências</span>}
+                {f.confidence != null && (
+                  <span>confiança {(f.confidence * 100).toFixed(0)}%</span>
+                )}
+                {f.pii_detected && (
+                  <span className="rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-800">
+                    PII detectado
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-2 flex justify-end gap-2">
+                {editing ? (
+                  <>
+                    <button
+                      onClick={() => { setEditingId(null); setEditText(""); }}
+                      className="text-[10px] text-muted-foreground hover:text-foreground"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={() => void saveEdit(f.id)}
+                      className="text-[10px] font-semibold text-primary hover:text-primary/80"
+                    >
+                      Salvar
+                    </button>
+                  </>
+                ) : f.review_status === "approved" ? (
+                  <>
+                    <button
+                      onClick={() => {
+                        setEditingId(f.id);
+                        setEditText(f.content_preview ?? "");
+                      }}
+                      className="text-[10px] text-muted-foreground hover:text-foreground"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      onClick={() => void reject(f.id)}
+                      className="text-[10px] text-muted-foreground hover:text-destructive"
+                    >
+                      Desativar
+                    </button>
+                  </>
+                ) : f.review_status === "rejected" ? (
+                  <button
+                    onClick={() => void approve(f.id)}
+                    className="text-[10px] font-semibold text-primary hover:text-primary/80"
+                  >
+                    Reativar
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => void reject(f.id)}
+                      className="text-[10px] text-muted-foreground hover:text-destructive"
+                    >
+                      Rejeitar
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingId(f.id);
+                        setEditText(f.content_preview ?? "");
+                      }}
+                      className="text-[10px] text-muted-foreground hover:text-foreground"
+                    >
+                      Editar
+                    </button>
+                    <button
+                      onClick={() => void approve(f.id)}
+                      className="text-[10px] font-semibold text-primary hover:text-primary/80"
+                    >
+                      Aprovar
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Histórico de runs */}
+      {(runsQ.data?.runs ?? []).length > 0 && (
+        <div className="border-t border-slate-200 bg-white px-4 py-3">
+          <p className="mb-2 text-[11px] font-semibold text-muted-foreground">
+            Últimas execuções
+          </p>
+          <ul className="space-y-1 text-[10px] text-muted-foreground">
+            {(runsQ.data?.runs ?? []).slice(0, 5).map((r) => {
+              const rr = r as Record<string, unknown>;
+              const when = new Date(rr.started_at as string).toLocaleString("pt-BR", {
+                day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+              });
+              return (
+                <li key={String(rr.id)} className="flex items-center justify-between">
+                  <span>
+                    {when} · {Number(rr.conversations_scanned ?? 0)} conv → {Number(rr.faqs_extracted ?? 0)} FAQs
+                    {" "}({Number(rr.faqs_auto_approved ?? 0)} auto · {Number(rr.faqs_pending ?? 0)} pending)
+                  </span>
+                  <span>${Number(rr.cost_usd ?? 0).toFixed(5)}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusBadgeDistill({
+  faq, hoursLeft,
+}: {
+  faq: DistilledFaq;
+  hoursLeft: number;
+}) {
+  const map: Record<string, { cls: string; label: string }> = {
+    approved: { cls: "bg-emerald-100 text-emerald-700", label: "Aprovada" },
+    auto_pending: { cls: "bg-amber-100 text-amber-800", label: "Pendente" },
+    quarantine: {
+      cls: "bg-blue-100 text-blue-700",
+      label: hoursLeft > 0 ? `Quarentena ${hoursLeft}h` : "Quarentena (liberada)",
+    },
+    rejected: { cls: "bg-slate-100 text-slate-500", label: "Rejeitada" },
+  };
+  const info = map[faq.review_status] ?? map.auto_pending;
+  return (
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold ${info.cls}`}>
+      {info.label}
+    </span>
+  );
+}
+
+// =================================================================
 // KnowledgeSheet — base de conhecimento (RAG) do agente
 // =================================================================
 
@@ -2147,6 +2485,7 @@ function KnowledgeSheet({
     refetchInterval: open ? 5000 : false, // polling para ver status mudar
   });
 
+  const [mainTab, setMainTab] = useState<"documentos" | "aprendizado">("documentos");
   const [tab, setTab] = useState<"url" | "pdf">("url");
   const [urlInput, setUrlInput] = useState("");
   const [pending, setPending] = useState(false);
@@ -2224,6 +2563,32 @@ function KnowledgeSheet({
           </p>
         </SheetHeader>
 
+        {/* Tabs principais: Documentos | Aprendizado */}
+        <div className="flex border-b bg-white px-3 pt-1">
+          <button
+            onClick={() => setMainTab("documentos")}
+            className={`relative px-4 py-2.5 text-xs font-semibold transition-colors ${
+              mainTab === "documentos" ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            📚 Documentos
+            {mainTab === "documentos" && <span className="absolute inset-x-2 -bottom-px h-0.5 bg-primary" />}
+          </button>
+          <button
+            onClick={() => setMainTab("aprendizado")}
+            className={`relative px-4 py-2.5 text-xs font-semibold transition-colors ${
+              mainTab === "aprendizado" ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            ✨ Aprendizado
+            {mainTab === "aprendizado" && <span className="absolute inset-x-2 -bottom-px h-0.5 bg-primary" />}
+          </button>
+        </div>
+
+        {mainTab === "aprendizado" ? (
+          <DistillationView agentId={agentId} />
+        ) : (
+        <>
         {/* Tabs URL / PDF */}
         <div className="flex border-b bg-slate-50 px-3 pt-2">
           <button
@@ -2377,6 +2742,8 @@ function KnowledgeSheet({
             );
           })}
         </div>
+        </>
+        )}
       </SheetContent>
     </Sheet>
   );
