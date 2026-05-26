@@ -114,7 +114,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         .single(),
       sb
         .from("account_llm_config")
-        .select("default_model, max_tokens, temperature")
+        .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model")
         .eq("account_id", data.accountId)
         .single(),
       sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
@@ -146,6 +146,11 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       agentSettings: (agent.data.settings as Record<string, string> | null) ?? {},
       basePrompt: (agent.data.system_prompt as string) || "",
       model,
+      fallbackModels:
+        (llm.data?.fallback_models as string[] | undefined) ??
+        ["openai/gpt-4o-mini", "x-ai/grok-4-fast"],
+      ragGateModel:
+        (llm.data?.rag_gate_model as string | undefined) ?? "x-ai/grok-4-fast",
       maxTokens,
       temperature,
       orKey,

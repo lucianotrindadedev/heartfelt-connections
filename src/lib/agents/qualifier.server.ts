@@ -11,7 +11,13 @@
 
 import { z } from "zod";
 import type { AgentContext, AgentResult } from "./context";
-import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
+import {
+  callLlmWithFallback,
+  callLlmStructuredWithFallback,
+  type LlmMessage,
+  type LlmTool,
+} from "./llm.server";
+import { decideRagNeed } from "./rag-gate.server";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
 import { loadHelenaAccount } from "@/lib/helena.server";
@@ -385,12 +391,23 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     initialTagApplied = true; // marca mesmo se a tag não existe no CRM, evita re-tentar
   }
 
-  // RAG: busca os top-5 chunks mais relevantes à última mensagem do lead
+  // RAG com Gate: primeiro um modelo barato decide se a msg precisa de RAG.
+  // Quando precisa, ele já reescreve a query pra busca semântica. Isso
+  // economiza embedding API call + vector search + ~700 tokens injetados
+  // no prompt principal em conversas triviais ("ok", "tudo bem", saudações).
   const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
-  const ragChunks = lastUserMsg ? await searchKnowledge(ctx.agentId, lastUserMsg, 5) : [];
-  const ragContext = formatChunksAsContext(ragChunks);
-  if (ragChunks.length > 0) {
-    console.log(`[qualifier] RAG: ${ragChunks.length} chunks injetados`);
+  let ragContext = "";
+  if (lastUserMsg) {
+    const gate = await decideRagNeed(ctx.orKey, ctx.ragGateModel, ctx.history, lastUserMsg);
+    if (gate.need) {
+      const ragChunks = await searchKnowledge(ctx.agentId, gate.query || lastUserMsg, 5);
+      ragContext = formatChunksAsContext(ragChunks);
+      console.log(
+        `[qualifier] RAG: gate=true (${gate.reasoning ?? "ok"}) query="${(gate.query || lastUserMsg).slice(0, 60)}" → ${ragChunks.length} chunks`,
+      );
+    } else {
+      console.log(`[qualifier] RAG: gate=false (${gate.reasoning ?? "skip"}) — busca evitada`);
+    }
   }
 
   // Mídias disponíveis (para a tool enviar_midia)
@@ -423,7 +440,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   const allowTools = cycleCount > 1 || hasExplicitInterestInM1;
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS && allowTools; loop++) {
-    const turn = await callLlm(ctx.orKey, {
+    const turn = await callLlmWithFallback(ctx.orKey, {
       model: ctx.model,
       systemCached: cached,
       systemDynamic: dynamic,
@@ -433,7 +450,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature,
       enableCaching: ctx.model.startsWith("anthropic/"),
-    });
+    }, ctx.fallbackModels);
 
     totalTokensIn += turn.tokensIn;
     totalTokensOut += turn.tokensOut;
@@ -488,8 +505,8 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     }
   }
 
-  // Resposta final estruturada (sem tools).
-  const { result, response: finalResponse } = await callLlmStructured<QualifierJsonResult>(
+  // Resposta final estruturada (sem tools) — com fallback.
+  const { result, response: finalResponse } = await callLlmStructuredWithFallback<QualifierJsonResult>(
     ctx.orKey,
     {
       model: ctx.model,
@@ -513,6 +530,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       toolChoice: "none",
     },
     (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
+    ctx.fallbackModels,
   );
 
   totalTokensIn += finalResponse.tokensIn;

@@ -38,7 +38,13 @@ import {
   getAvailableMediaForPrompt,
 } from "./send-media.server";
 import type { AgentContext, AgentResult } from "./context";
-import { callLlm, callLlmStructured, type LlmMessage, type LlmTool } from "./llm.server";
+import {
+  callLlmWithFallback,
+  callLlmStructuredWithFallback,
+  type LlmMessage,
+  type LlmTool,
+} from "./llm.server";
+import { decideRagNeed } from "./rag-gate.server";
 import type { LeadData, Stage } from "./stage";
 
 /**
@@ -455,12 +461,20 @@ ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n`
 const MAX_TOOL_LOOPS = 6;
 
 export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult> {
-  // RAG: busca conhecimento relevante para a última mensagem (best effort)
+  // RAG com Gate: modelo barato decide se a msg precisa de busca.
   const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
-  const ragChunks = lastUserMsg ? await searchKnowledge(ctx.agentId, lastUserMsg, 5) : [];
-  const ragContext = formatChunksAsContext(ragChunks);
-  if (ragChunks.length > 0) {
-    console.log(`[scheduler] RAG: ${ragChunks.length} chunks injetados`);
+  let ragContext = "";
+  if (lastUserMsg) {
+    const gate = await decideRagNeed(ctx.orKey, ctx.ragGateModel, ctx.history, lastUserMsg);
+    if (gate.need) {
+      const ragChunks = await searchKnowledge(ctx.agentId, gate.query || lastUserMsg, 5);
+      ragContext = formatChunksAsContext(ragChunks);
+      console.log(
+        `[scheduler] RAG: gate=true (${gate.reasoning ?? "ok"}) query="${(gate.query || lastUserMsg).slice(0, 60)}" → ${ragChunks.length} chunks`,
+      );
+    } else {
+      console.log(`[scheduler] RAG: gate=false (${gate.reasoning ?? "skip"}) — busca evitada`);
+    }
   }
 
   // Mídias disponíveis (para a tool enviar_midia)
@@ -484,7 +498,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Loop de tools: primeiro deixa o modelo decidir (tool_choice=auto).
   // Quando ele parar de chamar tools, força um turno final com jsonMode.
   for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
-    const turn = await callLlm(ctx.orKey, {
+    const turn = await callLlmWithFallback(ctx.orKey, {
       model: ctx.model,
       systemCached: cached,
       systemDynamic: dynamic,
@@ -494,7 +508,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature,
       enableCaching: ctx.model.startsWith("anthropic/"),
-    });
+    }, ctx.fallbackModels);
 
     totalTokensIn += turn.tokensIn;
     totalTokensOut += turn.tokensOut;
@@ -572,7 +586,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Após tools (ou se não chamou nenhuma), pede a resposta estruturada final.
   const finalBaseDynamic = buildDynamicSystemPrompt(ctx); // reflete patches acumulados
   const finalDynamic = extras ? finalBaseDynamic + "\n\n" + extras : finalBaseDynamic;
-  const { result, response: finalResponse } = await callLlmStructured<SchedulerJsonResult>(
+  const { result, response: finalResponse } = await callLlmStructuredWithFallback<SchedulerJsonResult>(
     ctx.orKey,
     {
       model: ctx.model,
@@ -592,6 +606,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       toolChoice: "none",
     },
     (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
+    ctx.fallbackModels,
   );
 
   totalTokensIn += finalResponse.tokensIn;

@@ -354,6 +354,119 @@ function recoverTruncatedJson(raw: string): unknown {
   }
 }
 
+/**
+ * Identifica erros que justificam tentar o próximo modelo da cadeia.
+ * - 5xx: provider down / model temporariamente indisponível
+ * - 429: rate limited → talvez outro provider tenha quota
+ * - 408 / timeout / AbortError: modelo muito lento
+ * - content vazio com finish_reason !== 'stop': modelo travou
+ */
+function isFallbackWorthy(err: unknown): boolean {
+  if (err instanceof LlmError) {
+    if (err.status >= 500) return true;
+    if (err.status === 429) return true;
+    if (err.status === 408) return true;
+    // Erros específicos do OpenRouter que indicam modelo indisponível
+    const body = (err.body ?? "").toLowerCase();
+    if (
+      body.includes("model_not_found") ||
+      body.includes("no allowed providers") ||
+      body.includes("provider returned error") ||
+      body.includes("temporarily unavailable")
+    ) {
+      return true;
+    }
+    return false;
+  }
+  if (err instanceof Error) {
+    if (err.name === "AbortError" || err.name === "TimeoutError") return true;
+    if (err.message.toLowerCase().includes("timeout")) return true;
+    if (err.message.toLowerCase().includes("fetch failed")) return true;
+  }
+  return false;
+}
+
+/**
+ * Versão do callLlm com cadeia de fallback. Tenta `req.model` primeiro;
+ * em erro fallback-worthy ou content vazio, tenta cada `fallbackModels`
+ * em ordem. Retorna o primeiro sucesso. Se todos falharem, joga o último erro.
+ *
+ * Loga cada tentativa com o motivo do fallback.
+ */
+export async function callLlmWithFallback(
+  orKey: string,
+  req: LlmRequest,
+  fallbackModels: string[] = [],
+): Promise<LlmResponse & { modelUsed: string; fallbackUsed: boolean }> {
+  const models = [req.model, ...fallbackModels.filter((m) => m && m !== req.model)];
+  let lastErr: unknown = null;
+
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    try {
+      const r = await callLlm(orKey, { ...req, model });
+      // Content vazio sem reasoning é um falhanço silencioso. Se houver
+      // próximo modelo na cadeia, tenta. Senão, devolve mesmo vazio
+      // (parser fará retry interno em callLlmStructured).
+      if (!r.content && i < models.length - 1) {
+        console.warn(
+          `[llm-fallback] model=${model} retornou content vazio (finish=${r.finishReason}) — tentando próximo`,
+        );
+        lastErr = new LlmError(200, `empty content from ${model}`);
+        continue;
+      }
+      if (i > 0) {
+        console.log(`[llm-fallback] sucesso com fallback model=${model} (após ${i} falhas)`);
+      }
+      return { ...r, modelUsed: model, fallbackUsed: i > 0 };
+    } catch (e) {
+      lastErr = e;
+      if (!isFallbackWorthy(e)) {
+        // Erro irrecuperável (400/401/403/etc.): não tenta os próximos.
+        throw e;
+      }
+      console.warn(
+        `[llm-fallback] model=${model} falhou (${e instanceof Error ? e.message : e}) — tentando próximo`,
+      );
+    }
+  }
+  throw lastErr ?? new LlmError(500, "Todos os modelos falharam sem erro registrado");
+}
+
+/**
+ * Versão structured de callLlmWithFallback. Tenta cada modelo da cadeia;
+ * em cada modelo, executa o mesmo flow de retry/parse do callLlmStructured.
+ * Só passa pro próximo modelo em erro fallback-worthy.
+ */
+export async function callLlmStructuredWithFallback<T>(
+  orKey: string,
+  req: LlmRequest,
+  parse: (raw: unknown) => T,
+  fallbackModels: string[] = [],
+): Promise<{ result: T; response: LlmResponse; modelUsed: string; fallbackUsed: boolean }> {
+  const models = [req.model, ...fallbackModels.filter((m) => m && m !== req.model)];
+  let lastErr: unknown = null;
+  for (let i = 0; i < models.length; i++) {
+    const model = models[i];
+    try {
+      const r = await callLlmStructured(orKey, { ...req, model }, parse);
+      if (i > 0) {
+        console.log(
+          `[llm-fallback-structured] sucesso com fallback model=${model} (após ${i} falhas)`,
+        );
+      }
+      return { ...r, modelUsed: model, fallbackUsed: i > 0 };
+    } catch (e) {
+      lastErr = e;
+      if (!isFallbackWorthy(e)) throw e;
+      console.warn(
+        `[llm-fallback-structured] model=${model} falhou (${e instanceof Error ? e.message : e}) — tentando próximo`,
+      );
+    }
+  }
+  throw lastErr ?? new LlmError(500, "Todos os modelos falharam");
+}
+
 export async function callLlmStructured<T>(
   orKey: string,
   req: LlmRequest,

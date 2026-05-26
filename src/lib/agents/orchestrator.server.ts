@@ -239,7 +239,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // 3. LLM config + secret
   const llm = await sb
     .from("account_llm_config")
-    .select("default_model, max_tokens, temperature")
+    .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model")
     .eq("account_id", accountId)
     .single();
   const secrets = await sb
@@ -317,6 +317,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         (agent.data.llm_model_override as string | null) ||
         (llm.data?.default_model as string | undefined) ||
         "anthropic/claude-sonnet-4.5",
+      fallbackModels:
+        (llm.data?.fallback_models as string[] | undefined) ??
+        ["openai/gpt-4o-mini", "x-ai/grok-4-fast"],
+      ragGateModel:
+        (llm.data?.rag_gate_model as string | undefined) ?? "x-ai/grok-4-fast",
       maxTokens: (llm.data?.max_tokens as number | undefined) ?? 1024,
       temperature: (llm.data?.temperature as number | undefined) ?? 0.5,
       orKey,

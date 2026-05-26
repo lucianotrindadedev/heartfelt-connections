@@ -30,6 +30,11 @@ export interface AgentContext {
 
   /** LLM. */
   model: string;
+  /** Cadeia de fallback: tentada em ordem se o `model` principal falhar
+   *  (5xx, timeout, content vazio). Pode ser []. */
+  fallbackModels: string[];
+  /** Modelo barato usado pelo RAG Gate pra decidir se a msg precisa de busca. */
+  ragGateModel: string;
   maxTokens: number;
   temperature: number;
   /** Chave OpenRouter já descriptografada. */
