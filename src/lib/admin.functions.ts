@@ -37,26 +37,108 @@ export const getAccountDetail = createServerFn({ method: "GET" })
   .inputValidator((d) => z.object({ accountId: z.string().min(1) }).parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const [accountRes, agentRes, usageRes, msgCountRes] = await Promise.all([
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    // A view llm_usage_daily devolve UMA linha por (account, day, provider).
+    // O painel quer 1 linha por dia → vamos somar no client (provider-agnóstico).
+    const [accountRes, agentRes, usageRaw, msgCountRes, lastLogsRes] = await Promise.all([
       sb.from("accounts").select("*").eq("id", data.accountId).maybeSingle(),
       sb.from("agents").select("*").eq("account_id", data.accountId).maybeSingle(),
       sb
         .from("llm_usage_daily")
-        .select("day, total_cost_usd, total_tokens")
+        .select("day, provider, total_cost_usd, total_tokens, tokens_in_sum, tokens_out_sum, requests")
         .eq("account_id", data.accountId)
-        .gte("day", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10))
+        .gte("day", since)
         .order("day", { ascending: false }),
       sb
         .from("messages")
         .select("id", { count: "exact", head: true })
         .eq("account_id", data.accountId),
+      // Últimos 5 logs (qualquer tipo) pra dar contexto rápido na overview
+      sb
+        .from("admin_logs_view")
+        .select("id, kind, status, created_at, model, error")
+        .eq("account_id", data.accountId)
+        .order("created_at", { ascending: false })
+        .limit(5),
     ]);
     if (accountRes.error) throw new Error(accountRes.error.message);
+
+    // Agrupa por dia (somando todos os providers)
+    type UsageRow = {
+      day: string; provider: string;
+      total_cost_usd: number | null; total_tokens: number | null;
+      tokens_in_sum: number | null; tokens_out_sum: number | null;
+      requests: number | null;
+    };
+    const byDay = new Map<string, {
+      day: string; total_cost_usd: number; total_tokens: number;
+      tokens_in: number; tokens_out: number; requests: number;
+    }>();
+    for (const r of ((usageRaw.data ?? []) as UsageRow[])) {
+      const k = r.day;
+      const cur = byDay.get(k) ?? {
+        day: k, total_cost_usd: 0, total_tokens: 0, tokens_in: 0, tokens_out: 0, requests: 0,
+      };
+      cur.total_cost_usd += Number(r.total_cost_usd ?? 0);
+      cur.total_tokens += Number(r.total_tokens ?? 0);
+      cur.tokens_in += Number(r.tokens_in_sum ?? 0);
+      cur.tokens_out += Number(r.tokens_out_sum ?? 0);
+      cur.requests += Number(r.requests ?? 0);
+      byDay.set(k, cur);
+    }
+    const usage = Array.from(byDay.values()).sort((a, b) => b.day.localeCompare(a.day));
+
     return {
       account: accountRes.data,
       agent: agentRes.data ?? null,
-      usage: usageRes.data ?? [],
+      usage,
       messageCount: msgCountRes.count ?? 0,
+      lastLogs: lastLogsRes.data ?? [],
+    };
+  });
+
+// ──────────────────────────────────────────────────────────────────
+// Logs unificados da conta — agent turns + follow-ups + warm-ups
+// ──────────────────────────────────────────────────────────────────
+
+export const listAccountLogs = createServerFn({ method: "GET" })
+  .middleware([attachSelfhostAuth, requireSuperAdmin])
+  .inputValidator((d) =>
+    z
+      .object({
+        accountId: z.string().min(1),
+        kind: z.enum(["all", "agent_turn", "followup", "warmup"]).default("all"),
+        status: z.enum(["all", "success", "failed"]).default("all"),
+        limit: z.number().int().min(1).max(200).default(50),
+        offset: z.number().int().min(0).default(0),
+        // Filtro por agente: útil quando a conta tem N agentes
+        agentId: z.string().uuid().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    let q = sb
+      .from("admin_logs_view")
+      .select(
+        "id, kind, account_id, agent_id, conversation_id, status, created_at, model, provider, latency_ms, tokens_in, tokens_out, cost_usd, error, detail",
+        { count: "exact" },
+      )
+      .eq("account_id", data.accountId)
+      .order("created_at", { ascending: false })
+      .range(data.offset, data.offset + data.limit - 1);
+
+    if (data.kind !== "all") q = q.eq("kind", data.kind);
+    if (data.status !== "all") q = q.eq("status", data.status);
+    if (data.agentId) q = q.eq("agent_id", data.agentId);
+
+    const res = await q;
+    if (res.error) throw new Error(res.error.message);
+    return {
+      logs: res.data ?? [],
+      total: res.count ?? 0,
+      hasMore: (res.count ?? 0) > data.offset + data.limit,
     };
   });
 
