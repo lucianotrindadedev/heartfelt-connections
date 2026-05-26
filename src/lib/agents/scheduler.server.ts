@@ -84,7 +84,8 @@ const VALID_STAGES = ["SLOT_OFFER", "NAME_COLLECT", "BOOKING", "CONFIRMED", "ESC
 
 const ResultSchema = z.object({
   reply: z.string().min(1, "Reply não pode ser vazio"),
-  next_stage: z.enum(VALID_STAGES),
+  // next_stage opcional — fallback aplicado no runSchedulerAgent (mantém stage atual).
+  next_stage: z.enum(VALID_STAGES).optional(),
   lead_data_patch: z
     .object({
       name: z.string().nullish(),
@@ -631,9 +632,12 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     ...stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>),
   } as Partial<LeadData>;
 
+  // Fallback: se LLM omitiu next_stage, mantem o stage atual.
+  const finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;
+
   return {
     reply: result.reply,
-    next_stage: result.next_stage as Stage,
+    next_stage: finalStage,
     lead_data_patch: mergedPatch,
     reasoning: result.reasoning,
     tools_called: toolsCalled,
