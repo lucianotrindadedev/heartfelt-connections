@@ -11,12 +11,124 @@ export const listAccounts = createServerFn({ method: "GET" })
   .middleware([attachSelfhostAuth, requireSuperAdmin])
   .handler(async () => {
     const sb = getSelfhost();
-    const { data, error } = await sb
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    const [accountsRes, msgCounts, runs] = await Promise.all([
+      sb
+        .from("accounts")
+        .select("id, nome, helena_account_id, criado_em, atualizado_em")
+        .order("criado_em", { ascending: false }),
+      sb
+        .from("messages")
+        .select("account_id")
+        .gte("criado_em", since),
+      sb
+        .from("agent_runs")
+        .select("account_id, cost_usd_estimate, tokens_in, tokens_out")
+        .gte("criado_em", since),
+    ]);
+
+    if (accountsRes.error) throw new Error(accountsRes.error.message);
+
+    // Agrega métricas dos últimos 30d por account
+    const msgByAcc = new Map<string, number>();
+    for (const m of msgCounts.data ?? []) {
+      const k = m.account_id as string;
+      msgByAcc.set(k, (msgByAcc.get(k) ?? 0) + 1);
+    }
+    const statsByAcc = new Map<string, { cost: number; tokens: number; turns: number }>();
+    for (const r of runs.data ?? []) {
+      const k = r.account_id as string;
+      const cur = statsByAcc.get(k) ?? { cost: 0, tokens: 0, turns: 0 };
+      cur.cost += Number(r.cost_usd_estimate ?? 0);
+      cur.tokens += Number(r.tokens_in ?? 0) + Number(r.tokens_out ?? 0);
+      cur.turns += 1;
+      statsByAcc.set(k, cur);
+    }
+
+    const accounts = (accountsRes.data ?? []).map((a) => {
+      const id = a.id as string;
+      const s = statsByAcc.get(id) ?? { cost: 0, tokens: 0, turns: 0 };
+      return {
+        ...a,
+        msg_count_30d: msgByAcc.get(id) ?? 0,
+        cost_usd_30d: s.cost,
+        tokens_30d: s.tokens,
+        turns_30d: s.turns,
+      };
+    });
+
+    return { accounts };
+  });
+
+export const deleteAccount = createServerFn({ method: "POST" })
+  .middleware([attachSelfhostAuth, requireSuperAdmin])
+  .inputValidator((d) =>
+    z
+      .object({
+        accountId: z.string().min(1),
+        // Confirmação: o usuário precisa digitar o nome OU o ID
+        confirmName: z.string().min(1),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+
+    // 1. Confirma que a conta existe e o nome bate (anti-acidente)
+    const acc = await sb
       .from("accounts")
-      .select("id, nome, helena_account_id, criado_em, atualizado_em")
-      .order("criado_em", { ascending: false });
-    if (error) throw new Error(error.message);
-    return { accounts: data ?? [] };
+      .select("id, nome")
+      .eq("id", data.accountId)
+      .single();
+    if (acc.error || !acc.data) throw new Error("Conta não encontrada");
+
+    const expected = (acc.data.nome as string).trim().toLowerCase();
+    const expectedId = (acc.data.id as string).trim().toLowerCase();
+    const got = data.confirmName.trim().toLowerCase();
+    if (got !== expected && got !== expectedId) {
+      throw new Error(
+        `Confirmação inválida. Digite exatamente o nome "${acc.data.nome}" ou o ID da conta pra deletar.`,
+      );
+    }
+
+    // 2. Conta o que vai sumir (pra retornar resumo)
+    const [convCount, msgCount, agentCount] = await Promise.all([
+      sb
+        .from("conversations")
+        .select("id", { count: "exact", head: true })
+        .in(
+          "agent_id",
+          (
+            await sb.from("agents").select("id").eq("account_id", data.accountId)
+          ).data?.map((a) => a.id as string) ?? [],
+        ),
+      sb
+        .from("messages")
+        .select("id", { count: "exact", head: true })
+        .eq("account_id", data.accountId),
+      sb
+        .from("agents")
+        .select("id", { count: "exact", head: true })
+        .eq("account_id", data.accountId),
+    ]);
+
+    // 3. DELETE — cascade automático apaga agents, conversations, messages,
+    //    agent_runs, followup_steps, warmup_steps, ai_magic_requests,
+    //    integrations, secrets, llm_config, knowledge_*, media_*, etc.
+    const del = await sb.from("accounts").delete().eq("id", data.accountId);
+    if (del.error) throw new Error(del.error.message);
+
+    return {
+      ok: true,
+      deleted: {
+        accountId: data.accountId,
+        nome: acc.data.nome as string,
+        agents: agentCount.count ?? 0,
+        conversations: convCount.count ?? 0,
+        messages: msgCount.count ?? 0,
+      },
+    };
   });
 
 /** Público (sem auth) — usado pelo embed para resolver qual conta abrir pelo helena_account_id. */

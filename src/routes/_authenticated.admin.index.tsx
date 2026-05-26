@@ -2,7 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { createAccount, listAccounts } from "@/lib/admin.functions";
+import { createAccount, listAccounts, deleteAccount } from "@/lib/admin.functions";
 import { helenaWebhookUrl } from "@/lib/app-base-url";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,11 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Check, ChevronDown, ChevronRight, Copy, Loader2, Plus } from "lucide-react";
+import {
+  Check, ChevronDown, ChevronRight, Copy, Loader2, Plus,
+  Trash2, MessageSquare, DollarSign, Activity, Search,
+  AlertTriangle, Users,
+} from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/_authenticated/admin/")({
@@ -28,6 +32,11 @@ type AccountRow = {
   id: string;
   nome: string;
   helena_account_id?: string | null;
+  msg_count_30d?: number;
+  cost_usd_30d?: number;
+  tokens_30d?: number;
+  turns_30d?: number;
+  criado_em?: string;
 };
 
 function AdminIndex() {
@@ -37,25 +46,51 @@ function AdminIndex() {
     queryFn: () => fetchAccounts(),
   });
 
+  const [search, setSearch] = useState("");
+
+  const accounts: AccountRow[] = q.data?.accounts ?? [];
+
+  const filtered = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return accounts;
+    return accounts.filter(
+      (a) =>
+        a.nome.toLowerCase().includes(term) ||
+        a.id.toLowerCase().includes(term) ||
+        (a.helena_account_id ?? "").toLowerCase().includes(term),
+    );
+  }, [accounts, search]);
+
+  const totals = useMemo(() => {
+    return accounts.reduce(
+      (t, a) => ({
+        msgs: t.msgs + (a.msg_count_30d ?? 0),
+        cost: t.cost + (a.cost_usd_30d ?? 0),
+        turns: t.turns + (a.turns_30d ?? 0),
+      }),
+      { msgs: 0, cost: 0, turns: 0 },
+    );
+  }, [accounts]);
+
   // Agrupa contas pelo helena_account_id
   const groups = useMemo(() => {
-    const accounts: AccountRow[] = q.data?.accounts ?? [];
     const map = new Map<string, AccountRow[]>();
-    for (const a of accounts) {
+    for (const a of filtered) {
       const key = a.helena_account_id ?? a.id;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(a);
     }
-    return Array.from(map.entries()); // [ [helenaId, [account, ...]], ... ]
-  }, [q.data]);
+    return Array.from(map.entries());
+  }, [filtered]);
 
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Contas</h1>
           <p className="text-sm text-muted-foreground">
-            Todas as contas Helena conectadas — clique para ver performance e custos.
+            Todas as contas Helena conectadas — clique para ver performance, logs e custos.
           </p>
         </div>
         <div className="flex gap-2">
@@ -68,6 +103,53 @@ function AdminIndex() {
           <CreateAccountDialog />
         </div>
       </div>
+
+      {/* KPIs globais */}
+      {q.data && (
+        <div className="grid gap-3 md:grid-cols-4">
+          <KpiCard
+            icon={<Users className="h-4 w-4 text-slate-500" />}
+            label="Total de contas"
+            value={accounts.length.toLocaleString("pt-BR")}
+          />
+          <KpiCard
+            icon={<MessageSquare className="h-4 w-4 text-blue-500" />}
+            label="Mensagens (30d)"
+            value={totals.msgs.toLocaleString("pt-BR")}
+          />
+          <KpiCard
+            icon={<Activity className="h-4 w-4 text-amber-500" />}
+            label="Turnos LLM (30d)"
+            value={totals.turns.toLocaleString("pt-BR")}
+          />
+          <KpiCard
+            icon={<DollarSign className="h-4 w-4 text-emerald-500" />}
+            label="Custo (30d)"
+            value={`$${totals.cost.toFixed(2)}`}
+          />
+        </div>
+      )}
+
+      {/* Search */}
+      {accounts.length > 0 && (
+        <div className="flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2">
+          <Search className="h-3.5 w-3.5 text-muted-foreground" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por nome, ID interno ou Helena ID…"
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Limpar
+            </button>
+          )}
+        </div>
+      )}
 
       {q.isLoading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -83,16 +165,16 @@ function AdminIndex() {
       <div className="grid gap-3">
         {groups.map(([helenaId, accounts]) =>
           accounts.length === 1 ? (
-            /* Conta única para esse Helena ID — card simples */
             <SingleAccountCard key={helenaId} account={accounts[0]} />
           ) : (
-            /* Múltiplas contas para o mesmo Helena ID — card agrupado */
             <MultiAccountGroup key={helenaId} helenaId={helenaId} accounts={accounts} />
           ),
         )}
         {q.data && groups.length === 0 && (
-          <Card className="p-6 text-center text-sm text-muted-foreground">
-            Nenhuma conta ainda. Clique em "Nova conta" para criar a primeira.
+          <Card className="p-8 text-center text-sm text-muted-foreground">
+            {search
+              ? `Nenhuma conta encontrada para "${search}".`
+              : 'Nenhuma conta ainda. Clique em "Nova conta" para criar a primeira.'}
           </Card>
         )}
       </div>
@@ -100,37 +182,101 @@ function AdminIndex() {
   );
 }
 
-function SingleAccountCard({ account }: { account: AccountRow }) {
+function KpiCard({
+  icon, label, value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
   return (
-    <Link to="/admin/account/$accountId" params={{ accountId: account.id }} className="block">
-      <Card className="flex items-center justify-between p-4 hover:bg-accent/40 transition">
-        <div>
-          <div className="font-medium">{account.nome}</div>
-          <div className="text-xs text-muted-foreground font-mono">{account.id}</div>
-        </div>
-        <ChevronRight className="h-4 w-4 text-muted-foreground" />
-      </Card>
-    </Link>
+    <Card className="p-4">
+      <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground">
+        {icon} {label}
+      </div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
+    </Card>
   );
 }
 
-function MultiAccountGroup({ helenaId, accounts }: { helenaId: string; accounts: AccountRow[] }) {
+function AccountStats({ account }: { account: AccountRow }) {
+  const stats = [
+    { icon: <MessageSquare className="h-3 w-3" />, label: `${(account.msg_count_30d ?? 0).toLocaleString("pt-BR")} msgs` },
+    { icon: <Activity className="h-3 w-3" />, label: `${(account.turns_30d ?? 0).toLocaleString("pt-BR")} turnos` },
+    { icon: <DollarSign className="h-3 w-3" />, label: `$${(account.cost_usd_30d ?? 0).toFixed(4)}` },
+  ];
+  return (
+    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+      {stats.map((s, i) => (
+        <span key={i} className="flex items-center gap-1 tabular-nums">
+          {s.icon}
+          {s.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function SingleAccountCard({ account }: { account: AccountRow }) {
+  return (
+    <Card className="overflow-hidden p-0 hover:bg-accent/30 transition">
+      <div className="flex items-center justify-between gap-4 p-4">
+        <Link
+          to="/admin/account/$accountId"
+          params={{ accountId: account.id }}
+          className="flex flex-1 min-w-0 flex-col gap-1.5"
+        >
+          <div className="font-medium">{account.nome}</div>
+          <div className="font-mono text-[11px] text-muted-foreground truncate">{account.id}</div>
+          <AccountStats account={account} />
+        </Link>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <DeleteAccountButton account={account} />
+          <Link
+            to="/admin/account/$accountId"
+            params={{ accountId: account.id }}
+            className="rounded-md p-1.5 hover:bg-muted"
+          >
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          </Link>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function MultiAccountGroup({
+  helenaId, accounts,
+}: {
+  helenaId: string;
+  accounts: AccountRow[];
+}) {
   const [open, setOpen] = useState(true);
 
+  const groupTotals = accounts.reduce(
+    (t, a) => ({
+      msgs: t.msgs + (a.msg_count_30d ?? 0),
+      cost: t.cost + (a.cost_usd_30d ?? 0),
+    }),
+    { msgs: 0, cost: 0 },
+  );
+
   return (
-    <div className="rounded-lg border overflow-hidden">
-      {/* Cabeçalho do grupo */}
+    <div className="overflow-hidden rounded-lg border">
       <button
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between bg-muted/50 px-4 py-3 hover:bg-muted/80 transition"
       >
         <div className="text-left">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             Helena CRM
           </span>
-          <p className="font-mono text-xs text-foreground mt-0.5">{helenaId}</p>
+          <p className="mt-0.5 font-mono text-xs text-foreground">{helenaId}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] text-muted-foreground tabular-nums">
+            {groupTotals.msgs.toLocaleString("pt-BR")} msgs · ${groupTotals.cost.toFixed(2)}
+          </span>
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
             {accounts.length} agentes
           </span>
@@ -142,22 +288,33 @@ function MultiAccountGroup({ helenaId, accounts }: { helenaId: string; accounts:
         </div>
       </button>
 
-      {/* Lista de contas do grupo */}
       {open && (
         <div className="divide-y">
           {accounts.map((a) => (
-            <Link
+            <div
               key={a.id}
-              to="/admin/account/$accountId"
-              params={{ accountId: a.id }}
-              className="flex items-center justify-between px-4 py-3 hover:bg-accent/40 transition"
+              className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-accent/30 transition"
             >
-              <div>
-                <div className="font-medium text-sm">{a.nome}</div>
-                <div className="text-xs text-muted-foreground font-mono">{a.id}</div>
+              <Link
+                to="/admin/account/$accountId"
+                params={{ accountId: a.id }}
+                className="flex flex-1 min-w-0 flex-col gap-1"
+              >
+                <div className="text-sm font-medium">{a.nome}</div>
+                <div className="font-mono text-[11px] text-muted-foreground truncate">{a.id}</div>
+                <AccountStats account={a} />
+              </Link>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <DeleteAccountButton account={a} />
+                <Link
+                  to="/admin/account/$accountId"
+                  params={{ accountId: a.id }}
+                  className="rounded-md p-1.5 hover:bg-muted"
+                >
+                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                </Link>
               </div>
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
-            </Link>
+            </div>
           ))}
         </div>
       )}
@@ -166,7 +323,109 @@ function MultiAccountGroup({ helenaId, accounts }: { helenaId: string; accounts:
 }
 
 // =============================================================
-// Dialog de criação
+// Delete account dialog
+// =============================================================
+
+function DeleteAccountButton({ account }: { account: AccountRow }) {
+  const [open, setOpen] = useState(false);
+  const [confirm, setConfirm] = useState("");
+  const qc = useQueryClient();
+  const deleteFn = useServerFn(deleteAccount);
+
+  const m = useMutation({
+    mutationFn: () =>
+      deleteFn({ data: { accountId: account.id, confirmName: confirm } }),
+    onSuccess: (res) => {
+      toast.success(
+        `Conta "${res.deleted.nome}" deletada — ${res.deleted.agents} agente(s), ${res.deleted.conversations} conversa(s), ${res.deleted.messages} msg(s).`,
+        { duration: 6000 },
+      );
+      qc.invalidateQueries({ queryKey: ["admin", "accounts"] });
+      setOpen(false);
+      setConfirm("");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao deletar"),
+  });
+
+  const canDelete = confirm.trim().toLowerCase() === account.nome.trim().toLowerCase()
+    || confirm.trim().toLowerCase() === account.id.trim().toLowerCase();
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        setOpen(v);
+        if (!v) setConfirm("");
+      }}
+    >
+      <DialogTrigger asChild>
+        <button
+          onClick={(e) => e.stopPropagation()}
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-rose-50 hover:text-rose-600"
+          title="Deletar conta"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-rose-700">
+            <AlertTriangle className="h-5 w-5" />
+            Deletar conta
+          </DialogTitle>
+          <DialogDescription>
+            Essa ação <strong>não pode ser desfeita</strong>. Tudo será apagado em cascata:
+            agentes, conversas, mensagens, runs do LLM, follow-ups, warm-ups, base de conhecimento,
+            mídias, integrações (Clinicorp/GCal/Clinup), secrets e configurações.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 rounded-md border border-rose-200 bg-rose-50 p-3 text-xs">
+          <div className="grid grid-cols-2 gap-y-1">
+            <span className="text-muted-foreground">Conta</span>
+            <span className="font-semibold">{account.nome}</span>
+            <span className="text-muted-foreground">ID</span>
+            <span className="font-mono">{account.id}</span>
+            <span className="text-muted-foreground">Mensagens (30d)</span>
+            <span>{(account.msg_count_30d ?? 0).toLocaleString("pt-BR")}</span>
+            <span className="text-muted-foreground">Custo LLM (30d)</span>
+            <span>${(account.cost_usd_30d ?? 0).toFixed(4)}</span>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="confirm-name" className="text-sm">
+            Digite <strong>{account.nome}</strong> ou o ID da conta pra confirmar:
+          </Label>
+          <Input
+            id="confirm-name"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder={account.nome}
+            autoComplete="off"
+          />
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancelar
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={!canDelete || m.isPending}
+            onClick={() => m.mutate()}
+          >
+            {m.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Deletar permanentemente
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// =============================================================
+// Create account dialog
 // =============================================================
 
 interface CreatedAccount {
@@ -219,7 +478,7 @@ function CreateAccountDialog() {
     >
       <DialogTrigger asChild>
         <Button>
-          <Plus className="h-4 w-4 mr-2" /> Nova conta
+          <Plus className="mr-2 h-4 w-4" /> Nova conta
         </Button>
       </DialogTrigger>
       <DialogContent>
@@ -303,7 +562,7 @@ function CreateAccountDialog() {
                 Cancelar
               </Button>
               <Button type="submit" disabled={m.isPending}>
-                {m.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                {m.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Criar conta
               </Button>
             </DialogFooter>
@@ -315,8 +574,7 @@ function CreateAccountDialog() {
 }
 
 function SuccessStep({
-  created,
-  onClose,
+  created, onClose,
 }: {
   created: CreatedAccount;
   onClose: () => void;
@@ -369,7 +627,7 @@ function SuccessStep({
 
         <div className="space-y-2">
           <Label>Header de segurança</Label>
-          <div className="rounded-md border bg-muted/40 p-3 text-xs font-mono">
+          <div className="rounded-md border bg-muted/40 p-3 font-mono text-xs">
             X-Helena-Secret: <span className="select-all">{created.webhookSecret}</span>
           </div>
           <Button
@@ -379,9 +637,9 @@ function SuccessStep({
             onClick={() => copy(created.webhookSecret, "secret")}
           >
             {copiedSecret ? (
-              <Check className="h-4 w-4 mr-1.5" />
+              <Check className="mr-1.5 h-4 w-4" />
             ) : (
-              <Copy className="h-4 w-4 mr-1.5" />
+              <Copy className="mr-1.5 h-4 w-4" />
             )}
             Copiar secret
           </Button>
