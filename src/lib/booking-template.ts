@@ -315,6 +315,115 @@ export function isReadyForBooking(
   return true;
 }
 
+type OfferedSlot = NonNullable<LeadData["offered_slots"]>[number];
+
+function normalizeTimeLabel(raw: string): string {
+  const m = raw.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return "";
+  return `${m[1]!.padStart(2, "0")}:${m[2]}`;
+}
+
+function slotMentionedInText(slot: OfferedSlot, text: string): boolean {
+  const hay = text.toLowerCase();
+  const time = normalizeTimeLabel(slot.time_label);
+  if (time && hay.includes(time)) return true;
+
+  for (const part of slot.date_label.split(/[,/]/)) {
+    const p = part.trim().toLowerCase();
+    if (p.length >= 4 && hay.includes(p.slice(0, Math.min(p.length, 12)))) return true;
+  }
+  return false;
+}
+
+function isSlotAcceptanceMessage(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (/^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado)[!.?\s]*$/i.test(t)) {
+    return true;
+  }
+  if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(t)) return true;
+  if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(t)) return true;
+  return !!normalizeTimeLabel(t);
+}
+
+/**
+ * Quando o lead aceita um horário ("Pode ser", "Sim", "14:40"), grava
+ * selected_slot_iso a partir de offered_slots — evita reservar slot antigo/errado.
+ */
+export function tryAutoSelectOfferedSlot(
+  stage: string,
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+): Partial<LeadData> {
+  if (stage !== "SLOT_OFFER" && stage !== "NAME_COLLECT" && stage !== "BOOKING") return {};
+
+  const slots = leadData.offered_slots ?? [];
+  if (slots.length === 0) return {};
+
+  let lastUserIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) return {};
+
+  const lastUser = history[lastUserIdx]!.content.trim();
+  if (!lastUser || !isSlotAcceptanceMessage(lastUser)) return {};
+
+  const lastAssistant = history
+    .slice(0, lastUserIdx)
+    .reverse()
+    .find((m) => m.role === "assistant");
+  const assistantText = lastAssistant?.content ?? "";
+
+  const userTime = normalizeTimeLabel(lastUser);
+  if (userTime) {
+    const byTime = slots.filter((s) => normalizeTimeLabel(s.time_label) === userTime);
+    if (byTime.length === 1) {
+      const s = byTime[0]!;
+      return {
+        selected_slot_iso: s.iso,
+        ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
+      };
+    }
+  }
+
+  if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(lastUser.toLowerCase()) && slots[0]) {
+    const s = slots[0];
+    return {
+      selected_slot_iso: s.iso,
+      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
+    };
+  }
+  if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(lastUser.toLowerCase()) && slots[1]) {
+    const s = slots[1];
+    return {
+      selected_slot_iso: s.iso,
+      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
+    };
+  }
+
+  const mentionedInAssistant = slots.filter((s) => slotMentionedInText(s, assistantText));
+  if (mentionedInAssistant.length === 1) {
+    const s = mentionedInAssistant[0]!;
+    return {
+      selected_slot_iso: s.iso,
+      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
+    };
+  }
+
+  if (slots.length === 1) {
+    const s = slots[0]!;
+    return {
+      selected_slot_iso: s.iso,
+      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
+    };
+  }
+
+  return {};
+}
+
 export function mergeLeadDataPatch(current: LeadData, patch: Partial<LeadData>): LeadData {
   const next: LeadData = { ...current, ...patch };
   if (patch.custom_fields || current.custom_fields) {

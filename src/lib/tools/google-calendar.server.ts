@@ -521,6 +521,9 @@ export async function createGoogleCalendarEvent(
     return start < evEnd && end > evStart;
   });
   if (hasConflict) {
+    console.warn(
+      `[gcal] conflito ao criar evento start=${start.toISOString()} calendar=${token.calendarId} eventos=${conflictJson.items?.length ?? 0}`,
+    );
     throw new Error("HORÁRIO INDISPONÍVEL");
   }
   const calId = calIdEnc;

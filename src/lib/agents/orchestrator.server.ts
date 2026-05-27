@@ -15,8 +15,8 @@ import {
   resolveEffectivePhone,
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
-import { mergeLeadDataPatch, tryAutoCaptureBookingAnswer } from "@/lib/booking-template";
-import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
+import { mergeLeadDataPatch, tryAutoCaptureBookingAnswer, tryAutoSelectOfferedSlot } from "@/lib/booking-template";
+import { DEFAULT_LLM_MODEL, DEFAULT_TOOL_FALLBACK_MODELS, DEFAULT_TOOL_MODEL } from "@/lib/llm-defaults";
 import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
@@ -241,7 +241,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // 3. LLM config + secret
   const llm = await sb
     .from("account_llm_config")
-    .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model")
+    .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model, tool_model")
     .eq("account_id", accountId)
     .single();
   const secrets = await sb
@@ -304,6 +304,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
+    if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
+      const slotPatch = tryAutoSelectOfferedSlot(stage, leadData, history);
+      if (Object.keys(slotPatch).length > 0) {
+        leadData = mergeLeadDataPatch(leadData, slotPatch);
+        console.log(
+          `[orch] auto-selecao slot conv=${conversationId} iso=${slotPatch.selected_slot_iso}`,
+        );
+      }
+    }
+
     // 8. Integrações habilitadas
     const [clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
       sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
@@ -330,6 +340,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         (agent.data.llm_model_override as string | null) ||
         (llm.data?.default_model as string | undefined) ||
         DEFAULT_LLM_MODEL,
+      toolModel:
+        (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
+      toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
       fallbackModels:
         (llm.data?.fallback_models as string[] | undefined) ??
         ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],

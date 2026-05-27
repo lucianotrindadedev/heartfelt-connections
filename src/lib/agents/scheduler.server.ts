@@ -55,6 +55,7 @@ import {
   isReadyForBooking,
   mergeLeadDataPatch,
   resolveBookingLeadName,
+  tryAutoSelectOfferedSlot,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
 
@@ -566,18 +567,44 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
     return { patch: {}, toolsCalled: [] };
   }
 
+  const slotPatch = tryAutoSelectOfferedSlot(ctx.stage, ctx.leadData, ctx.history);
+  if (Object.keys(slotPatch).length > 0) {
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotPatch);
+  }
+
   const ready = isReadyForBooking(ctx.leadData, ctx.agentSettings, {
     hasPhone: !!ctx.effectivePhone,
     hasBookingIntegration: hasBookingIntegration(ctx),
   });
-  if (!ready) return { patch: {}, toolsCalled: [] };
+  if (!ready) return { patch: slotPatch, toolsCalled: [] };
 
-  console.log(`[scheduler] auto criar_agendamento conv=${ctx.conversationId} stage=${ctx.stage}`);
+  console.log(
+    `[scheduler] auto criar_agendamento conv=${ctx.conversationId} stage=${ctx.stage} slot=${ctx.leadData.selected_slot_iso}`,
+  );
   const outcome = await execCriarAgendamento(ctx);
+  let extraPatch: Partial<LeadData> = { ...slotPatch, ...(outcome.patch ?? {}) };
+  let toolResult = outcome.result;
+  const toolsCalled: string[] = ["criar_agendamento"];
+
+  const failed =
+    toolResult.includes('"ok":false') || toolResult.includes('"ok": false');
+  if (failed && /INDISPON|indispon|conflit/i.test(toolResult)) {
+    console.warn(
+      `[scheduler] slot indisponível conv=${ctx.conversationId} — atualizando horários`,
+    );
+    delete ctx.leadData.selected_slot_iso;
+    extraPatch = { ...extraPatch };
+    delete extraPatch.selected_slot_iso;
+    const refresh = await execListarHorarios(ctx, 14);
+    toolsCalled.push("listar_horarios");
+    extraPatch = mergeLeadDataPatch(extraPatch as LeadData, refresh.patch ?? {});
+    toolResult += `\n\n# HORÁRIOS ATUALIZADOS (listar_horarios)\n${refresh.result}`;
+  }
+
   return {
-    patch: outcome.patch ?? {},
-    toolResult: outcome.result,
-    toolsCalled: ["criar_agendamento"],
+    patch: extraPatch,
+    toolResult,
+    toolsCalled,
   };
 }
 
@@ -633,20 +660,26 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   let totalTokensOut = 0;
   let totalCostUsd = 0;
 
-  // Loop de tools: primeiro deixa o modelo decidir (tool_choice=auto).
-  // Quando ele parar de chamar tools, força um turno final com jsonMode.
+  // Loop de tools: GPT-4.1 mini (toolModel) — Gemini costuma falhar em function calling.
+  // Resposta final ao lead continua em ctx.model (Gemini Flash Lite).
   for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
     const turn = await callLlmWithFallback(ctx.orKey, {
-      model: ctx.model,
+      model: ctx.toolModel,
       systemCached: cached,
       systemDynamic: dynamic,
       messages: workingMessages,
       tools: SCHEDULER_TOOLS,
       toolChoice: "auto",
       maxTokens: ctx.maxTokens,
-      temperature: ctx.temperature,
-      enableCaching: ctx.model.startsWith("anthropic/"),
-    }, ctx.fallbackModels);
+      temperature: Math.min(ctx.temperature, 0.4),
+      enableCaching: false,
+    }, ctx.toolFallbackModels);
+
+    if (loop === 0) {
+      console.log(
+        `[scheduler] tool loop model=${turn.modelUsed} fallback=${turn.fallbackUsed} stage=${ctx.stage}`,
+      );
+    }
 
     totalTokensIn += turn.tokensIn;
     totalTokensOut += turn.tokensOut;
@@ -729,9 +762,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     }
   }
 
-  // Após tools (ou se não chamou nenhuma), pede a resposta estruturada final.
+  // Resposta estruturada final: ctx.model (conversa / tom / JSON reply).
   const finalBaseDynamic = buildDynamicSystemPrompt(ctx); // reflete patches acumulados
   const finalDynamic = extras ? finalBaseDynamic + "\n\n" + extras : finalBaseDynamic;
+  console.log(`[scheduler] reply JSON model=${ctx.model} stage=${ctx.stage}`);
   const { result, response: finalResponse } = await callLlmStructuredWithFallback<SchedulerJsonResult>(
     ctx.orKey,
     {

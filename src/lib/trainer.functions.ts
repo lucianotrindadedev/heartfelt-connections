@@ -10,7 +10,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
-import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
+import { DEFAULT_LLM_MODEL, DEFAULT_TOOL_FALLBACK_MODELS, DEFAULT_TOOL_MODEL } from "@/lib/llm-defaults";
 import { splitMessage } from "@/lib/message-splitter.server";
 import type { AgentContext } from "@/lib/agents/context";
 import { runQualifierAgent } from "@/lib/agents/qualifier.server";
@@ -115,7 +115,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         .single(),
       sb
         .from("account_llm_config")
-        .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model")
+        .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model, tool_model")
         .eq("account_id", data.accountId)
         .single(),
       sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
@@ -147,6 +147,8 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       agentSettings: (agent.data.settings as Record<string, string> | null) ?? {},
       basePrompt: (agent.data.system_prompt as string) || "",
       model,
+      toolModel: (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
+      toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
       fallbackModels:
         (llm.data?.fallback_models as string[] | undefined) ??
         ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],

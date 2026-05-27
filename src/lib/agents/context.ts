@@ -30,6 +30,10 @@ export interface AgentContext {
 
   /** LLM. */
   model: string;
+  /** Modelo para tool calling no scheduler (separado do model de conversa/JSON). */
+  toolModel: string;
+  /** Fallback do tool loop do scheduler. */
+  toolFallbackModels: string[];
   /** Cadeia de fallback: tentada em ordem se o `model` principal falhar
    *  (5xx, timeout, content vazio). Pode ser []. */
   fallbackModels: string[];
