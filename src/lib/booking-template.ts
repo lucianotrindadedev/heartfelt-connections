@@ -153,7 +153,10 @@ ${missing.length > 0 ? `Ainda faltam (pergunte UM por vez, use lead_data_patch.c
 
 Regra: salve respostas em lead_data_patch:
 - name → lead_data_patch.name
-- demais campos → lead_data_patch.custom_fields.{key}`;
+- demais campos → lead_data_patch.custom_fields.{key}
+
+Regra CRÍTICA: se um campo já aparece em "Já coletados" abaixo, NUNCA pergunte de novo.
+Telefone do WhatsApp já está disponível (# LEAD_DATA / effectivePhone) — não peça telefone salvo em custom_fields.`;
 }
 
 function formatSlotParts(iso: string | undefined): { date: string; time: string } {
@@ -279,9 +282,9 @@ export function normalizeLeadDataForBooking(
     delete cf.child_birth_date;
   }
 
-  if (!cf.guardians?.trim()) {
+  if (!cf.guardians?.trim() && cf.child_birth_date?.trim() && cf.child_name?.trim()) {
     const fallback = ld.name?.trim() || opts?.fallbackGuardianName?.trim();
-    if (fallback && !looksLikeBirthDate(fallback)) {
+    if (fallback && !looksLikeBirthDate(fallback) && !looksLikePhoneNumber(fallback)) {
       cf.guardians = fallback;
     }
   }
@@ -714,68 +717,45 @@ export function mergeLeadDataPatch(current: LeadData, patch: Partial<LeadData>):
 
 const MAX_AUTO_CAPTURE_LEN = 200;
 
-function looksLikeQuestion(text: string): boolean {
-  return text.trim().endsWith("?");
+function looksLikePhoneNumber(text: string): boolean {
+  const digits = text.replace(/\D/g, "");
+  return digits.length >= 10 && digits.length <= 13;
 }
 
-function isShortAffirmative(text: string): boolean {
-  return /^(sim|não|nao|ok|blz|beleza|uhum|certo|pode|confirmo|confirmado|yes|no)[!.?\s]*$/i.test(
-    text.trim(),
-  );
+function stripAffirmativePrefix(text: string): string {
+  return text.replace(/^(sim|ok|isso|uhum|certo)[,.\s]+/i, "").trim();
 }
 
-/**
- * Em NAME_COLLECT, se o lead acabou de responder a pergunta do campo pendente
- * mas o LLM não gravou em lead_data, captura a última mensagem do usuário.
- */
-export function tryAutoCaptureBookingAnswer(
-  stage: string,
+function captureBookingAnswer(
+  rawAnswer: string,
+  assistantText: string,
   leadData: LeadData,
-  history: { role: "user" | "assistant"; content: string }[],
-  settings: Record<string, string>,
+  fields: BookingFieldDef[],
 ): Partial<LeadData> {
-  if (stage !== "NAME_COLLECT") return {};
-  if (!leadData.selected_slot_iso) return {};
-
-  const fields = getBookingFields(settings);
-  const missing = getMissingBookingFields(fields, leadData);
-  if (missing.length === 0) return {};
-
-  let lastUserIdx = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i]!.role === "user") {
-      lastUserIdx = i;
-      break;
-    }
-  }
-  if (lastUserIdx < 0) return {};
-
-  const lastUser = history[lastUserIdx]!.content.trim();
+  const lastUser = stripAffirmativePrefix(rawAnswer.trim());
   if (!lastUser || lastUser.length > MAX_AUTO_CAPTURE_LEN) return {};
   if (looksLikeQuestion(lastUser)) return {};
   if (isSlotAcceptanceMessage(lastUser)) return {};
   if (looksLikeSchedulingPreference(lastUser)) return {};
+  if (looksLikePhoneNumber(lastUser)) return {};
 
-  const prevAssistant = history
-    .slice(0, lastUserIdx)
-    .reverse()
-    .find((m) => m.role === "assistant");
-  if (!prevAssistant) return {};
+  const missing = getMissingBookingFields(fields, leadData);
+  if (missing.length === 0) return {};
 
   const field =
-    matchFieldFromAssistantQuestion(prevAssistant.content, missing) ??
+    matchFieldFromAssistantQuestion(assistantText, missing) ??
     inferBookingFieldFromContent(lastUser, missing) ??
     missing[0]!;
 
   if (isBirthDateField(field) && !looksLikeBirthDate(lastUser)) return {};
-  if (isChildNameField(field) && looksLikeBirthDate(lastUser)) {
+  if (looksLikeBirthDate(lastUser)) {
     const birthField = missing.find(isBirthDateField);
-    if (!birthField) return {};
-    if (field.maps_to === "name" || field.key === "name") {
-      return { name: lastUser };
+    if (birthField) {
+      return { custom_fields: { [birthField.key]: lastUser } };
     }
-    return { custom_fields: { [birthField.key]: lastUser } };
+    return {};
   }
+  if (isChildNameField(field) && looksLikeBirthDate(lastUser)) return {};
   if (isGuardiansField(field) && looksLikeBirthDate(lastUser)) {
     const birthField = missing.find(isBirthDateField);
     if (birthField) {
@@ -797,4 +777,84 @@ export function tryAutoCaptureBookingAnswer(
       [field.key]: lastUser,
     },
   };
+}
+
+/**
+ * Reprocessa o histórico e preenche campos que o LLM não gravou em lead_data.
+ * Evita repetir perguntas já respondidas no chat.
+ */
+export function backfillBookingFieldsFromHistory(
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+  settings: Record<string, string>,
+): Partial<LeadData> {
+  const fields = getBookingFields(settings);
+  let acc = leadData;
+  let merged: Partial<LeadData> = {};
+
+  for (let i = 0; i < history.length; i++) {
+    const msg = history[i]!;
+    if (msg.role !== "user") continue;
+
+    const assistantText = history
+      .slice(0, i)
+      .filter((m) => m.role === "assistant")
+      .slice(-3)
+      .map((m) => m.content)
+      .join("\n");
+    if (!assistantText.trim()) continue;
+
+    const patch = captureBookingAnswer(msg.content, assistantText, acc, fields);
+    if (Object.keys(patch).length === 0) continue;
+
+    acc = mergeLeadDataPatch(acc, patch);
+    merged = mergeLeadDataPatch(merged as LeadData, patch);
+  }
+
+  return merged;
+}
+
+function looksLikeQuestion(text: string): boolean {
+  return text.trim().endsWith("?");
+}
+
+function isShortAffirmative(text: string): boolean {
+  return /^(sim|não|nao|ok|blz|beleza|uhum|certo|pode|confirmo|confirmado|yes|no)[!.?\s]*$/i.test(
+    text.trim(),
+  );
+}
+
+/**
+ * Em NAME_COLLECT, se o lead acabou de responder a pergunta do campo pendente
+ * mas o LLM não gravou em lead_data, captura a última mensagem do usuário.
+ */
+export function tryAutoCaptureBookingAnswer(
+  stage: string,
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+  settings: Record<string, string>,
+): Partial<LeadData> {
+  if (stage !== "NAME_COLLECT" && stage !== "BOOKING") return {};
+
+  const fields = getBookingFields(settings);
+  if (getMissingBookingFields(fields, leadData).length === 0) return {};
+
+  let lastUserIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) return {};
+
+  const assistantText = history
+    .slice(0, lastUserIdx)
+    .filter((m) => m.role === "assistant")
+    .slice(-3)
+    .map((m) => m.content)
+    .join("\n");
+  if (!assistantText.trim()) return {};
+
+  return captureBookingAnswer(history[lastUserIdx]!.content, assistantText, leadData, fields);
 }

@@ -16,6 +16,7 @@ import {
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
 import {
+  backfillBookingFieldsFromHistory,
   getBookingFields,
   getMissingBookingFields,
   isReadyForBooking,
@@ -327,6 +328,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       fallbackGuardianName: helenaContact?.name,
     });
 
+    if (stage === "NAME_COLLECT" || stage === "BOOKING") {
+      const backfill = backfillBookingFieldsFromHistory(leadData, history, agentSettings);
+      if (Object.keys(backfill).length > 0) {
+        leadData = mergeLeadDataPatch(leadData, backfill);
+        console.log(
+          `[orch] backfill campos conv=${conversationId} patch=${JSON.stringify(backfill)}`,
+        );
+      }
+    }
+
     const lastUserMsg = [...history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
     const slotSelectionTurn =
       isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg);
@@ -348,6 +359,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         console.log(
           `[orch] auto-captura NAME_COLLECT conv=${conversationId} patch=${JSON.stringify(autoPatch)}`,
         );
+      }
+    }
+
+    if (stage === "BOOKING" && !slotSelectionTurn) {
+      const autoPatch = tryAutoCaptureBookingAnswer(stage, leadData, history, agentSettings);
+      if (Object.keys(autoPatch).length > 0) {
+        leadData = mergeLeadDataPatch(leadData, autoPatch);
       }
     }
 
@@ -475,16 +493,26 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       mergeLeadDataPatch(leadData, patch as Partial<LeadData>),
       { fallbackGuardianName: helenaContact?.name },
     );
+    const backfillFinal = backfillBookingFieldsFromHistory(newLeadData, history, agentSettings);
+    const finalLeadData =
+      Object.keys(backfillFinal).length > 0
+        ? mergeLeadDataPatch(newLeadData, backfillFinal)
+        : newLeadData;
+    if (Object.keys(backfillFinal).length > 0) {
+      console.log(
+        `[orch] backfill pos-turn conv=${conversationId} patch=${JSON.stringify(backfillFinal)}`,
+      );
+    }
 
     let newStage = resolveNextStage(stage, result.next_stage, {
       requireAppointmentForConfirmed: hasBookingIntegration,
-      hasAppointmentId: !!newLeadData.appointment_id,
-      leadData: newLeadData,
+      hasAppointmentId: !!finalLeadData.appointment_id,
+      leadData: finalLeadData,
     });
 
     if (
       stage === "SLOT_OFFER" &&
-      newLeadData.selected_slot_iso &&
+      finalLeadData.selected_slot_iso &&
       newStage === "SLOT_OFFER"
     ) {
       newStage = "NAME_COLLECT";
@@ -494,7 +522,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     if (
-      newLeadData.appointment_id &&
+      finalLeadData.appointment_id &&
       (newStage === "NAME_COLLECT" || newStage === "BOOKING")
     ) {
       console.log(
@@ -506,7 +534,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let reply = result.reply;
     if (
       hasBookingIntegration &&
-      !newLeadData.appointment_id &&
+      !finalLeadData.appointment_id &&
       /\b(agendei|agendado|marquei|confirmad[oa]|visita guiada para)\b/i.test(reply)
     ) {
       console.warn(
@@ -514,13 +542,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
       const missingFields = getMissingBookingFields(
         getBookingFields(agentSettings),
-        newLeadData,
+        finalLeadData,
       );
-      if (newLeadData.selected_slot_iso && missingFields.length > 0) {
+      if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
         const nextField = missingFields[0]!;
         reply = `Perfeito! Anotei esse horário para você.\n\n${nextField.question}`;
         newStage = "NAME_COLLECT";
-      } else if (newLeadData.selected_slot_iso) {
+      } else if (finalLeadData.selected_slot_iso) {
         reply =
           "Perfeito! Anotei esse horário. Estou finalizando o registro na agenda e já te confirmo.";
         newStage = "BOOKING";
@@ -528,17 +556,22 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         reply =
           "Desculpe, tive um problema ao registrar sua visita na agenda agora. Pode me confirmar o horário que você prefere? Vou tentar registrar de novo.";
         if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
-          newStage = newLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
+          newStage = finalLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
         }
       }
     }
 
-    if (newStage === "NAME_COLLECT" && !newLeadData.selected_slot_iso) {
+    if (newStage === "NAME_COLLECT" && !finalLeadData.selected_slot_iso) {
       newStage = "SLOT_OFFER";
     }
 
+    const cfKeys = Object.keys(finalLeadData.custom_fields ?? {}).join(",");
+    console.log(
+      `[orch] persist conv=${conversationId} stage=${newStage} custom_fields=${cfKeys || "(vazio)"}`,
+    );
+
     // 12. Persiste e entrega
-    await persistStageAndLeadData(conversationId, meta, newStage, newLeadData, route);
+    await persistStageAndLeadData(conversationId, meta, newStage, finalLeadData, route);
 
     await deliverReply(
       accountId,
@@ -562,14 +595,14 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     // 13. Se transitou para ESCALATED, dispara escalação humana
     if (newStage === "ESCALATED" && stage !== "ESCALATED") {
-      console.log(`[orch] disparando escalateToHuman — motivo: ${newLeadData.escalation_reason}`);
+      console.log(`[orch] disparando escalateToHuman — motivo: ${finalLeadData.escalation_reason}`);
       try {
         await escalateToHuman({
           accountId,
           agentId,
           phone: effectivePhone ?? conversationPhone,
           sessionId,
-          reason: newLeadData.escalation_reason,
+          reason: finalLeadData.escalation_reason,
         });
       } catch (e) {
         console.error("[orch] escalateToHuman falhou:", e);

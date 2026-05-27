@@ -490,6 +490,7 @@ ${fieldsBlock}
 6. **NUNCA diga "agendei", "marquei" ou "está confirmado" sem appointment_id em lead_data** (ok=true de criar_agendamento).
 7. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
 8. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
+9. **NUNCA repita pergunta de campo que já consta em LEAD_DATA / "Já coletados".** Telefone do lead já está no sistema — não peça telefone em custom_fields.
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
 
