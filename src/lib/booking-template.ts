@@ -179,9 +179,121 @@ function formatSlotParts(iso: string | undefined): { date: string; time: string 
   }
 }
 
+export function looksLikeBirthDate(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (/^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/.test(t)) return true;
+  if (/^\d{1,2}\s+de\s+[a-zà-ú]+(\s+de\s+\d{2,4})?$/i.test(t)) return true;
+  return false;
+}
+
+function looksLikePersonName(text: string): boolean {
+  const t = text.trim();
+  if (!t || looksLikeBirthDate(t) || looksLikeSchedulingPreference(t)) return false;
+  if (/^\d+$/.test(t)) return false;
+  return /[\p{L}']/u.test(t);
+}
+
+function isBirthDateField(field: BookingFieldDef): boolean {
+  const k = field.key.toLowerCase();
+  const l = field.label.toLowerCase();
+  return k.includes("birth") || k.includes("nasc") || l.includes("nascimento");
+}
+
+function isGuardiansField(field: BookingFieldDef): boolean {
+  const k = field.key.toLowerCase();
+  const l = field.label.toLowerCase();
+  return k.includes("guardian") || k.includes("respons") || l.includes("respons");
+}
+
+function isChildNameField(field: BookingFieldDef): boolean {
+  return field.key === "child_name" || field.label.toLowerCase().includes("criança");
+}
+
+function matchFieldFromAssistantQuestion(
+  assistantText: string,
+  fields: BookingFieldDef[],
+): BookingFieldDef | null {
+  const t = assistantText.toLowerCase();
+  for (const f of fields) {
+    const q = f.question.toLowerCase().slice(0, 24);
+    if (q.length >= 8 && t.includes(q)) return f;
+    if (isBirthDateField(f) && /nascimento|nasceu|data de nasc/i.test(t)) return f;
+    if (isChildNameField(f) && /nome da (sua )?crian/i.test(t)) return f;
+    if (isGuardiansField(f) && /respons[aá]ve/i.test(t)) return f;
+    if ((f.maps_to === "name" || f.key === "name") && /seu nome|nome completo/i.test(t)) {
+      return f;
+    }
+  }
+  return null;
+}
+
+function inferBookingFieldFromContent(
+  text: string,
+  missing: BookingFieldDef[],
+): BookingFieldDef | null {
+  if (looksLikeBirthDate(text)) {
+    return missing.find(isBirthDateField) ?? null;
+  }
+  if (looksLikePersonName(text)) {
+    return (
+      missing.find(isChildNameField) ??
+      missing.find((f) => f.maps_to === "name" || f.key === "name") ??
+      missing.find(isGuardiansField) ??
+      null
+    );
+  }
+  return null;
+}
+
+/** Corrige custom_fields deslocados (ex.: nascimento com nome, responsáveis com data). */
+export function normalizeLeadDataForBooking(
+  ld: LeadData,
+  opts?: { fallbackGuardianName?: string },
+): LeadData {
+  const cf = { ...(ld.custom_fields ?? {}) };
+  const childName = cf.child_name?.trim();
+  let birth = cf.child_birth_date?.trim();
+  let guardians = cf.guardians?.trim();
+
+  if (
+    childName &&
+    birth === childName &&
+    guardians &&
+    looksLikeBirthDate(guardians)
+  ) {
+    cf.child_birth_date = guardians;
+    delete cf.guardians;
+    birth = cf.child_birth_date;
+    guardians = undefined;
+  }
+
+  if (guardians && looksLikeBirthDate(guardians) && (!birth || birth === childName)) {
+    cf.child_birth_date = guardians;
+    delete cf.guardians;
+    birth = cf.child_birth_date;
+    guardians = undefined;
+  }
+
+  if (birth && looksLikePersonName(birth) && birth === childName) {
+    delete cf.child_birth_date;
+  }
+
+  if (!cf.guardians?.trim()) {
+    const fallback = ld.name?.trim() || opts?.fallbackGuardianName?.trim();
+    if (fallback && !looksLikeBirthDate(fallback)) {
+      cf.guardians = fallback;
+    }
+  }
+
+  return { ...ld, custom_fields: cf };
+}
+
 export function buildTemplateVars(ctx: AgentContext): Record<string, string> {
   const s = ctx.agentSettings;
-  const ld = ctx.leadData;
+  const ld = normalizeLeadDataForBooking(ctx.leadData, {
+    fallbackGuardianName: ctx.helenaContact?.name,
+  });
   const cf = ld.custom_fields ?? {};
   const { date: slot_date, time: slot_time } = formatSlotParts(ld.selected_slot_iso);
   const interest = ld.interest?.trim() ?? "";
@@ -218,7 +330,15 @@ export function renderBookingTemplate(
 ): string {
   let out = template;
   out = out.replace(/\{custom\.([a-zA-Z0-9_]+)\}/g, (_, key: string) => vars[`custom.${key}`] ?? "");
-  out = out.replace(/\{([a-zA-Z0-9_]+)\}/g, (_, key: string) => vars[key] ?? "");
+
+  const standardKeys = Object.keys(vars)
+    .filter((k) => !k.startsWith("custom."))
+    .sort((a, b) => b.length - a.length);
+  for (const key of standardKeys) {
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(`\\{${escaped}\\}`, "g"), vars[key] ?? "");
+  }
+
   if (opts?.preserveNewlines) {
     return out
       .split("\n")
@@ -323,6 +443,94 @@ function normalizeTimeLabel(raw: string): string {
   return `${m[1]!.padStart(2, "0")}:${m[2]}`;
 }
 
+function hourInBrt(iso: string): number {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return -1;
+  return Number(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Sao_Paulo",
+      hour: "numeric",
+      hour12: false,
+    }).format(d),
+  );
+}
+
+/** Lead falando de turno/dia — preferência de horário, não resposta de campo nem nome. */
+export function looksLikeSchedulingPreference(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  if (!t) return false;
+  if (
+    /^(manh[aã]|tarde|noite|de manh[aã]|de tarde|de noite|periodo|per[ií]odo|hor[aá]rio|turno)[!.?\s]*$/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/\d{1,2}:\d{2}/.test(t)) return false;
+  if (
+    /manh[aã]|tarde|noite|prefer[oi]|hor[aá]rio|turno|segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo|\b\d{1,2}\/\d{1,2}\b/.test(
+      t,
+    ) &&
+    t.length <= 48 &&
+    !/^[A-ZÀ-Ú][a-zà-ú]+(\s+[A-ZÀ-Úa-zà-ú]+)+$/.test(text.trim())
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function pickSlotByPreference(
+  slots: OfferedSlot[],
+  text: string,
+  assistantText: string,
+): Partial<LeadData> | null {
+  const t = text.toLowerCase();
+  const wantMorning = /manh[aã]|de manh[aã]/.test(t);
+  const wantAfternoon = /\btarde\b|de tarde/.test(t);
+  const wantEvening = /noite|de noite/.test(t);
+  if (!wantMorning && !wantAfternoon && !wantEvening) return null;
+
+  let pool = slots;
+  const mentioned = slots.filter((s) => slotMentionedInText(s, assistantText));
+  if (mentioned.length > 0) pool = mentioned;
+
+  const filtered = pool.filter((s) => {
+    const h = hourInBrt(s.iso);
+    if (h < 0) return false;
+    if (wantMorning) return h < 12;
+    if (wantAfternoon) return h >= 12 && h < 18;
+    if (wantEvening) return h >= 18;
+    return true;
+  });
+  if (filtered.length === 0) return null;
+
+  filtered.sort((a, b) => new Date(a.iso).getTime() - new Date(b.iso).getTime());
+  const s = filtered[0]!;
+  return {
+    selected_slot_iso: s.iso,
+    ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
+  };
+}
+
+export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadData> {
+  const next: Partial<LeadData> = { ...patch };
+  if (next.custom_fields) {
+    const cleaned: Record<string, string> = {};
+    for (const [k, v] of Object.entries(next.custom_fields)) {
+      if (typeof v !== "string") continue;
+      if (looksLikeSchedulingPreference(v)) continue;
+      if (k.includes("birth") && !looksLikeBirthDate(v) && looksLikePersonName(v)) continue;
+      if (k.includes("guardian") && looksLikeBirthDate(v)) continue;
+      cleaned[k] = v;
+    }
+    next.custom_fields = cleaned;
+  }
+  if (typeof next.name === "string" && looksLikeSchedulingPreference(next.name)) {
+    delete next.name;
+  }
+  return next;
+}
+
 function slotMentionedInText(slot: OfferedSlot, text: string): boolean {
   const hay = text.toLowerCase();
   const time = normalizeTimeLabel(slot.time_label);
@@ -376,13 +584,18 @@ export function tryAutoSelectOfferedSlot(
   if (lastUserIdx < 0) return {};
 
   const lastUser = history[lastUserIdx]!.content.trim();
-  if (!lastUser || !isSlotAcceptanceMessage(lastUser)) return {};
+  if (!lastUser) return {};
 
   const lastAssistant = history
     .slice(0, lastUserIdx)
     .reverse()
     .find((m) => m.role === "assistant");
   const assistantText = lastAssistant?.content ?? "";
+
+  const prefPatch = pickSlotByPreference(slots, lastUser, assistantText);
+  if (prefPatch) return prefPatch;
+
+  if (!isSlotAcceptanceMessage(lastUser)) return {};
 
   const userTime = normalizeTimeLabel(lastUser);
   if (userTime) {
@@ -465,6 +678,7 @@ export function tryAutoCaptureBookingAnswer(
   settings: Record<string, string>,
 ): Partial<LeadData> {
   if (stage !== "NAME_COLLECT") return {};
+  if (!leadData.selected_slot_iso) return {};
 
   const fields = getBookingFields(settings);
   const missing = getMissingBookingFields(fields, leadData);
@@ -483,6 +697,7 @@ export function tryAutoCaptureBookingAnswer(
   if (!lastUser || lastUser.length > MAX_AUTO_CAPTURE_LEN) return {};
   if (looksLikeQuestion(lastUser)) return {};
   if (isSlotAcceptanceMessage(lastUser)) return {};
+  if (looksLikeSchedulingPreference(lastUser)) return {};
 
   const prevAssistant = history
     .slice(0, lastUserIdx)
@@ -490,7 +705,28 @@ export function tryAutoCaptureBookingAnswer(
     .find((m) => m.role === "assistant");
   if (!prevAssistant) return {};
 
-  const field = missing[0]!;
+  const field =
+    matchFieldFromAssistantQuestion(prevAssistant.content, missing) ??
+    inferBookingFieldFromContent(lastUser, missing) ??
+    missing[0]!;
+
+  if (isBirthDateField(field) && !looksLikeBirthDate(lastUser)) return {};
+  if (isChildNameField(field) && looksLikeBirthDate(lastUser)) {
+    const birthField = missing.find(isBirthDateField);
+    if (!birthField) return {};
+    if (field.maps_to === "name" || field.key === "name") {
+      return { name: lastUser };
+    }
+    return { custom_fields: { [birthField.key]: lastUser } };
+  }
+  if (isGuardiansField(field) && looksLikeBirthDate(lastUser)) {
+    const birthField = missing.find(isBirthDateField);
+    if (birthField) {
+      return { custom_fields: { [birthField.key]: lastUser } };
+    }
+    return {};
+  }
+
   if (isShortAffirmative(lastUser) && field.maps_to !== "name" && field.key !== "name") {
     return {};
   }

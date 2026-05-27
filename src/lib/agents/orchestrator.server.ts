@@ -16,8 +16,12 @@ import {
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
 import {
+  isReadyForBooking,
   isSlotAcceptanceMessage,
+  looksLikeSchedulingPreference,
   mergeLeadDataPatch,
+  normalizeLeadDataForBooking,
+  sanitizeLeadDataPatch,
   tryAutoCaptureBookingAnswer,
   tryAutoSelectOfferedSlot,
 } from "@/lib/booking-template";
@@ -299,8 +303,31 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let leadData = readLeadDataFromMeta(meta);
     const agentSettings = (agent.data.settings as Record<string, string> | null) ?? {};
 
+    if (leadData.custom_fields) {
+      const cleaned: Record<string, string> = {};
+      let removedInvalid = false;
+      for (const [k, v] of Object.entries(leadData.custom_fields)) {
+        if (typeof v === "string" && looksLikeSchedulingPreference(v)) {
+          removedInvalid = true;
+          continue;
+        }
+        cleaned[k] = v;
+      }
+      if (removedInvalid) {
+        leadData = { ...leadData, custom_fields: cleaned };
+        console.log(
+          `[orch] limpando custom_fields inválidos conv=${conversationId} (preferência de horário)`,
+        );
+      }
+    }
+
+    leadData = normalizeLeadDataForBooking(leadData, {
+      fallbackGuardianName: helenaContact?.name,
+    });
+
     const lastUserMsg = [...history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
-    const slotSelectionTurn = isSlotAcceptanceMessage(lastUserMsg);
+    const slotSelectionTurn =
+      isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg);
 
     if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
       const slotPatch = tryAutoSelectOfferedSlot(stage, leadData, history);
@@ -322,14 +349,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    let effectiveStage = stage;
-    if (stage === "SLOT_OFFER" && leadData.selected_slot_iso) {
-      effectiveStage = "NAME_COLLECT";
-      console.log(
-        `[orch] slot escolhido conv=${conversationId} — scheduler em NAME_COLLECT (era SLOT_OFFER)`,
-      );
-    }
-
     // 8. Integrações habilitadas
     const [clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
       sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
@@ -337,6 +356,35 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
       sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
     ]);
+
+    const hasBookingIntegration =
+      !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
+
+    let effectiveStage = stage;
+    if (stage === "SLOT_OFFER" && leadData.selected_slot_iso) {
+      effectiveStage = "NAME_COLLECT";
+      console.log(
+        `[orch] slot escolhido conv=${conversationId} — scheduler em NAME_COLLECT (era SLOT_OFFER)`,
+      );
+    }
+    if (stage === "NAME_COLLECT" && !leadData.selected_slot_iso) {
+      effectiveStage = "SLOT_OFFER";
+      console.log(
+        `[orch] NAME_COLLECT sem slot conv=${conversationId} — scheduler em SLOT_OFFER`,
+      );
+    }
+    if (
+      (stage === "NAME_COLLECT" || stage === "BOOKING") &&
+      hasBookingIntegration &&
+      !leadData.appointment_id &&
+      isReadyForBooking(leadData, agentSettings, {
+        hasPhone: !!effectivePhone,
+        hasBookingIntegration,
+      })
+    ) {
+      effectiveStage = "BOOKING";
+      console.log(`[orch] campos completos conv=${conversationId} — scheduler em BOOKING`);
+    }
 
     // 9. Monta AgentContext
     const ctx: AgentContext = {
@@ -416,12 +464,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     );
 
     // 11. Aplica transição validada + merge de lead_data
-    const hasBookingIntegration =
-      !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
     const patch = stripNullishFields(
-      (result.lead_data_patch ?? {}) as Record<string, unknown>,
+      sanitizeLeadDataPatch(
+        (result.lead_data_patch ?? {}) as Partial<LeadData>,
+      ) as Record<string, unknown>,
     ) as Partial<LeadData>;
-    const newLeadData: LeadData = mergeLeadDataPatch(leadData, patch as Partial<LeadData>);
+    const newLeadData: LeadData = normalizeLeadDataForBooking(
+      mergeLeadDataPatch(leadData, patch as Partial<LeadData>),
+      { fallbackGuardianName: helenaContact?.name },
+    );
 
     let newStage = resolveNextStage(stage, result.next_stage, {
       requireAppointmentForConfirmed: hasBookingIntegration,
@@ -462,8 +513,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       reply =
         "Desculpe, tive um problema ao registrar sua visita na agenda agora. Pode me confirmar o horário que você prefere? Vou tentar registrar de novo.";
       if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
-        newStage = "BOOKING";
+        newStage = newLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
       }
+    }
+
+    if (newStage === "NAME_COLLECT" && !newLeadData.selected_slot_iso) {
+      newStage = "SLOT_OFFER";
     }
 
     // 12. Persiste e entrega

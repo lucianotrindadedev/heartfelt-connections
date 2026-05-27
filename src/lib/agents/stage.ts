@@ -84,6 +84,23 @@ function coerceProposedStage(current: Stage, proposed: Stage, leadData: LeadData
       );
       return "NAME_COLLECT";
     }
+    if (proposed === "NAME_COLLECT" && !leadData.selected_slot_iso) {
+      console.warn(
+        `[stage] ${current} → NAME_COLLECT bloqueado — selected_slot_iso ausente`,
+      );
+      return "SLOT_OFFER";
+    }
+  }
+  if (
+    current === "NAME_COLLECT" &&
+    proposed === "SLOT_OFFER" &&
+    leadData.selected_slot_iso &&
+    !leadData.appointment_id
+  ) {
+    console.warn(
+      `[stage] ${current} → SLOT_OFFER bloqueado — slot já escolhido`,
+    );
+    return "NAME_COLLECT";
   }
   if (current === "NAME_COLLECT" && proposed === "CONFIRMED" && !leadData.appointment_id) {
     console.warn(`[stage] ${current} → CONFIRMED redirecionado para BOOKING (sem appointment_id)`);

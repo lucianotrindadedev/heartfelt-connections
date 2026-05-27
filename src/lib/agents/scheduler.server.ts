@@ -58,6 +58,7 @@ import {
   tryAutoSelectOfferedSlot,
   resolveGcalEventTemplates,
   isSlotAcceptanceMessage,
+  looksLikeSchedulingPreference,
 } from "@/lib/booking-template";
 
 /**
@@ -472,8 +473,8 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
-- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Quando o lead escolher um horário → next_stage="NAME_COLLECT" (NUNCA BOOKING direto).
-- **NAME_COLLECT**: confirme o slot escolhido (selected_slot_iso). NÃO chame listar_horarios se o lead já escolheu horário. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
+- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
+- **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou — peça desculpas e ofereça outro horário.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
 
@@ -630,7 +631,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   }
 
   const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
-  if (isSlotAcceptanceMessage(lastUserMsg)) {
+  if (isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg)) {
     console.log(
       `[scheduler] turn de escolha de horário conv=${ctx.conversationId} — adiando criar_agendamento`,
     );
