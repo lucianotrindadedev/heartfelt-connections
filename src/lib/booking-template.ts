@@ -184,7 +184,20 @@ export function getMissingBookingFields(
 ): BookingFieldDef[] {
   return fields.filter((f) => {
     if (!f.required) return false;
-    return !getFieldValue(f.key, f.maps_to, ld);
+    const v = getFieldValue(f.key, f.maps_to, ld);
+    if (!v) return true;
+    // Campos de nome preenchidos com mensagem de saudacao/intencao
+    // contam como MISSING — forca o agente a perguntar de novo em vez
+    // de criar um agendamento com lixo no titulo/descricao.
+    const isNameField =
+      f.key === "child_name" ||
+      f.key.includes("child") ||
+      f.key.includes("guardian") ||
+      f.key.includes("respons") ||
+      f.maps_to === "name" ||
+      f.key === "name";
+    if (isNameField && looksLikeIntentMessage(v)) return true;
+    return false;
   });
 }
 
@@ -254,10 +267,41 @@ export function looksLikeBirthDate(text: string): boolean {
   return false;
 }
 
+/**
+ * Detecta mensagens de saudacao/intencao/qualificacao do lead.
+ * Essas mensagens NAO devem ser usadas como resposta de campo de cadastro
+ * (nome da crianca, nome dos responsaveis etc).
+ *
+ * Heuristica conservadora:
+ *  - >= 5 palavras (nomes proprios raramente passam disso)
+ *  - OU contem verbos/palavras tipicas de intencao
+ *  - OU pergunta (termina com ?)
+ */
+export function looksLikeIntentMessage(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (t.endsWith("?")) return true;
+
+  const tl = t.toLowerCase();
+  const intentWords =
+    /\b(ol[aá]|oi|bom dia|boa tarde|boa noite|gostaria|gostari[ae]|quero|queria|preciso|posso|pode|poderia|tenho|estou|interesse|interessad[oa]|informa[cç][oõ]es?|saber|sobre|d[uú]vida|escola|consulta|atendiment|servi[cç]o|aula|curso|mensalidad|valor|pre[cç]o|hor[aá]rio|disponibilidade|matr[ií]cul|filh[oa]|crian[cç]a|esposa|marido|m[ãa]e|pai|melhor falar|gente|al[ôo])\b/i;
+  if (intentWords.test(tl)) return true;
+
+  const wordCount = t.split(/\s+/).filter(Boolean).length;
+  if (wordCount >= 5) return true;
+
+  return false;
+}
+
 function looksLikePersonName(text: string): boolean {
   const t = text.trim();
   if (!t || looksLikeBirthDate(t) || looksLikeSchedulingPreference(t)) return false;
   if (/^\d+$/.test(t)) return false;
+  // Rejeita mensagens de saudacao/intencao — elas nao sao nome de pessoa.
+  if (looksLikeIntentMessage(t)) return false;
+  // Nome de pessoa raramente passa de 6 palavras.
+  const wordCount = t.split(/\s+/).filter(Boolean).length;
+  if (wordCount > 6) return false;
   return /[\p{L}']/u.test(t);
 }
 
@@ -601,12 +645,25 @@ export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadDat
       if (looksLikeSchedulingPreference(v)) continue;
       if (k.includes("birth") && !looksLikeBirthDate(v) && looksLikePersonName(v)) continue;
       if (k.includes("guardian") && looksLikeBirthDate(v)) continue;
+
+      // Campos de nome (crianca, responsaveis, nome generico) NUNCA aceitam
+      // mensagens de saudacao/intencao tipo "ola gostaria de mais informacoes".
+      const isNameField =
+        k === "child_name" ||
+        k.includes("child") ||
+        k.includes("guardian") ||
+        k.includes("respons") ||
+        k === "name";
+      if (isNameField && looksLikeIntentMessage(v)) continue;
+
       cleaned[k] = v;
     }
     next.custom_fields = cleaned;
   }
-  if (typeof next.name === "string" && looksLikeSchedulingPreference(next.name)) {
-    delete next.name;
+  if (typeof next.name === "string") {
+    if (looksLikeSchedulingPreference(next.name) || looksLikeIntentMessage(next.name)) {
+      delete next.name;
+    }
   }
   return next;
 }
@@ -827,12 +884,8 @@ function captureBookingAnswer(
   const missing = getMissingBookingFields(fields, leadData);
   if (missing.length === 0) return {};
 
-  const field =
-    matchFieldFromAssistantQuestion(assistantText, missing) ??
-    inferBookingFieldFromContent(lastUser, missing) ??
-    missing[0]!;
-
-  if (isBirthDateField(field) && !looksLikeBirthDate(lastUser)) return {};
+  // Datas de nascimento sao auto-classificadas independente da pergunta —
+  // o formato dd/mm/yyyy e inequivoco.
   if (looksLikeBirthDate(lastUser)) {
     const birthField = missing.find(isBirthDateField);
     if (birthField) {
@@ -840,21 +893,30 @@ function captureBookingAnswer(
     }
     return {};
   }
-  if (isChildNameField(field) && looksLikeBirthDate(lastUser)) return {};
-  if (isGuardiansField(field) && looksLikeBirthDate(lastUser)) {
-    const birthField = missing.find(isBirthDateField);
-    if (birthField) {
-      return { custom_fields: { [birthField.key]: lastUser } };
-    }
-    return {};
-  }
+
+  // Para os demais campos, EXIGIMOS que o assistente tenha perguntado
+  // explicitamente sobre o campo. Sem isso, nao capturamos — evita usar
+  // a M1 ("Ola gostaria de mais informacoes...") como nome da crianca.
+  const fieldFromQuestion = matchFieldFromAssistantQuestion(assistantText, missing);
+  if (!fieldFromQuestion) return {};
+  const field = fieldFromQuestion;
 
   if (isShortAffirmative(lastUser) && field.maps_to !== "name" && field.key !== "name") {
     return {};
   }
 
+  // Mensagens de saudacao/intencao nao sao resposta de campo de cadastro.
+  if (looksLikeIntentMessage(lastUser)) return {};
+
   if (field.maps_to === "name" || field.key === "name") {
+    if (!looksLikePersonName(lastUser)) return {};
     return { name: lastUser };
+  }
+
+  // Campos de nome (crianca / responsaveis) exigem que o conteudo
+  // pareca nome de pessoa — nao texto livre.
+  if (isChildNameField(field) || isGuardiansField(field)) {
+    if (!looksLikePersonName(lastUser)) return {};
   }
 
   return {
@@ -867,6 +929,10 @@ function captureBookingAnswer(
 /**
  * Reprocessa o histórico e preenche campos que o LLM não gravou em lead_data.
  * Evita repetir perguntas já respondidas no chat.
+ *
+ * Importante: so processa mensagens APOS o assistente ter feito a primeira
+ * pergunta de campo de booking. Mensagens da fase RECEPTION/QUALIFICATION
+ * (ex: "Ola gostaria de informacoes") nunca viram resposta de cadastro.
  */
 export function backfillBookingFieldsFromHistory(
   leadData: LeadData,
@@ -875,10 +941,24 @@ export function backfillBookingFieldsFromHistory(
   channelCtx?: BookingChannelContext,
 ): Partial<LeadData> {
   const fields = getBookingFieldsForChannel(settings, channelCtx);
+
+  // Encontra o indice da primeira pergunta de campo de booking do assistente.
+  // Tudo antes disso e descartado para evitar capturar M1/QUALIFICATION.
+  let firstFieldQuestionIdx = -1;
+  for (let i = 0; i < history.length; i++) {
+    const m = history[i]!;
+    if (m.role !== "assistant") continue;
+    if (matchFieldFromAssistantQuestion(m.content, fields)) {
+      firstFieldQuestionIdx = i;
+      break;
+    }
+  }
+  if (firstFieldQuestionIdx === -1) return {};
+
   let acc = leadData;
   let merged: Partial<LeadData> = {};
 
-  for (let i = 0; i < history.length; i++) {
+  for (let i = firstFieldQuestionIdx + 1; i < history.length; i++) {
     const msg = history[i]!;
     if (msg.role !== "user") continue;
 

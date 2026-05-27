@@ -544,10 +544,33 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     );
 
     // 11. Aplica transição validada + merge de lead_data
+    const rawPatch = (result.lead_data_patch ?? {}) as Partial<LeadData>;
+    const sanitized = sanitizeLeadDataPatch(rawPatch);
+    // Telemetria: detecta quando o LLM tentou gravar campo invalido (lixo)
+    // que o sanitizer rejeitou. Util para mapear quais modelos alucinam mais.
+    const rejectedCustomFields: string[] = [];
+    const rawCf = rawPatch.custom_fields ?? {};
+    const sanitizedCf = sanitized.custom_fields ?? {};
+    for (const k of Object.keys(rawCf)) {
+      if (rawCf[k] !== sanitizedCf[k]) rejectedCustomFields.push(k);
+    }
+    if (rejectedCustomFields.length > 0) {
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "llm_patch_sanitized",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          route,
+          stage_from: stage,
+          model: route === "qualifier" ? ctx.qualifierModel : ctx.model,
+          rejected_fields: rejectedCustomFields,
+          raw_preview: JSON.stringify(rawCf).slice(0, 200),
+        })}`,
+      );
+    }
     const patch = stripNullishFields(
-      sanitizeLeadDataPatch(
-        (result.lead_data_patch ?? {}) as Partial<LeadData>,
-      ) as Record<string, unknown>,
+      sanitized as Record<string, unknown>,
     ) as Partial<LeadData>;
     const newLeadData: LeadData = normalizeLeadDataForBooking(
       mergeLeadDataPatch(leadData, patch as Partial<LeadData>),
