@@ -537,6 +537,8 @@ function hourInBrt(iso: string): number {
 export function looksLikeSchedulingPreference(text: string): boolean {
   const t = text.trim().toLowerCase();
   if (!t) return false;
+  // Data de nascimento (dd/mm/yyyy) tem prioridade — nunca classifica como preferencia.
+  if (looksLikeBirthDate(text)) return false;
   if (
     /^(manh[aã]|tarde|noite|de manh[aã]|de tarde|de noite|periodo|per[ií]odo|hor[aá]rio|turno)[!.?\s]*$/i.test(
       t,
