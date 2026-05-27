@@ -86,4 +86,11 @@ export interface AgentResult {
   tokens_out?: number;
   /** Custo total em USD de todas as chamadas LLM deste turn (via usage.cost da OpenRouter). */
   cost_usd?: number;
+  /**
+   * Telemetria estruturada do turn (intervenções determinísticas, blocos,
+   * sanitizers etc). Propagada do sub-agente até `messages.meta` no
+   * orchestrator. Exemplos:
+   *  - { preflight_blocked: true, dirty_fields: ["child_name"] }
+   */
+  telemetry?: Record<string, unknown>;
 }

@@ -209,6 +209,129 @@ export function getNextBookingFieldQuestion(
   return missing[0] ?? null;
 }
 
+// ── Preflight pre-criar_agendamento ─────────────────────────────────────────
+//
+// Ultima barreira ANTES de chamar criar_agendamento. Detecta campos suspeitos
+// que escaparam de sanitizeLeadDataPatch / getMissingBookingFields (cintos +
+// suspensorio + air-bag). Se detectar lixo, retorna a lista de chaves para o
+// scheduler limpar do lead_data — o orchestrator vai naturalmente forcar o LLM
+// a re-perguntar no proximo turn (sem o lead nem perceber).
+//
+// Aceita os mesmos tipos de "lixo" que sanitizeLeadDataPatch ja rejeita, mas
+// aqui validamos o ESTADO ATUAL de lead_data (que pode ter sido contaminado
+// por backfill ou por turns anteriores).
+
+export interface PreflightIssue {
+  key: string;
+  value: string;
+  reason:
+    | "intent_message_in_name"
+    | "too_many_words_in_name"
+    | "scheduling_text_in_name"
+    | "not_a_date";
+}
+
+export interface PreflightResult {
+  ok: boolean;
+  issues: PreflightIssue[];
+}
+
+function isNameFieldKey(field: BookingFieldDef): boolean {
+  if (field.maps_to === "name") return true;
+  if (field.key === "name") return true;
+  const k = field.key.toLowerCase();
+  return (
+    k.includes("name") ||
+    k.includes("nome") ||
+    k.includes("child") ||
+    k.includes("guardian") ||
+    k.includes("respons")
+  );
+}
+
+function isDateFieldKey(field: BookingFieldDef): boolean {
+  const k = field.key.toLowerCase();
+  const label = (field.label ?? "").toLowerCase();
+  return (
+    k.includes("birth") ||
+    k.includes("nasciment") ||
+    k.includes("data") ||
+    label.includes("nasciment") ||
+    label.includes("data")
+  );
+}
+
+export function preflightBookingFields(
+  fields: BookingFieldDef[],
+  ld: LeadData,
+): PreflightResult {
+  const issues: PreflightIssue[] = [];
+
+  for (const f of fields) {
+    if (!f.required) continue;
+    const v = getFieldValue(f.key, f.maps_to, ld);
+    if (!v) continue;
+
+    // Date fields tem prioridade sobre name fields. Ex: "child_birth_date"
+    // contem "child" mas e claramente uma data.
+    const dateField = isDateFieldKey(f);
+    const nameField = !dateField && isNameFieldKey(f);
+
+    if (dateField) {
+      if (!looksLikeBirthDate(v)) {
+        issues.push({ key: f.key, value: v, reason: "not_a_date" });
+      }
+      continue;
+    }
+
+    if (nameField) {
+      // Prioridade do mais especifico (palavras-chave de intencao / agendamento)
+      // para o mais generico (so contagem de palavras).
+      const hasIntentKeyword =
+        /\b(ol[aá]|oi|bom dia|boa tarde|boa noite|gostaria|quero|queria|preciso|interesse|informa[cç][oõ]es?|sobre|d[uú]vida|valor|pre[cç]o|mensalidad)\b/i.test(
+          v,
+        ) || v.trim().endsWith("?");
+      if (hasIntentKeyword) {
+        issues.push({ key: f.key, value: v, reason: "intent_message_in_name" });
+        continue;
+      }
+      if (looksLikeSchedulingPreference(v) || isSlotAcceptanceMessage(v)) {
+        issues.push({ key: f.key, value: v, reason: "scheduling_text_in_name" });
+        continue;
+      }
+      const wordCount = v.split(/\s+/).filter(Boolean).length;
+      if (wordCount > 6) {
+        issues.push({ key: f.key, value: v, reason: "too_many_words_in_name" });
+        continue;
+      }
+    }
+  }
+
+  return { ok: issues.length === 0, issues };
+}
+
+/**
+ * Retorna LeadData com os campos suspeitos zerados — usado pelo scheduler
+ * apos preflightBookingFields detectar lixo. Os campos voltam a constar como
+ * MISSING e o LLM e forcado a re-perguntar no proximo turn.
+ */
+export function clearBookingFields(ld: LeadData, fieldsToClear: BookingFieldDef[]): LeadData {
+  if (fieldsToClear.length === 0) return ld;
+  const next: LeadData = { ...ld };
+  let mutatedCustom = false;
+  const customFields = { ...(next.custom_fields ?? {}) };
+  for (const f of fieldsToClear) {
+    if (f.maps_to === "name" || f.key === "name") {
+      delete next.name;
+    } else {
+      delete customFields[f.key];
+      mutatedCustom = true;
+    }
+  }
+  if (mutatedCustom) next.custom_fields = customFields;
+  return next;
+}
+
 export function buildBookingFieldsPromptBlock(fields: BookingFieldDef[], ld: LeadData): string {
   if (fields.length === 0) return "";
 
@@ -364,8 +487,8 @@ export function normalizeLeadDataForBooking(
 ): LeadData {
   const cf = { ...(ld.custom_fields ?? {}) };
   const childName = cf.child_name?.trim();
-  let birth = cf.child_birth_date?.trim();
-  let guardians = cf.guardians?.trim();
+  let birth: string | undefined = cf.child_birth_date?.trim();
+  let guardians: string | undefined = cf.guardians?.trim();
 
   if (
     childName &&

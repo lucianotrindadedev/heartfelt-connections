@@ -20,6 +20,8 @@ import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated.
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated.admin.index'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
 import { Route as AuthenticatedAdminTemplatesRouteImport } from './routes/_authenticated.admin.templates'
+import { Route as AuthenticatedAdminTelemetryRouteImport } from './routes/_authenticated.admin.telemetry'
+import { Route as AuthenticatedAdminReplayRouteImport } from './routes/_authenticated.admin.replay'
 import { Route as AuthenticatedAdminEvolutionRouteImport } from './routes/_authenticated.admin.evolution'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as ApiPublicDiagRunTurnRouteImport } from './routes/api/public/diag/run-turn'
@@ -93,6 +95,18 @@ const AuthenticatedAdminTemplatesRoute =
   AuthenticatedAdminTemplatesRouteImport.update({
     id: '/templates',
     path: '/templates',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
+const AuthenticatedAdminTelemetryRoute =
+  AuthenticatedAdminTelemetryRouteImport.update({
+    id: '/telemetry',
+    path: '/telemetry',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
+const AuthenticatedAdminReplayRoute =
+  AuthenticatedAdminReplayRouteImport.update({
+    id: '/replay',
+    path: '/replay',
     getParentRoute: () => AuthenticatedAdminRoute,
   } as any)
 const AuthenticatedAdminEvolutionRoute =
@@ -211,6 +225,8 @@ export interface FileRoutesByFullPath {
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
   '/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
+  '/admin/replay': typeof AuthenticatedAdminReplayRoute
+  '/admin/telemetry': typeof AuthenticatedAdminTelemetryRoute
   '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/admin/': typeof AuthenticatedAdminIndexRoute
@@ -240,6 +256,8 @@ export interface FileRoutesByTo {
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed': typeof EmbedIndexRoute
   '/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
+  '/admin/replay': typeof AuthenticatedAdminReplayRoute
+  '/admin/telemetry': typeof AuthenticatedAdminTelemetryRoute
   '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/admin': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
@@ -272,6 +290,8 @@ export interface FileRoutesById {
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
   '/_authenticated/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
+  '/_authenticated/admin/replay': typeof AuthenticatedAdminReplayRoute
+  '/_authenticated/admin/telemetry': typeof AuthenticatedAdminTelemetryRoute
   '/_authenticated/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
@@ -305,6 +325,8 @@ export interface FileRouteTypes {
     | '/embed/$accountId'
     | '/embed/'
     | '/admin/evolution'
+    | '/admin/replay'
+    | '/admin/telemetry'
     | '/admin/templates'
     | '/embed/account/$accountId'
     | '/admin/'
@@ -334,6 +356,8 @@ export interface FileRouteTypes {
     | '/embed/$accountId'
     | '/embed'
     | '/admin/evolution'
+    | '/admin/replay'
+    | '/admin/telemetry'
     | '/admin/templates'
     | '/admin'
     | '/admin/account/$accountId'
@@ -365,6 +389,8 @@ export interface FileRouteTypes {
     | '/embed/$accountId'
     | '/embed/'
     | '/_authenticated/admin/evolution'
+    | '/_authenticated/admin/replay'
+    | '/_authenticated/admin/telemetry'
     | '/_authenticated/admin/templates'
     | '/embed/account/$accountId'
     | '/_authenticated/admin/'
@@ -489,6 +515,20 @@ declare module '@tanstack/react-router' {
       path: '/templates'
       fullPath: '/admin/templates'
       preLoaderRoute: typeof AuthenticatedAdminTemplatesRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
+    '/_authenticated/admin/telemetry': {
+      id: '/_authenticated/admin/telemetry'
+      path: '/telemetry'
+      fullPath: '/admin/telemetry'
+      preLoaderRoute: typeof AuthenticatedAdminTelemetryRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
+    '/_authenticated/admin/replay': {
+      id: '/_authenticated/admin/replay'
+      path: '/replay'
+      fullPath: '/admin/replay'
+      preLoaderRoute: typeof AuthenticatedAdminReplayRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
     '/_authenticated/admin/evolution': {
@@ -629,6 +669,8 @@ declare module '@tanstack/react-router' {
 
 interface AuthenticatedAdminRouteChildren {
   AuthenticatedAdminEvolutionRoute: typeof AuthenticatedAdminEvolutionRoute
+  AuthenticatedAdminReplayRoute: typeof AuthenticatedAdminReplayRoute
+  AuthenticatedAdminTelemetryRoute: typeof AuthenticatedAdminTelemetryRoute
   AuthenticatedAdminTemplatesRoute: typeof AuthenticatedAdminTemplatesRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
   AuthenticatedAdminAccountAccountIdRoute: typeof AuthenticatedAdminAccountAccountIdRoute
@@ -636,6 +678,8 @@ interface AuthenticatedAdminRouteChildren {
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
   AuthenticatedAdminEvolutionRoute: AuthenticatedAdminEvolutionRoute,
+  AuthenticatedAdminReplayRoute: AuthenticatedAdminReplayRoute,
+  AuthenticatedAdminTelemetryRoute: AuthenticatedAdminTelemetryRoute,
   AuthenticatedAdminTemplatesRoute: AuthenticatedAdminTemplatesRoute,
   AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
   AuthenticatedAdminAccountAccountIdRoute:

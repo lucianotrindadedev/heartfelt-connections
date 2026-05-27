@@ -38,6 +38,7 @@ import {
   getAvailableMediaForPrompt,
 } from "./send-media.server";
 import type { AgentContext, AgentResult } from "./context";
+import type { LeadData, Stage } from "./stage";
 import {
   callLlmWithFallback,
   callLlmStructuredWithFallback,
@@ -48,6 +49,7 @@ import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
   buildBookingFieldsPromptBlock,
+  clearBookingFields,
   defaultCommitmentQuestion,
   getBookingFieldsForChannel,
   buildChannelPhonePromptBlock,
@@ -55,6 +57,7 @@ import {
   isCommitmentRequired,
   isReadyForBooking,
   mergeLeadDataPatch,
+  preflightBookingFields,
   resolveBookingLeadName,
   tryAutoSelectOfferedSlot,
   resolveGcalEventTemplates,
@@ -632,6 +635,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   patch: Partial<LeadData>;
   toolResult?: string;
   toolsCalled: string[];
+  telemetry?: Record<string, unknown>;
 }> {
   if (ctx.leadData.appointment_id) return { patch: {}, toolsCalled: [] };
   if (!hasBookingIntegration(ctx)) return { patch: {}, toolsCalled: [] };
@@ -659,6 +663,41 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
     effectivePhone: ctx.effectivePhone,
   });
   if (!ready) return { patch: slotPatch, toolsCalled: [] };
+
+  // Preflight: ultima barreira antes de criar evento na agenda real.
+  // Detecta lixo que escapou dos filtros anteriores (intent message gravada
+  // como child_name etc) e ABORTA a criacao silenciosamente — o LLM no
+  // proximo turn vai re-perguntar o campo limpo.
+  const channelCtxForFields =
+    ctx.channel != null
+      ? { channel: ctx.channel, effectivePhone: ctx.effectivePhone ?? null }
+      : undefined;
+  const allFields = getBookingFieldsForChannel(ctx.agentSettings, channelCtxForFields);
+  const preflight = preflightBookingFields(allFields, ctx.leadData);
+  if (!preflight.ok) {
+    console.warn(
+      `[scheduler:telemetry] ${JSON.stringify({
+        event: "false_booking_blocked_preflight",
+        conv: ctx.conversationId,
+        account: ctx.accountId,
+        agent: ctx.agentId,
+        stage: ctx.stage,
+        model: ctx.model,
+        issues: preflight.issues.map((i) => ({ key: i.key, reason: i.reason })),
+        values_preview: preflight.issues.map((i) => i.value.slice(0, 80)),
+      })}`,
+    );
+    const dirtyFields = allFields.filter((f) =>
+      preflight.issues.some((i) => i.key === f.key),
+    );
+    const cleanedLead = clearBookingFields(ctx.leadData, dirtyFields);
+    ctx.leadData = cleanedLead;
+    return {
+      patch: { ...slotPatch, ...cleanedLead },
+      toolsCalled: [],
+      telemetry: { preflight_blocked: true, dirty_fields: dirtyFields.map((f) => f.key) },
+    };
+  }
 
   console.log(
     `[scheduler] auto criar_agendamento conv=${ctx.conversationId} stage=${ctx.stage} slot=${ctx.leadData.selected_slot_iso}`,
@@ -914,5 +953,6 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     tokens_in: totalTokensIn,
     tokens_out: totalTokensOut,
     cost_usd: totalCostUsd,
+    telemetry: autoBooking.telemetry,
   };
 }

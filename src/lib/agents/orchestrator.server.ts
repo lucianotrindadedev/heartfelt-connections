@@ -709,6 +709,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         duplicate_reply_blocked: duplicateReplyBlocked || undefined,
         false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
         forced_scheduling_advance: forcedSchedulingAdvance || undefined,
+        preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,
+        preflight_dirty_fields: (result.telemetry?.dirty_fields as string[]) || undefined,
       },
       sessionId,
       effectivePhone ?? conversationPhone,
