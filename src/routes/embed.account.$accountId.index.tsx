@@ -49,6 +49,7 @@ import { toast } from "sonner";
 import {
   getAgent,
   updateAgent,
+  mergeAgentSettings,
   updateLlmConfig,
   updateVoiceConfig,
   updateAudio,
@@ -83,6 +84,11 @@ import {
   resetAgent,
 } from "@/lib/integrations.functions";
 import { listTemplates } from "@/lib/templates.functions";
+import {
+  GCAL_TEMPLATE_VARS,
+  DEFAULT_BOOKING_FIELDS_SCHOOL,
+  DEFAULT_BOOKING_FIELDS_CLINIC,
+} from "@/lib/booking-template";
 import {
   requestPromptEdit,
   applyPromptEdit,
@@ -5476,6 +5482,7 @@ function AgentSettingsView({
           <IntegrationsTab
             accountId={accountId}
             agentId={agentId}
+            agentSettings={settings}
             audioHabilitado={audioHabilitado}
             audioTranscrever={audioTranscrever}
             audioResponder={audioResponder}
@@ -5495,6 +5502,7 @@ function AgentSettingsView({
 function IntegrationsTab({
   accountId,
   agentId: _agentId,
+  agentSettings,
   audioHabilitado,
   audioTranscrever,
   audioResponder,
@@ -5503,6 +5511,7 @@ function IntegrationsTab({
 }: {
   accountId: string;
   agentId: string;
+  agentSettings: Record<string, string>;
   audioHabilitado: boolean;
   audioTranscrever: boolean;
   audioResponder: boolean;
@@ -5586,7 +5595,7 @@ function IntegrationsTab({
         <ClinupPanel accountId={accountId} />
       )}
       {configuredIntegrations.google_calendar && (
-        <GoogleCalendarPanel accountId={accountId} />
+        <GoogleCalendarPanel accountId={accountId} agentSettings={agentSettings} />
       )}
 
       {/* Nenhuma integração configurada ainda */}
@@ -5784,13 +5793,43 @@ function AudioPanel({
 
 // ── Google Calendar Panel ───────────────────────────────────────────
 
-function GoogleCalendarPanel({ accountId }: { accountId: string }) {
+function GoogleCalendarPanel({
+  accountId,
+  agentSettings,
+}: {
+  accountId: string;
+  agentSettings: Record<string, string>;
+}) {
   const qc = useQueryClient();
   const getStatus = useServerFn(getGoogleCalendarStatusFn);
   const getAuthUrl = useServerFn(getGoogleAuthUrl);
   const disconnect = useServerFn(disconnectGoogleCalendar);
   const listCalendars = useServerFn(listGoogleCalendarsFn);
   const selectCalendar = useServerFn(selectGoogleCalendarFn);
+  const mergeSettings = useServerFn(mergeAgentSettings);
+
+  const [bookingSettings, setBookingSettings] = useState<Record<string, string>>(agentSettings);
+
+  useEffect(() => {
+    setBookingSettings(agentSettings);
+  }, [agentSettings]);
+
+  const saveBookingM = useMutation({
+    mutationFn: (patch: Record<string, string>) =>
+      mergeSettings({ data: { accountId, settings: patch } }),
+    onSuccess: () => {
+      toast.success("Configuração de agenda salva.");
+      qc.invalidateQueries({ queryKey: ["agent", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar"),
+  });
+
+  const insertVar = (field: "gcal_event_title_template" | "gcal_event_description_template", token: string) => {
+    setBookingSettings((p) => ({
+      ...p,
+      [field]: `${p[field] ?? ""}${token}`,
+    }));
+  };
 
   const { data } = useQuery({
     queryKey: ["gcal-status", accountId],
@@ -5920,6 +5959,162 @@ function GoogleCalendarPanel({ accountId }: { accountId: string }) {
                 <p className="text-[11px] text-muted-foreground">
                   O agente buscará janelas livres e criará eventos neste calendário.
                 </p>
+              </div>
+
+              {/* Template do evento Google Calendar */}
+              <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-4">
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">Template do evento na agenda</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Define título e descrição ao criar o agendamento. Use variáveis abaixo.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Tipo de agendamento (rótulo)</Label>
+                  <Input
+                    value={bookingSettings.appointment_type_label ?? ""}
+                    onChange={(e) =>
+                      setBookingSettings((p) => ({ ...p, appointment_type_label: e.target.value }))
+                    }
+                    placeholder="ex: Visita guiada, Consulta de Diagnóstico"
+                    className="text-sm"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Título do evento</Label>
+                  <Input
+                    value={bookingSettings.gcal_event_title_template ?? ""}
+                    onChange={(e) =>
+                      setBookingSettings((p) => ({ ...p, gcal_event_title_template: e.target.value }))
+                    }
+                    placeholder="Visita guiada - {child_name}"
+                    className="text-sm font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Descrição do evento</Label>
+                  <Textarea
+                    value={bookingSettings.gcal_event_description_template ?? ""}
+                    onChange={(e) =>
+                      setBookingSettings((p) => ({
+                        ...p,
+                        gcal_event_description_template: e.target.value,
+                      }))
+                    }
+                    placeholder={"Criança: {child_name}\nNascimento: {child_birth_date}\nResponsáveis: {guardians}\n{notes}"}
+                    rows={4}
+                    className="text-sm font-mono"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Pergunta de compromisso (opcional)</Label>
+                  <Input
+                    value={bookingSettings.booking_commitment_question ?? ""}
+                    onChange={(e) =>
+                      setBookingSettings((p) => ({ ...p, booking_commitment_question: e.target.value }))
+                    }
+                    placeholder="Posso garantir à equipe que você estará presente na visita?"
+                    className="text-sm"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Deixe vazio para desativar. Evite &quot;dentista&quot; em contexto escolar.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {GCAL_TEMPLATE_VARS.map((v) => (
+                    <button
+                      key={v.key}
+                      type="button"
+                      title={v.desc}
+                      onClick={() => {
+                        insertVar("gcal_event_title_template", v.key);
+                      }}
+                      className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-mono text-slate-600 hover:bg-slate-100"
+                    >
+                      {v.key}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium">Campos a coletar antes do agendamento</Label>
+                  <Textarea
+                    value={bookingSettings.booking_fields_json ?? ""}
+                    onChange={(e) =>
+                      setBookingSettings((p) => ({ ...p, booking_fields_json: e.target.value }))
+                    }
+                    placeholder='[{"key":"child_name","label":"Nome da criança","question":"Qual é o nome da sua criança?","required":true}]'
+                    rows={6}
+                    className="text-xs font-mono"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() =>
+                        setBookingSettings((p) => ({
+                          ...p,
+                          booking_fields_json: JSON.stringify(DEFAULT_BOOKING_FIELDS_SCHOOL, null, 2),
+                          appointment_type_label: p.appointment_type_label || "Visita guiada",
+                          gcal_event_title_template:
+                            p.gcal_event_title_template || "Visita guiada - {child_name}",
+                          gcal_event_description_template:
+                            p.gcal_event_description_template ||
+                            "Criança: {child_name}\nNascimento: {child_birth_date}\nResponsáveis: {guardians}\n{notes}",
+                        }))
+                      }
+                    >
+                      Padrão escola
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() =>
+                        setBookingSettings((p) => ({
+                          ...p,
+                          booking_fields_json: JSON.stringify(DEFAULT_BOOKING_FIELDS_CLINIC, null, 2),
+                          appointment_type_label: p.appointment_type_label || "Consulta",
+                          gcal_event_title_template:
+                            p.gcal_event_title_template || "Consulta - {name}",
+                        }))
+                      }
+                    >
+                      Padrão clínica
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    O agente pergunta um campo por vez antes de chamar agendar_google_calendar.
+                    Use <code className="font-mono">maps_to: &quot;name&quot;</code> para gravar em nome do lead.
+                  </p>
+                </div>
+
+                <Button
+                  type="button"
+                  className="w-full"
+                  disabled={saveBookingM.isPending}
+                  onClick={() =>
+                    saveBookingM.mutate({
+                      appointment_type_label: bookingSettings.appointment_type_label ?? "",
+                      gcal_event_title_template: bookingSettings.gcal_event_title_template ?? "",
+                      gcal_event_description_template:
+                        bookingSettings.gcal_event_description_template ?? "",
+                      booking_commitment_question: bookingSettings.booking_commitment_question ?? "",
+                      booking_fields_json: bookingSettings.booking_fields_json ?? "",
+                    })
+                  }
+                >
+                  {saveBookingM.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Salvar template de agenda
+                </Button>
               </div>
 
               <Button variant="outline" className="w-full" onClick={() => disconnectM.mutate()} disabled={disconnectM.isPending}>

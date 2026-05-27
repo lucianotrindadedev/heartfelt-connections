@@ -45,7 +45,14 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
-import type { LeadData, Stage } from "./stage";
+import {
+  buildBookingFieldsPromptBlock,
+  defaultCommitmentQuestion,
+  getBookingFields,
+  getMissingBookingFields,
+  mergeLeadDataPatch,
+  resolveGcalEventTemplates,
+} from "@/lib/booking-template";
 
 /**
  * Após agendamento confirmado: remove a tag de "não agendado" e adiciona a
@@ -96,6 +103,7 @@ const ResultSchema = z.object({
       appointment_id: z.union([z.number(), z.string()]).nullish(),
       notes: z.string().nullish(),
       escalation_reason: z.string().nullish(),
+      custom_fields: z.record(z.string()).nullish(),
     })
     .optional(),
   reasoning: z.string().optional(),
@@ -335,6 +343,18 @@ async function execListarHorarios(
 
 async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   const ld = ctx.leadData;
+  const bookingFields = getBookingFields(ctx.agentSettings);
+  const missing = getMissingBookingFields(bookingFields, ld);
+  if (missing.length > 0) {
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error: `Campos obrigatórios pendentes: ${missing.map((f) => f.key).join(", ")}`,
+        missing: missing.map((f) => ({ key: f.key, question: f.question })),
+      }),
+    };
+  }
+
   if (!ld.selected_slot_iso) {
     return { result: JSON.stringify({ ok: false, error: "selected_slot_iso ausente" }) };
   }
@@ -349,12 +369,12 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   if (ctx.integrations.googleCalendar) {
     try {
       const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
-      const interest = ld.interest ? ` — ${ld.interest}` : "";
+      const { titulo, descricao } = resolveGcalEventTemplates(ctx);
       const ev = await createGoogleCalendarEvent(ctx.accountId, {
         eventoInicio: ld.selected_slot_iso,
         duracaoMinutos: duracao,
-        titulo: `Consulta - ${ld.name}${interest}`,
-        descricao: ld.notes ?? "",
+        titulo,
+        descricao,
         telefone: ctx.effectivePhone,
       });
       await applyBookedTagSwap(ctx);
@@ -391,25 +411,35 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
 
 function buildCachedSystemPrompt(ctx: AgentContext): string {
   const s = ctx.agentSettings;
-  return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "secretária"} da clínica ${s.company_name || "(nome da clínica)"}.
+  const orgLabel = s.company_name?.trim() || "empresa";
+  const appointmentLabel = s.appointment_type_label?.trim() || "Consulta";
+  const commitmentQ = defaultCommitmentQuestion(s);
+  const commitmentEnabled = s.booking_commitment_question !== "" && !!commitmentQ;
+  const bookingFields = getBookingFields(s);
+  const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
 
-Você está no MÓDULO DE AGENDAMENTO. Seu único objetivo é converter um lead já qualificado em uma consulta agendada — com o mínimo de fricção.
+  return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "atendente virtual"} da ${orgLabel}.
+
+Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qualificado em um ${appointmentLabel.toLowerCase()} agendado — com o mínimo de fricção.
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
 - **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro. Nunca invente horários.
-- **NAME_COLLECT**: confirme o slot escolhido pelo lead e peça o nome completo. Pergunte também: "posso garantir à ${s.doctor_name || "dentista"} que você estará presente?"
-- **BOOKING**: chame criar_agendamento. Se retornar ok=false, peça desculpa e proponha outro horário (use listar_horarios de novo).
+- **NAME_COLLECT**: confirme o slot escolhido. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
+- **BOOKING**: chame criar_agendamento SOMENTE quando todos os campos obrigatórios estiverem preenchidos. Se retornar ok=false, peça desculpa e proponha outro horário.
 - **CONFIRMED**: agradeça e encerre o ciclo. Não venda mais nada.
+
+${fieldsBlock}
 
 # REGRAS ABSOLUTAS
 
 1. NUNCA diga "vou verificar", "estou consultando", "já te retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores das tools.
-3. UMA pergunta por vez. Mensagens curtas. Use \\n\\n no reply para separar bolhas no WhatsApp (saudação | corpo | pergunta).
-4. Se o lead pedir explicitamente para falar com humano → next_stage="ESCALATED".
-5. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
-6. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir: "Já temos seu cadastro como [NOME]. Está correto?"
+3. UMA pergunta por vez. Mensagens curtas. Use \\n\\n no reply para separar bolhas no WhatsApp.
+4. NUNCA use "dentista" ou "consulta odontológica" se o contexto for escola/educação — use "${appointmentLabel}" e linguagem do prompt do proprietário.
+5. Se o lead pedir explicitamente para falar com humano → next_stage="ESCALATED".
+6. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
+7. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
 
@@ -422,19 +452,20 @@ Responda APENAS em JSON válido:
 }
 
 Campos válidos em lead_data_patch:
-- name (string): nome completo coletado
+- name (string): nome do responsável / lead
+- custom_fields (object): campos extras { "child_name": "...", "child_birth_date": "...", "guardians": "..." }
 - selected_slot_iso (string): ISO do slot escolhido (copie do offered_slots)
-- dentist_person_id (number): copie do offered_slots correspondente
+- dentist_person_id (number): copie do offered_slots correspondente (Clinicorp)
 - commitment_confirmed (boolean): true quando o lead confirma compromisso
 - patient_id (number): do retorno de buscar_paciente
 - appointment_id (string|number): do retorno de criar_agendamento
+- notes (string): observações relevantes para a agenda
 
-# DADOS DA CLÍNICA (use para responder dúvidas durante o agendamento)
+# DADOS DO NEGÓCIO
 
 - Endereço: ${s.company_address || "(não informado)"}
 - Horário de funcionamento: ${s.business_hours || "(não informado)"}
-- Pagamento: ${s.payment_methods || "(não informado)"}
-- Diferenciais: ${s.featured_services || "(não informado)"}
+- Profissional / referência: ${s.doctor_name || s.contact_person_name || "(não informado)"}
 
 ${ctx.basePrompt ? `\n# INSTRUÇÕES ADICIONAIS DO PROPRIETÁRIO\n\n${ctx.basePrompt}` : ""}`;
 }
@@ -470,6 +501,7 @@ ${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.conte
 ${JSON.stringify(
   {
     name: ld.name ?? null,
+    custom_fields: ld.custom_fields ?? null,
     interest: ld.interest ?? null,
     selected_slot_iso: ld.selected_slot_iso ?? null,
     dentist_person_id: ld.dentist_person_id ?? null,
@@ -480,6 +512,13 @@ ${JSON.stringify(
   null,
   2,
 )}
+
+${(() => {
+  const missing = getMissingBookingFields(getBookingFields(ctx.agentSettings), ld);
+  return missing.length > 0
+    ? `# PRÓXIMO CAMPO A COLETAR\nPergunte apenas: "${missing[0]!.question}"\n`
+    : "";
+})()}
 
 ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n` : ""}`;
 }
@@ -606,9 +645,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
 
       toolsCalled.push(tc.function.name);
       if (outcome.patch) {
-        accumulatedPatch = { ...accumulatedPatch, ...outcome.patch };
-        // Atualiza dynamic para os próximos loops com o novo lead_data.
-        ctx.leadData = { ...ctx.leadData, ...outcome.patch };
+        accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, outcome.patch);
+        ctx.leadData = mergeLeadDataPatch(ctx.leadData, outcome.patch);
       }
       console.log(`[scheduler] tool ${tc.function.name} → ${outcome.result.slice(0, 200)}`);
 
@@ -651,10 +689,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   totalCostUsd += finalResponse.costUsd;
 
   // Merge final do patch: o que o LLM declarou + o que veio de tools.
-  const mergedPatch = {
-    ...accumulatedPatch,
-    ...stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>),
-  } as Partial<LeadData>;
+  const mergedPatch = mergeLeadDataPatch(
+    accumulatedPatch as LeadData,
+    stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>) as Partial<LeadData>,
+  );
 
   // Fallback: se LLM omitiu next_stage, mantem o stage atual.
   const finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;

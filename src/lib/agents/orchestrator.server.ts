@@ -15,6 +15,7 @@ import {
   resolveEffectivePhone,
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
+import { mergeLeadDataPatch } from "@/lib/booking-template";
 import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
@@ -378,7 +379,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const patch = stripNullishFields(
       (result.lead_data_patch ?? {}) as Record<string, unknown>,
     ) as Partial<LeadData>;
-    const newLeadData: LeadData = { ...leadData, ...patch };
+    const newLeadData: LeadData = mergeLeadDataPatch(leadData, patch as Partial<LeadData>);
 
     // 12. Persiste e entrega
     await persistStageAndLeadData(conversationId, meta, newStage, newLeadData, route);
