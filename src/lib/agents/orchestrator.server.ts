@@ -15,7 +15,7 @@ import {
   resolveEffectivePhone,
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
-import { mergeLeadDataPatch } from "@/lib/booking-template";
+import { mergeLeadDataPatch, tryAutoCaptureBookingAnswer } from "@/lib/booking-template";
 import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
@@ -290,7 +290,18 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // 7. Stage + lead_data a partir de conversations.meta
     const meta = (conv.data.meta as ConversationMeta | null) ?? null;
     const stage = readStageFromMeta(meta);
-    const leadData = readLeadDataFromMeta(meta);
+    let leadData = readLeadDataFromMeta(meta);
+    const agentSettings = (agent.data.settings as Record<string, string> | null) ?? {};
+
+    if (stage === "NAME_COLLECT") {
+      const autoPatch = tryAutoCaptureBookingAnswer(stage, leadData, history, agentSettings);
+      if (Object.keys(autoPatch).length > 0) {
+        leadData = mergeLeadDataPatch(leadData, autoPatch);
+        console.log(
+          `[orch] auto-captura NAME_COLLECT conv=${conversationId} patch=${JSON.stringify(autoPatch)}`,
+        );
+      }
+    }
 
     // 8. Integrações habilitadas
     const [clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
@@ -312,7 +323,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       effectivePhone,
       channel,
       helenaContact,
-      agentSettings: (agent.data.settings as Record<string, string> | null) ?? {},
+      agentSettings,
       basePrompt: (agent.data.system_prompt as string) || "",
       model:
         (agent.data.llm_model_override as string | null) ||

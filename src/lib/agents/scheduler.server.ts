@@ -518,9 +518,18 @@ ${JSON.stringify(
 
 ${(() => {
   const missing = getMissingBookingFields(getBookingFields(ctx.agentSettings), ld);
-  return missing.length > 0
-    ? `# PRÓXIMO CAMPO A COLETAR\nPergunte apenas: "${missing[0]!.question}"\n`
-    : "";
+  if (missing.length === 0) return "";
+  const f = missing[0]!;
+  const lastUser = [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim();
+  const savePath =
+    f.maps_to === "name" || f.key === "name"
+      ? "lead_data_patch.name"
+      : `lead_data_patch.custom_fields.${f.key}`;
+  return `# PRÓXIMO CAMPO A COLETAR
+Campo pendente: ${f.key} — pergunta sugerida: "${f.question}"
+${lastUser ? `- Última mensagem do lead: "${lastUser.slice(0, 120)}"` : ""}
+- Se essa mensagem já responde o campo, salve em ${savePath} e avance para o próximo campo (não repita a pergunta).
+- Só faça a pergunta sugerida se o campo ainda estiver vazio após analisar a última mensagem do lead.`;
 })()}
 
 ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n` : ""}`;

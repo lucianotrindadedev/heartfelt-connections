@@ -294,3 +294,66 @@ export function mergeLeadDataPatch(current: LeadData, patch: Partial<LeadData>):
   }
   return next;
 }
+
+const MAX_AUTO_CAPTURE_LEN = 200;
+
+function looksLikeQuestion(text: string): boolean {
+  return text.trim().endsWith("?");
+}
+
+function isShortAffirmative(text: string): boolean {
+  return /^(sim|não|nao|ok|blz|beleza|uhum|certo|pode|confirmo|confirmado|yes|no)[!.?\s]*$/i.test(
+    text.trim(),
+  );
+}
+
+/**
+ * Em NAME_COLLECT, se o lead acabou de responder a pergunta do campo pendente
+ * mas o LLM não gravou em lead_data, captura a última mensagem do usuário.
+ */
+export function tryAutoCaptureBookingAnswer(
+  stage: string,
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+  settings: Record<string, string>,
+): Partial<LeadData> {
+  if (stage !== "NAME_COLLECT") return {};
+
+  const fields = getBookingFields(settings);
+  const missing = getMissingBookingFields(fields, leadData);
+  if (missing.length === 0) return {};
+
+  let lastUserIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) return {};
+
+  const lastUser = history[lastUserIdx]!.content.trim();
+  if (!lastUser || lastUser.length > MAX_AUTO_CAPTURE_LEN) return {};
+  if (looksLikeQuestion(lastUser)) return {};
+
+  const prevAssistant = history
+    .slice(0, lastUserIdx)
+    .reverse()
+    .find((m) => m.role === "assistant");
+  if (!prevAssistant) return {};
+
+  const field = missing[0]!;
+  if (isShortAffirmative(lastUser) && field.maps_to !== "name" && field.key !== "name") {
+    return {};
+  }
+
+  if (field.maps_to === "name" || field.key === "name") {
+    return { name: lastUser };
+  }
+
+  return {
+    custom_fields: {
+      [field.key]: lastUser,
+    },
+  };
+}
