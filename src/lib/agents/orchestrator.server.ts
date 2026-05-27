@@ -424,6 +424,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
     }
 
+    if (
+      newLeadData.appointment_id &&
+      (newStage === "NAME_COLLECT" || newStage === "BOOKING")
+    ) {
+      console.log(
+        `[orch] agendamento criado conv=${conversationId} — avancando ${newStage} → CONFIRMED`,
+      );
+      newStage = "CONFIRMED";
+    }
+
     let reply = result.reply;
     if (
       hasBookingIntegration &&
