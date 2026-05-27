@@ -66,6 +66,9 @@ const httpServer = http.createServer(async (req, res) => {
     const webResponse = await app.fetch(webRequest);
     res.statusCode = webResponse.status;
     webResponse.headers.forEach((value, key) => res.setHeader(key, value));
+    if (!url.pathname.startsWith("/assets/")) {
+      res.setHeader("Cache-Control", "no-store");
+    }
     res.end(Buffer.from(await webResponse.arrayBuffer()));
   } catch (err) {
     console.error("[iasarai] request error:", err);

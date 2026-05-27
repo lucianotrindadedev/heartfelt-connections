@@ -534,13 +534,63 @@ export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadDat
 function slotMentionedInText(slot: OfferedSlot, text: string): boolean {
   const hay = text.toLowerCase();
   const time = normalizeTimeLabel(slot.time_label);
+  const userTime = normalizeTimeLabel(hay);
   if (time && hay.includes(time)) return true;
+
+  const dayPart = slot.date_label.split(/[,/]/)[0]?.trim().toLowerCase() ?? "";
+  const weekdayStems = [
+    "domingo",
+    "segunda",
+    "terca",
+    "terça",
+    "quarta",
+    "quinta",
+    "sexta",
+    "sabado",
+    "sábado",
+  ];
+  for (const stem of weekdayStems) {
+    const normalizedStem = stem.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const normalizedDay = dayPart.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const normalizedHay = hay.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    if (normalizedDay.startsWith(normalizedStem) && normalizedHay.includes(normalizedStem)) {
+      if (!userTime || time === userTime) return true;
+    }
+  }
 
   for (const part of slot.date_label.split(/[,/]/)) {
     const p = part.trim().toLowerCase();
-    if (p.length >= 4 && hay.includes(p.slice(0, Math.min(p.length, 12)))) return true;
+    if (p.length >= 4 && hay.includes(p.slice(0, Math.min(p.length, 12)))) {
+      if (!userTime || time === userTime) return true;
+    }
   }
+
+  const dateMatch = slot.date_label.match(/\b(\d{1,2}\/\d{1,2})\b/);
+  if (dateMatch?.[1] && hay.includes(dateMatch[1])) {
+    if (!userTime || time === userTime) return true;
+  }
+
   return false;
+}
+
+function recentAssistantContext(
+  history: { role: "user" | "assistant"; content: string }[],
+  beforeIdx: number,
+  maxMessages = 4,
+): string {
+  return history
+    .slice(0, beforeIdx)
+    .filter((m) => m.role === "assistant")
+    .slice(-maxMessages)
+    .map((m) => m.content)
+    .join("\n");
+}
+
+function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
+  return {
+    selected_slot_iso: slot.iso,
+    ...(slot.dentist_person_id != null ? { dentist_person_id: slot.dentist_person_id } : {}),
+  };
 }
 
 export function isSlotAcceptanceMessage(text: string): boolean {
@@ -554,7 +604,18 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   }
   if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(t)) return true;
   if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(t)) return true;
-  if (/\d{1,2}:\d{2}/.test(t) && /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero)/i.test(t)) {
+  if (
+    /\d{1,2}:\d{2}/.test(t) &&
+    /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero|otimo|ótimo|t[aá] otimo|t[aá] ótimo|legal|bom|maravilha|certo|fechado|perfeito)/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\d{1,2}:\d{2}/.test(t) &&
+    /(segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)/i.test(t)
+  ) {
     return true;
   }
   return !!normalizeTimeLabel(t);
@@ -586,59 +647,55 @@ export function tryAutoSelectOfferedSlot(
   const lastUser = history[lastUserIdx]!.content.trim();
   if (!lastUser) return {};
 
-  const lastAssistant = history
-    .slice(0, lastUserIdx)
-    .reverse()
-    .find((m) => m.role === "assistant");
-  const assistantText = lastAssistant?.content ?? "";
+  const assistantText = recentAssistantContext(history, lastUserIdx);
 
   const prefPatch = pickSlotByPreference(slots, lastUser, assistantText);
   if (prefPatch) return prefPatch;
 
   if (!isSlotAcceptanceMessage(lastUser)) return {};
 
+  const mentionedByUser = slots.filter((s) => slotMentionedInText(s, lastUser));
+  if (mentionedByUser.length === 1) {
+    return patchFromSlot(mentionedByUser[0]!);
+  }
+
   const userTime = normalizeTimeLabel(lastUser);
   if (userTime) {
     const byTime = slots.filter((s) => normalizeTimeLabel(s.time_label) === userTime);
     if (byTime.length === 1) {
-      const s = byTime[0]!;
-      return {
-        selected_slot_iso: s.iso,
-        ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
-      };
+      return patchFromSlot(byTime[0]!);
+    }
+    if (byTime.length > 1) {
+      const narrowed = byTime.filter((s) => slotMentionedInText(s, lastUser));
+      if (narrowed.length === 1) {
+        return patchFromSlot(narrowed[0]!);
+      }
     }
   }
 
   if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(lastUser.toLowerCase()) && slots[0]) {
-    const s = slots[0];
-    return {
-      selected_slot_iso: s.iso,
-      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
-    };
+    return patchFromSlot(slots[0]);
   }
   if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(lastUser.toLowerCase()) && slots[1]) {
-    const s = slots[1];
-    return {
-      selected_slot_iso: s.iso,
-      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
-    };
+    return patchFromSlot(slots[1]);
   }
 
   const mentionedInAssistant = slots.filter((s) => slotMentionedInText(s, assistantText));
   if (mentionedInAssistant.length === 1) {
-    const s = mentionedInAssistant[0]!;
-    return {
-      selected_slot_iso: s.iso,
-      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
-    };
+    return patchFromSlot(mentionedInAssistant[0]!);
+  }
+
+  if (mentionedByUser.length > 1 && userTime) {
+    const byDayAndTime = mentionedByUser.filter(
+      (s) => normalizeTimeLabel(s.time_label) === userTime,
+    );
+    if (byDayAndTime.length === 1) {
+      return patchFromSlot(byDayAndTime[0]!);
+    }
   }
 
   if (slots.length === 1) {
-    const s = slots[0]!;
-    return {
-      selected_slot_iso: s.iso,
-      ...(s.dentist_person_id != null ? { dentist_person_id: s.dentist_person_id } : {}),
-    };
+    return patchFromSlot(slots[0]!);
   }
 
   return {};

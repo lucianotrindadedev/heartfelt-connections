@@ -16,6 +16,8 @@ import {
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
 import {
+  getBookingFields,
+  getMissingBookingFields,
   isReadyForBooking,
   isSlotAcceptanceMessage,
   looksLikeSchedulingPreference,
@@ -510,10 +512,24 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       console.warn(
         `[orch] reply afirma agendamento sem appointment_id conv=${conversationId} — bloqueando confirmação falsa`,
       );
-      reply =
-        "Desculpe, tive um problema ao registrar sua visita na agenda agora. Pode me confirmar o horário que você prefere? Vou tentar registrar de novo.";
-      if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
-        newStage = newLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
+      const missingFields = getMissingBookingFields(
+        getBookingFields(agentSettings),
+        newLeadData,
+      );
+      if (newLeadData.selected_slot_iso && missingFields.length > 0) {
+        const nextField = missingFields[0]!;
+        reply = `Perfeito! Anotei esse horário para você.\n\n${nextField.question}`;
+        newStage = "NAME_COLLECT";
+      } else if (newLeadData.selected_slot_iso) {
+        reply =
+          "Perfeito! Anotei esse horário. Estou finalizando o registro na agenda e já te confirmo.";
+        newStage = "BOOKING";
+      } else {
+        reply =
+          "Desculpe, tive um problema ao registrar sua visita na agenda agora. Pode me confirmar o horário que você prefere? Vou tentar registrar de novo.";
+        if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
+          newStage = newLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
+        }
       }
     }
 

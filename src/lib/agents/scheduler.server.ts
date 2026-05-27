@@ -713,6 +713,16 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     baseDynamic += `\n\n# RESULTADO listar_horarios (automático)\n${slotListing.toolResult}\nUse os horários acima para oferecer ao lead.`;
   }
 
+  const slotAuto = tryAutoSelectOfferedSlot(ctx.stage, ctx.leadData, ctx.history);
+  if (Object.keys(slotAuto).length > 0) {
+    accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, slotAuto);
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotAuto);
+    console.log(
+      `[scheduler] auto-selecao slot conv=${ctx.conversationId} iso=${slotAuto.selected_slot_iso}`,
+    );
+    baseDynamic = buildDynamicSystemPrompt(ctx);
+  }
+
   const autoBooking = await tryDeterministicBooking(ctx);
   accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, autoBooking.patch);
   toolsCalled.push(...autoBooking.toolsCalled);
