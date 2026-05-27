@@ -18,6 +18,7 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
+import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
 import { loadHelenaAccount } from "@/lib/helena.server";
@@ -183,7 +184,7 @@ async function ensureInitialNotScheduledTag(ctx: AgentContext): Promise<void> {
 
 function buildCachedSystemPrompt(ctx: AgentContext): string {
   const s = ctx.agentSettings;
-  return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "secretária"} da clínica ${s.company_name || "(nome da clínica)"}.
+  return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "atendente virtual"} de ${s.company_name || "(nome da empresa)"}.
 
 Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead precisa, criar conexão humana e — somente quando o interesse estiver claro — sinalizar que o agendamento pode começar.
 
@@ -246,13 +247,15 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 - Horário: ${s.business_hours || "(não informado)"}
 - Diferenciais: ${s.featured_services || "(não informado)"}
 
+${buildOwnerStylePromptBlock()}
+
 ${ctx.basePrompt ? `\n# INSTRUÇÕES ADICIONAIS DO PROPRIETÁRIO\n\n${ctx.basePrompt}` : ""}
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
 
 Responda APENAS em JSON válido:
 {
-  "reply": "mensagem curta a enviar ao paciente",
+  "reply": "mensagem curta a enviar ao lead (emojis permitidos se o proprietário pedir)",
   "next_stage": "RECEPTION" | "QUALIFICATION" | "SLOT_OFFER" | "ESCALATED",
   "lead_data_patch": {
     "interest": "IMPLANTE | FACETAS | PROTESE | CLAREAMENTO | ORTODONTIA | OUTRO",

@@ -45,6 +45,7 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
+import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
   buildBookingFieldsPromptBlock,
   defaultCommitmentQuestion,
@@ -445,7 +446,7 @@ ${fieldsBlock}
 
 Responda APENAS em JSON válido:
 {
-  "reply": "mensagem a enviar ao paciente",
+  "reply": "mensagem a enviar ao lead (emojis permitidos se o proprietário pedir)",
   "next_stage": "SLOT_OFFER" | "NAME_COLLECT" | "BOOKING" | "CONFIRMED" | "ESCALATED",
   "lead_data_patch": { ...campos aprendidos neste turn... },
   "reasoning": "1 frase explicando sua decisão (não vai para o lead)"
@@ -466,6 +467,8 @@ Campos válidos em lead_data_patch:
 - Endereço: ${s.company_address || "(não informado)"}
 - Horário de funcionamento: ${s.business_hours || "(não informado)"}
 - Profissional / referência: ${s.doctor_name || s.contact_person_name || "(não informado)"}
+
+${buildOwnerStylePromptBlock()}
 
 ${ctx.basePrompt ? `\n# INSTRUÇÕES ADICIONAIS DO PROPRIETÁRIO\n\n${ctx.basePrompt}` : ""}`;
 }
