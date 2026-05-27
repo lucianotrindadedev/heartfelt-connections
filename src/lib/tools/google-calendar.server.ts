@@ -482,24 +482,48 @@ export async function createGoogleCalendarEvent(
   const token = await loadTokens(accountId);
   if (!token) throw new Error("Google Calendar não conectado para esta conta");
 
-  // Valida que o horário ainda está disponível
   const start = new Date(params.eventoInicio);
   const end = new Date(start.getTime() + params.duracaoMinutos * 60_000);
-
-  const slots = await listGoogleCalendarSlots(accountId, {
-    periodoInicio: params.eventoInicio,
-    periodoFim: end.toISOString(),
-    tamanhoJanelaMinutos: params.duracaoMinutos,
-    granularidade: Math.min(params.duracaoMinutos, 30),
-    amostras: 1,
-  }).catch(() => [] as GCalSlot[]);
-
-  if (slots.length === 0) {
-    throw new Error("HORÁRIO INDISPONÍVEL");
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    throw new Error("eventoInicio inválido");
   }
 
   const accessToken = await refreshTokenIfNeeded(accountId, token);
-  const calId = encodeURIComponent(token.calendarId);
+
+  // Conflito direto na agenda (mais confiável que re-gerar janelas).
+  const calIdEnc = encodeURIComponent(token.calendarId);
+  const conflictUrl = new URL(`${GCAL_BASE}/calendars/${calIdEnc}/events`);
+  conflictUrl.searchParams.set(
+    "timeMin",
+    new Date(start.getTime() - 60_000).toISOString(),
+  );
+  conflictUrl.searchParams.set(
+    "timeMax",
+    new Date(end.getTime() + 60_000).toISOString(),
+  );
+  conflictUrl.searchParams.set("singleEvents", "true");
+  conflictUrl.searchParams.set("showDeleted", "false");
+
+  const conflictRes = await fetch(conflictUrl.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!conflictRes.ok) {
+    const errBody = await conflictRes.text();
+    throw new Error(`Falha ao validar disponibilidade: ${conflictRes.status} ${errBody.slice(0, 200)}`);
+  }
+  const conflictJson = (await conflictRes.json()) as {
+    items?: { start?: { dateTime?: string }; end?: { dateTime?: string } }[];
+  };
+  const hasConflict = (conflictJson.items ?? []).some((ev) => {
+    if (!ev.start?.dateTime || !ev.end?.dateTime) return false;
+    const evStart = new Date(ev.start.dateTime);
+    const evEnd = new Date(ev.end.dateTime);
+    return start < evEnd && end > evStart;
+  });
+  if (hasConflict) {
+    throw new Error("HORÁRIO INDISPONÍVEL");
+  }
+  const calId = calIdEnc;
 
   const descricaoFinal = [
     params.descricao ?? "",
@@ -531,12 +555,16 @@ export async function createGoogleCalendarEvent(
     start?: { dateTime?: string };
     end?: { dateTime?: string };
   };
-  return {
+  const result = {
     id: json.id ?? "",
     htmlLink: json.htmlLink ?? "",
     start: json.start?.dateTime ?? start.toISOString(),
     end: json.end?.dateTime ?? end.toISOString(),
   };
+  console.log(
+    `[gcal] evento criado id=${result.id} calendar=${token.calendarId} start=${result.start}`,
+  );
+  return result;
 }
 
 // ── Buscar agendamentos do contato (busca por telefone na descrição) ─────

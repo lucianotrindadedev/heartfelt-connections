@@ -284,6 +284,37 @@ function ldNotesOnly(ctx: AgentContext): string {
   return ctx.leadData.notes?.trim() ?? "";
 }
 
+/** Nome do responsável para booking/GCal — fallback para campos da escola. */
+export function resolveBookingLeadName(leadData: LeadData): string | undefined {
+  if (leadData.name?.trim()) return leadData.name.trim();
+  const guardians = leadData.custom_fields?.guardians?.trim();
+  if (guardians) {
+    const first = guardians.split(/[,;/]|(?:\s+e\s+)/i)[0]?.trim();
+    if (first) return first;
+  }
+  return leadData.custom_fields?.child_name?.trim() || undefined;
+}
+
+export function isCommitmentRequired(settings: Record<string, string>): boolean {
+  if (settings.booking_commitment_question === "") return false;
+  // Só exige confirmação de compromisso se o proprietário configurou pergunta explícita.
+  return !!settings.booking_commitment_question?.trim();
+}
+
+export function isReadyForBooking(
+  leadData: LeadData,
+  settings: Record<string, string>,
+  opts: { hasPhone: boolean; hasBookingIntegration: boolean },
+): boolean {
+  if (!opts.hasBookingIntegration || !opts.hasPhone) return false;
+  if (leadData.appointment_id) return false;
+  if (!leadData.selected_slot_iso) return false;
+  if (!resolveBookingLeadName(leadData)) return false;
+  if (getMissingBookingFields(getBookingFields(settings), leadData).length > 0) return false;
+  if (isCommitmentRequired(settings) && !leadData.commitment_confirmed) return false;
+  return true;
+}
+
 export function mergeLeadDataPatch(current: LeadData, patch: Partial<LeadData>): LeadData {
   const next: LeadData = { ...current, ...patch };
   if (patch.custom_fields || current.custom_fields) {

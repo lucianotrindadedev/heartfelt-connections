@@ -68,16 +68,40 @@ const TRANSITIONS: Record<Stage, Stage[]> = {
  * Valida transição. Retorna o próximo stage permitido ou o atual se inválido.
  * Logs warning para pulos ilegais.
  */
-export function resolveNextStage(current: Stage, proposed: unknown): Stage {
+export interface ResolveNextStageOptions {
+  /** Bloqueia CONFIRMED sem appointment_id quando há integração de agenda. */
+  requireAppointmentForConfirmed?: boolean;
+  hasAppointmentId?: boolean;
+}
+
+export function resolveNextStage(
+  current: Stage,
+  proposed: unknown,
+  opts?: ResolveNextStageOptions,
+): Stage {
   if (!isStage(proposed)) {
     console.warn(`[stage] proposta inválida: "${proposed}" — mantendo ${current}`);
     return current;
   }
   if (proposed === current) return current;
   const allowed = TRANSITIONS[current];
-  if (allowed.includes(proposed)) return proposed;
-  console.warn(`[stage] transição ilegal ${current} → ${proposed} — bloqueada`);
-  return current;
+  if (!allowed.includes(proposed)) {
+    console.warn(`[stage] transição ilegal ${current} → ${proposed} — bloqueada`);
+    return current;
+  }
+
+  if (
+    opts?.requireAppointmentForConfirmed &&
+    proposed === "CONFIRMED" &&
+    !opts.hasAppointmentId
+  ) {
+    console.warn(
+      `[stage] CONFIRMED bloqueado sem appointment_id (de ${current}) — mantendo BOOKING`,
+    );
+    return current === "NAME_COLLECT" || current === "BOOKING" ? "BOOKING" : current;
+  }
+
+  return proposed;
 }
 
 /** Stage inicial para novas conversas. */

@@ -387,11 +387,33 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     );
 
     // 11. Aplica transição validada + merge de lead_data
-    const newStage = resolveNextStage(stage, result.next_stage);
+    const hasBookingIntegration =
+      !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
     const patch = stripNullishFields(
       (result.lead_data_patch ?? {}) as Record<string, unknown>,
     ) as Partial<LeadData>;
     const newLeadData: LeadData = mergeLeadDataPatch(leadData, patch as Partial<LeadData>);
+
+    let newStage = resolveNextStage(stage, result.next_stage, {
+      requireAppointmentForConfirmed: hasBookingIntegration,
+      hasAppointmentId: !!newLeadData.appointment_id,
+    });
+
+    let reply = result.reply;
+    if (
+      hasBookingIntegration &&
+      !newLeadData.appointment_id &&
+      /\b(agendei|agendado|marquei|confirmad[oa]|visita guiada para)\b/i.test(reply)
+    ) {
+      console.warn(
+        `[orch] reply afirma agendamento sem appointment_id conv=${conversationId} — bloqueando confirmação falsa`,
+      );
+      reply =
+        "Desculpe, tive um problema ao registrar sua visita na agenda agora. Pode me confirmar o horário que você prefere? Vou tentar registrar de novo.";
+      if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
+        newStage = "BOOKING";
+      }
+    }
 
     // 12. Persiste e entrega
     await persistStageAndLeadData(conversationId, meta, newStage, newLeadData, route);
@@ -400,7 +422,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       accountId,
       agentId,
       conversationId,
-      result.reply,
+      reply,
       {
         model: ctx.model,
         latency_ms: latencyMs,

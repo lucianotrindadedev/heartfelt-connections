@@ -51,7 +51,10 @@ import {
   defaultCommitmentQuestion,
   getBookingFields,
   getMissingBookingFields,
+  isCommitmentRequired,
+  isReadyForBooking,
   mergeLeadDataPatch,
+  resolveBookingLeadName,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
 
@@ -156,10 +159,9 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "criar_agendamento",
       description:
-        "Cria o agendamento no Clinicorp. Use APENAS quando: " +
-        "(1) lead_data.selected_slot_iso está preenchido, " +
-        "(2) lead_data.name está preenchido (nome completo), " +
-        "(3) lead_data.commitment_confirmed=true. " +
+        "Cria o agendamento na agenda integrada (Google Calendar, Clinicorp ou Clinup). " +
+        "Use APENAS quando todos os campos obrigatórios estiverem preenchidos e lead_data.selected_slot_iso existir. " +
+        "NUNCA confirme agendamento ao lead sem chamar esta tool e receber ok=true com appointment_id. " +
         "Retorna {ok, appointment_id} ou {ok:false, error}.",
       parameters: {
         type: "object",
@@ -359,18 +361,25 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   if (!ld.selected_slot_iso) {
     return { result: JSON.stringify({ ok: false, error: "selected_slot_iso ausente" }) };
   }
-  if (!ld.name) {
+
+  const leadName = resolveBookingLeadName(ld);
+  if (!leadName) {
     return { result: JSON.stringify({ ok: false, error: "name ausente" }) };
   }
   if (!ctx.effectivePhone) {
     return { result: JSON.stringify({ ok: false, error: "telefone ausente" }) };
   }
 
+  const bookingCtx: AgentContext = {
+    ...ctx,
+    leadData: { ...ld, name: leadName },
+  };
+
   // Google Calendar
   if (ctx.integrations.googleCalendar) {
     try {
       const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
-      const { titulo, descricao } = resolveGcalEventTemplates(ctx);
+      const { titulo, descricao } = resolveGcalEventTemplates(bookingCtx);
       const ev = await createGoogleCalendarEvent(ctx.accountId, {
         eventoInicio: ld.selected_slot_iso,
         duracaoMinutos: duracao,
@@ -380,11 +389,17 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
       });
       await applyBookedTagSwap(ctx);
       return {
-        result: JSON.stringify({ ok: true, appointment_id: ev.id, datetime: ev.start }),
-        patch: { appointment_id: ev.id, booked_tag_applied: true },
+        result: JSON.stringify({
+          ok: true,
+          appointment_id: ev.id,
+          datetime: ev.start,
+          calendar_event_link: ev.htmlLink,
+        }),
+        patch: { appointment_id: ev.id, name: leadName, booked_tag_applied: true },
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[scheduler] criar_agendamento GCal falhou: ${msg}`);
       return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300) }) };
     }
   }
@@ -393,14 +408,14 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   try {
     const appt = await createClinicorpAppointment(ctx.accountId, {
       phone: ctx.effectivePhone,
-      name: ld.name,
+      name: leadName,
       datetime: ld.selected_slot_iso,
       dentistPersonId: ld.dentist_person_id,
     });
     await applyBookedTagSwap(ctx);
     return {
       result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
-      patch: { appointment_id: appt.id, booked_tag_applied: true },
+      patch: { appointment_id: appt.id, name: leadName, booked_tag_applied: true },
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -415,7 +430,7 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
   const orgLabel = s.company_name?.trim() || "empresa";
   const appointmentLabel = s.appointment_type_label?.trim() || "Consulta";
   const commitmentQ = defaultCommitmentQuestion(s);
-  const commitmentEnabled = s.booking_commitment_question !== "" && !!commitmentQ;
+  const commitmentEnabled = isCommitmentRequired(s) && !!commitmentQ;
   const bookingFields = getBookingFields(s);
   const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
 
@@ -427,8 +442,8 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 - **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro. Nunca invente horários.
 - **NAME_COLLECT**: confirme o slot escolhido. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
-- **BOOKING**: chame criar_agendamento SOMENTE quando todos os campos obrigatórios estiverem preenchidos. Se retornar ok=false, peça desculpa e proponha outro horário.
-- **CONFIRMED**: agradeça e encerre o ciclo. Não venda mais nada.
+- **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou — peça desculpas e ofereça outro horário.
+- **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
 
 ${fieldsBlock}
 
@@ -439,8 +454,9 @@ ${fieldsBlock}
 3. UMA pergunta por vez. Mensagens curtas. Use \\n\\n no reply para separar bolhas no WhatsApp.
 4. NUNCA use "dentista" ou "consulta odontológica" se o contexto for escola/educação — use "${appointmentLabel}" e linguagem do prompt do proprietário.
 5. Se o lead pedir explicitamente para falar com humano → next_stage="ESCALATED".
-6. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
-7. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
+6. **NUNCA diga "agendei", "marquei" ou "está confirmado" sem appointment_id em lead_data** (ok=true de criar_agendamento).
+7. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
+8. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
 
@@ -535,6 +551,36 @@ ${lastUser ? `- Última mensagem do lead: "${lastUser.slice(0, 120)}"` : ""}
 ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n` : ""}`;
 }
 
+function hasBookingIntegration(ctx: AgentContext): boolean {
+  return ctx.integrations.googleCalendar || ctx.integrations.clinicorp || ctx.integrations.clinup;
+}
+
+async function tryDeterministicBooking(ctx: AgentContext): Promise<{
+  patch: Partial<LeadData>;
+  toolResult?: string;
+  toolsCalled: string[];
+}> {
+  if (ctx.leadData.appointment_id) return { patch: {}, toolsCalled: [] };
+  if (!hasBookingIntegration(ctx)) return { patch: {}, toolsCalled: [] };
+  if (ctx.stage !== "BOOKING" && ctx.stage !== "NAME_COLLECT") {
+    return { patch: {}, toolsCalled: [] };
+  }
+
+  const ready = isReadyForBooking(ctx.leadData, ctx.agentSettings, {
+    hasPhone: !!ctx.effectivePhone,
+    hasBookingIntegration: hasBookingIntegration(ctx),
+  });
+  if (!ready) return { patch: {}, toolsCalled: [] };
+
+  console.log(`[scheduler] auto criar_agendamento conv=${ctx.conversationId} stage=${ctx.stage}`);
+  const outcome = await execCriarAgendamento(ctx);
+  return {
+    patch: outcome.patch ?? {},
+    toolResult: outcome.result,
+    toolsCalled: ["criar_agendamento"],
+  };
+}
+
 // ── Loop principal: tool use + structured output ──────────────────────────
 
 const MAX_TOOL_LOOPS = 6;
@@ -561,15 +607,28 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const extras = [ragContext, mediaContext].filter(Boolean).join("\n\n");
 
   const cached = buildCachedSystemPrompt(ctx);
-  const baseDynamic = buildDynamicSystemPrompt(ctx);
+  let baseDynamic = buildDynamicSystemPrompt(ctx);
+
+  const autoBooking = await tryDeterministicBooking(ctx);
+  let accumulatedPatch: Partial<LeadData> = autoBooking.patch;
+  if (Object.keys(autoBooking.patch).length > 0) {
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, autoBooking.patch);
+    baseDynamic = buildDynamicSystemPrompt(ctx);
+  }
+  if (autoBooking.toolResult) {
+    baseDynamic += `\n\n# RESULTADO criar_agendamento (automático)\n${autoBooking.toolResult}\n` +
+      (ctx.leadData.appointment_id
+        ? "Evento criado na agenda. Confirme ao lead e use next_stage=CONFIRMED."
+        : "Falha ao criar evento. NÃO confirme agendamento — peça desculpas e ofereça outro horário.");
+  }
+
   const dynamic = extras ? baseDynamic + "\n\n" + extras : baseDynamic;
 
   // Histórico convertido para LlmMessage.
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
 
   let workingMessages: LlmMessage[] = [...history];
-  const toolsCalled: string[] = [];
-  let accumulatedPatch: Partial<LeadData> = {};
+  const toolsCalled: string[] = [...autoBooking.toolsCalled];
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let totalCostUsd = 0;
