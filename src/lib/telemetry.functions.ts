@@ -18,6 +18,7 @@ const FLAG_KEYS = [
   "false_booking_claim_blocked",
   "forced_scheduling_advance",
   "preflight_blocked",
+  "double_booking_blocked",
 ] as const;
 
 type FlagKey = (typeof FLAG_KEYS)[number];
@@ -130,5 +131,6 @@ function emptyFlags(): Record<FlagKey, number> {
     false_booking_claim_blocked: 0,
     forced_scheduling_advance: 0,
     preflight_blocked: 0,
+    double_booking_blocked: 0,
   };
 }

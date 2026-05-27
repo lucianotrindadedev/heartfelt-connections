@@ -711,6 +711,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         forced_scheduling_advance: forcedSchedulingAdvance || undefined,
         preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,
         preflight_dirty_fields: (result.telemetry?.dirty_fields as string[]) || undefined,
+        double_booking_blocked:
+          (result.telemetry?.double_booking_blocked as boolean) || undefined,
       },
       sessionId,
       effectivePhone ?? conversationPhone,

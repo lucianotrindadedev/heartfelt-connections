@@ -383,6 +383,35 @@ async function execListarHorarios(
 
 async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   const ld = ctx.leadData;
+
+  // GUARD DE IDEMPOTENCIA — bug "agendamento duplo" (27/05/2026):
+  // se ja temos appointment_id (criado seja pelo tryDeterministicBooking
+  // deste turn, seja por turn anterior), NUNCA chamar a API de novo.
+  // Quando o LLM (gpt-4.1-mini) insiste em chamar criar_agendamento
+  // mesmo depois do evento ja ter sido criado, a segunda chamada conflita
+  // com o evento que ele mesmo criou e devolve "HORÁRIO INDISPONÍVEL" —
+  // o lead ve o evento na agenda mas recebe mensagem de erro.
+  if (ld.appointment_id) {
+    console.warn(
+      `[scheduler:telemetry] ${JSON.stringify({
+        event: "double_booking_blocked",
+        conv: ctx.conversationId,
+        account: ctx.accountId,
+        agent: ctx.agentId,
+        appointment_id: ld.appointment_id,
+        model: ctx.model,
+      })}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: true,
+        appointment_id: ld.appointment_id,
+        already_booked: true,
+        note: "Agendamento ja existe — nao foi recriado. Apenas confirme ao lead.",
+      }),
+    };
+  }
+
   const bookingFields = getBookingFieldsForChannel(ctx.agentSettings, {
     channel: ctx.channel,
     effectivePhone: ctx.effectivePhone,
@@ -801,6 +830,11 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let totalCostUsd = 0;
+  // Telemetria: marca quando o LLM tentou criar agendamento DUPLICADO no mesmo
+  // turn (apos o tryDeterministicBooking ja ter criado). O guard em
+  // execCriarAgendamento retorna already_booked:true e a flag vai para
+  // messages.meta para diagnostico.
+  let doubleBookingBlocked = false;
 
   // Loop de tools: GPT-4.1 mini (toolModel) — Gemini costuma falhar em function calling.
   // Resposta final ao lead continua em ctx.model (Gemini Flash Lite).
@@ -894,6 +928,15 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, outcome.patch);
         ctx.leadData = mergeLeadDataPatch(ctx.leadData, outcome.patch);
       }
+      if (
+        (tc.function.name === "criar_agendamento" ||
+          tc.function.name === "agendar_clinicorp" ||
+          tc.function.name === "agendar_google_calendar" ||
+          tc.function.name === "agendar_clinup") &&
+        outcome.result.includes('"already_booked":true')
+      ) {
+        doubleBookingBlocked = true;
+      }
       console.log(`[scheduler] tool ${tc.function.name} → ${outcome.result.slice(0, 200)}`);
 
       workingMessages.push({
@@ -944,6 +987,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Fallback: se LLM omitiu next_stage, mantem o stage atual.
   const finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;
 
+  const mergedTelemetry: Record<string, unknown> = { ...(autoBooking.telemetry ?? {}) };
+  if (doubleBookingBlocked) mergedTelemetry.double_booking_blocked = true;
+
   return {
     reply: result.reply,
     next_stage: finalStage,
@@ -953,6 +999,6 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     tokens_in: totalTokensIn,
     tokens_out: totalTokensOut,
     cost_usd: totalCostUsd,
-    telemetry: autoBooking.telemetry,
+    telemetry: Object.keys(mergedTelemetry).length > 0 ? mergedTelemetry : undefined,
   };
 }

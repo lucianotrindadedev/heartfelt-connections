@@ -23,6 +23,7 @@ const FLAG_LABELS: Record<string, string> = {
   false_booking_claim_blocked: "Confirmação falsa bloqueada",
   forced_scheduling_advance: "Avanço forçado p/ agendamento",
   preflight_blocked: "Preflight bloqueado",
+  double_booking_blocked: "Agendamento duplo bloqueado",
 };
 
 const FLAG_KEYS = Object.keys(FLAG_LABELS);
