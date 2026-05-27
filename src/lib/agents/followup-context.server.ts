@@ -6,6 +6,7 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
+import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -60,7 +61,7 @@ export async function generateContextualFollowup(
   const model =
     (agent.data.llm_model_override as string | null) ||
     (llmCfg.data?.default_model as string | undefined) ||
-    "google/gemini-2.5-flash";
+    DEFAULT_LLM_MODEL;
 
   const basePrompt = (agent.data.system_prompt as string) || "";
   const settings = (agent.data.settings as Record<string, string> | null) ?? {};

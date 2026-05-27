@@ -10,6 +10,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
+import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
 import { splitMessage } from "@/lib/message-splitter.server";
 import type { AgentContext } from "@/lib/agents/context";
 import { runQualifierAgent } from "@/lib/agents/qualifier.server";
@@ -127,7 +128,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
     const model =
       (agent.data.llm_model_override as string | null) ||
       (llm.data?.default_model as string | undefined) ||
-      "google/gemini-2.5-flash";
+      DEFAULT_LLM_MODEL;
     const maxTokens = (llm.data?.max_tokens as number | undefined) ?? 2048;
     const temperature = (llm.data?.temperature as number | undefined) ?? 0.5;
 
@@ -150,7 +151,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         (llm.data?.fallback_models as string[] | undefined) ??
         ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],
       ragGateModel:
-        (llm.data?.rag_gate_model as string | undefined) ?? "google/gemini-2.5-flash",
+        (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
       maxTokens,
       temperature,
       orKey,

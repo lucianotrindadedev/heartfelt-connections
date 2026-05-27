@@ -12,6 +12,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { runDistillationForAgent, loadOrKey } from "@/lib/knowledge/distiller.server";
+import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
 
 function validateCronSecret(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -91,14 +92,14 @@ export const Route = createFileRoute("/api/public/cron/knowledge-distiller")({
             continue;
           }
 
-          // 4. Modelo: usa rag_gate_model (já é barato — Gemini Flash)
+          // 4. Modelo: usa rag_gate_model (barato — Gemini Flash Lite)
           const llmCfg = await sb
             .from("account_llm_config")
             .select("rag_gate_model")
             .eq("account_id", a.account_id)
             .single();
           const model =
-            (llmCfg.data?.rag_gate_model as string | undefined) ?? "google/gemini-2.5-flash";
+            (llmCfg.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL;
 
           // 5. Janela de tempo: 7 dias atrás (weekly) ou 1 dia (daily)
           const sinceHours = a.distillation_schedule === "daily" ? 24 : 7 * 24;

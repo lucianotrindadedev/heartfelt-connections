@@ -4,9 +4,10 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
+import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_SPLITTER_MODEL = "openai/gpt-4.1-mini";
+const DEFAULT_SPLITTER_MODEL = DEFAULT_LLM_MODEL;
 
 const MAX_CHARS = 600;
 const MIN_LLM_SPLIT_CHARS = 80;

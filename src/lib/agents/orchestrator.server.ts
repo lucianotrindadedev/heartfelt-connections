@@ -16,6 +16,7 @@ import {
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
 import { mergeLeadDataPatch, tryAutoCaptureBookingAnswer } from "@/lib/booking-template";
+import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
 import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
@@ -328,12 +329,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       model:
         (agent.data.llm_model_override as string | null) ||
         (llm.data?.default_model as string | undefined) ||
-        "google/gemini-2.5-flash",
+        DEFAULT_LLM_MODEL,
       fallbackModels:
         (llm.data?.fallback_models as string[] | undefined) ??
         ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],
       ragGateModel:
-        (llm.data?.rag_gate_model as string | undefined) ?? "google/gemini-2.5-flash",
+        (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
       maxTokens: (llm.data?.max_tokens as number | undefined) ?? 1024,
       temperature: (llm.data?.temperature as number | undefined) ?? 0.5,
       orKey,
