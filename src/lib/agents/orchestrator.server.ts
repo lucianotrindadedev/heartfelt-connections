@@ -80,6 +80,35 @@ interface MsgRow {
   meta: Record<string, unknown> | null;
 }
 
+/** Normaliza texto para comparação (lowercase, sem pontuação/emoji/espaços extras). */
+function normalizeForSimilarity(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Compara reply atual com a última mensagem do assistente. Considera duplicado
+ *  quando >70% das palavras de uma estão contidas na outra (mesmo splitada em bolhas). */
+function isReplyTooSimilar(current: string, previous: string): boolean {
+  const a = normalizeForSimilarity(current);
+  const b = normalizeForSimilarity(previous);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const wordsA = new Set(a.split(" ").filter((w) => w.length >= 3));
+  const wordsB = new Set(b.split(" ").filter((w) => w.length >= 3));
+  if (wordsA.size < 4) return false; // muito curto pra avaliar
+
+  let matches = 0;
+  for (const w of wordsA) if (wordsB.has(w)) matches++;
+  const overlap = matches / wordsA.size;
+  return overlap >= 0.7;
+}
+
 // ── Persistência stage/lead_data em conversations.meta ────────────────────
 
 interface ConversationMeta {
@@ -349,6 +378,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const slotSelectionTurn =
       isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg);
 
+    const lastAssistantMsg = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+    const lastAssistantProposedScheduling =
+      /\b(posso (?:te )?agendar|vamos (?:agendar|marcar)|podemos (?:agendar|marcar)|que tal (?:agendar|marcar)|posso (?:te )?(?:reservar|propor) (?:um )?(?:hor[áa]rio|visita)|topa (?:agendar|marcar)|aceita (?:agendar|marcar)|gostaria de agendar|deseja (?:agendar|marcar)|posso te ofer)/i.test(
+        lastAssistantMsg,
+      );
+    const isShortYes = /^(sim|ok|claro|topo|topa|pode|aceito|aceita|quero|isso|vamos|bora|blz|beleza|combinado|fechado|perfeito|com certeza|por favor)[!.?\s]*$/i.test(
+      lastUserMsg.toLowerCase(),
+    );
+    const userAcceptedSchedulingProposal =
+      stage === "QUALIFICATION" && lastAssistantProposedScheduling && isShortYes;
+
     if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
       const slotPatch = tryAutoSelectOfferedSlot(stage, leadData, history);
       if (Object.keys(slotPatch).length > 0) {
@@ -400,6 +440,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
 
     let effectiveStage = stage;
+    if (userAcceptedSchedulingProposal && hasBookingIntegration) {
+      effectiveStage = "SLOT_OFFER";
+      console.log(
+        `[orch] lead aceitou proposta de agendamento conv=${conversationId} — forcando SLOT_OFFER (era ${stage})`,
+      );
+    }
     if (stage === "SLOT_OFFER" && leadData.selected_slot_iso) {
       effectiveStage = "NAME_COLLECT";
       console.log(
@@ -465,9 +511,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       history,
     };
 
-    // 10. Roteamento por stage
-    const route = routeForStage(stage);
-    console.log(`[orch] conv=${conversationId} stage=${stage} route=${route}`);
+    // 10. Roteamento por stage (usa effectiveStage para evitar qualifier preso quando lead já aceitou agendar)
+    const route = routeForStage(effectiveStage);
+    console.log(
+      `[orch] conv=${conversationId} stage=${stage}${effectiveStage !== stage ? ` (effective=${effectiveStage})` : ""} route=${route}`,
+    );
 
     let result: AgentResult;
     const t0 = Date.now();
@@ -536,6 +584,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       leadData: finalLeadData,
     });
 
+    // Se forcamos SLOT_OFFER e o scheduler rodou, garante que persistimos SLOT_OFFER
+    // mesmo que o LLM tenha proposto QUALIFICATION ou stage anterior.
+    if (
+      userAcceptedSchedulingProposal &&
+      hasBookingIntegration &&
+      effectiveStage === "SLOT_OFFER" &&
+      stage === "QUALIFICATION" &&
+      newStage === "QUALIFICATION"
+    ) {
+      newStage = "SLOT_OFFER";
+      console.log(
+        `[orch] forcando persist SLOT_OFFER conv=${conversationId} (lead aceitou agendamento)`,
+      );
+    }
+
     if (
       stage === "SLOT_OFFER" &&
       finalLeadData.selected_slot_iso &&
@@ -589,6 +652,22 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     if (newStage === "NAME_COLLECT" && !finalLeadData.selected_slot_iso) {
       newStage = "SLOT_OFFER";
+    }
+
+    // Guarda anti-loop: se o reply é praticamente idêntico à última msg do assistente,
+    // o LLM está alucinando ao repetir conteúdo. Substitui por um avanço de proposta.
+    if (lastAssistantMsg && isReplyTooSimilar(reply, lastAssistantMsg)) {
+      console.warn(
+        `[orch] reply duplicada detectada conv=${conversationId} — substituindo por proposta de avanco`,
+      );
+      if (hasBookingIntegration && (stage === "QUALIFICATION" || stage === "RECEPTION")) {
+        reply =
+          "Vou te mostrar os horários disponíveis pra você escolher o melhor, ok? 😊";
+        newStage = "SLOT_OFFER";
+      } else {
+        reply =
+          "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
+      }
     }
 
     const cfKeys = Object.keys(finalLeadData.custom_fields ?? {}).join(",");
