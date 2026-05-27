@@ -17,9 +17,10 @@ import {
 } from "@/lib/conversation-channel.server";
 import {
   backfillBookingFieldsFromHistory,
-  getBookingFields,
+  getBookingFieldsForChannel,
   getMissingBookingFields,
   isReadyForBooking,
+  type BookingChannelContext,
   isSlotAcceptanceMessage,
   looksLikeSchedulingPreference,
   mergeLeadDataPatch,
@@ -235,6 +236,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       contactPhone: channelIdentifier,
       conversationPhone,
     }).phone ?? null;
+  const channelCtx: BookingChannelContext = { channel, effectivePhone };
 
   // 2. Lock atômico (evita dois turnos em paralelo na mesma conversa)
   await clearStaleConversationLock(conversationId);
@@ -329,7 +331,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     });
 
     if (stage === "NAME_COLLECT" || stage === "BOOKING") {
-      const backfill = backfillBookingFieldsFromHistory(leadData, history, agentSettings);
+      const backfill = backfillBookingFieldsFromHistory(
+        leadData,
+        history,
+        agentSettings,
+        channelCtx,
+      );
       if (Object.keys(backfill).length > 0) {
         leadData = mergeLeadDataPatch(leadData, backfill);
         console.log(
@@ -353,7 +360,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     if (stage === "NAME_COLLECT" && !slotSelectionTurn) {
-      const autoPatch = tryAutoCaptureBookingAnswer(stage, leadData, history, agentSettings);
+      const autoPatch = tryAutoCaptureBookingAnswer(
+        stage,
+        leadData,
+        history,
+        agentSettings,
+        channelCtx,
+      );
       if (Object.keys(autoPatch).length > 0) {
         leadData = mergeLeadDataPatch(leadData, autoPatch);
         console.log(
@@ -363,7 +376,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     if (stage === "BOOKING" && !slotSelectionTurn) {
-      const autoPatch = tryAutoCaptureBookingAnswer(stage, leadData, history, agentSettings);
+      const autoPatch = tryAutoCaptureBookingAnswer(
+        stage,
+        leadData,
+        history,
+        agentSettings,
+        channelCtx,
+      );
       if (Object.keys(autoPatch).length > 0) {
         leadData = mergeLeadDataPatch(leadData, autoPatch);
       }
@@ -400,6 +419,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       isReadyForBooking(leadData, agentSettings, {
         hasPhone: !!effectivePhone,
         hasBookingIntegration,
+        channel,
+        effectivePhone,
       })
     ) {
       effectiveStage = "BOOKING";
@@ -493,7 +514,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       mergeLeadDataPatch(leadData, patch as Partial<LeadData>),
       { fallbackGuardianName: helenaContact?.name },
     );
-    const backfillFinal = backfillBookingFieldsFromHistory(newLeadData, history, agentSettings);
+    const backfillFinal = backfillBookingFieldsFromHistory(
+      newLeadData,
+      history,
+      agentSettings,
+      channelCtx,
+    );
     const finalLeadData =
       Object.keys(backfillFinal).length > 0
         ? mergeLeadDataPatch(newLeadData, backfillFinal)
@@ -541,7 +567,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         `[orch] reply afirma agendamento sem appointment_id conv=${conversationId} — bloqueando confirmação falsa`,
       );
       const missingFields = getMissingBookingFields(
-        getBookingFields(agentSettings),
+        getBookingFieldsForChannel(agentSettings, channelCtx),
         finalLeadData,
       );
       if (finalLeadData.selected_slot_iso && missingFields.length > 0) {

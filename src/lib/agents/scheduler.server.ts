@@ -49,7 +49,8 @@ import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
   buildBookingFieldsPromptBlock,
   defaultCommitmentQuestion,
-  getBookingFields,
+  getBookingFieldsForChannel,
+  buildChannelPhonePromptBlock,
   getMissingBookingFields,
   isCommitmentRequired,
   isReadyForBooking,
@@ -379,7 +380,10 @@ async function execListarHorarios(
 
 async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   const ld = ctx.leadData;
-  const bookingFields = getBookingFields(ctx.agentSettings);
+  const bookingFields = getBookingFieldsForChannel(ctx.agentSettings, {
+    channel: ctx.channel,
+    effectivePhone: ctx.effectivePhone,
+  });
   const missing = getMissingBookingFields(bookingFields, ld);
   if (missing.length > 0) {
     return {
@@ -464,7 +468,11 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
   const appointmentLabel = s.appointment_type_label?.trim() || "Consulta";
   const commitmentQ = defaultCommitmentQuestion(s);
   const commitmentEnabled = isCommitmentRequired(s) && !!commitmentQ;
-  const bookingFields = getBookingFields(s);
+  const bookingFields = getBookingFieldsForChannel(s, {
+    channel: ctx.channel,
+    effectivePhone: ctx.effectivePhone,
+  });
+  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
   const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
 
   return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "atendente virtual"} da ${orgLabel}.
@@ -479,6 +487,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
 
 ${fieldsBlock}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}
 
 # REGRAS ABSOLUTAS
 
@@ -541,13 +550,17 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
     .map((s) => `  • ${s.date_label} ${s.time_label} (iso=${s.iso}, dentist_person_id=${s.dentist_person_id ?? "?"})`)
     .join("\n");
 
+  const channelCtx = { channel: ctx.channel, effectivePhone: ctx.effectivePhone };
+  const bookingFields = getBookingFieldsForChannel(ctx.agentSettings, channelCtx);
+  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+
   return `# ESTADO ATUAL
 
 - Agora (BRT): ${dateStr}
 - Stage corrente: ${ctx.stage}
 - Telefone do lead: ${ctx.effectivePhone ?? "(sem telefone WhatsApp confirmado)"}
 - Canal: ${ctx.channel}
-${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
 
 # LEAD_DATA ACUMULADO
 
@@ -567,7 +580,7 @@ ${JSON.stringify(
 )}
 
 ${(() => {
-  const missing = getMissingBookingFields(getBookingFields(ctx.agentSettings), ld);
+  const missing = getMissingBookingFields(bookingFields, ld);
   if (missing.length === 0) return "";
   const f = missing[0]!;
   const lastUser = [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim();
@@ -642,6 +655,8 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   const ready = isReadyForBooking(ctx.leadData, ctx.agentSettings, {
     hasPhone: !!ctx.effectivePhone,
     hasBookingIntegration: hasBookingIntegration(ctx),
+    channel: ctx.channel,
+    effectivePhone: ctx.effectivePhone,
   });
   if (!ready) return { patch: slotPatch, toolsCalled: [] };
 

@@ -3,6 +3,7 @@
 
 import type { LeadData } from "@/lib/agents/stage";
 import type { AgentContext } from "@/lib/agents/context";
+import type { ConversationChannel } from "@/lib/conversation-channel.server";
 
 export interface BookingFieldDef {
   /** Chave em lead_data.custom_fields (ou "name" para lead_data.name). */
@@ -100,6 +101,69 @@ export function getBookingFields(settings: Record<string, string>): BookingField
     return DEFAULT_BOOKING_FIELDS_SCHOOL;
   }
   return DEFAULT_BOOKING_FIELDS_CLINIC;
+}
+
+export interface BookingChannelContext {
+  channel: ConversationChannel;
+  effectivePhone: string | null | undefined;
+}
+
+function isPhoneRelatedBookingField(field: BookingFieldDef): boolean {
+  const k = field.key.toLowerCase();
+  const l = field.label.toLowerCase();
+  const q = field.question.toLowerCase();
+  return (
+    k.includes("phone") ||
+    k.includes("telefone") ||
+    k.includes("celular") ||
+    k.includes("whatsapp") ||
+    l.includes("telefone") ||
+    l.includes("celular") ||
+    l.includes("whatsapp") ||
+    q.includes("telefone") ||
+    q.includes("celular") ||
+    q.includes("whatsapp")
+  );
+}
+
+/** WhatsApp com telefone no contexto → não coletar telefone de novo. */
+export function shouldSkipPhoneCollection(
+  channel: ConversationChannel,
+  effectivePhone: string | null | undefined,
+): boolean {
+  return channel === "whatsapp" && !!effectivePhone?.trim();
+}
+
+export function getBookingFieldsForChannel(
+  settings: Record<string, string>,
+  channelCtx?: BookingChannelContext,
+): BookingFieldDef[] {
+  const fields = getBookingFields(settings);
+  if (!channelCtx || !shouldSkipPhoneCollection(channelCtx.channel, channelCtx.effectivePhone)) {
+    return fields;
+  }
+  return fields.filter((f) => !isPhoneRelatedBookingField(f));
+}
+
+export function buildChannelPhonePromptBlock(
+  channel: ConversationChannel,
+  effectivePhone: string | null | undefined,
+): string {
+  if (shouldSkipPhoneCollection(channel, effectivePhone)) {
+    return `# TELEFONE — NÃO PERGUNTE
+
+O lead está no **WhatsApp**. Telefone já confirmado: **${effectivePhone}**.
+
+- **NUNCA** peça telefone, celular ou "número para contato".
+- Se o prompt do proprietário pedir telefone, **ignore** essa instrução neste canal.
+- O agendamento usa esse número automaticamente (GCal / Clinicorp).`;
+  }
+  if ((channel === "instagram" || channel === "messenger") && !effectivePhone?.trim()) {
+    return `# TELEFONE
+
+Canal ${channel}: confirme o WhatsApp do lead antes do agendamento, se ainda não houver telefone no contexto.`;
+  }
+  return "";
 }
 
 function getFieldValue(
@@ -427,13 +491,24 @@ export function isCommitmentRequired(settings: Record<string, string>): boolean 
 export function isReadyForBooking(
   leadData: LeadData,
   settings: Record<string, string>,
-  opts: { hasPhone: boolean; hasBookingIntegration: boolean },
+  opts: {
+    hasPhone: boolean;
+    hasBookingIntegration: boolean;
+    channel?: ConversationChannel;
+    effectivePhone?: string | null;
+  },
 ): boolean {
   if (!opts.hasBookingIntegration || !opts.hasPhone) return false;
   if (leadData.appointment_id) return false;
   if (!leadData.selected_slot_iso) return false;
   if (!resolveBookingLeadName(leadData)) return false;
-  if (getMissingBookingFields(getBookingFields(settings), leadData).length > 0) return false;
+  const channelCtx =
+    opts.channel != null
+      ? { channel: opts.channel, effectivePhone: opts.effectivePhone ?? null }
+      : undefined;
+  if (getMissingBookingFields(getBookingFieldsForChannel(settings, channelCtx), leadData).length > 0) {
+    return false;
+  }
   if (isCommitmentRequired(settings) && !leadData.commitment_confirmed) return false;
   return true;
 }
@@ -731,7 +806,15 @@ function captureBookingAnswer(
   assistantText: string,
   leadData: LeadData,
   fields: BookingFieldDef[],
+  channelCtx?: BookingChannelContext,
 ): Partial<LeadData> {
+  if (
+    channelCtx &&
+    shouldSkipPhoneCollection(channelCtx.channel, channelCtx.effectivePhone) &&
+    /\b(telefone|celular|whatsapp|n[uú]mero para contato)\b/i.test(assistantText.toLowerCase())
+  ) {
+    return {};
+  }
   const lastUser = stripAffirmativePrefix(rawAnswer.trim());
   if (!lastUser || lastUser.length > MAX_AUTO_CAPTURE_LEN) return {};
   if (looksLikeQuestion(lastUser)) return {};
@@ -787,8 +870,9 @@ export function backfillBookingFieldsFromHistory(
   leadData: LeadData,
   history: { role: "user" | "assistant"; content: string }[],
   settings: Record<string, string>,
+  channelCtx?: BookingChannelContext,
 ): Partial<LeadData> {
-  const fields = getBookingFields(settings);
+  const fields = getBookingFieldsForChannel(settings, channelCtx);
   let acc = leadData;
   let merged: Partial<LeadData> = {};
 
@@ -804,7 +888,7 @@ export function backfillBookingFieldsFromHistory(
       .join("\n");
     if (!assistantText.trim()) continue;
 
-    const patch = captureBookingAnswer(msg.content, assistantText, acc, fields);
+    const patch = captureBookingAnswer(msg.content, assistantText, acc, fields, channelCtx);
     if (Object.keys(patch).length === 0) continue;
 
     acc = mergeLeadDataPatch(acc, patch);
@@ -833,10 +917,11 @@ export function tryAutoCaptureBookingAnswer(
   leadData: LeadData,
   history: { role: "user" | "assistant"; content: string }[],
   settings: Record<string, string>,
+  channelCtx?: BookingChannelContext,
 ): Partial<LeadData> {
   if (stage !== "NAME_COLLECT" && stage !== "BOOKING") return {};
 
-  const fields = getBookingFields(settings);
+  const fields = getBookingFieldsForChannel(settings, channelCtx);
   if (getMissingBookingFields(fields, leadData).length === 0) return {};
 
   let lastUserIdx = -1;
@@ -856,5 +941,5 @@ export function tryAutoCaptureBookingAnswer(
     .join("\n");
   if (!assistantText.trim()) return {};
 
-  return captureBookingAnswer(history[lastUserIdx]!.content, assistantText, leadData, fields);
+  return captureBookingAnswer(history[lastUserIdx]!.content, assistantText, leadData, fields, channelCtx);
 }
