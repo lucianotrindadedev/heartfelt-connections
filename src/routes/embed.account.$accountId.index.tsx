@@ -7407,39 +7407,23 @@ function EscalationView({ agentId, onClose }: { agentId: string; onClose: () => 
   });
 
   const [ativo, setAtivo] = useState(false);
-  const [evUrl, setEvUrl] = useState("");
-  const [evInstance, setEvInstance] = useState("");
-  const [evKey, setEvKey] = useState("");
-  const [grupo, setGrupo] = useState("");
 
   useEffect(() => {
-    if (data) {
-      setAtivo(data.ativo ?? false);
-      setEvUrl(data.evolution_url ?? "");
-      setEvInstance(data.evolution_instance ?? "");
-      setGrupo(data.grupo_alerta ?? "");
-    }
+    if (data) setAtivo(data.ativo ?? false);
   }, [data]);
 
   const save = useMutation({
-    mutationFn: () =>
-      saveCfg({
-        data: {
-          agentId,
-          ativo,
-          evolution_url: evUrl || undefined,
-          evolution_instance: evInstance || undefined,
-          ...(evKey ? { evolution_key: evKey } : {}),
-          grupo_alerta: grupo || undefined,
-        },
-      }),
+    mutationFn: () => saveCfg({ data: { agentId, ativo } }),
     onSuccess: () => {
-      toast.success("Escalação salva.");
-      setEvKey("");
+      toast.success("Configuração salva.");
       qc.invalidateQueries({ queryKey: ["escalation-config", agentId] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar."),
   });
+
+  const systemReady = !!data?.system_configured;
+  const agentBound = !!data?.agent_bound;
+  const canActivate = systemReady && agentBound;
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
@@ -7458,7 +7442,7 @@ function EscalationView({ agentId, onClose }: { agentId: string; onClose: () => 
         <div className="flex-1" />
         <button
           onClick={() => save.mutate()}
-          disabled={save.isPending}
+          disabled={save.isPending || ativo === (data?.ativo ?? false)}
           className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-white shadow-sm shadow-primary/30 transition-opacity hover:opacity-90 disabled:opacity-60"
         >
           {save.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
@@ -7476,45 +7460,45 @@ function EscalationView({ agentId, onClose }: { agentId: string; onClose: () => 
           <div className="rounded-xl border border-pink-200 bg-pink-50 p-4">
             <p className="text-sm font-semibold text-pink-800">Transferência para atendente humano</p>
             <p className="mt-1 text-xs text-pink-700">
-              Quando o agente escalar para humano, a tag <strong>"IA Desligada"</strong> é adicionada ao contato no CRM e um alerta é enviado ao grupo Evolution configurado abaixo.
+              Quando o agente escalar para humano, a tag <strong>"IA Desligada"</strong> é
+              adicionada ao contato no CRM e um alerta é enviado ao grupo configurado pelo
+              administrador.
             </p>
           </div>
 
-          {/* Toggle */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <ToggleRow label="Ativar escalada humana" value={ativo} onChange={setAtivo} />
-          </div>
-
-          {/* Evolution config */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-            <p className="text-sm font-semibold text-foreground">Configuração Evolution API</p>
-            <div>
-              <Label className="text-xs font-semibold text-slate-700">URL Evolution API</Label>
-              <Input value={evUrl} onChange={(e) => setEvUrl(e.target.value)} placeholder="https://evolution.meudominio.com.br" className="mt-1.5" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-700">Instância Evolution</Label>
-              <Input value={evInstance} onChange={(e) => setEvInstance(e.target.value)} placeholder="minha-instancia" className="mt-1.5" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-700">API Key Evolution</Label>
-              {data?.key_last4 && !evKey && (
-                <p className="text-xs text-muted-foreground mb-1">Atual: ••••{data.key_last4}</p>
+          {/* Status da configuracao (gerenciada pelo admin) */}
+          {!canActivate && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800">
+              {!systemReady ? (
+                <p>
+                  A Evolution API ainda não foi configurada pelo administrador. Entre em
+                  contato para habilitar a escalada humana.
+                </p>
+              ) : (
+                <p>
+                  O administrador ainda não vinculou este agente a uma instância e grupo
+                  Evolution. Entre em contato para habilitar a escalada humana.
+                </p>
               )}
-              <Input type="password" value={evKey} onChange={(e) => setEvKey(e.target.value)} placeholder="cole a API key" className="mt-1.5" />
             </div>
-            <div>
-              <Label className="text-xs font-semibold text-slate-700">JID do grupo de alerta</Label>
-              <Input value={grupo} onChange={(e) => setGrupo(e.target.value)} placeholder="120363123456789@g.us" className="mt-1.5" />
-              <p className="mt-1.5 text-[11px] text-muted-foreground">
-                Copie o JID do grupo no painel Evolution (formato: 120363…@g.us)
-              </p>
-            </div>
+          )}
+
+          {/* Toggle */}
+          <div className={`rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ${!canActivate ? "opacity-60 pointer-events-none" : ""}`}>
+            <ToggleRow
+              label="Ativar escalada humana"
+              value={ativo}
+              onChange={setAtivo}
+            />
           </div>
 
-          <Button onClick={() => save.mutate()} disabled={save.isPending} className="w-full py-3">
+          <Button
+            onClick={() => save.mutate()}
+            disabled={save.isPending || ativo === (data?.ativo ?? false)}
+            className="w-full py-3"
+          >
             {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            Salvar configurações
+            Salvar configuração
           </Button>
         </div>
       )}

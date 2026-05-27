@@ -1,0 +1,44 @@
+feat(escalation): mover credenciais Evolution para admin (global) + binding por agente
+
+Reestrutura a escalada humana em 3 camadas separadas:
+
+1) Evolution API GLOBAL do SAAS (singleton)
+   - Nova tabela system_evolution_config (id=1) com base_url + api_key_enc + last4.
+   - Migration 0029_evolution_system_config.sql.
+   - Nova rota /admin/evolution (superadmin) para salvar credenciais e listar
+     instancias detectadas via GET /instance/fetchInstances.
+
+2) Binding por agente (admin)
+   - Nova aba "Escalada humana" em /admin/account/$accountId.
+   - Componente AccountEscalationTab: lista os agentes da conta, dropdown
+     instancia (lista global) + dropdown grupo (lista via /group/fetchAllGroups
+     da instancia escolhida) + botao salvar.
+   - Permite selecionar grupos privados colando JID manual (mantem como opcao).
+
+3) Toggle no embed do agente
+   - EscalationView no embed simplificada: apenas o toggle ativar/desativar.
+   - Mostra aviso se a Evolution global nao esta configurada OU se o admin ainda
+     nao vinculou o agente a uma instancia+grupo (botao Salvar fica disabled).
+   - saveAgentEscalation reduzido a { agentId, ativo }.
+   - getAgentEscalation agora retorna { ativo, evolution_instance, grupo_alerta,
+     system_configured, agent_bound } (com maybeSingle, tolerante a linha ausente).
+
+Modulos novos:
+- src/lib/evolution.server.ts: cliente Evolution (loadSystemEvolution,
+  listInstances, listGroups, sendText) + erros tipados.
+- src/lib/evolution.functions.ts: server functions admin (getSystemEvolutionConfig,
+  saveSystemEvolutionConfig, listEvolutionInstances, listEvolutionGroups,
+  listAccountAgentsEscalation, saveAgentEscalationAdmin).
+
+Runtime:
+- escalateToHuman agora le base_url+api_key de system_evolution_config (global)
+  e instance+grupo de agent_escalation (por agente). Trata erros tipados
+  (EvolutionConfigMissingError, EvolutionApiError) com logs especificos.
+
+Outros:
+- createAccount no admin agora cria a linha em agent_escalation (antes so o
+  embed via ensureAccount fazia isso, causando erros no /admin pra agentes
+  criados pelo admin).
+
+Colunas legadas agent_escalation.evolution_url e evolution_key_enc ficam no
+banco por retrocompat, mas nao sao mais usadas pelo codigo.

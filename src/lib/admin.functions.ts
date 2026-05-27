@@ -353,6 +353,7 @@ export const createAccount = createServerFn({ method: "POST" })
       sb.from("agent_audio").insert({ agent_id: agentIns.data.id }),
       sb.from("agent_followup").insert({ agent_id: agentIns.data.id }),
       sb.from("agent_warmup").insert({ agent_id: agentIns.data.id }),
+      sb.from("agent_escalation").insert({ agent_id: agentIns.data.id, ativo: false }),
       sb.from("channels_whatsapp").insert({ agent_id: agentIns.data.id }),
       sb.from("webchat_config").insert({ agent_id: agentIns.data.id }),
       sb.from("account_secrets").insert({ account_id: internalId }),

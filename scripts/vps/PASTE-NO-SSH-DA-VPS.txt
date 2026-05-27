@@ -1,0 +1,30 @@
+# Cole no terminal SSH root@72.62.104.184 (sessão que já está aberta)
+# Passo 1 — SOMENTE LEITURA (não altera nada)
+
+echo "=== TODOS postgres/supabase ==="
+docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}' | grep -iE 'postgres|supabase|NAME'
+
+echo ""
+echo "=== CANDIDATO iasarai-db (supabase/postgres:17 + porta 3000->5432) ==="
+docker ps --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}' | grep -E 'supabase/postgres:17' | grep '0.0.0.0:3000->5432' || echo "NAO ENCONTRADO"
+
+CID=$(docker ps --format '{{.ID}}\t{{.Ports}}' | grep '0.0.0.0:3000->5432' | head -1 | awk '{print $1}')
+echo "Container ID sugerido: ${CID:-VAZIO}"
+
+if [ -n "$CID" ]; then
+  echo ""
+  echo "=== Tabelas atuais no candidato ==="
+  docker exec "$CID" psql -U postgres -d postgres -c "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1;"
+fi
+
+# Passo 2 — No PowerShell (criar pasta na VPS ANTES do scp):
+#   ssh root@72.62.104.184 "mkdir -p /tmp/iasarai-migrations"
+#   scp -r migrations root@72.62.104.184:/tmp/iasarai-migrations/
+#   scp scripts/vps/02-run-migrations.sh root@72.62.104.184:/tmp/
+#
+# Passo 3 — Na VPS (substitua CID):
+#   export IASARAI_DB_CONTAINER=<CID>
+#   export MIGRATE_CONFIRM=yes-iasarai-db
+#   export MIGRATIONS_DIR=/tmp/iasarai-migrations   # (pasta com os .sql diretamente)
+#   sed -i 's/\r$//' /tmp/02-run-migrations.sh   # se veio do Windows (erro pipefail)
+#   bash /tmp/02-run-migrations.sh

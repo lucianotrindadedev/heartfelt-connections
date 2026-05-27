@@ -95,6 +95,12 @@ function AdminIndex() {
         </div>
         <div className="flex gap-2">
           <Link
+            to="/admin/evolution"
+            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
+          >
+            Evolution
+          </Link>
+          <Link
             to="/admin/templates"
             className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
           >

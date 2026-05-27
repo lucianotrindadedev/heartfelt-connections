@@ -20,18 +20,19 @@ import { Route as AuthenticatedAdminRouteImport } from './routes/_authenticated.
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated.admin.index'
 import { Route as EmbedAccountAccountIdRouteImport } from './routes/embed.account.$accountId'
 import { Route as AuthenticatedAdminTemplatesRouteImport } from './routes/_authenticated.admin.templates'
+import { Route as AuthenticatedAdminEvolutionRouteImport } from './routes/_authenticated.admin.evolution'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as ApiPublicDiagRunTurnRouteImport } from './routes/api/public/diag/run-turn'
 import { Route as ApiPublicDiagQueueRouteImport } from './routes/api/public/diag/queue'
-import { Route as ApiPublicDiagFollowupRouteImport } from './routes/api/public/diag/followup'
-import { Route as ApiPublicDiagGcalSlotsRouteImport } from './routes/api/public/diag/gcal-slots'
 import { Route as ApiPublicDiagHelenaSendRouteImport } from './routes/api/public/diag/helena-send'
+import { Route as ApiPublicDiagGcalSlotsRouteImport } from './routes/api/public/diag/gcal-slots'
+import { Route as ApiPublicDiagFollowupRouteImport } from './routes/api/public/diag/followup'
+import { Route as ApiPublicCronWarmupSequenceRouteImport } from './routes/api/public/cron/warmup-sequence'
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
-import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/cron/followup'
-import { Route as ApiPublicCronFollowupSequenceRouteImport } from './routes/api/public/cron/followup-sequence'
-import { Route as ApiPublicCronWarmupSequenceRouteImport } from './routes/api/public/cron/warmup-sequence'
 import { Route as ApiPublicCronKnowledgeDistillerRouteImport } from './routes/api/public/cron/knowledge-distiller'
+import { Route as ApiPublicCronFollowupSequenceRouteImport } from './routes/api/public/cron/followup-sequence'
+import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/cron/followup'
 import { Route as ApiPublicCronDrainConversationRouteImport } from './routes/api/public/cron/drain-conversation'
 import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
 import { Route as ApiPublicWebhookHelenaAccountIdRouteImport } from './routes/api/public/webhook/helena/$accountId'
@@ -94,6 +95,12 @@ const AuthenticatedAdminTemplatesRoute =
     path: '/templates',
     getParentRoute: () => AuthenticatedAdminRoute,
   } as any)
+const AuthenticatedAdminEvolutionRoute =
+  AuthenticatedAdminEvolutionRouteImport.update({
+    id: '/evolution',
+    path: '/evolution',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
 const EmbedAccountAccountIdIndexRoute =
   EmbedAccountAccountIdIndexRouteImport.update({
     id: '/',
@@ -110,9 +117,9 @@ const ApiPublicDiagQueueRoute = ApiPublicDiagQueueRouteImport.update({
   path: '/api/public/diag/queue',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiPublicDiagFollowupRoute = ApiPublicDiagFollowupRouteImport.update({
-  id: '/api/public/diag/followup',
-  path: '/api/public/diag/followup',
+const ApiPublicDiagHelenaSendRoute = ApiPublicDiagHelenaSendRouteImport.update({
+  id: '/api/public/diag/helena-send',
+  path: '/api/public/diag/helena-send',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicDiagGcalSlotsRoute = ApiPublicDiagGcalSlotsRouteImport.update({
@@ -120,11 +127,17 @@ const ApiPublicDiagGcalSlotsRoute = ApiPublicDiagGcalSlotsRouteImport.update({
   path: '/api/public/diag/gcal-slots',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiPublicDiagHelenaSendRoute = ApiPublicDiagHelenaSendRouteImport.update({
-  id: '/api/public/diag/helena-send',
-  path: '/api/public/diag/helena-send',
+const ApiPublicDiagFollowupRoute = ApiPublicDiagFollowupRouteImport.update({
+  id: '/api/public/diag/followup',
+  path: '/api/public/diag/followup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicCronWarmupSequenceRoute =
+  ApiPublicCronWarmupSequenceRouteImport.update({
+    id: '/api/public/cron/warmup-sequence',
+    path: '/api/public/cron/warmup-sequence',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicCronWarmupRoute = ApiPublicCronWarmupRouteImport.update({
   id: '/api/public/cron/warmup',
   path: '/api/public/cron/warmup',
@@ -135,6 +148,18 @@ const ApiPublicCronQueueRoute = ApiPublicCronQueueRouteImport.update({
   path: '/api/public/cron/queue',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicCronKnowledgeDistillerRoute =
+  ApiPublicCronKnowledgeDistillerRouteImport.update({
+    id: '/api/public/cron/knowledge-distiller',
+    path: '/api/public/cron/knowledge-distiller',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicCronFollowupSequenceRoute =
+  ApiPublicCronFollowupSequenceRouteImport.update({
+    id: '/api/public/cron/followup-sequence',
+    path: '/api/public/cron/followup-sequence',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicCronFollowupRoute = ApiPublicCronFollowupRouteImport.update({
   id: '/api/public/cron/followup',
   path: '/api/public/cron/followup',
@@ -185,6 +210,7 @@ export interface FileRoutesByFullPath {
   '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
+  '/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
   '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/admin/': typeof AuthenticatedAdminIndexRoute
@@ -192,10 +218,10 @@ export interface FileRoutesByFullPath {
   '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
-  '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/gcal-slots': typeof ApiPublicDiagGcalSlotsRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
@@ -213,16 +239,17 @@ export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed': typeof EmbedIndexRoute
+  '/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
   '/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/admin': typeof AuthenticatedAdminIndexRoute
   '/admin/account/$accountId': typeof AuthenticatedAdminAccountAccountIdRoute
   '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
-  '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/gcal-slots': typeof ApiPublicDiagGcalSlotsRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
@@ -244,6 +271,7 @@ export interface FileRoutesById {
   '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
+  '/_authenticated/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
   '/_authenticated/admin/templates': typeof AuthenticatedAdminTemplatesRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdRouteWithChildren
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
@@ -251,10 +279,10 @@ export interface FileRoutesById {
   '/api/public/cron/drain-conversation': typeof ApiPublicCronDrainConversationRoute
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
-  '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
+  '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/gcal-slots': typeof ApiPublicDiagGcalSlotsRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
@@ -276,6 +304,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/embed/$accountId'
     | '/embed/'
+    | '/admin/evolution'
     | '/admin/templates'
     | '/embed/account/$accountId'
     | '/admin/'
@@ -283,10 +312,10 @@ export interface FileRouteTypes {
     | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
-    | '/api/public/cron/warmup-sequence'
     | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/cron/warmup-sequence'
     | '/api/public/diag/followup'
     | '/api/public/diag/gcal-slots'
     | '/api/public/diag/helena-send'
@@ -304,16 +333,17 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/embed/$accountId'
     | '/embed'
+    | '/admin/evolution'
     | '/admin/templates'
     | '/admin'
     | '/admin/account/$accountId'
     | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
-    | '/api/public/cron/warmup-sequence'
     | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/cron/warmup-sequence'
     | '/api/public/diag/followup'
     | '/api/public/diag/gcal-slots'
     | '/api/public/diag/helena-send'
@@ -334,6 +364,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/embed/$accountId'
     | '/embed/'
+    | '/_authenticated/admin/evolution'
     | '/_authenticated/admin/templates'
     | '/embed/account/$accountId'
     | '/_authenticated/admin/'
@@ -341,10 +372,10 @@ export interface FileRouteTypes {
     | '/api/public/cron/drain-conversation'
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
-    | '/api/public/cron/warmup-sequence'
     | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
+    | '/api/public/cron/warmup-sequence'
     | '/api/public/diag/followup'
     | '/api/public/diag/gcal-slots'
     | '/api/public/diag/helena-send'
@@ -364,12 +395,12 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiPublicCronDrainConversationRoute: typeof ApiPublicCronDrainConversationRoute
-  ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute,
+  ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute
   ApiPublicCronFollowupSequenceRoute: typeof ApiPublicCronFollowupSequenceRoute
-  ApiPublicCronWarmupSequenceRoute: typeof ApiPublicCronWarmupSequenceRoute
   ApiPublicCronKnowledgeDistillerRoute: typeof ApiPublicCronKnowledgeDistillerRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
+  ApiPublicCronWarmupSequenceRoute: typeof ApiPublicCronWarmupSequenceRoute
   ApiPublicDiagFollowupRoute: typeof ApiPublicDiagFollowupRoute
   ApiPublicDiagGcalSlotsRoute: typeof ApiPublicDiagGcalSlotsRoute
   ApiPublicDiagHelenaSendRoute: typeof ApiPublicDiagHelenaSendRoute
@@ -460,6 +491,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminTemplatesRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
+    '/_authenticated/admin/evolution': {
+      id: '/_authenticated/admin/evolution'
+      path: '/evolution'
+      fullPath: '/admin/evolution'
+      preLoaderRoute: typeof AuthenticatedAdminEvolutionRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
     '/embed/account/$accountId/': {
       id: '/embed/account/$accountId/'
       path: '/'
@@ -472,20 +510,6 @@ declare module '@tanstack/react-router' {
       path: '/api/public/diag/run-turn'
       fullPath: '/api/public/diag/run-turn'
       preLoaderRoute: typeof ApiPublicDiagRunTurnRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/public/diag/followup': {
-      id: '/api/public/diag/followup'
-      path: '/api/public/diag/followup'
-      fullPath: '/api/public/diag/followup'
-      preLoaderRoute: typeof ApiPublicDiagFollowupRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/public/diag/gcal-slots': {
-      id: '/api/public/diag/gcal-slots'
-      path: '/api/public/diag/gcal-slots'
-      fullPath: '/api/public/diag/gcal-slots'
-      preLoaderRoute: typeof ApiPublicDiagGcalSlotsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/diag/queue': {
@@ -502,6 +526,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicDiagHelenaSendRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/diag/gcal-slots': {
+      id: '/api/public/diag/gcal-slots'
+      path: '/api/public/diag/gcal-slots'
+      fullPath: '/api/public/diag/gcal-slots'
+      preLoaderRoute: typeof ApiPublicDiagGcalSlotsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/diag/followup': {
+      id: '/api/public/diag/followup'
+      path: '/api/public/diag/followup'
+      fullPath: '/api/public/diag/followup'
+      preLoaderRoute: typeof ApiPublicDiagFollowupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/cron/warmup-sequence': {
+      id: '/api/public/cron/warmup-sequence'
+      path: '/api/public/cron/warmup-sequence'
+      fullPath: '/api/public/cron/warmup-sequence'
+      preLoaderRoute: typeof ApiPublicCronWarmupSequenceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron/warmup': {
       id: '/api/public/cron/warmup'
       path: '/api/public/cron/warmup'
@@ -516,32 +561,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicCronQueueRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/public/cron/followup': {
-      id: '/api/public/cron/followup'
-      path: '/api/public/cron/followup'
-      fullPath: '/api/public/cron/followup'
-      preLoaderRoute: typeof ApiPublicCronFollowupRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/public/cron/followup-sequence': {
-      id: '/api/public/cron/followup'
-      path: '/api/public/cron/followup'
-      fullPath: '/api/public/cron/followup'
-      preLoaderRoute: typeof ApiPublicCronFollowupSequenceRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/public/cron/warmup-sequence': {
-      id: '/api/public/cron/warmup-sequence'
-      path: '/api/public/cron/warmup-sequence'
-      fullPath: '/api/public/cron/warmup-sequence'
-      preLoaderRoute: typeof ApiPublicCronWarmupSequenceRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/api/public/cron/knowledge-distiller': {
       id: '/api/public/cron/knowledge-distiller'
       path: '/api/public/cron/knowledge-distiller'
       fullPath: '/api/public/cron/knowledge-distiller'
       preLoaderRoute: typeof ApiPublicCronKnowledgeDistillerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/cron/followup-sequence': {
+      id: '/api/public/cron/followup-sequence'
+      path: '/api/public/cron/followup-sequence'
+      fullPath: '/api/public/cron/followup-sequence'
+      preLoaderRoute: typeof ApiPublicCronFollowupSequenceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/cron/followup': {
+      id: '/api/public/cron/followup'
+      path: '/api/public/cron/followup'
+      fullPath: '/api/public/cron/followup'
+      preLoaderRoute: typeof ApiPublicCronFollowupRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/cron/drain-conversation': {
@@ -590,12 +628,14 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedAdminRouteChildren {
+  AuthenticatedAdminEvolutionRoute: typeof AuthenticatedAdminEvolutionRoute
   AuthenticatedAdminTemplatesRoute: typeof AuthenticatedAdminTemplatesRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
   AuthenticatedAdminAccountAccountIdRoute: typeof AuthenticatedAdminAccountAccountIdRoute
 }
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
+  AuthenticatedAdminEvolutionRoute: AuthenticatedAdminEvolutionRoute,
   AuthenticatedAdminTemplatesRoute: AuthenticatedAdminTemplatesRoute,
   AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
   AuthenticatedAdminAccountAccountIdRoute:
@@ -653,10 +693,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicCronDrainConversationRoute: ApiPublicCronDrainConversationRoute,
   ApiPublicCronFollowupRoute: ApiPublicCronFollowupRoute,
   ApiPublicCronFollowupSequenceRoute: ApiPublicCronFollowupSequenceRoute,
-  ApiPublicCronWarmupSequenceRoute: ApiPublicCronWarmupSequenceRoute,
   ApiPublicCronKnowledgeDistillerRoute: ApiPublicCronKnowledgeDistillerRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,
+  ApiPublicCronWarmupSequenceRoute: ApiPublicCronWarmupSequenceRoute,
   ApiPublicDiagFollowupRoute: ApiPublicDiagFollowupRoute,
   ApiPublicDiagGcalSlotsRoute: ApiPublicDiagGcalSlotsRoute,
   ApiPublicDiagHelenaSendRoute: ApiPublicDiagHelenaSendRoute,
@@ -672,12 +712,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-  }
-}

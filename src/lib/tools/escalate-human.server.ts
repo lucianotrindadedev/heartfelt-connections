@@ -1,8 +1,17 @@
 // Escalada para atendimento humano:
 // 1. Tag "IA Desligada" no contato Helena
 // 2. Alerta no grupo Evolution API configurado
+//
+// Fonte das credenciais Evolution:
+//  - URL + API key: GLOBAIS do SAAS (system_evolution_config)
+//  - Instancia + grupo: POR AGENTE (agent_escalation.evolution_instance / grupo_alerta)
+//  - Toggle ativo: POR AGENTE (agent_escalation.ativo)
 import { getSelfhost } from "@/integrations/selfhost/client.server";
-import { decryptValue } from "@/lib/crypto.server";
+import {
+  EvolutionApiError,
+  EvolutionConfigMissingError,
+  sendText as evoSendText,
+} from "@/lib/evolution.server";
 import { loadHelenaAccount } from "@/lib/helena.server";
 
 export async function escalateToHuman(params: {
@@ -17,7 +26,7 @@ export async function escalateToHuman(params: {
 
   const { data: cfg } = await sb
     .from("agent_escalation")
-    .select("grupo_alerta, evolution_url, evolution_instance, evolution_key_enc, ativo")
+    .select("grupo_alerta, evolution_instance, ativo")
     .eq("agent_id", params.agentId)
     .single();
 
@@ -47,33 +56,36 @@ export async function escalateToHuman(params: {
     console.error("[escalate] falha ao taguear no Helena:", e);
   }
 
-  // 2. Alerta no grupo Evolution API
-  if (cfg?.ativo && cfg.grupo_alerta && cfg.evolution_url && cfg.evolution_instance) {
+  // 2. Alerta no grupo Evolution API (apenas se o agente tem instancia+grupo configurados)
+  if (cfg?.ativo && cfg.grupo_alerta && cfg.evolution_instance) {
     try {
-      const evKey = await decryptValue(cfg.evolution_key_enc as unknown as string);
-      if (evKey) {
-        const alertText =
-          `🚨 *Escalada Humana*\n\n` +
-          `📱 Telefone: ${params.phone}\n` +
-          (params.reason ? `📝 Motivo: ${params.reason}\n` : "") +
-          `\n_O atendimento foi transferido para humano._`;
+      const alertText =
+        `🚨 *Escalada Humana*\n\n` +
+        `📱 Telefone: ${params.phone}\n` +
+        (params.reason ? `📝 Motivo: ${params.reason}\n` : "") +
+        `\n_O atendimento foi transferido para humano._`;
 
-        const evUrl = `${(cfg.evolution_url as string).replace(/\/$/, "")}/message/sendText/${cfg.evolution_instance}`;
-        const evRes = await fetch(evUrl, {
-          method: "POST",
-          headers: {
-            apikey: evKey,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            number: cfg.grupo_alerta,
-            text: alertText,
-          }),
-        });
-        alerted = evRes.ok;
+      const res = await evoSendText({
+        instance: cfg.evolution_instance as string,
+        number: cfg.grupo_alerta as string,
+        text: alertText,
+      });
+      alerted = res.ok;
+      if (!res.ok) {
+        console.error(
+          `[escalate] Evolution sendText falhou ${res.status}: ${res.body.slice(0, 200)}`,
+        );
       }
     } catch (e) {
-      console.error("[escalate] falha ao enviar alerta Evolution:", e);
+      if (e instanceof EvolutionConfigMissingError) {
+        console.warn(
+          "[escalate] Evolution global nao configurada — alerta nao enviado",
+        );
+      } else if (e instanceof EvolutionApiError) {
+        console.error(`[escalate] Evolution API error: ${e.message}`);
+      } else {
+        console.error("[escalate] falha ao enviar alerta Evolution:", e);
+      }
     }
   }
 

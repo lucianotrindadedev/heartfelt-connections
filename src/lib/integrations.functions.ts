@@ -259,22 +259,38 @@ export const testClinupConnection = createServerFn({ method: "POST" })
 // ESCALAÇÃO HUMANA
 // ============================================================
 
+// No painel do agente (embed) so expomos o TOGGLE ativo/desativo + leitura
+// read-only do que o admin configurou. As credenciais Evolution sao globais
+// (system_evolution_config) e a instancia/grupo do agente sao configurados
+// pelo admin em /admin/account/$accountId.
 export const getAgentEscalation = createServerFn({ method: "GET" })
   .inputValidator((d) => agentIdInput.parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
     const { data: cfg } = await sb
       .from("agent_escalation")
-      .select("grupo_alerta, evolution_url, evolution_instance, ativo, evolution_key_enc")
+      .select("evolution_instance, grupo_alerta, ativo")
       .eq("agent_id", data.agentId)
-      .single();
+      .maybeSingle();
+
+    // Saber se a Evolution global ja foi configurada pelo superadmin —
+    // isso muda a copy do toggle no embed.
+    const { data: sys } = await sb
+      .from("system_evolution_config")
+      .select("base_url, api_key_last4")
+      .eq("id", 1)
+      .maybeSingle();
+    const system_configured = !!(sys?.base_url && sys?.api_key_last4);
+
+    const instance = (cfg?.evolution_instance as string | null) ?? "";
+    const grupo = (cfg?.grupo_alerta as string | null) ?? "";
 
     return {
       ativo: cfg?.ativo ?? false,
-      grupo_alerta: (cfg?.grupo_alerta as string | null) ?? "",
-      evolution_url: (cfg?.evolution_url as string | null) ?? "",
-      evolution_instance: (cfg?.evolution_instance as string | null) ?? "",
-      key_last4: cfg?.evolution_key_enc ? "****" : null,
+      evolution_instance: instance,
+      grupo_alerta: grupo,
+      system_configured,
+      agent_bound: !!(instance && grupo),
     };
   });
 
@@ -282,26 +298,20 @@ export const saveAgentEscalation = createServerFn({ method: "POST" })
   .inputValidator((d) =>
     agentIdInput
       .extend({
-        evolution_key: z.string().optional(),
-        grupo_alerta: z.string().optional(),
-        evolution_url: z.string().optional(),
-        evolution_instance: z.string().optional(),
-        ativo: z.boolean().optional(),
+        ativo: z.boolean(),
       })
-      .parse(d)
+      .parse(d),
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { agentId, evolution_key, ...rest } = data;
-
-    const patch: Record<string, unknown> = { ...rest };
-    if (evolution_key) {
-      patch.evolution_key_enc = await encryptValue(evolution_key);
-    }
+    const { agentId, ativo } = data;
 
     await sb
       .from("agent_escalation")
-      .upsert({ agent_id: agentId, ...patch }, { onConflict: "agent_id" });
+      .upsert(
+        { agent_id: agentId, ativo, atualizado_em: new Date().toISOString() },
+        { onConflict: "agent_id" },
+      );
 
     return { ok: true };
   });

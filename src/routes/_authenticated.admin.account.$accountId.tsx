@@ -10,6 +10,7 @@ import {
   ChevronDown, ChevronRight, AlertCircle, Activity, Bell, Flame,
 } from "lucide-react";
 import { useState, useMemo } from "react";
+import { AccountEscalationTab } from "@/components/admin/AccountEscalationTab";
 
 function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
@@ -37,7 +38,7 @@ export const Route = createFileRoute("/_authenticated/admin/account/$accountId")
   component: AdminAccountDetail,
 });
 
-type Tab = "overview" | "logs" | "setup";
+type Tab = "overview" | "logs" | "setup" | "escalation";
 
 function AdminAccountDetail() {
   const { accountId } = Route.useParams();
@@ -129,6 +130,9 @@ function AdminAccountDetail() {
             <TabButton active={tab === "setup"} onClick={() => setTab("setup")}>
               Setup / Integração
             </TabButton>
+            <TabButton active={tab === "escalation"} onClick={() => setTab("escalation")}>
+              Escalada humana
+            </TabButton>
           </div>
 
           {tab === "overview" && (
@@ -147,6 +151,10 @@ function AdminAccountDetail() {
               appBaseUrl={appBaseUrl}
               webhookSecret={String(q.data.agent?.webhook_secret ?? "")}
             />
+          )}
+
+          {tab === "escalation" && (
+            <AccountEscalationTab accountId={accountId} />
           )}
         </>
       )}
