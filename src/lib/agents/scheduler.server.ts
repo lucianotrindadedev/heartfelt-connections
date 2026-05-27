@@ -57,6 +57,7 @@ import {
   resolveBookingLeadName,
   tryAutoSelectOfferedSlot,
   resolveGcalEventTemplates,
+  isSlotAcceptanceMessage,
 } from "@/lib/booking-template";
 
 /**
@@ -285,6 +286,36 @@ async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
 ): Promise<ToolOutcome> {
+  const selected = ctx.leadData.selected_slot_iso;
+  if (selected) {
+    const existing = ctx.leadData.offered_slots?.find((s) => s.iso === selected);
+    const slots = existing
+      ? [existing]
+      : [
+          {
+            iso: selected,
+            date_label: "(horário escolhido)",
+            time_label: new Intl.DateTimeFormat("pt-BR", {
+              timeZone: "America/Sao_Paulo",
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+            }).format(new Date(selected)),
+          },
+        ];
+    console.log(
+      `[scheduler] listar_horarios ignorado conv=${ctx.conversationId} — slot já escolhido iso=${selected}`,
+    );
+    return {
+      result: JSON.stringify({
+        count: slots.length,
+        slots,
+        note: "Lead já escolheu horário (selected_slot_iso). NÃO re-listar; confirme o slot e avance a coleta.",
+      }),
+      patch: {},
+    };
+  }
+
   const today = new Date();
   const end = new Date(today.getTime() + (diasAFrente ?? 7) * 24 * 60 * 60 * 1000);
 
@@ -441,8 +472,8 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
-- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro. Nunca invente horários. Quando o lead escolher um horário → next_stage="NAME_COLLECT" (NUNCA BOOKING direto).
-- **NAME_COLLECT**: confirme o slot escolhido. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
+- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Quando o lead escolher um horário → next_stage="NAME_COLLECT" (NUNCA BOOKING direto).
+- **NAME_COLLECT**: confirme o slot escolhido (selected_slot_iso). NÃO chame listar_horarios se o lead já escolheu horário. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou — peça desculpas e ofereça outro horário.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
 
@@ -549,7 +580,11 @@ ${lastUser ? `- Última mensagem do lead: "${lastUser.slice(0, 120)}"` : ""}
 - Só faça a pergunta sugerida se o campo ainda estiver vazio após analisar a última mensagem do lead.`;
 })()}
 
-${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n` : ""}`;
+${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n` : ""}${
+    ld.selected_slot_iso
+      ? `\n# HORÁRIO JÁ ESCOLHIDO PELO LEAD\nselected_slot_iso=${ld.selected_slot_iso}\nNÃO chame listar_horarios de novo. Confirme este horário ao lead e colete os campos pendentes.\n`
+      : ""
+  }`;
 }
 
 function hasBookingIntegration(ctx: AgentContext): boolean {
@@ -592,6 +627,14 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   const slotPatch = tryAutoSelectOfferedSlot(ctx.stage, ctx.leadData, ctx.history);
   if (Object.keys(slotPatch).length > 0) {
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotPatch);
+  }
+
+  const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
+  if (isSlotAcceptanceMessage(lastUserMsg)) {
+    console.log(
+      `[scheduler] turn de escolha de horário conv=${ctx.conversationId} — adiando criar_agendamento`,
+    );
+    return { patch: slotPatch, toolsCalled: [] };
   }
 
   const ready = isReadyForBooking(ctx.leadData, ctx.agentSettings, {

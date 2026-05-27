@@ -216,14 +216,27 @@ function parseDisponibilidadeFromSettings(
 }
 
 function formatarDataIso(d: Date): string {
-  // Mesmo formato do n8n (YYYY-MM-DDThh:mm:ss±hh:mm)
-  const offset = d.getTimezoneOffset();
-  const adjusted = new Date(d.getTime() - 60 * offset * 1000);
-  const iso = adjusted.toISOString().slice(0, -5);
-  const hora = Math.floor(Math.abs(offset) / 60);
-  const min = Math.abs(offset) % 60;
-  const sinal = offset <= 0 ? "+" : "-";
-  return `${iso}${sinal}${String(hora).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+  const local = formatGcalLocalDateTime(d);
+  return `${local}-03:00`;
+}
+
+/** Horário local em America/Sao_Paulo para a API do Google Calendar (campo dateTime + timeZone). */
+function formatGcalLocalDateTime(d: Date): string {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    })
+      .formatToParts(d)
+      .map((p) => [p.type, p.value]),
+  ) as Record<string, string>;
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
 // ── Lista calendários do usuário (após OAuth) ────────────────────────────
@@ -542,8 +555,8 @@ export async function createGoogleCalendarEvent(
     body: JSON.stringify({
       summary: params.titulo,
       description: descricaoFinal.trim(),
-      start: { dateTime: start.toISOString(), timeZone: TZ },
-      end: { dateTime: end.toISOString(), timeZone: TZ },
+      start: { dateTime: formatGcalLocalDateTime(start), timeZone: TZ },
+      end: { dateTime: formatGcalLocalDateTime(end), timeZone: TZ },
     }),
   });
 

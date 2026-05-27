@@ -15,7 +15,12 @@ import {
   resolveEffectivePhone,
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
-import { mergeLeadDataPatch, tryAutoCaptureBookingAnswer, tryAutoSelectOfferedSlot } from "@/lib/booking-template";
+import {
+  isSlotAcceptanceMessage,
+  mergeLeadDataPatch,
+  tryAutoCaptureBookingAnswer,
+  tryAutoSelectOfferedSlot,
+} from "@/lib/booking-template";
 import { DEFAULT_LLM_MODEL, DEFAULT_TOOL_FALLBACK_MODELS, DEFAULT_TOOL_MODEL } from "@/lib/llm-defaults";
 import {
   loadHelenaAccount,
@@ -294,15 +299,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let leadData = readLeadDataFromMeta(meta);
     const agentSettings = (agent.data.settings as Record<string, string> | null) ?? {};
 
-    if (stage === "NAME_COLLECT") {
-      const autoPatch = tryAutoCaptureBookingAnswer(stage, leadData, history, agentSettings);
-      if (Object.keys(autoPatch).length > 0) {
-        leadData = mergeLeadDataPatch(leadData, autoPatch);
-        console.log(
-          `[orch] auto-captura NAME_COLLECT conv=${conversationId} patch=${JSON.stringify(autoPatch)}`,
-        );
-      }
-    }
+    const lastUserMsg = [...history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
+    const slotSelectionTurn = isSlotAcceptanceMessage(lastUserMsg);
 
     if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
       const slotPatch = tryAutoSelectOfferedSlot(stage, leadData, history);
@@ -312,6 +310,24 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           `[orch] auto-selecao slot conv=${conversationId} iso=${slotPatch.selected_slot_iso}`,
         );
       }
+    }
+
+    if (stage === "NAME_COLLECT" && !slotSelectionTurn) {
+      const autoPatch = tryAutoCaptureBookingAnswer(stage, leadData, history, agentSettings);
+      if (Object.keys(autoPatch).length > 0) {
+        leadData = mergeLeadDataPatch(leadData, autoPatch);
+        console.log(
+          `[orch] auto-captura NAME_COLLECT conv=${conversationId} patch=${JSON.stringify(autoPatch)}`,
+        );
+      }
+    }
+
+    let effectiveStage = stage;
+    if (stage === "SLOT_OFFER" && leadData.selected_slot_iso) {
+      effectiveStage = "NAME_COLLECT";
+      console.log(
+        `[orch] slot escolhido conv=${conversationId} — scheduler em NAME_COLLECT (era SLOT_OFFER)`,
+      );
     }
 
     // 8. Integrações habilitadas
@@ -328,7 +344,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       agentId,
       conversationId,
       sessionId,
-      stage,
+      stage: effectiveStage,
       leadData,
       conversationPhone,
       effectivePhone,

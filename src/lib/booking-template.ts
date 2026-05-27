@@ -335,13 +335,20 @@ function slotMentionedInText(slot: OfferedSlot, text: string): boolean {
   return false;
 }
 
-function isSlotAcceptanceMessage(text: string): boolean {
+export function isSlotAcceptanceMessage(text: string): boolean {
   const t = text.trim().toLowerCase();
-  if (/^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado)[!.?\s]*$/i.test(t)) {
+  if (
+    /^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado)(?:\s+(?:as?|às|o|a|no|na|em)\s+\d{1,2}:\d{2})?[!.?\s]*$/i.test(
+      t,
+    )
+  ) {
     return true;
   }
   if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(t)) return true;
   if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(t)) return true;
+  if (/\d{1,2}:\d{2}/.test(t) && /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero)/i.test(t)) {
+    return true;
+  }
   return !!normalizeTimeLabel(t);
 }
 
@@ -475,6 +482,7 @@ export function tryAutoCaptureBookingAnswer(
   const lastUser = history[lastUserIdx]!.content.trim();
   if (!lastUser || lastUser.length > MAX_AUTO_CAPTURE_LEN) return {};
   if (looksLikeQuestion(lastUser)) return {};
+  if (isSlotAcceptanceMessage(lastUser)) return {};
 
   const prevAssistant = history
     .slice(0, lastUserIdx)
