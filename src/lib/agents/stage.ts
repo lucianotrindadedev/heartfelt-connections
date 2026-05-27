@@ -72,6 +72,24 @@ export interface ResolveNextStageOptions {
   /** Bloqueia CONFIRMED sem appointment_id quando há integração de agenda. */
   requireAppointmentForConfirmed?: boolean;
   hasAppointmentId?: boolean;
+  /** lead_data atual — usado para corrigir transições inválidas do LLM. */
+  leadData?: LeadData;
+}
+
+function coerceProposedStage(current: Stage, proposed: Stage, leadData: LeadData): Stage {
+  if (current === "SLOT_OFFER") {
+    if (proposed === "BOOKING" || proposed === "CONFIRMED") {
+      console.warn(
+        `[stage] ${current} → ${proposed} redirecionado para NAME_COLLECT (coleta antes do booking)`,
+      );
+      return "NAME_COLLECT";
+    }
+  }
+  if (current === "NAME_COLLECT" && proposed === "CONFIRMED" && !leadData.appointment_id) {
+    console.warn(`[stage] ${current} → CONFIRMED redirecionado para BOOKING (sem appointment_id)`);
+    return "BOOKING";
+  }
+  return proposed;
 }
 
 export function resolveNextStage(
@@ -84,15 +102,17 @@ export function resolveNextStage(
     return current;
   }
   if (proposed === current) return current;
+
+  const coerced = coerceProposedStage(current, proposed, opts?.leadData ?? {});
   const allowed = TRANSITIONS[current];
-  if (!allowed.includes(proposed)) {
-    console.warn(`[stage] transição ilegal ${current} → ${proposed} — bloqueada`);
+  if (!allowed.includes(coerced)) {
+    console.warn(`[stage] transição ilegal ${current} → ${coerced} — bloqueada`);
     return current;
   }
 
   if (
     opts?.requireAppointmentForConfirmed &&
-    proposed === "CONFIRMED" &&
+    coerced === "CONFIRMED" &&
     !opts.hasAppointmentId
   ) {
     console.warn(
@@ -101,7 +121,7 @@ export function resolveNextStage(
     return current === "NAME_COLLECT" || current === "BOOKING" ? "BOOKING" : current;
   }
 
-  return proposed;
+  return coerced;
 }
 
 /** Stage inicial para novas conversas. */

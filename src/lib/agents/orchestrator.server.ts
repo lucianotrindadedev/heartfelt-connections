@@ -410,7 +410,19 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let newStage = resolveNextStage(stage, result.next_stage, {
       requireAppointmentForConfirmed: hasBookingIntegration,
       hasAppointmentId: !!newLeadData.appointment_id,
+      leadData: newLeadData,
     });
+
+    if (
+      stage === "SLOT_OFFER" &&
+      newLeadData.selected_slot_iso &&
+      newStage === "SLOT_OFFER"
+    ) {
+      newStage = "NAME_COLLECT";
+      console.log(
+        `[orch] slot selecionado conv=${conversationId} — avancando SLOT_OFFER → NAME_COLLECT`,
+      );
+    }
 
     let reply = result.reply;
     if (

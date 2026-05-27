@@ -441,7 +441,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
-- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro. Nunca invente horários.
+- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro. Nunca invente horários. Quando o lead escolher um horário → next_stage="NAME_COLLECT" (NUNCA BOOKING direto).
 - **NAME_COLLECT**: confirme o slot escolhido. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou — peça desculpas e ofereça outro horário.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
@@ -556,6 +556,28 @@ function hasBookingIntegration(ctx: AgentContext): boolean {
   return ctx.integrations.googleCalendar || ctx.integrations.clinicorp || ctx.integrations.clinup;
 }
 
+async function ensureOfferedSlots(ctx: AgentContext): Promise<{
+  patch: Partial<LeadData>;
+  toolResult?: string;
+  toolsCalled: string[];
+}> {
+  if (ctx.stage !== "SLOT_OFFER" || ctx.dryRun) {
+    return { patch: {}, toolsCalled: [] };
+  }
+  if (!hasBookingIntegration(ctx)) return { patch: {}, toolsCalled: [] };
+  if ((ctx.leadData.offered_slots?.length ?? 0) > 0) {
+    return { patch: {}, toolsCalled: [] };
+  }
+
+  console.log(`[scheduler] auto listar_horarios conv=${ctx.conversationId} (offered_slots vazio)`);
+  const outcome = await execListarHorarios(ctx, 14);
+  return {
+    patch: outcome.patch ?? {},
+    toolResult: outcome.result,
+    toolsCalled: ["listar_horarios"],
+  };
+}
+
 async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   patch: Partial<LeadData>;
   toolResult?: string;
@@ -636,8 +658,20 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const cached = buildCachedSystemPrompt(ctx);
   let baseDynamic = buildDynamicSystemPrompt(ctx);
 
+  const slotListing = await ensureOfferedSlots(ctx);
+  let accumulatedPatch: Partial<LeadData> = slotListing.patch;
+  const toolsCalled: string[] = [...slotListing.toolsCalled];
+  if (Object.keys(slotListing.patch).length > 0) {
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotListing.patch);
+    baseDynamic = buildDynamicSystemPrompt(ctx);
+  }
+  if (slotListing.toolResult) {
+    baseDynamic += `\n\n# RESULTADO listar_horarios (automático)\n${slotListing.toolResult}\nUse os horários acima para oferecer ao lead.`;
+  }
+
   const autoBooking = await tryDeterministicBooking(ctx);
-  let accumulatedPatch: Partial<LeadData> = autoBooking.patch;
+  accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, autoBooking.patch);
+  toolsCalled.push(...autoBooking.toolsCalled);
   if (Object.keys(autoBooking.patch).length > 0) {
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, autoBooking.patch);
     baseDynamic = buildDynamicSystemPrompt(ctx);
@@ -655,7 +689,6 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
 
   let workingMessages: LlmMessage[] = [...history];
-  const toolsCalled: string[] = [...autoBooking.toolsCalled];
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let totalCostUsd = 0;
