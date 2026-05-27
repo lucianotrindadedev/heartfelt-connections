@@ -21,7 +21,6 @@ import {
   getMissingBookingFields,
   isReadyForBooking,
   type BookingChannelContext,
-  isSlotAcceptanceMessage,
   looksLikeSchedulingPreference,
   mergeLeadDataPatch,
   normalizeLeadDataForBooking,
@@ -29,7 +28,13 @@ import {
   tryAutoCaptureBookingAnswer,
   tryAutoSelectOfferedSlot,
 } from "@/lib/booking-template";
-import { DEFAULT_LLM_MODEL, DEFAULT_TOOL_FALLBACK_MODELS, DEFAULT_TOOL_MODEL } from "@/lib/llm-defaults";
+import {
+  DEFAULT_LLM_MODEL,
+  DEFAULT_QUALIFIER_FALLBACK_MODELS,
+  DEFAULT_QUALIFIER_MODEL,
+  DEFAULT_TOOL_FALLBACK_MODELS,
+  DEFAULT_TOOL_MODEL,
+} from "@/lib/llm-defaults";
 import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
@@ -60,6 +65,11 @@ import {
   type LeadData,
   type Stage,
 } from "./stage";
+import {
+  applyDeterministicStageOverrides,
+  detectSignals,
+  inferEffectiveStage,
+} from "./stage-signals";
 
 const MAX_HISTORY = 50;
 
@@ -374,20 +384,24 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    const lastUserMsg = [...history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
-    const slotSelectionTurn =
-      isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg);
+    // Integracoes precisam ser carregadas para os signals (hasBookingIntegration).
+    const [clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
+      sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
+      sb.from("clinup_config").select("ativo").eq("account_id", accountId).maybeSingle(),
+      sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
+      sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
+    ]);
+    const hasBookingIntegration =
+      !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
 
-    const lastAssistantMsg = [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
-    const lastAssistantProposedScheduling =
-      /\b(posso (?:te )?agendar|vamos (?:agendar|marcar)|podemos (?:agendar|marcar)|que tal (?:agendar|marcar)|posso (?:te )?(?:reservar|propor) (?:um )?(?:hor[áa]rio|visita)|topa (?:agendar|marcar)|aceita (?:agendar|marcar)|gostaria de agendar|deseja (?:agendar|marcar)|posso te ofer)/i.test(
-        lastAssistantMsg,
-      );
-    const isShortYes = /^(sim|ok|claro|topo|topa|pode|aceito|aceita|quero|isso|vamos|bora|blz|beleza|combinado|fechado|perfeito|com certeza|por favor)[!.?\s]*$/i.test(
-      lastUserMsg.toLowerCase(),
-    );
-    const userAcceptedSchedulingProposal =
-      stage === "QUALIFICATION" && lastAssistantProposedScheduling && isShortYes;
+    // Sinais deterministicos extraidos do historico + lead_data.
+    const signals = detectSignals({
+      stage,
+      leadData,
+      history,
+      hasBookingIntegration,
+    });
+    const { lastUserMsg, lastAssistantMsg, slotSelectionTurn, userAcceptedSchedulingProposal } = signals;
 
     if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
       const slotPatch = tryAutoSelectOfferedSlot(stage, leadData, history);
@@ -428,49 +442,22 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    // 8. Integrações habilitadas
-    const [clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
-      sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
-      sb.from("clinup_config").select("ativo").eq("account_id", accountId).maybeSingle(),
-      sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
-      sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
-    ]);
-
-    const hasBookingIntegration =
-      !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
-
-    let effectiveStage = stage;
-    if (userAcceptedSchedulingProposal && hasBookingIntegration) {
-      effectiveStage = "SLOT_OFFER";
+    // 8. Stage deterministico (effectiveStage) — calculado por stage-signals.
+    const isReady = isReadyForBooking(leadData, agentSettings, {
+      hasPhone: !!effectivePhone,
+      hasBookingIntegration,
+      channel,
+      effectivePhone,
+    });
+    const { effectiveStage, reason: effectiveReason } = inferEffectiveStage(
+      { stage, leadData, history, hasBookingIntegration },
+      signals,
+      isReady,
+    );
+    if (effectiveStage !== stage) {
       console.log(
-        `[orch] lead aceitou proposta de agendamento conv=${conversationId} — forcando SLOT_OFFER (era ${stage})`,
+        `[orch] effectiveStage conv=${conversationId} ${stage} → ${effectiveStage} (${effectiveReason})`,
       );
-    }
-    if (stage === "SLOT_OFFER" && leadData.selected_slot_iso) {
-      effectiveStage = "NAME_COLLECT";
-      console.log(
-        `[orch] slot escolhido conv=${conversationId} — scheduler em NAME_COLLECT (era SLOT_OFFER)`,
-      );
-    }
-    if (stage === "NAME_COLLECT" && !leadData.selected_slot_iso) {
-      effectiveStage = "SLOT_OFFER";
-      console.log(
-        `[orch] NAME_COLLECT sem slot conv=${conversationId} — scheduler em SLOT_OFFER`,
-      );
-    }
-    if (
-      (stage === "NAME_COLLECT" || stage === "BOOKING") &&
-      hasBookingIntegration &&
-      !leadData.appointment_id &&
-      isReadyForBooking(leadData, agentSettings, {
-        hasPhone: !!effectivePhone,
-        hasBookingIntegration,
-        channel,
-        effectivePhone,
-      })
-    ) {
-      effectiveStage = "BOOKING";
-      console.log(`[orch] campos completos conv=${conversationId} — scheduler em BOOKING`);
     }
 
     // 9. Monta AgentContext
@@ -491,6 +478,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         (agent.data.llm_model_override as string | null) ||
         (llm.data?.default_model as string | undefined) ||
         DEFAULT_LLM_MODEL,
+      qualifierModel:
+        ((llm.data as Record<string, unknown> | null)?.qualifier_model as string | undefined) ??
+        DEFAULT_QUALIFIER_MODEL,
+      qualifierFallbackModels: [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
       toolModel:
         (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
       toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
@@ -578,54 +569,40 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
     }
 
-    let newStage = resolveNextStage(stage, result.next_stage, {
+    const resolvedStage = resolveNextStage(stage, result.next_stage, {
       requireAppointmentForConfirmed: hasBookingIntegration,
       hasAppointmentId: !!finalLeadData.appointment_id,
       leadData: finalLeadData,
     });
 
-    // Se forcamos SLOT_OFFER e o scheduler rodou, garante que persistimos SLOT_OFFER
-    // mesmo que o LLM tenha proposto QUALIFICATION ou stage anterior.
-    if (
-      userAcceptedSchedulingProposal &&
-      hasBookingIntegration &&
-      effectiveStage === "SLOT_OFFER" &&
-      stage === "QUALIFICATION" &&
-      newStage === "QUALIFICATION"
-    ) {
-      newStage = "SLOT_OFFER";
+    // Overrides deterministicos pos-LLM (stage-signals).
+    const overrideOut = applyDeterministicStageOverrides({
+      proposedNextStage: resolvedStage,
+      originalStage: stage,
+      effectiveStage,
+      leadData: finalLeadData,
+      hasBookingIntegration,
+      signals,
+    });
+    let newStage = overrideOut.stage;
+    if (overrideOut.reason) {
       console.log(
-        `[orch] forcando persist SLOT_OFFER conv=${conversationId} (lead aceitou agendamento)`,
+        `[orch] stage override conv=${conversationId} ${resolvedStage} → ${newStage} (${overrideOut.reason})`,
       );
-    }
-
-    if (
-      stage === "SLOT_OFFER" &&
-      finalLeadData.selected_slot_iso &&
-      newStage === "SLOT_OFFER"
-    ) {
-      newStage = "NAME_COLLECT";
-      console.log(
-        `[orch] slot selecionado conv=${conversationId} — avancando SLOT_OFFER → NAME_COLLECT`,
-      );
-    }
-
-    if (
-      finalLeadData.appointment_id &&
-      (newStage === "NAME_COLLECT" || newStage === "BOOKING")
-    ) {
-      console.log(
-        `[orch] agendamento criado conv=${conversationId} — avancando ${newStage} → CONFIRMED`,
-      );
-      newStage = "CONFIRMED";
     }
 
     let reply = result.reply;
+    // Flags de telemetria do turn (vao para meta da mensagem + agent_runs).
+    let duplicateReplyBlocked = false;
+    let falseBookingClaimBlocked = false;
+    let forcedSchedulingAdvance = userAcceptedSchedulingProposal;
+
     if (
       hasBookingIntegration &&
       !finalLeadData.appointment_id &&
       /\b(agendei|agendado|marquei|confirmad[oa]|visita guiada para)\b/i.test(reply)
     ) {
+      falseBookingClaimBlocked = true;
       console.warn(
         `[orch] reply afirma agendamento sem appointment_id conv=${conversationId} — bloqueando confirmação falsa`,
       );
@@ -650,15 +627,25 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    if (newStage === "NAME_COLLECT" && !finalLeadData.selected_slot_iso) {
-      newStage = "SLOT_OFFER";
-    }
-
     // Guarda anti-loop: se o reply é praticamente idêntico à última msg do assistente,
     // o LLM está alucinando ao repetir conteúdo. Substitui por um avanço de proposta.
     if (lastAssistantMsg && isReplyTooSimilar(reply, lastAssistantMsg)) {
+      duplicateReplyBlocked = true;
+      // Log estruturado (JSON em uma linha) — facil de filtrar em Coolify/Datadog
+      // para mapear quais modelos alucinam mais e em quais stages.
       console.warn(
-        `[orch] reply duplicada detectada conv=${conversationId} — substituindo por proposta de avanco`,
+        `[orch:telemetry] ${JSON.stringify({
+          event: "duplicate_reply_blocked",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          route,
+          stage_from: stage,
+          stage_effective: effectiveStage,
+          model: route === "qualifier" ? ctx.qualifierModel : ctx.model,
+          reply_preview: reply.slice(0, 120),
+          prev_preview: lastAssistantMsg.slice(0, 120),
+        })}`,
       );
       if (hasBookingIntegration && (stage === "QUALIFICATION" || stage === "RECEPTION")) {
         reply =
@@ -684,15 +671,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       conversationId,
       reply,
       {
-        model: ctx.model,
+        model: route === "qualifier" ? ctx.qualifierModel : ctx.model,
+        reply_model_kind: route === "qualifier" ? "qualifier" : "reply",
         latency_ms: latencyMs,
         tokens_in: result.tokens_in ?? null,
         tokens_out: result.tokens_out ?? null,
         cost_usd_estimate: result.cost_usd ?? null,
         stage_from: stage,
+        stage_effective: effectiveStage,
         stage_to: newStage,
         agent: route,
         tools_called: result.tools_called,
+        // Telemetria: marcadores de intervencoes deterministicas.
+        duplicate_reply_blocked: duplicateReplyBlocked || undefined,
+        false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
+        forced_scheduling_advance: forcedSchedulingAdvance || undefined,
       },
       sessionId,
       effectivePhone ?? conversationPhone,

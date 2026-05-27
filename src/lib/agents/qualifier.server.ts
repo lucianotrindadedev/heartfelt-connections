@@ -452,7 +452,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS && allowTools; loop++) {
     const turn = await callLlmWithFallback(ctx.orKey, {
-      model: ctx.model,
+      model: ctx.qualifierModel,
       systemCached: cached,
       systemDynamic: dynamic,
       messages: workingMessages,
@@ -460,8 +460,8 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       toolChoice: "auto",
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature,
-      enableCaching: ctx.model.startsWith("anthropic/"),
-    }, ctx.fallbackModels);
+      enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
+    }, ctx.qualifierFallbackModels);
 
     totalTokensIn += turn.tokensIn;
     totalTokensOut += turn.tokensOut;
@@ -520,7 +520,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   const { result, response: finalResponse } = await callLlmStructuredWithFallback<QualifierJsonResult>(
     ctx.orKey,
     {
-      model: ctx.model,
+      model: ctx.qualifierModel,
       systemCached: cached,
       systemDynamic: dynamic,
       messages:
@@ -537,11 +537,11 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
             ],
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature,
-      enableCaching: ctx.model.startsWith("anthropic/"),
+      enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
       toolChoice: "none",
     },
     (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
-    ctx.fallbackModels,
+    ctx.qualifierFallbackModels,
   );
 
   totalTokensIn += finalResponse.tokensIn;

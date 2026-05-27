@@ -30,6 +30,11 @@ export interface AgentContext {
 
   /** LLM. */
   model: string;
+  /** Modelo dedicado ao qualifier (decisoes de roteamento + tools de tag/midia).
+   *  Robusto em instructions-following — geralmente openai/gpt-4o-mini. */
+  qualifierModel: string;
+  /** Fallback do qualifier quando o modelo principal falha. */
+  qualifierFallbackModels: string[];
   /** Modelo para tool calling no scheduler (separado do model de conversa/JSON). */
   toolModel: string;
   /** Fallback do tool loop do scheduler. */

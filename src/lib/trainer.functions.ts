@@ -10,7 +10,13 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
-import { DEFAULT_LLM_MODEL, DEFAULT_TOOL_FALLBACK_MODELS, DEFAULT_TOOL_MODEL } from "@/lib/llm-defaults";
+import {
+  DEFAULT_LLM_MODEL,
+  DEFAULT_QUALIFIER_FALLBACK_MODELS,
+  DEFAULT_QUALIFIER_MODEL,
+  DEFAULT_TOOL_FALLBACK_MODELS,
+  DEFAULT_TOOL_MODEL,
+} from "@/lib/llm-defaults";
 import { splitMessage } from "@/lib/message-splitter.server";
 import type { AgentContext } from "@/lib/agents/context";
 import { runQualifierAgent } from "@/lib/agents/qualifier.server";
@@ -147,6 +153,10 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       agentSettings: (agent.data.settings as Record<string, string> | null) ?? {},
       basePrompt: (agent.data.system_prompt as string) || "",
       model,
+      qualifierModel:
+        ((llm.data as Record<string, unknown> | null)?.qualifier_model as string | undefined) ??
+        DEFAULT_QUALIFIER_MODEL,
+      qualifierFallbackModels: [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
       toolModel: (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
       toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
       fallbackModels:

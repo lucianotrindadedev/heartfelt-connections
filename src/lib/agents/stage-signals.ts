@@ -1,0 +1,193 @@
+// Camada deterministica de stage signals.
+//
+// Filosofia: o LLM continua propondo `next_stage` no JSON, mas a maquina
+// deterministica tem PRIORIDADE quando detecta sinais inequivocos no historico
+// ou no lead_data. Isso isola o fluxo critico (agendamento) das oscilacoes
+// do modelo (especialmente Gemini Flash Lite, que e barato mas fragil em
+// instructions-following).
+//
+// Cada funcao aqui e PURA — sem I/O, sem side-effects — para facilitar testes
+// e raciocinio. Spread sobre essa camada deve ser preferido a logica inline
+// no orchestrator.
+
+import {
+  isSlotAcceptanceMessage,
+  looksLikeSchedulingPreference,
+} from "@/lib/booking-template";
+import type { LeadData, Stage } from "./stage";
+
+export interface StageSignalsContext {
+  /** Stage atual lido de conversations.meta. */
+  stage: Stage;
+  /** lead_data atual (apos backfill + normalizacao). */
+  leadData: LeadData;
+  /** Historico ja filtrado (sem fallbacks). */
+  history: { role: "user" | "assistant"; content: string }[];
+  /** Integracoes de agendamento ativas (clinicorp, clinup ou gcal). */
+  hasBookingIntegration: boolean;
+}
+
+export interface DetectedSignals {
+  /** Ultima mensagem do usuario (trim). */
+  lastUserMsg: string;
+  /** Ultima mensagem do assistente (raw). */
+  lastAssistantMsg: string;
+  /** Usuario mandou texto que indica escolha/aceitacao de horario? */
+  slotSelectionTurn: boolean;
+  /** Assistente acabou de propor agendamento ("posso agendar?", "vamos marcar?"). */
+  lastAssistantProposedScheduling: boolean;
+  /** Usuario respondeu confirmacao curta ("sim", "ok", "pode", etc). */
+  isShortYes: boolean;
+  /** QUALIFICATION + assistente propos agendar + usuario disse sim. */
+  userAcceptedSchedulingProposal: boolean;
+}
+
+const SCHEDULING_PROPOSAL_REGEX =
+  /\b(posso (?:te )?agendar|vamos (?:agendar|marcar)|podemos (?:agendar|marcar)|que tal (?:agendar|marcar)|posso (?:te )?(?:reservar|propor) (?:um )?(?:hor[áa]rio|visita)|topa (?:agendar|marcar)|aceita (?:agendar|marcar)|gostaria de agendar|deseja (?:agendar|marcar)|posso te ofer)/i;
+
+const SHORT_YES_REGEX =
+  /^(sim|ok|claro|topo|topa|pode|aceito|aceita|quero|isso|vamos|bora|blz|beleza|combinado|fechado|perfeito|com certeza|por favor)[!.?\s]*$/i;
+
+export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
+  const lastUserMsg =
+    [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
+  const lastAssistantMsg =
+    [...ctx.history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+
+  const slotSelectionTurn =
+    isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg);
+
+  const lastAssistantProposedScheduling = SCHEDULING_PROPOSAL_REGEX.test(lastAssistantMsg);
+  const isShortYes = SHORT_YES_REGEX.test(lastUserMsg.toLowerCase());
+  const userAcceptedSchedulingProposal =
+    ctx.stage === "QUALIFICATION" && lastAssistantProposedScheduling && isShortYes;
+
+  return {
+    lastUserMsg,
+    lastAssistantMsg,
+    slotSelectionTurn,
+    lastAssistantProposedScheduling,
+    isShortYes,
+    userAcceptedSchedulingProposal,
+  };
+}
+
+/**
+ * Calcula o stage que deve ser PASSADO ao sub-agente (effective stage).
+ * Difere do stage persistido em casos onde sinais deterministicos indicam
+ * que devemos rotear/promptar como se estivessemos em outro stage.
+ *
+ * Exemplos:
+ * - QUALIFICATION + usuario aceitou agendar → roteia como SLOT_OFFER (scheduler)
+ * - SLOT_OFFER + ja tem selected_slot_iso → roteia como NAME_COLLECT
+ * - NAME_COLLECT sem selected_slot_iso → roteia como SLOT_OFFER (volta listar)
+ */
+export interface InferEffectiveStageResult {
+  effectiveStage: Stage;
+  reason?: string;
+}
+
+export function inferEffectiveStage(
+  ctx: StageSignalsContext,
+  signals: DetectedSignals,
+  isReadyForBooking: boolean,
+): InferEffectiveStageResult {
+  const { stage, leadData, hasBookingIntegration } = ctx;
+
+  if (signals.userAcceptedSchedulingProposal && hasBookingIntegration) {
+    return {
+      effectiveStage: "SLOT_OFFER",
+      reason: "lead_accepted_scheduling_proposal",
+    };
+  }
+
+  if (stage === "SLOT_OFFER" && leadData.selected_slot_iso) {
+    return {
+      effectiveStage: "NAME_COLLECT",
+      reason: "slot_already_selected",
+    };
+  }
+
+  if (stage === "NAME_COLLECT" && !leadData.selected_slot_iso) {
+    return {
+      effectiveStage: "SLOT_OFFER",
+      reason: "name_collect_without_slot",
+    };
+  }
+
+  if (
+    (stage === "NAME_COLLECT" || stage === "BOOKING") &&
+    hasBookingIntegration &&
+    !leadData.appointment_id &&
+    isReadyForBooking
+  ) {
+    return {
+      effectiveStage: "BOOKING",
+      reason: "all_fields_collected",
+    };
+  }
+
+  return { effectiveStage: stage };
+}
+
+/**
+ * Aplica overrides deterministicos APOS o LLM ter proposto next_stage.
+ * Usado para garantir progressao mesmo quando o LLM "trava" no mesmo stage.
+ */
+export interface ApplyOverridesInput {
+  /** Stage validado pelo resolveNextStage (ja aplicou regras de transicao). */
+  proposedNextStage: Stage;
+  /** Stage que estava registrado em conversations.meta antes do turn. */
+  originalStage: Stage;
+  /** effectiveStage que foi passado ao LLM. */
+  effectiveStage: Stage;
+  leadData: LeadData;
+  hasBookingIntegration: boolean;
+  signals: DetectedSignals;
+}
+
+export interface OverrideResult {
+  stage: Stage;
+  reason?: string;
+}
+
+export function applyDeterministicStageOverrides(input: ApplyOverridesInput): OverrideResult {
+  const { proposedNextStage, originalStage, effectiveStage, leadData, hasBookingIntegration, signals } = input;
+  let result = proposedNextStage;
+  let reason: string | undefined;
+
+  if (
+    signals.userAcceptedSchedulingProposal &&
+    hasBookingIntegration &&
+    effectiveStage === "SLOT_OFFER" &&
+    originalStage === "QUALIFICATION" &&
+    result === "QUALIFICATION"
+  ) {
+    result = "SLOT_OFFER";
+    reason = "force_slot_offer_after_accept";
+  }
+
+  if (
+    originalStage === "SLOT_OFFER" &&
+    leadData.selected_slot_iso &&
+    result === "SLOT_OFFER"
+  ) {
+    result = "NAME_COLLECT";
+    reason = reason ?? "slot_selected_advance_to_name_collect";
+  }
+
+  if (
+    leadData.appointment_id &&
+    (result === "NAME_COLLECT" || result === "BOOKING")
+  ) {
+    result = "CONFIRMED";
+    reason = reason ?? "appointment_created_advance_to_confirmed";
+  }
+
+  if (result === "NAME_COLLECT" && !leadData.selected_slot_iso) {
+    result = "SLOT_OFFER";
+    reason = reason ?? "name_collect_requires_slot";
+  }
+
+  return { stage: result, reason };
+}
