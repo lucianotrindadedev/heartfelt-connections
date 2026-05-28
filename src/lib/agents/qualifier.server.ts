@@ -347,35 +347,20 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
     !!utm?.content ||
     (m1Trimmed.length >= 20 && !isGreetingOnly && hasIntentWords);
 
-  return `# ESTADO ATUAL
+  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+  const ownerPromptDominant = !!(ctx.basePrompt && ctx.basePrompt.trim());
+
+  // Bloco de ESTADO + tags = DADOS, não comportamento. Sempre presente.
+  const stateBlock = `# ESTADO ATUAL
 
 - Agora (BRT): ${dateStr}
 - Stage corrente: ${ctx.stage}
 - Ciclos de conversa já completos: ${cycleCount}
 - Canal: ${ctx.channel}
-${(() => {
-  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
-  return phoneBlock ? `\n${phoneBlock}\n` : "";
-})()}${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
 ${utm?.source ? `- UTM Source: ${utm.source}` : ""}
 ${utm?.medium ? `- UTM Medium: ${utm.medium}` : ""}
 ${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}
-
-${
-  cycleCount <= 1 && hasExplicitInterestInM1
-    ? `# ⚡ ATENÇÃO — M1 com interesse explícito
-
-A primeira mensagem do lead foi: "${firstUserMsg.slice(0, 200)}"
-
-Ele JÁ disse o que quer. NÃO pergunte "como posso te ajudar?" — isso ignora
-o que ele acabou de dizer e gera fricção. Em vez disso:
-  1. Cumprimente reconhecendo o tema ("Oi! Que ótimo seu interesse em X...")
-  2. Pergunte o NOME do lead
-  3. Sinalize que vai te ajudar com isso
-  4. Aplique a tag de interesse compatível NESTE turno (chame aplicar_tag_interesse)
-`
-    : ""
-}
 
 # TAGS DE INTERESSE DISPONÍVEIS NO CRM
 
@@ -409,7 +394,31 @@ ${JSON.stringify(
   },
   null,
   2,
-)}
+)}`;
+
+  // Quando o prompt do proprietário domina, entregamos SÓ estado/dados. A
+  // abertura, o ritmo de ciclos e o fechamento vêm do prompt dele — injetar
+  // prescrições aqui competiria com (e venceria) o que ele escreveu.
+  if (ownerPromptDominant) return stateBlock;
+
+  // Template padrão (semente) — mantém os blocos comportamentais originais.
+  return `${stateBlock}
+
+${
+  cycleCount <= 1 && hasExplicitInterestInM1
+    ? `# ⚡ ATENÇÃO — M1 com interesse explícito
+
+A primeira mensagem do lead foi: "${firstUserMsg.slice(0, 200)}"
+
+Ele JÁ disse o que quer. NÃO pergunte "como posso te ajudar?" — isso ignora
+o que ele acabou de dizer e gera fricção. Em vez disso:
+  1. Cumprimente reconhecendo o tema ("Oi! Que ótimo seu interesse em X...")
+  2. Pergunte o NOME do lead
+  3. Sinalize que vai te ajudar com isso
+  4. Aplique a tag de interesse compatível NESTE turno (chame aplicar_tag_interesse)
+`
+    : ""
+}
 
 # REGRA DE CICLOS
 
