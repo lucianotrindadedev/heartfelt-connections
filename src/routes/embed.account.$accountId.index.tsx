@@ -5374,35 +5374,9 @@ function AgentSettingsView({
                 )}
               </div>
 
-              <div className="border-t border-slate-100" />
-
-              {/* Voice */}
-              <div>
-                <Label className="text-sm font-semibold">Voz do assistente (ElevenLabs)</Label>
-                <p className="mb-2 text-xs text-muted-foreground">Voz utilizada quando o modo áudio está ativado.</p>
-                {!hasElevenLabs ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
-                    Cadastre sua chave ElevenLabs em "Conexões e custos" para escolher uma voz.
-                  </div>
-                ) : voices.isLoading ? (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Carregando vozes…
-                  </div>
-                ) : (
-                  <select
-                    className="w-full rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    value={voiceId}
-                    onChange={(e) => setVoiceId(e.target.value)}
-                  >
-                    <option value="">— escolher voz —</option>
-                    {(voices.data?.voices ?? []).map((v) => (
-                      <option key={v.voice_id} value={v.voice_id}>{v.name}</option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              <div className="border-t border-slate-100" />
+              {/* Voz do assistente (ElevenLabs TTS) — oculto: ainda não
+                  implementado (resposta em voz). Reativar quando o TTS
+                  estiver pronto. */}
 
               {/* Debounce */}
               <div>
@@ -5552,10 +5526,7 @@ function IntegrationsTab({
                 <span className={`h-1 w-1 rounded-full ${secretsLast4?.openrouter ? "bg-emerald-500" : "bg-red-500"}`} />
                 OpenRouter {secretsLast4?.openrouter ? `••${secretsLast4.openrouter}` : "não configurado"}
               </span>
-              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${secretsLast4?.elevenlabs ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
-                <span className={`h-1 w-1 rounded-full ${secretsLast4?.elevenlabs ? "bg-emerald-500" : "bg-zinc-400"}`} />
-                ElevenLabs {secretsLast4?.elevenlabs ? `••${secretsLast4.elevenlabs}` : "não configurado"}
-              </span>
+              {/* ElevenLabs oculto — TTS ainda não implementado */}
             </div>
           </div>
           {!secretsLast4?.openrouter && (
@@ -5579,13 +5550,10 @@ function IntegrationsTab({
       {/* CRM — sempre visível */}
       <HelenaConfigPanel accountId={accountId} />
 
-      {/* Áudio — sempre visível */}
-      <AudioPanel
-        accountId={accountId}
-        initialHabilitado={audioHabilitado}
-        initialTranscrever={audioTranscrever}
-        initialResponder={audioResponder}
-      />
+      {/* Áudio: transcrição é OBRIGATÓRIA e automática (sempre ligada no
+          webhook via Groq Whisper). Painel de config oculto — não há nada
+          opcional para o usuário ajustar. Resposta em voz (TTS) ainda não
+          implementada. */}
 
       {/* Integrações de agendamento — condicionais ao template */}
       {configuredIntegrations.clinicorp && (
@@ -6543,14 +6511,8 @@ function SecretsSheet({
             ) : null}
             note={testResult}
           />
-          <KeyBlock
-            label="ElevenLabs"
-            help={<a className="text-primary underline" href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer">elevenlabs.io/app/settings/api-keys</a>}
-            current={last4.elevenlabs}
-            value={elKey}
-            onChange={setElKey}
-            onSave={() => saveKey(elKey, setEL, "ElevenLabs", () => setElKey(""))}
-          />
+          {/* ElevenLabs oculto — TTS (resposta em voz) ainda não implementado.
+              Reativar o KeyBlock quando o recurso estiver pronto. */}
           {/* Groq é gerenciado centralmente pelo servidor (GROQ_API_KEY).
               Não exposto na UI a partir de 2026-05. */}
           <div className="rounded-md border p-3">
