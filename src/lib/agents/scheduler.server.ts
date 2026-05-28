@@ -61,8 +61,6 @@ import {
   resolveBookingLeadName,
   tryAutoSelectOfferedSlot,
   resolveGcalEventTemplates,
-  isSlotAcceptanceMessage,
-  looksLikeSchedulingPreference,
 } from "@/lib/booking-template";
 
 /**
@@ -731,19 +729,12 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotPatch);
   }
 
-  const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
-  // Adia o criar_agendamento APENAS fora do BOOKING (ex: ainda em NAME_COLLECT,
-  // pra confirmar/coletar dados antes). Em BOOKING já é a hora de criar — adiar
-  // aqui deixaria o agendamento órfão se o lead não mandar outra mensagem.
-  if (
-    ctx.stage !== "BOOKING" &&
-    (isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg))
-  ) {
-    console.log(
-      `[scheduler] turn de escolha de horário conv=${ctx.conversationId} — adiando criar_agendamento`,
-    );
-    return { patch: slotPatch, toolsCalled: [] };
-  }
+  // NÃO adiamos mais o criar_agendamento no turn de escolha de horário.
+  // Assim que o lead escolhe o slot e os dados obrigatórios estão completos,
+  // agendamos AQUI mesmo, de forma determinística (sem depender de outro turn
+  // de LLM). O createClinicorpAppointment busca o paciente e, se não existir,
+  // cria o cadastro antes de marcar. Se ainda faltar dado, o isReadyForBooking
+  // abaixo retorna sem agendar e o agente pergunta o que falta no próximo turn.
 
   const ready = isReadyForBooking(ctx.leadData, ctx.agentSettings, {
     hasPhone: !!ctx.effectivePhone,

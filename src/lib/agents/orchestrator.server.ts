@@ -734,35 +734,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    // 14. BOOKING pronto mas sem agendamento: o lead já escolheu o horário e
-    // está tudo coletado, mas o criar_agendamento foi adiado (ex: turn de
-    // aceitação de slot disse "já te confirmo"). Sem intervenção, o evento só
-    // sairia se o lead mandasse outra mensagem — se ele cala, o lead é perdido.
-    // Auto-dispara um turn de follow-up que executa o criar_agendamento
-    // proativamente. O guard de tools_called evita re-disparo em loop.
-    if (
-      newStage === "BOOKING" &&
-      hasBookingIntegration &&
-      finalLeadData.selected_slot_iso &&
-      !finalLeadData.appointment_id &&
-      !(result.tools_called ?? []).includes("criar_agendamento")
-    ) {
-      const readyToBook = isReadyForBooking(finalLeadData, agentSettings, {
-        hasPhone: !!effectivePhone,
-        hasBookingIntegration,
-        channel,
-        effectivePhone,
-      });
-      if (readyToBook) {
-        console.log(
-          `[orch] BOOKING pronto sem appointment_id conv=${conversationId} — auto-disparando turn p/ criar_agendamento`,
-        );
-        const { scheduleConversationAgentTurn } = await import(
-          "@/lib/schedule-agent-turn.server"
-        );
-        scheduleConversationAgentTurn(conversationId, 3, 0);
-      }
-    }
   } finally {
     await releaseConversationLock(conversationId);
 
