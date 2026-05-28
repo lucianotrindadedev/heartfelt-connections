@@ -20,7 +20,7 @@ export const listAccounts = createServerFn({ method: "GET" })
         .order("criado_em", { ascending: false }),
       sb
         .from("messages")
-        .select("account_id")
+        .select("conversations(agents(account_id))")
         .gte("criado_em", since),
       sb
         .from("agent_runs")
@@ -33,8 +33,9 @@ export const listAccounts = createServerFn({ method: "GET" })
     // Agrega métricas dos últimos 30d por account
     const msgByAcc = new Map<string, number>();
     for (const m of msgCounts.data ?? []) {
-      const k = m.account_id as string;
-      msgByAcc.set(k, (msgByAcc.get(k) ?? 0) + 1);
+      const conv = m.conversations as { agents?: { account_id?: string } | null } | null;
+      const k = conv?.agents?.account_id;
+      if (k) msgByAcc.set(k, (msgByAcc.get(k) ?? 0) + 1);
     }
     const statsByAcc = new Map<string, { cost: number; tokens: number; turns: number }>();
     for (const r of runs.data ?? []) {

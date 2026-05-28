@@ -1,6 +1,5 @@
 import { createFileRoute, Link, Outlet, useNavigate } from "@tanstack/react-router";
 import {
-  Bot,
   LogOut,
   Users,
   LayoutTemplate,
@@ -37,19 +36,6 @@ function AdminLayout() {
     <div className="flex min-h-screen bg-slate-50">
       {/* ── Sidebar ── */}
       <aside className="fixed inset-y-0 left-0 z-30 flex w-60 flex-col border-r border-slate-200 bg-white">
-        {/* Logo */}
-        <div className="flex items-center gap-2.5 border-b border-slate-100 px-5 py-4">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 text-white shadow-sm shadow-violet-500/30">
-            <Bot className="h-4.5 w-4.5" />
-          </div>
-          <div className="leading-tight">
-            <p className="text-sm font-bold text-slate-900">Promptfy</p>
-            <p className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
-              Admin
-            </p>
-          </div>
-        </div>
-
         {/* Nav */}
         <nav className="flex-1 space-y-1 px-3 py-4">
           {NAV_ITEMS.map((item) => (

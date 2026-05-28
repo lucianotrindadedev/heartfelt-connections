@@ -295,53 +295,70 @@ function MultiAccountGroup({
   helenaId: string;
   accounts: AccountRow[];
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
 
   const groupTotals = accounts.reduce(
     (t, a) => ({
       msgs: t.msgs + (a.msg_count_30d ?? 0),
       cost: t.cost + (a.cost_usd_30d ?? 0),
+      turns: t.turns + (a.turns_30d ?? 0),
     }),
-    { msgs: 0, cost: 0 },
+    { msgs: 0, cost: 0, turns: 0 },
   );
+
+  const shortId = helenaId.slice(0, 8);
 
   return (
     <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3 transition-colors hover:bg-slate-100/70"
+        className="group flex w-full items-center gap-3 px-4 py-3 transition-colors hover:bg-slate-50"
       >
-        <div className="flex items-center gap-2.5 text-left">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
-            <Users className="h-3.5 w-3.5" />
-          </span>
-          <div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              CRM
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+          <Users className="h-4 w-4" />
+        </div>
+        <div className="flex min-w-0 flex-1 flex-col gap-1 text-left">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-slate-900">Conta {shortId}</span>
+            <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
+              {accounts.length} agentes
             </span>
-            <p className="font-mono text-[11px] leading-tight text-slate-600">{helenaId}</p>
+          </div>
+          <div className="font-mono text-[10px] text-slate-400">{helenaId}</div>
+          <div className="mt-0.5 flex items-center gap-1.5">
+            <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-slate-500">
+              <MessageSquare className="h-3 w-3" />
+              {groupTotals.msgs.toLocaleString("pt-BR")} msgs
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-slate-500">
+              <Activity className="h-3 w-3" />
+              {groupTotals.turns.toLocaleString("pt-BR")} turnos
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-slate-500">
+              <DollarSign className="h-3 w-3" />
+              ${groupTotals.cost.toFixed(4)}
+            </span>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-[11px] tabular-nums text-slate-400">
-            {groupTotals.msgs.toLocaleString("pt-BR")} msgs · ${groupTotals.cost.toFixed(2)}
-          </span>
-          <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
-            {accounts.length} agentes
-          </span>
+        <div className="shrink-0 text-slate-300 transition-colors group-hover:text-slate-500">
           {open ? (
-            <ChevronDown className="h-4 w-4 text-slate-400" />
+            <ChevronDown className="h-4 w-4" />
           ) : (
-            <ChevronRight className="h-4 w-4 text-slate-400" />
+            <ChevronRight className="h-4 w-4" />
           )}
         </div>
       </button>
 
       {open && (
-        <div className="divide-y divide-slate-100">
-          {accounts.map((a) => (
-            <AccountRowItem key={a.id} account={a} nested />
-          ))}
+        <div className="border-t border-slate-100">
+          <p className="px-4 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            Selecione o agente
+          </p>
+          <div className="divide-y divide-slate-100">
+            {accounts.map((a) => (
+              <AccountRowItem key={a.id} account={a} nested />
+            ))}
+          </div>
         </div>
       )}
     </div>
