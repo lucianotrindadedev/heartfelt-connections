@@ -732,7 +732,13 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   }
 
   const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
-  if (isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg)) {
+  // Adia o criar_agendamento APENAS fora do BOOKING (ex: ainda em NAME_COLLECT,
+  // pra confirmar/coletar dados antes). Em BOOKING já é a hora de criar — adiar
+  // aqui deixaria o agendamento órfão se o lead não mandar outra mensagem.
+  if (
+    ctx.stage !== "BOOKING" &&
+    (isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg))
+  ) {
     console.log(
       `[scheduler] turn de escolha de horário conv=${ctx.conversationId} — adiando criar_agendamento`,
     );
