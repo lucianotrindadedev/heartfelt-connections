@@ -1,5 +1,5 @@
 /** Modelo padrão OpenRouter para agentes, RAG gate, splitter e jobs auxiliares. */
-export const DEFAULT_LLM_MODEL = "google/gemini-3.1-flash-lite";
+export const DEFAULT_LLM_MODEL = "google/gemini-2.5-flash";
 
 /** Modelo para tool calling (scheduler: listar_horarios, criar_agendamento, etc.). */
 export const DEFAULT_TOOL_MODEL = "openai/gpt-4.1-mini";
@@ -27,7 +27,7 @@ export const DEFAULT_TOOL_FALLBACK_MODELS = [
 
 /** Slugs legados migrados automaticamente para {@link DEFAULT_LLM_MODEL}. */
 export const LEGACY_GEMINI_FLASH_MODELS = [
-  "google/gemini-2.5-flash",
   "google/gemini-2.5-flash-lite",
+  "google/gemini-3.1-flash-lite",
   "google/gemini-3.1-flash-lite-preview",
 ] as const;
