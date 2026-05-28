@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { createAccount, listAccounts, deleteAccount } from "@/lib/admin.functions";
 import { helenaWebhookUrl } from "@/lib/app-base-url";
-import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -88,60 +87,38 @@ function AdminIndex() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Contas</h1>
-          <p className="text-sm text-muted-foreground">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Contas</h1>
+          <p className="mt-0.5 text-sm text-slate-500">
             Todas as contas do CRM conectadas — clique para ver performance, logs e custos.
           </p>
         </div>
-        <div className="flex gap-2">
-          <Link
-            to="/admin/replay"
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
-          >
-            Replay
-          </Link>
-          <Link
-            to="/admin/telemetry"
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
-          >
-            Telemetria
-          </Link>
-          <Link
-            to="/admin/evolution"
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
-          >
-            Evolution
-          </Link>
-          <Link
-            to="/admin/templates"
-            className="inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium text-foreground hover:bg-muted"
-          >
-            Templates
-          </Link>
-          <CreateAccountDialog />
-        </div>
+        <CreateAccountDialog />
       </div>
 
       {/* KPIs globais */}
       {q.data && (
         <div className="grid gap-3 md:grid-cols-4">
           <KpiCard
-            icon={<Users className="h-4 w-4 text-slate-500" />}
+            icon={<Users className="h-4 w-4" />}
+            iconBg="bg-slate-100 text-slate-600"
             label="Total de contas"
             value={accounts.length.toLocaleString("pt-BR")}
           />
           <KpiCard
-            icon={<MessageSquare className="h-4 w-4 text-blue-500" />}
+            icon={<MessageSquare className="h-4 w-4" />}
+            iconBg="bg-blue-50 text-blue-600"
             label="Mensagens (30d)"
             value={totals.msgs.toLocaleString("pt-BR")}
           />
           <KpiCard
-            icon={<Activity className="h-4 w-4 text-amber-500" />}
+            icon={<Activity className="h-4 w-4" />}
+            iconBg="bg-amber-50 text-amber-600"
             label="Turnos LLM (30d)"
             value={totals.turns.toLocaleString("pt-BR")}
           />
           <KpiCard
-            icon={<DollarSign className="h-4 w-4 text-emerald-500" />}
+            icon={<DollarSign className="h-4 w-4" />}
+            iconBg="bg-emerald-50 text-emerald-600"
             label="Custo (30d)"
             value={`$${totals.cost.toFixed(2)}`}
           />
@@ -150,13 +127,13 @@ function AdminIndex() {
 
       {/* Search */}
       {accounts.length > 0 && (
-        <div className="flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2">
-          <Search className="h-3.5 w-3.5 text-muted-foreground" />
+        <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-sm">
+          <Search className="h-4 w-4 text-slate-400" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por nome, ID interno ou ID do CRM…"
-            className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+            className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
           />
           {search && (
             <button
@@ -189,11 +166,17 @@ function AdminIndex() {
           ),
         )}
         {q.data && groups.length === 0 && (
-          <Card className="p-8 text-center text-sm text-muted-foreground">
-            {search
-              ? `Nenhuma conta encontrada para "${search}".`
-              : 'Nenhuma conta ainda. Clique em "Nova conta" para criar a primeira.'}
-          </Card>
+          <div className="rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center">
+            <Users className="mx-auto mb-3 h-8 w-8 text-slate-300" />
+            <p className="text-sm font-medium text-slate-600">
+              {search ? `Nenhuma conta encontrada para "${search}".` : "Nenhuma conta ainda"}
+            </p>
+            {!search && (
+              <p className="mt-1 text-xs text-slate-400">
+                Clique em "Nova conta" para criar a primeira.
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>
@@ -201,19 +184,50 @@ function AdminIndex() {
 }
 
 function KpiCard({
-  icon, label, value,
+  icon, iconBg, label, value,
 }: {
   icon: React.ReactNode;
+  iconBg: string;
   label: string;
   value: string;
 }) {
   return (
-    <Card className="p-4">
-      <div className="flex items-center gap-2 text-xs uppercase text-muted-foreground">
-        {icon} {label}
+    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-2.5">
+        <span className={`flex h-8 w-8 items-center justify-center rounded-lg ${iconBg}`}>
+          {icon}
+        </span>
+        <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">
+          {label}
+        </span>
       </div>
-      <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
-    </Card>
+      <div className="mt-2.5 text-2xl font-bold tabular-nums text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+const AVATAR_COLORS = [
+  "bg-violet-100 text-violet-700",
+  "bg-blue-100 text-blue-700",
+  "bg-emerald-100 text-emerald-700",
+  "bg-amber-100 text-amber-700",
+  "bg-rose-100 text-rose-700",
+  "bg-cyan-100 text-cyan-700",
+];
+function avatarColor(seed: string): string {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+
+function AccountAvatar({ name }: { name: string }) {
+  const initials = name.trim().slice(0, 2).toUpperCase();
+  return (
+    <div
+      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-xs font-bold ${avatarColor(name)}`}
+    >
+      {initials}
+    </div>
   );
 }
 
@@ -224,9 +238,12 @@ function AccountStats({ account }: { account: AccountRow }) {
     { icon: <DollarSign className="h-3 w-3" />, label: `$${(account.cost_usd_30d ?? 0).toFixed(4)}` },
   ];
   return (
-    <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+    <div className="flex items-center gap-1.5">
       {stats.map((s, i) => (
-        <span key={i} className="flex items-center gap-1 tabular-nums">
+        <span
+          key={i}
+          className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-slate-500"
+        >
           {s.icon}
           {s.label}
         </span>
@@ -235,32 +252,41 @@ function AccountStats({ account }: { account: AccountRow }) {
   );
 }
 
-function SingleAccountCard({ account }: { account: AccountRow }) {
+function AccountRowItem({ account, nested }: { account: AccountRow; nested?: boolean }) {
   return (
-    <Card className="overflow-hidden p-0 hover:bg-accent/30 transition">
-      <div className="flex items-center justify-between gap-4 p-4">
+    <div
+      className={`group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-slate-50 ${
+        nested ? "" : "rounded-xl border border-slate-200 bg-white shadow-sm"
+      }`}
+    >
+      <AccountAvatar name={account.nome} />
+      <Link
+        to="/admin/account/$accountId"
+        params={{ accountId: account.id }}
+        className="flex min-w-0 flex-1 flex-col gap-1"
+      >
+        <div className="truncate text-sm font-semibold text-slate-900">{account.nome}</div>
+        <div className="truncate font-mono text-[10px] text-slate-400">{account.id}</div>
+        <div className="mt-0.5">
+          <AccountStats account={account} />
+        </div>
+      </Link>
+      <div className="flex shrink-0 items-center gap-1">
+        <DeleteAccountButton account={account} />
         <Link
           to="/admin/account/$accountId"
           params={{ accountId: account.id }}
-          className="flex flex-1 min-w-0 flex-col gap-1.5"
+          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 transition-colors group-hover:bg-slate-100 group-hover:text-slate-600"
         >
-          <div className="font-medium">{account.nome}</div>
-          <div className="font-mono text-[11px] text-muted-foreground truncate">{account.id}</div>
-          <AccountStats account={account} />
+          <ChevronRight className="h-4 w-4" />
         </Link>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <DeleteAccountButton account={account} />
-          <Link
-            to="/admin/account/$accountId"
-            params={{ accountId: account.id }}
-            className="rounded-md p-1.5 hover:bg-muted"
-          >
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-          </Link>
-        </div>
       </div>
-    </Card>
+    </div>
   );
+}
+
+function SingleAccountCard({ account }: { account: AccountRow }) {
+  return <AccountRowItem account={account} />;
 }
 
 function MultiAccountGroup({
@@ -280,59 +306,41 @@ function MultiAccountGroup({
   );
 
   return (
-    <div className="overflow-hidden rounded-lg border">
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between bg-muted/50 px-4 py-3 hover:bg-muted/80 transition"
+        className="flex w-full items-center justify-between gap-3 border-b border-slate-100 bg-slate-50/70 px-4 py-3 transition-colors hover:bg-slate-100/70"
       >
-        <div className="text-left">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            CRM
+        <div className="flex items-center gap-2.5 text-left">
+          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600">
+            <Users className="h-3.5 w-3.5" />
           </span>
-          <p className="mt-0.5 font-mono text-xs text-foreground">{helenaId}</p>
+          <div>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              CRM
+            </span>
+            <p className="font-mono text-[11px] leading-tight text-slate-600">{helenaId}</p>
+          </div>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[11px] text-muted-foreground tabular-nums">
+          <span className="text-[11px] tabular-nums text-slate-400">
             {groupTotals.msgs.toLocaleString("pt-BR")} msgs · ${groupTotals.cost.toFixed(2)}
           </span>
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+          <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-700">
             {accounts.length} agentes
           </span>
           {open ? (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            <ChevronDown className="h-4 w-4 text-slate-400" />
           ) : (
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            <ChevronRight className="h-4 w-4 text-slate-400" />
           )}
         </div>
       </button>
 
       {open && (
-        <div className="divide-y">
+        <div className="divide-y divide-slate-100">
           {accounts.map((a) => (
-            <div
-              key={a.id}
-              className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-accent/30 transition"
-            >
-              <Link
-                to="/admin/account/$accountId"
-                params={{ accountId: a.id }}
-                className="flex flex-1 min-w-0 flex-col gap-1"
-              >
-                <div className="text-sm font-medium">{a.nome}</div>
-                <div className="font-mono text-[11px] text-muted-foreground truncate">{a.id}</div>
-                <AccountStats account={a} />
-              </Link>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <DeleteAccountButton account={a} />
-                <Link
-                  to="/admin/account/$accountId"
-                  params={{ accountId: a.id }}
-                  className="rounded-md p-1.5 hover:bg-muted"
-                >
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                </Link>
-              </div>
-            </div>
+            <AccountRowItem key={a.id} account={a} nested />
           ))}
         </div>
       )}
