@@ -3023,22 +3023,20 @@ function DiffPreviewBlock({ before, after }: { before: string; after: string }) 
           ))}
         </div>
 
-        {(restCount > 0 || blocks.some((b) => b.length > 8)) && (
-          <button
-            onClick={() => setModalOpen(true)}
-            className="text-[11px] text-primary hover:underline"
-          >
-            Ver alterações completas{restCount > 0 ? ` (${restCount} bloco${restCount > 1 ? "s" : ""} a mais)` : ""}
-          </button>
-        )}
-        {restCount === 0 && !blocks.some((b) => b.length > 8) && (
-          <button
-            onClick={() => setModalOpen(true)}
-            className="text-[11px] text-muted-foreground hover:text-primary"
-          >
-            Ver em tela cheia
-          </button>
-        )}
+        {(() => {
+          const hasMore = restCount > 0 || blocks.some((b) => b.length > 8);
+          return (
+            <button
+              onClick={() => setModalOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50 hover:text-primary"
+            >
+              <ExternalLink className="h-3 w-3" />
+              {hasMore
+                ? `Ver todas as ${blocks.length} alterações${restCount > 0 ? ` (${restCount} a mais)` : ""}`
+                : "Abrir em tela cheia"}
+            </button>
+          );
+        })()}
       </div>
 
       {/* Modal com diff completo */}

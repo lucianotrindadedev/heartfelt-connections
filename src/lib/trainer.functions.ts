@@ -302,6 +302,10 @@ DEVE ter ~14.000 chars — você copia LITERALMENTE o restante.
 5. Se múltiplas anotações apontarem o mesmo problema, agrupe a correção.
 6. PRESERVE todas as seções: ROLE, TASK, REGRAS DE OURO, FLUXO, OBJEÇÕES,
    FERRAMENTAS, etc. Cada uma delas DEVE aparecer completa no proposed_prompt.
+7. PRESERVE CARACTERE A CARACTERE tudo que está fora das correções pedidas —
+   escaping/markdown (ex: \\[Nome\\] continua \\[Nome\\], NÃO vira [Nome]),
+   acentos, pontuação, espaçamento e emojis. Linhas não relacionadas às
+   anotações devem sair IDÊNTICAS. Mudanças cosméticas não pedidas são PROIBIDAS.
 
 # FORMATO DE SAÍDA (JSON puro, sem markdown)
 

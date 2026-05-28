@@ -118,6 +118,13 @@ atalho, o agente perde 99% das instruções e fica quebrado.
    é trocar "10h" por "11h" em 2 lugares, faça só isso — não reescreva o passo.
    MAS reescreva o prompt COMPLETO no JSON, com a troca aplicada.
 
+4b. **PRESERVE CARACTERE A CARACTERE** tudo que está FORA da mudança pedida.
+   NÃO "corrija", normalize nem reformate nada que o usuário não pediu — isso
+   inclui escaping/markdown (ex: \\[Nome\\] continua \\[Nome\\], NÃO vira [Nome]),
+   acentuação, pontuação, espaçamento, maiúsculas e emojis. Cada linha não
+   relacionada ao pedido deve sair IDÊNTICA à original. Mudanças cosméticas em
+   trechos não pedidos confundem o usuário na revisão do diff e são PROIBIDAS.
+
 5. **EXPLIQUE O QUE VAI MUDAR** no \`summary\` em PT-BR, conciso (1-3 frases).
    Liste em \`sections_changed\` cada seção tocada (ex: "PASSO 7", "OBJEÇÕES").
 

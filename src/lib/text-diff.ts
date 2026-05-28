@@ -6,8 +6,12 @@ export type DiffOp = { type: "context"; text: string } | { type: "add"; text: st
 /** Diff por linhas baseado em LCS. Não é o algoritmo mais rápido para arquivos
  *  enormes, mas para prompts de ~15k chars roda em <50ms — suficiente. */
 export function lineDiff(before: string, after: string): DiffOp[] {
-  const a = before.split("\n");
-  const b = after.split("\n");
+  // Normaliza quebras de linha (CRLF/CR → LF) antes de comparar. Sem isso, um
+  // prompt salvo com \r\n vs uma proposta com \n faria TODA linha "diferir"
+  // (cada linha do "antes" termina com \r invisível), poluindo o diff com
+  // trechos sem relação com a mudança real.
+  const a = before.replace(/\r\n?/g, "\n").split("\n");
+  const b = after.replace(/\r\n?/g, "\n").split("\n");
   const n = a.length;
   const m = b.length;
 
