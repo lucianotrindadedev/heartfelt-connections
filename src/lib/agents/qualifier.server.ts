@@ -183,8 +183,58 @@ async function ensureInitialNotScheduledTag(ctx: AgentContext): Promise<void> {
 
 // ── Prompts ────────────────────────────────────────────────────────────────
 
+// Scaffold técnico — SEMPRE anexado quando o prompt do proprietário domina.
+// Contém só o que o parser e a máquina de estados precisam (módulo, estágios
+// válidos, ferramentas e formato JSON). O comportamento/persona vem do prompt.
+const QUALIFIER_TECHNICAL_SCAFFOLD = `# ⚙️ REGRAS TÉCNICAS DO SISTEMA (não exibir ao lead)
+
+Você opera no MÓDULO DE QUALIFICAÇÃO (estágios RECEPTION e QUALIFICATION).
+Você NÃO agenda — quando o interesse estiver claro e o lead demonstrar
+disposição de avançar, sinalize next_stage="SLOT_OFFER" e o módulo de
+agendamento assume a partir daí.
+
+Ferramentas disponíveis (chame quando fizer sentido no fluxo):
+- aplicar_tag_interesse: registra o interesse do lead no CRM. Não use no 1º
+  ciclo, exceto se a primeira mensagem já trouxer interesse explícito.
+- enviar_midia: envia uma mídia cadastrada (ver seção "MÍDIAS DISPONÍVEIS").
+
+Valores válidos de next_stage:
+- "RECEPTION" → primeira mensagem, só saudação
+- "QUALIFICATION" → continuando a descoberta do interesse
+- "SLOT_OFFER" → interesse claro + sinal de avanço (preço, horário, "quero")
+- "ESCALATED" → pedido de humano, situação delicada ou falha grave
+
+# FORMATO DE SAÍDA OBRIGATÓRIO
+
+Responda APENAS em JSON válido:
+{
+  "reply": "mensagem curta a enviar ao lead",
+  "next_stage": "RECEPTION" | "QUALIFICATION" | "SLOT_OFFER" | "ESCALATED",
+  "lead_data_patch": {
+    "interest": "interesse identificado",
+    "name": "nome se já mencionado",
+    "notes": "queixa principal em 1 frase",
+    "custom_fields": { "chave": "valor" },
+    "escalation_reason": "se next_stage=ESCALATED"
+  },
+  "reasoning": "1 frase do raciocínio"
+}`;
+
 function buildCachedSystemPrompt(ctx: AgentContext): string {
   const s = ctx.agentSettings;
+
+  // O prompt do proprietário DOMINA quando presente: vai no topo como
+  // comportamento principal, seguido apenas do scaffold técnico necessário.
+  // O template padrão abaixo é só a "semente" — usada quando ainda não há
+  // prompt configurado.
+  if (ctx.basePrompt && ctx.basePrompt.trim()) {
+    return `${ctx.basePrompt.trim()}
+
+${buildOwnerStylePromptBlock()}
+
+${QUALIFIER_TECHNICAL_SCAFFOLD}`;
+  }
+
   return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "atendente virtual"} de ${s.company_name || "(nome da empresa)"}.
 
 Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead precisa, criar conexão humana e — somente quando o interesse estiver claro — sinalizar que o agendamento pode começar.
@@ -249,8 +299,6 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 - Diferenciais: ${s.featured_services || "(não informado)"}
 
 ${buildOwnerStylePromptBlock()}
-
-${ctx.basePrompt ? `\n# INSTRUÇÕES ADICIONAIS DO PROPRIETÁRIO\n\n${ctx.basePrompt}` : ""}
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
 

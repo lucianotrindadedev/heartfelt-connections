@@ -507,6 +507,62 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
   const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
   const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
 
+  // Scaffold técnico — SEMPRE presente, mesmo quando o prompt do dono domina.
+  // Contém estágios, ferramentas, guardrails inegociáveis (ex: não confirmar
+  // sem appointment_id) e o formato JSON — tudo que o parser e a máquina de
+  // estados precisam para funcionar, independente do comportamento escrito.
+  const technicalScaffold = `# ⚙️ REGRAS TÉCNICAS DO SISTEMA (não exibir ao lead)
+
+Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
+- **SLOT_OFFER**: ofereça no máx 2 horários. SEMPRE chame listar_horarios
+  primeiro (se selected_slot_iso vazio). Nunca invente horários. Só avance
+  para NAME_COLLECT quando selected_slot_iso estiver preenchido.
+- **NAME_COLLECT**: só se selected_slot_iso existir. Confirme o slot. NÃO
+  chame listar_horarios. Colete os campos obrigatórios (UM por mensagem).${commitmentEnabled ? ` Ao final dos campos, pergunte: "${commitmentQ}"` : ""}
+- **BOOKING**: o sistema cria o agendamento. Se criar_agendamento ok=true,
+  confirme e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou.
+- **CONFIRMED**: só após appointment_id em lead_data. Agradeça e encerre.
+
+${fieldsBlock}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}
+
+# GUARDRAILS INEGOCIÁVEIS
+1. NUNCA diga "vou verificar", "estou consultando", "já retorno" — chame a tool de verdade.
+2. NUNCA invente horários, IDs ou nomes. Use APENAS valores vindos das tools.
+3. **NUNCA diga "agendei", "marquei" ou "confirmado" sem appointment_id** em lead_data (ok=true de criar_agendamento).
+4. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED".
+5. NUNCA repita pergunta de campo que já consta em LEAD_DATA.
+6. Se o lead pedir explicitamente humano → next_stage="ESCALATED".
+
+# FORMATO DE SAÍDA OBRIGATÓRIO
+
+Responda APENAS em JSON válido:
+{
+  "reply": "mensagem a enviar ao lead",
+  "next_stage": "SLOT_OFFER" | "NAME_COLLECT" | "BOOKING" | "CONFIRMED" | "ESCALATED",
+  "lead_data_patch": { ...campos aprendidos neste turn... },
+  "reasoning": "1 frase explicando sua decisão (não vai para o lead)"
+}
+
+Campos válidos em lead_data_patch:
+- name (string): nome do responsável / lead
+- custom_fields (object): { "child_name": "...", "child_birth_date": "...", "guardians": "..." }
+- selected_slot_iso (string): ISO do slot escolhido (copie de offered_slots)
+- dentist_person_id (number): copie de offered_slots (Clinicorp)
+- commitment_confirmed (boolean): true quando o lead confirma compromisso
+- patient_id (number): do retorno de buscar_paciente
+- appointment_id (string|number): do retorno de criar_agendamento
+- notes (string): observações relevantes para a agenda`;
+
+  // Prompt do proprietário DOMINA quando presente.
+  if (ctx.basePrompt && ctx.basePrompt.trim()) {
+    return `${ctx.basePrompt.trim()}
+
+${buildOwnerStylePromptBlock()}
+
+${technicalScaffold}`;
+  }
+
   return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "atendente virtual"} da ${orgLabel}.
 
 Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qualificado em um ${appointmentLabel.toLowerCase()} agendado — com o mínimo de fricção.
@@ -559,9 +615,7 @@ Campos válidos em lead_data_patch:
 - Horário de funcionamento: ${s.business_hours || "(não informado)"}
 - Profissional / referência: ${s.doctor_name || s.contact_person_name || "(não informado)"}
 
-${buildOwnerStylePromptBlock()}
-
-${ctx.basePrompt ? `\n# INSTRUÇÕES ADICIONAIS DO PROPRIETÁRIO\n\n${ctx.basePrompt}` : ""}`;
+${buildOwnerStylePromptBlock()}`;
 }
 
 function buildDynamicSystemPrompt(ctx: AgentContext): string {
