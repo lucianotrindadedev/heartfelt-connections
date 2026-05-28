@@ -42,13 +42,14 @@ export const NOT_SCHEDULED_SYNONYMS = [
  * Sinônimos prováveis para a tag de "agendamento confirmado".
  */
 export const SCHEDULED_SYNONYMS = [
+  "IA Agendou",
+  "IA Agendado",
   "Agendado",
   "AGENDADO",
   "Confirmado",
   "Matriculado",
   "Compatível",
   "Compativel",
-  "IA Agendou",
 ] as const;
 
 /**
@@ -92,19 +93,26 @@ async function getTags(account: HelenaAccount): Promise<HelenaTag[]> {
 export async function resolveTagName(
   account: HelenaAccount,
   approximateName: string,
+  excludeExact?: readonly string[],
 ): Promise<string | null> {
   const tags = await getTags(account);
   const target = normalize(approximateName);
   if (!target) return null;
+  const excluded = new Set((excludeExact ?? []).map(normalize));
 
   // 1. Match exato (case-insensitive + sem acento)
-  const exact = tags.find((t) => normalize(t.name) === target);
+  const exact = tags.find(
+    (t) => normalize(t.name) === target && !excluded.has(normalize(t.name)),
+  );
   if (exact) return exact.name;
 
-  // 2. Match por contém (mais permissivo) — pega o mais curto, evita ambiguidade
+  // 2. Match por contém (mais permissivo) — pega o mais curto, evita ambiguidade.
+  //    `excluded` evita falsos positivos por substring (ex: o sinônimo
+  //    "Agendado" casaria com a tag "N/A Não Agendado", que contém "agendado").
   const partial = tags
     .filter((t) => {
       const n = normalize(t.name);
+      if (excluded.has(n)) return false;
       return n.includes(target) || target.includes(n);
     })
     .sort((a, b) => a.name.length - b.name.length);
@@ -121,9 +129,10 @@ export async function resolveTagName(
 export async function resolveOneOf(
   account: HelenaAccount,
   synonyms: readonly string[],
+  excludeExact?: readonly string[],
 ): Promise<string | null> {
   for (const syn of synonyms) {
-    const found = await resolveTagName(account, syn);
+    const found = await resolveTagName(account, syn, excludeExact);
     if (found) return found;
   }
   return null;
@@ -161,10 +170,16 @@ export async function swapTagBySynonyms(
   removeSynonyms: readonly string[],
   addSynonyms: readonly string[],
 ): Promise<{ ok: boolean; removed?: string; added?: string; reason?: string }> {
-  const [removeExact, addExact] = await Promise.all([
-    resolveOneOf(account, removeSynonyms),
-    resolveOneOf(account, addSynonyms),
-  ]);
+  // Resolve a tag de remoção primeiro e a EXCLUI da resolução da tag de
+  // adição. Sem isso, o sinônimo "Agendado" casaria por substring com a tag
+  // "N/A Não Agendado" (que contém "agendado"), fazendo o swap adicionar a
+  // mesma tag que removeu — e nunca chegar em "IA Agendou"/"Agendado" reais.
+  const removeExact = await resolveOneOf(account, removeSynonyms);
+  const addExact = await resolveOneOf(
+    account,
+    addSynonyms,
+    removeExact ? [removeExact] : undefined,
+  );
 
   if (!addExact) return { ok: false, reason: "add_tag_not_found" };
 
