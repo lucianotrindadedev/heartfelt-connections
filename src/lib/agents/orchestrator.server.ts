@@ -24,6 +24,7 @@ import {
   looksLikeSchedulingPreference,
   mergeLeadDataPatch,
   normalizeLeadDataForBooking,
+  resolveBookingLeadName,
   sanitizeLeadDataPatch,
   tryAutoCaptureBookingAnswer,
   tryAutoSelectOfferedSlot,
@@ -53,6 +54,10 @@ import {
   typingDelayMs,
 } from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
+import {
+  notifyBooking,
+  summarizeConversationForNotification,
+} from "@/lib/agents/notify-booking.server";
 import type { AgentContext, AgentResult } from "./context";
 import { stripNullishFields } from "./parse-llm-json.server";
 import { runQualifierAgent } from "./qualifier.server";
@@ -345,6 +350,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const meta = (conv.data.meta as ConversationMeta | null) ?? null;
     const stage = readStageFromMeta(meta);
     let leadData = readLeadDataFromMeta(meta);
+    // Captura ANTES de qualquer mutação — usado para detectar "recém-agendado"
+    // (transição de sem→com appointment_id) e disparar a notificação 1x só.
+    const hadAppointmentBefore = !!leadData.appointment_id;
     const agentSettings = (agent.data.settings as Record<string, string> | null) ?? {};
 
     if (leadData.custom_fields) {
@@ -731,6 +739,36 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         });
       } catch (e) {
         console.error("[orch] escalateToHuman falhou:", e);
+      }
+    }
+
+    // 14. Notificação de agendamento confirmado — dispara só na transição
+    // sem→com appointment_id (1x por agendamento). Reusa a config da escalada
+    // (instância + grupo) com toggle próprio (notificar_agendamentos).
+    const justBooked = !hadAppointmentBefore && !!finalLeadData.appointment_id;
+    if (justBooked) {
+      try {
+        let summary = await summarizeConversationForNotification(
+          ctx.orKey,
+          ctx.ragGateModel,
+          history,
+        );
+        if (!summary) summary = (finalLeadData.notes as string | undefined) ?? "";
+        await notifyBooking({
+          agentId,
+          accountId,
+          event: "created",
+          patientName:
+            resolveBookingLeadName(finalLeadData) ||
+            (finalLeadData.name as string | undefined) ||
+            "(sem nome)",
+          phone: effectivePhone ?? conversationPhone,
+          datetimeIso: (finalLeadData.selected_slot_iso as string | undefined) ?? "",
+          appointmentLabel: agentSettings.appointment_type_label || "Consulta",
+          summary,
+        });
+      } catch (e) {
+        console.error("[orch] notifyBooking falhou:", e);
       }
     }
 

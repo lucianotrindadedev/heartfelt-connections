@@ -144,7 +144,7 @@ export const listAccountAgentsEscalation = createServerFn({ method: "GET" })
 
     const { data: escs } = await sb
       .from("agent_escalation")
-      .select("agent_id, evolution_instance, grupo_alerta, ativo")
+      .select("agent_id, evolution_instance, grupo_alerta, ativo, notificar_agendamentos")
       .in("agent_id", agentIds);
 
     const escByAgent = new Map(
@@ -160,6 +160,7 @@ export const listAccountAgentsEscalation = createServerFn({ method: "GET" })
           ativo: !!e?.ativo,
           evolution_instance: (e?.evolution_instance as string | null) ?? "",
           grupo_alerta: (e?.grupo_alerta as string | null) ?? "",
+          notificar_agendamentos: !!e?.notificar_agendamentos,
         };
       }),
     };
@@ -174,6 +175,7 @@ export const saveAgentEscalationAdmin = createServerFn({ method: "POST" })
         evolution_instance: z.string().max(120).optional(),
         grupo_alerta: z.string().max(120).optional(),
         ativo: z.boolean().optional(),
+        notificar_agendamentos: z.boolean().optional(),
       })
       .parse(d),
   )

@@ -18,6 +18,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -124,6 +125,7 @@ interface AgentRow {
   ativo: boolean;
   evolution_instance: string;
   grupo_alerta: string;
+  notificar_agendamentos: boolean;
 }
 
 interface InstanceRow {
@@ -147,6 +149,7 @@ function AgentEscalationRow({
 
   const [instance, setInstance] = useState(agent.evolution_instance);
   const [grupo, setGrupo] = useState(agent.grupo_alerta);
+  const [notify, setNotify] = useState(agent.notificar_agendamentos);
 
   const groupsQ = useQuery({
     queryKey: ["admin", "evolution", "groups", instance],
@@ -161,6 +164,7 @@ function AgentEscalationRow({
           agentId: agent.id,
           evolution_instance: instance || undefined,
           grupo_alerta: grupo || undefined,
+          notificar_agendamentos: notify,
         },
       }),
     onSuccess: () => {
@@ -180,7 +184,9 @@ function AgentEscalationRow({
       : groups;
 
   const dirty =
-    instance !== agent.evolution_instance || grupo !== agent.grupo_alerta;
+    instance !== agent.evolution_instance ||
+    grupo !== agent.grupo_alerta ||
+    notify !== agent.notificar_agendamentos;
 
   return (
     <Card className="space-y-3 p-4">
@@ -265,6 +271,22 @@ function AgentEscalationRow({
             <p className="text-xs text-rose-600">{groupsQ.data.message}</p>
           )}
         </div>
+      </div>
+
+      <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+        <div className="min-w-0">
+          <Label className="text-sm font-medium">Notificar agendamentos</Label>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Envia uma mensagem a este grupo sempre que um agendamento for
+            confirmado (paciente, data/hora, telefone e resumo da conversa).
+          </p>
+          {notify && (!instance || !grupo) && (
+            <p className="mt-1 text-xs text-amber-600">
+              Selecione uma instância e um grupo acima para as notificações funcionarem.
+            </p>
+          )}
+        </div>
+        <Switch checked={notify} onCheckedChange={setNotify} />
       </div>
 
       <div className="flex items-center justify-end gap-2">
