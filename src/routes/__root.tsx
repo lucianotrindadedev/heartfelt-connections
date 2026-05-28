@@ -2,6 +2,7 @@ import { Outlet, Link, createRootRouteWithContext, HeadContent, Scripts } from "
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider } from "@/lib/auth";
 import { Toaster } from "@/components/ui/sonner";
+import { useEffect } from "react";
 
 import appCss from "../styles.css?url";
 
@@ -73,8 +74,43 @@ function RootShell({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Detecta cliente com bundle desatualizado após um novo deploy e recarrega.
+// O TanStack Start gera IDs de serverFn por hash do conteúdo — após redeploy
+// o servidor tem novos IDs mas o cliente ainda usa os antigos. Um reload
+// baixa o novo bundle e resolve o problema silenciosamente.
+const STALE_RELOAD_KEY = "sfn_last_reload";
+const STALE_RELOAD_COOLDOWN_MS = 5 * 60 * 1000; // 5 min entre reloads
+
+function useStaleClientReload() {
+  useEffect(() => {
+    const handler = (event: PromiseRejectionEvent) => {
+      const msg: string =
+        event.reason?.message ??
+        event.reason?.cause?.message ??
+        String(event.reason ?? "");
+      if (!msg.includes("Server function module export not resolved")) return;
+
+      const lastReload = parseInt(
+        sessionStorage.getItem(STALE_RELOAD_KEY) ?? "0",
+        10,
+      );
+      if (Date.now() - lastReload < STALE_RELOAD_COOLDOWN_MS) return;
+
+      console.warn(
+        "[app] serverFn ID desatualizado — novo deploy detectado, recarregando…",
+      );
+      sessionStorage.setItem(STALE_RELOAD_KEY, String(Date.now()));
+      window.location.reload();
+    };
+
+    window.addEventListener("unhandledrejection", handler);
+    return () => window.removeEventListener("unhandledrejection", handler);
+  }, []);
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  useStaleClientReload();
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
