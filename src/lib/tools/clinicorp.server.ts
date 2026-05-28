@@ -512,21 +512,71 @@ export async function createClinicorpAppointment(
     },
   );
 
+  const rawBody = await res.text();
   if (!res.ok) {
-    const err = await res.text();
-    const msg = `Clinicorp create appointment failed: ${res.status} — ${err.slice(0, 300)}`;
+    const msg = `Clinicorp create appointment failed: ${res.status} — ${rawBody.slice(0, 300)}`;
     console.error("[clinicorp]", msg);
     throw new Error(msg);
   }
 
-  const json = (await res.json()) as {
-    appointment?: { id?: number | string; start_datetime?: string };
-    Appointment?: { Id?: number | string; StartDateTime?: string };
+  // A resposta de create_appointment_by_api varia de formato entre versões da
+  // API. Logamos o corpo cru p/ diagnóstico e tentamos extrair o id em vários
+  // formatos conhecidos (top-level, appointment{}, Appointment{}, data{}).
+  console.log("[clinicorp] create appointment response:", rawBody.slice(0, 500));
+  let json: Record<string, unknown> = {};
+  try {
+    json = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    json = {};
+  }
+
+  const pickId = (o: unknown): string | number | undefined => {
+    if (!o || typeof o !== "object") return undefined;
+    const r = o as Record<string, unknown>;
+    const cand =
+      r.id ?? r.Id ?? r.ID ?? r.appointment_id ?? r.Appointment_Id ?? r.AppointmentId;
+    return typeof cand === "string" || typeof cand === "number" ? cand : undefined;
+  };
+  const pickDt = (o: unknown): string | undefined => {
+    if (!o || typeof o !== "object") return undefined;
+    const r = o as Record<string, unknown>;
+    const cand = r.start_datetime ?? r.StartDateTime ?? r.datetime ?? r.date;
+    return typeof cand === "string" ? cand : undefined;
   };
 
-  const appt = json.appointment ?? json.Appointment;
-  const apptId = (appt as { id?: number | string })?.id ?? (appt as { Id?: number | string })?.Id ?? "";
-  const apptDt = (appt as { start_datetime?: string })?.start_datetime ?? (appt as { StartDateTime?: string })?.StartDateTime ?? params.datetime;
+  const apptObj =
+    (json.appointment as unknown) ??
+    (json.Appointment as unknown) ??
+    (json.data as unknown) ??
+    json;
+  let apptId: string | number = pickId(apptObj) ?? pickId(json) ?? "";
+  const apptDt = pickDt(apptObj) ?? pickDt(json) ?? params.datetime;
+
+  // Fallback: o POST passou (2xx) mas não achamos o id na resposta — o
+  // agendamento quase certamente foi criado. Re-consultamos a agenda do
+  // paciente e pegamos o id do agendamento que bate com o horário escolhido.
+  // Sem isso, o id voltaria vazio e o sistema bloquearia a confirmação como
+  // se tivesse falhado (apesar do evento existir na agenda).
+  if (!apptId) {
+    console.warn(
+      "[clinicorp] id ausente na resposta de create — re-consultando agenda do paciente",
+    );
+    try {
+      const target = extractSpTime(params.datetime);
+      const list = await listClinicorpPatientAppointments(accountId, params.phone);
+      const match = list.find((a) => {
+        if (!a.datetime) return false;
+        const t = extractSpTime(a.datetime);
+        return t.localDate === target.localDate && t.localTime === target.localTime;
+      });
+      if (match?.id) {
+        apptId = match.id;
+        console.log(`[clinicorp] id recuperado via lista: ${apptId}`);
+      }
+    } catch (e) {
+      console.error("[clinicorp] re-consulta de agenda falhou:", e);
+    }
+  }
 
   return {
     id: apptId,
