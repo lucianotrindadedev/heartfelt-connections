@@ -700,6 +700,33 @@ function hourInBrt(iso: string): number {
   );
 }
 
+/** Data (YYYY-MM-DD) de um instante no fuso de Brasília. */
+function dateInBrt(d: Date): string {
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d); // en-CA → "YYYY-MM-DD"
+}
+
+/**
+ * Resolve datas RELATIVAS faladas pelo lead ("hoje", "amanhã", "depois de
+ * amanhã") para a data alvo (YYYY-MM-DD em BRT). Retorna null se não houver.
+ * IMPORTANTE: "amanhã" contém "manhã" — por isso o match de turno usa \b.
+ */
+function relativeTargetDateBrt(t: string): string | null {
+  const now = Date.now();
+  const DAY = 86_400_000;
+  // \b só no início: "amanhã" termina em "ã" (não-word), então \b final falha.
+  // O \b inicial basta — em "manhã" o "m" abre palavra; dentro de "amanhã" não.
+  if (/depois\s+de\s+amanh[aã]/.test(t)) return dateInBrt(new Date(now + 2 * DAY));
+  if (/\bamanh[aã]/.test(t)) return dateInBrt(new Date(now + DAY));
+  if (/\bhoje\b/.test(t)) return dateInBrt(new Date(now));
+  return null;
+}
+
 /** Lead falando de turno/dia — preferência de horário, não resposta de campo nem nome. */
 export function looksLikeSchedulingPreference(text: string): boolean {
   const t = text.trim().toLowerCase();
@@ -732,23 +759,38 @@ function pickSlotByPreference(
   assistantText: string,
 ): Partial<LeadData> | null {
   const t = text.toLowerCase();
-  const wantMorning = /manh[aã]|de manh[aã]/.test(t);
-  const wantAfternoon = /\btarde\b|de tarde/.test(t);
-  const wantEvening = /noite|de noite/.test(t);
-  if (!wantMorning && !wantAfternoon && !wantEvening) return null;
+
+  // Data relativa ("amanhã", "hoje", "depois de amanhã"). O \b em relativo
+  // evita o bug clássico: "amanhã" contém "manhã".
+  const targetDate = relativeTargetDateBrt(t);
+
+  // Turno do dia. \b inicial impede "amanhã" de casar como "manhã": o "m"
+  // dentro de "amanhã" é precedido por "a" (sem boundary); em "manhã"/"de
+  // manhã" o "m" abre palavra.
+  const wantMorning = /\bmanh[aã]/.test(t);
+  const wantAfternoon = /\btarde/.test(t);
+  const wantEvening = /\bnoite/.test(t);
+
+  if (!targetDate && !wantMorning && !wantAfternoon && !wantEvening) return null;
 
   let pool = slots;
   const mentioned = slots.filter((s) => slotMentionedInText(s, assistantText));
   if (mentioned.length > 0) pool = mentioned;
 
-  const filtered = pool.filter((s) => {
-    const h = hourInBrt(s.iso);
-    if (h < 0) return false;
-    if (wantMorning) return h < 12;
-    if (wantAfternoon) return h >= 12 && h < 18;
-    if (wantEvening) return h >= 18;
-    return true;
-  });
+  let filtered = pool;
+  if (targetDate) {
+    filtered = filtered.filter((s) => dateInBrt(new Date(s.iso)) === targetDate);
+  }
+  if (wantMorning || wantAfternoon || wantEvening) {
+    filtered = filtered.filter((s) => {
+      const h = hourInBrt(s.iso);
+      if (h < 0) return false;
+      if (wantMorning) return h < 12;
+      if (wantAfternoon) return h >= 12 && h < 18;
+      if (wantEvening) return h >= 18;
+      return true;
+    });
+  }
   if (filtered.length === 0) return null;
 
   filtered.sort((a, b) => new Date(a.iso).getTime() - new Date(b.iso).getTime());
