@@ -51,6 +51,12 @@ export interface LeadData {
   initial_tag_applied?: boolean;
   /** Marca que a tag de status pós-agendamento ("Agendado") já foi aplicada. */
   booked_tag_applied?: boolean;
+  /** Sinal transitório (truthy): a tool de cancelamento rodou neste turn. O
+   *  orquestrador limpa o appointment_id de fato e remove este sinal antes de
+   *  persistir. (undefined sozinho não limpa por causa do stripNullishFields.) */
+  appointment_cancelled?: boolean;
+  /** Sinal transitório: cancelamento foi para REMARCAR — limpar também o slot. */
+  reoffer_after_cancel?: boolean;
 }
 
 /** Transições válidas entre stages. `*` = qualquer origem. */
@@ -60,7 +66,7 @@ const TRANSITIONS: Record<Stage, Stage[]> = {
   SLOT_OFFER: ["SLOT_OFFER", "NAME_COLLECT", "QUALIFICATION", "ESCALATED"],
   NAME_COLLECT: ["NAME_COLLECT", "BOOKING", "SLOT_OFFER", "ESCALATED", "CONFIRMED"],
   BOOKING: ["BOOKING", "CONFIRMED", "SLOT_OFFER", "ESCALATED"], // retry ou volta ao slot
-  CONFIRMED: ["CONFIRMED", "ESCALATED"],
+  CONFIRMED: ["CONFIRMED", "ESCALATED", "SLOT_OFFER"], // SLOT_OFFER = remarcação (cancela o antigo e reoferta)
   ESCALATED: ["ESCALATED"], // terminal — só humano pode reativar (via /ativar)
 };
 

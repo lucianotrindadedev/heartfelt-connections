@@ -14,12 +14,14 @@ import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-jso
 import {
   listClinicorpSlots,
   createClinicorpAppointment,
+  cancelClinicorpAppointment,
   findClinicorpPatient,
   type ClinicorpSlot,
 } from "@/lib/tools/clinicorp.server";
 import {
   listGoogleCalendarSlots,
   createGoogleCalendarEvent,
+  cancelGoogleCalendarEvent,
   findGoogleCalendarEventsByPhone,
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
@@ -173,6 +175,29 @@ const SCHEDULER_TOOLS: LlmTool[] = [
         properties: {},
         required: [],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancelar_agendamento",
+      description:
+        "Cancela o agendamento ATIVO do lead (que já tem appointment_id) e remove o evento da agenda " +
+        "(Clinicorp/Google Calendar). Use quando o lead pedir explicitamente para CANCELAR e NÃO quiser " +
+        "remarcar. Depois, confirme o cancelamento ao lead. Retorna {ok, cancelled} ou {ok:false, error}.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remarcar_agendamento",
+      description:
+        "Cancela o agendamento ATIVO do lead e REINICIA a oferta de horários para marcar um novo. " +
+        "Use quando o lead quiser MUDAR a data/horário do agendamento existente. Após esta tool, " +
+        "ofereça novos horários (chame listar_horarios) e use next_stage=\"SLOT_OFFER\". " +
+        "Retorna {ok, cancelled, reoffer:true} ou {ok:false, error}.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
   {
@@ -490,6 +515,98 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   }
 }
 
+/** Reverte as tags pós-cancelamento: remove "Agendado" e volta "Não Agendado". */
+async function applyUnbookedTagSwap(ctx: AgentContext): Promise<void> {
+  if (ctx.dryRun) return;
+  if (!ctx.helenaContact?.id) return;
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    const res = await swapTagBySynonyms(
+      helena,
+      ctx.helenaContact.id,
+      SCHEDULED_SYNONYMS,
+      NOT_SCHEDULED_SYNONYMS,
+    );
+    if (res.ok) {
+      console.log(
+        `[scheduler] tag swap pós-cancelamento: removeu=${res.removed ?? "(n/a)"} adicionou=${res.added}`,
+      );
+    }
+  } catch (e) {
+    console.warn("[scheduler] erro ao reverter tags pós-cancelamento:", e);
+  }
+}
+
+/**
+ * Cancela o agendamento ativo do lead (Clinicorp ou Google Calendar) e limpa
+ * o appointment_id. Com `reoffer=true` (remarcação), também limpa o slot e os
+ * horários oferecidos para reiniciar a oferta. Determinístico — não precisa de
+ * outro turn de LLM para efetivar o cancelamento.
+ */
+async function execCancelarAgendamento(
+  ctx: AgentContext,
+  opts?: { reoffer?: boolean },
+): Promise<ToolOutcome> {
+  const ld = ctx.leadData;
+  if (!ld.appointment_id) {
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error: "Nenhum agendamento ativo para cancelar.",
+      }),
+    };
+  }
+
+  const clearPatch: Partial<LeadData> = {
+    appointment_id: undefined,
+    booked_tag_applied: false,
+    commitment_confirmed: false,
+    appointment_cancelled: true, // sinal p/ o orquestrador limpar o appointment_id de fato
+  };
+  if (opts?.reoffer) {
+    clearPatch.selected_slot_iso = undefined;
+    clearPatch.offered_slots = undefined;
+    clearPatch.dentist_person_id = undefined;
+    clearPatch.reoffer_after_cancel = true;
+  }
+
+  if (ctx.dryRun) {
+    return {
+      result: JSON.stringify({ ok: true, cancelled: true, dry_run: true, reoffer: !!opts?.reoffer }),
+      patch: clearPatch,
+    };
+  }
+
+  try {
+    if (ctx.integrations.googleCalendar) {
+      await cancelGoogleCalendarEvent(ctx.accountId, String(ld.appointment_id));
+    } else {
+      await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[scheduler] cancelamento falhou conv=${ctx.conversationId}: ${msg}`);
+    return { result: JSON.stringify({ ok: false, error: msg.slice(0, 200) }) };
+  }
+
+  await applyUnbookedTagSwap(ctx);
+  console.log(
+    `[scheduler] agendamento cancelado conv=${ctx.conversationId} appt=${ld.appointment_id} reoffer=${!!opts?.reoffer}`,
+  );
+
+  return {
+    result: JSON.stringify({
+      ok: true,
+      cancelled: true,
+      reoffer: !!opts?.reoffer,
+      note: opts?.reoffer
+        ? "Agendamento anterior cancelado. Agora ofereça novos horários ao lead (next_stage=SLOT_OFFER)."
+        : "Agendamento cancelado com sucesso. Confirme ao lead.",
+    }),
+    patch: clearPatch,
+  };
+}
+
 // ── Prompts (separados em cached + dynamic) ───────────────────────────────
 
 function buildCachedSystemPrompt(ctx: AgentContext): string {
@@ -520,6 +637,13 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
 - **BOOKING**: o sistema cria o agendamento. Se criar_agendamento ok=true,
   confirme e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou.
 - **CONFIRMED**: só após appointment_id em lead_data. Agradeça e encerre.
+
+# CANCELAMENTO E REMARCAÇÃO (quando já existe appointment_id)
+- Se o lead pedir para CANCELAR e não quiser outro horário → chame
+  cancelar_agendamento e confirme o cancelamento. NÃO peça novos horários.
+- Se o lead quiser MUDAR a data/horário (remarcar) → chame remarcar_agendamento,
+  depois ofereça novos horários (listar_horarios) e use next_stage="SLOT_OFFER".
+- Nunca diga que cancelou/remarcou sem a tool retornar ok=true.
 
 ${fieldsBlock}
 ${phoneBlock ? `\n${phoneBlock}\n` : ""}
@@ -952,6 +1076,16 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "agendar_google_calendar":
           case "agendar_clinup":
             outcome = await execCriarAgendamento(ctx);
+            break;
+          case "cancelar_agendamento":
+          case "cancelar_clinicorp":
+          case "cancelar_google_calendar":
+            outcome = await execCancelarAgendamento(ctx);
+            break;
+          case "remarcar_agendamento":
+          case "reagendar":
+          case "reagendar_agendamento":
+            outcome = await execCancelarAgendamento(ctx, { reoffer: true });
             break;
           case "enviar_midia": {
             const slug = typeof args.slug === "string" ? args.slug : "";

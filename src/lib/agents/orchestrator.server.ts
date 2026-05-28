@@ -350,9 +350,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const meta = (conv.data.meta as ConversationMeta | null) ?? null;
     const stage = readStageFromMeta(meta);
     let leadData = readLeadDataFromMeta(meta);
-    // Captura ANTES de qualquer mutação — usado para detectar "recém-agendado"
-    // (transição de sem→com appointment_id) e disparar a notificação 1x só.
+    // Captura ANTES de qualquer mutação — usado para detectar transições de
+    // agendamento (sem→com = agendou; com→sem = cancelou) e disparar a
+    // notificação 1x só. slotIsoBefore guarda o horário antigo (para a msg de
+    // cancelamento, já que o appointment_id/slot são limpos ao cancelar).
     const hadAppointmentBefore = !!leadData.appointment_id;
+    const slotIsoBefore = (leadData.selected_slot_iso as string | undefined) ?? "";
     const agentSettings = (agent.data.settings as Record<string, string> | null) ?? {};
 
     if (leadData.custom_fields) {
@@ -590,7 +593,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       agentSettings,
       channelCtx,
     );
-    const finalLeadData =
+    let finalLeadData =
       Object.keys(backfillFinal).length > 0
         ? mergeLeadDataPatch(newLeadData, backfillFinal)
         : newLeadData;
@@ -599,6 +602,31 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         `[orch] backfill pos-turn conv=${conversationId} patch=${JSON.stringify(backfillFinal)}`,
       );
     }
+
+    // Cancelamento: a tool sinaliza appointment_cancelled (truthy, sobrevive ao
+    // stripNullishFields). Aqui limpamos o appointment_id de fato (e, em
+    // remarcação, o slot) e removemos os sinais transitórios antes de persistir.
+    if (finalLeadData.appointment_cancelled) {
+      const reoffer = !!finalLeadData.reoffer_after_cancel;
+      finalLeadData = { ...finalLeadData };
+      delete finalLeadData.appointment_id;
+      delete finalLeadData.booked_tag_applied;
+      delete finalLeadData.commitment_confirmed;
+      if (reoffer) {
+        delete finalLeadData.selected_slot_iso;
+        delete finalLeadData.dentist_person_id;
+        delete finalLeadData.offered_slots;
+      }
+      delete finalLeadData.appointment_cancelled;
+      delete finalLeadData.reoffer_after_cancel;
+      console.log(
+        `[orch] agendamento cancelado conv=${conversationId} reoffer=${reoffer} — appointment_id limpo`,
+      );
+    }
+
+    // Transição com→sem appointment_id = cancelamento efetivado neste turn.
+    const appointmentJustCancelled =
+      hadAppointmentBefore && !finalLeadData.appointment_id;
 
     const resolvedStage = resolveNextStage(stage, result.next_stage, {
       requireAppointmentForConfirmed: hasBookingIntegration,
@@ -631,6 +659,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     if (
       hasBookingIntegration &&
       !finalLeadData.appointment_id &&
+      !appointmentJustCancelled &&
       /\b(agendei|agendado|marquei|confirmad[oa]|visita guiada para)\b/i.test(reply)
     ) {
       falseBookingClaimBlocked = true;
@@ -742,12 +771,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    // 14. Notificação de agendamento confirmado — dispara só na transição
-    // sem→com appointment_id (1x por agendamento). Reusa a config da escalada
+    // 14. Notificações de agendamento — disparam na transição do appointment_id:
+    //   sem→com  = agendou   → notifica "created"
+    //   com→sem  = cancelou  → notifica "cancelled"
+    // (Remarcar = cancela o antigo + reoferta → gera naturalmente cancelled e,
+    //  depois, created quando o novo for marcado.) Reusa a config da escalada
     // (instância + grupo) com toggle próprio (notificar_agendamentos).
     const justBooked = !hadAppointmentBefore && !!finalLeadData.appointment_id;
-    if (justBooked) {
+    if (justBooked || appointmentJustCancelled) {
       try {
+        const event = justBooked ? "created" : "cancelled";
         let summary = await summarizeConversationForNotification(
           ctx.orKey,
           ctx.ragGateModel,
@@ -757,13 +790,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         await notifyBooking({
           agentId,
           accountId,
-          event: "created",
+          event,
           patientName:
             resolveBookingLeadName(finalLeadData) ||
             (finalLeadData.name as string | undefined) ||
             "(sem nome)",
           phone: effectivePhone ?? conversationPhone,
-          datetimeIso: (finalLeadData.selected_slot_iso as string | undefined) ?? "",
+          datetimeIso: justBooked
+            ? (finalLeadData.selected_slot_iso as string | undefined) ?? ""
+            : slotIsoBefore,
           appointmentLabel: agentSettings.appointment_type_label || "Consulta",
           summary,
         });
