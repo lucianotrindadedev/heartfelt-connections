@@ -34,3 +34,72 @@ export async function getGroqApiKey(accountId?: string): Promise<string | null> 
     return null;
   }
 }
+
+const GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+const GROQ_WHISPER_MODEL = "whisper-large-v3-turbo";
+
+export interface TranscribeResult {
+  ok: boolean;
+  text: string;
+  error?: string;
+}
+
+/**
+ * Baixa um áudio de uma URL pública e transcreve via Groq Whisper.
+ * Espelha o fluxo n8n: download → multipart POST → whisper-large-v3-turbo.
+ *
+ * Retorna { ok:false } com erro em vez de lançar — transcrição é best-effort,
+ * o webhook segue com a melhor info disponível.
+ */
+export async function transcribeAudioFromUrl(
+  audioUrl: string,
+  apiKey: string,
+  opts: { language?: string } = {},
+): Promise<TranscribeResult> {
+  try {
+    // 1. Baixa o áudio
+    const audioRes = await fetch(audioUrl, { signal: AbortSignal.timeout(30_000) });
+    if (!audioRes.ok) {
+      return { ok: false, text: "", error: `download ${audioRes.status}` };
+    }
+    const audioBlob = await audioRes.blob();
+    if (audioBlob.size === 0) {
+      return { ok: false, text: "", error: "áudio vazio" };
+    }
+
+    // 2. Monta multipart e envia ao Groq
+    const form = new FormData();
+    // Nome do arquivo precisa ter extensão reconhecida pelo Whisper
+    const ext = audioBlob.type.includes("ogg")
+      ? "ogg"
+      : audioBlob.type.includes("mp4") || audioBlob.type.includes("m4a")
+        ? "m4a"
+        : audioBlob.type.includes("wav")
+          ? "wav"
+          : "mp3";
+    form.append("file", audioBlob, `audio.${ext}`);
+    form.append("model", GROQ_WHISPER_MODEL);
+    form.append("temperature", "0");
+    form.append("response_format", "json");
+    if (opts.language) form.append("language", opts.language);
+
+    const res = await fetch(GROQ_TRANSCRIBE_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { ok: false, text: "", error: `groq ${res.status}: ${body.slice(0, 200)}` };
+    }
+    const json = (await res.json()) as { text?: string };
+    return { ok: true, text: (json.text ?? "").trim() };
+  } catch (e) {
+    return {
+      ok: false,
+      text: "",
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}

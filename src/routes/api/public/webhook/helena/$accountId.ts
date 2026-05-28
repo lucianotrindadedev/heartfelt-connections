@@ -11,6 +11,7 @@ import {
 } from "@/lib/conversation-channel.server";
 import { dispatchInboundAgentTurn } from "@/lib/schedule-agent-turn.server";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
+import { getGroqApiKey, transcribeAudioFromUrl } from "@/lib/groq.server";
 import {
   isResetCommand,
   resetConversationHistory,
@@ -33,11 +34,18 @@ function hasIaDesligadaTag(tagNames: string[]): boolean {
   return tagNames.some((t) => t.trim().toUpperCase() === AI_DISABLED_TAG.toUpperCase());
 }
 
+interface HelenaFile {
+  mimeType?: string | null;
+  type?: string | null;
+  publicUrl?: string | null;
+  url?: string | null;
+  name?: string | null;
+}
 interface HelenaDetails {
   to?: string | null;
   from?: string | null;
-  file?: unknown;
-  transcription?: unknown;
+  file?: HelenaFile | null;
+  transcription?: string | null;
 }
 
 interface HelenaContent {
@@ -345,9 +353,47 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         const sessionId = c.sessionId?.trim() || undefined;
         const fromDetails = (c.details?.from ?? "").toString().trim();
         const legacyPhone = (body.telefone ?? body.phone ?? "").toString().trim();
-        const messageContent = (c.text ?? "").toString();
-        const audioUrl = body.audio_url ?? null;
+        let messageContent = (c.text ?? "").toString();
         const messageType = c.type ?? "TEXT";
+
+        // ── Áudio: detecta arquivo de áudio no payload e transcreve via Groq ──
+        // Helena entrega o anexo em content.details.file { mimeType, publicUrl }.
+        const helenaFile = c.details?.file ?? null;
+        const fileMime = (helenaFile?.mimeType ?? helenaFile?.type ?? "").toString();
+        const isAudioMessage =
+          fileMime.startsWith("audio/") ||
+          messageType.toUpperCase() === "AUDIO" ||
+          messageType.toUpperCase() === "VOICE";
+        const audioUrl: string | null =
+          body.audio_url ?? helenaFile?.publicUrl ?? helenaFile?.url ?? null;
+        let audioTranscription: string | null = null;
+
+        if (isAudioMessage && audioUrl && !messageContent.trim()) {
+          // Helena às vezes já manda a transcrição pronta — usa de graça.
+          const prebuilt = (c.details?.transcription ?? "").toString().trim();
+          if (prebuilt) {
+            audioTranscription = prebuilt;
+            messageContent = prebuilt;
+            console.log(`[webhook] áudio: usando transcrição da Helena (${prebuilt.length} chars)`);
+          } else {
+            const groqKey = await getGroqApiKey(accountId);
+            if (groqKey) {
+              const tr = await transcribeAudioFromUrl(audioUrl, groqKey, { language: "pt" });
+              if (tr.ok && tr.text) {
+                audioTranscription = tr.text;
+                messageContent = tr.text;
+                console.log(`[webhook] áudio transcrito via Groq (${tr.text.length} chars)`);
+              } else {
+                console.error(`[webhook] transcrição falhou: ${tr.error}`);
+                // Fallback: avisa o LLM que veio áudio mas não deu pra transcrever
+                messageContent = "[O lead enviou um áudio que não pôde ser transcrito. Peça gentilmente para reenviar como texto.]";
+              }
+            } else {
+              console.warn("[webhook] áudio recebido mas GROQ_API_KEY não configurada");
+              messageContent = "[O lead enviou um áudio, mas a transcrição não está configurada. Peça para reenviar como texto.]";
+            }
+          }
+        }
 
         const isInbound =
           c.direction === "FROM_HUB" ||
@@ -516,6 +562,9 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
                 payload_shape: body.eventType ? "envelope" : "flat",
               }
             : { evento: body.evento ?? "mensagem_recebida" }),
+          ...(audioTranscription
+            ? { audio_transcrito: true, transcription: audioTranscription }
+            : {}),
         };
 
         await sb.from("messages").insert({
