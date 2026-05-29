@@ -2524,14 +2524,27 @@ function KnowledgeSheet({
     try {
       const res = await crawlSiteFn({ data: { agentId, url, maxPages: 20 } });
       setUrlInput("");
-      toast.success(
-        `Site rastreado: ${res.indexed} página(s) indexada(s)` +
-          (res.failed ? `, ${res.failed} com falha` : "") +
-          ".",
-        { duration: 6000 },
-      );
       qc.invalidateQueries({ queryKey: ["knowledge-docs", agentId] });
+      // O crawl é síncrono e pode demorar; cada página é salva de forma
+      // independente, então mesmo sem o resumo (timeout do gateway) as páginas
+      // aparecem na lista via polling. Só não quebramos se `res` vier vazio.
+      if (res && typeof res.indexed === "number") {
+        toast.success(
+          `Site rastreado: ${res.indexed} página(s) indexada(s)` +
+            (res.failed ? `, ${res.failed} com falha` : "") +
+            (res.skipped ? `. ${res.skipped} restante(s) — rode de novo p/ continuar` : "") +
+            ".",
+          { duration: 7000 },
+        );
+      } else {
+        toast.success(
+          "Rastreamento em andamento — as páginas vão aparecer na lista conforme forem indexadas.",
+          { duration: 6000 },
+        );
+      }
     } catch (e) {
+      // Mesmo em erro/timeout, o que já foi indexado persiste — atualiza a lista.
+      qc.invalidateQueries({ queryKey: ["knowledge-docs", agentId] });
       toast.error(e instanceof Error ? e.message : "Erro ao rastrear o site");
     } finally {
       setPending(false);

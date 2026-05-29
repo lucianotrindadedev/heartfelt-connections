@@ -53,6 +53,7 @@ const HEADERS: HeadersInit = {
 export async function crawlSite(
   baseUrl: string,
   maxPages: number,
+  deadlineMs?: number,
 ): Promise<CrawlResult> {
   const start = normalizeUrl(baseUrl);
   if (!start) throw new Error("URL inválida.");
@@ -67,6 +68,7 @@ export async function crawlSite(
   const queueCap = Math.max(maxPages * 5, 50);
 
   while (queue.length > 0 && pages.length < maxPages) {
+    if (deadlineMs && Date.now() > deadlineMs) break;
     const current = queue.shift()!;
     if (visited.has(current)) continue;
     visited.add(current);

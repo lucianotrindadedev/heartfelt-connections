@@ -161,8 +161,13 @@ export const crawlSiteDocument = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const sb = getSelfhost();
 
+    // Orçamento de tempo para a request terminar ANTES do timeout do gateway
+    // (crawl síncrono): ~25s descobrindo/baixando páginas, ~50s no total.
+    const crawlDeadline = Date.now() + 25_000;
+    const overallDeadline = Date.now() + 50_000;
+
     // 1. Crawla a mesma origem (BFS) baixando cada página uma vez.
-    const { pages, errors } = await crawlSite(data.url, data.maxPages);
+    const { pages, errors } = await crawlSite(data.url, data.maxPages, crawlDeadline);
     if (pages.length === 0) {
       throw new Error(
         errors[0]?.error
@@ -173,9 +178,15 @@ export const crawlSiteDocument = createServerFn({ method: "POST" })
 
     let indexed = 0;
     let failed = errors.length;
+    let skipped = 0;
 
     // 2. Cada página vira um documento próprio (re-crawl substitui o anterior).
     for (const page of pages) {
+      // Respeita o orçamento de tempo — o que já foi indexado persiste.
+      if (Date.now() > overallDeadline) {
+        skipped = pages.length - (indexed + (failed - errors.length));
+        break;
+      }
       // Remove versão anterior desta URL (idempotente em re-crawls). Cascade
       // apaga os chunks antigos.
       await sb
@@ -221,6 +232,7 @@ export const crawlSiteDocument = createServerFn({ method: "POST" })
       found: pages.length,
       indexed,
       failed,
+      skipped, // páginas não processadas por limite de tempo (re-rodar continua)
       // amostra de erros de fetch (para diagnóstico na UI)
       errors: errors.slice(0, 8),
     };
