@@ -5431,6 +5431,28 @@ function AgentSettingsView({
                   </div>
                 </div>
               </div>
+
+              <div className="border-t border-slate-100" />
+
+              {/* Etiquetas que pausam a IA */}
+              <div>
+                <Label className="text-sm font-semibold">Etiquetas que pausam a IA</Label>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Liste etiquetas do CRM em que a IA <strong>não deve interagir</strong>.
+                  Se o contato tiver qualquer uma delas, o agente é ignorado naquele contato
+                  (ex.: <code>RESPONSÁVEL</code> para escolas, <code>PACIENTE</code> para clínicas).
+                  Separe por vírgula ou uma por linha. A comparação ignora maiúsculas e acentos.
+                  A etiqueta <strong>&quot;IA Desligada&quot;</strong> (escalada humana) já pausa
+                  automaticamente — não precisa incluí-la.
+                </p>
+                <textarea
+                  value={settings.blocked_tags ?? ""}
+                  onChange={(e) => setSetting("blocked_tags", e.target.value)}
+                  placeholder={"Ex.: RESPONSÁVEL, PACIENTE\nCLIENTE VIP"}
+                  rows={3}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                />
+              </div>
             </div>
 
             {/* Save button */}

@@ -30,8 +30,35 @@ import {
 
 const AI_DISABLED_TAG = "IA Desligada";
 
-function hasIaDesligadaTag(tagNames: string[]): boolean {
-  return tagNames.some((t) => t.trim().toUpperCase() === AI_DISABLED_TAG.toUpperCase());
+/** Normaliza tag para comparação: sem acento, sem espaços nas pontas, maiúsculo. */
+function normalizeTag(s: string): string {
+  return (s ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .toUpperCase();
+}
+
+/** Tags que pausam a IA: a fixa "IA Desligada" (escalada humana) + as
+ *  configuradas pelo dono em settings.blocked_tags (vírgula/; /quebra de linha). */
+function parseBlockedTags(raw: string | undefined): string[] {
+  const tags = [AI_DISABLED_TAG];
+  if (raw?.trim()) {
+    for (const t of raw.split(/[,;\n]/)) {
+      const v = t.trim();
+      if (v) tags.push(v);
+    }
+  }
+  return tags;
+}
+
+/** Retorna a tag bloqueadora que o contato possui (nome real), ou null. */
+function findBlockingTag(tagNames: string[], blockedTags: string[]): string | null {
+  const blockedSet = new Set(blockedTags.map(normalizeTag));
+  for (const t of tagNames) {
+    if (blockedSet.has(normalizeTag(t))) return t;
+  }
+  return null;
 }
 
 interface HelenaFile {
@@ -542,12 +569,17 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           });
         }
 
-        // ── Bloqueio por tag "IA Desligada": ignora completamente o agente ──
-        // Reutiliza o contato já carregado em upsertConversation (sem nova chamada HTTP).
-        const agentBlockedByTag =
-          isInbound && !!resolvedContact && hasIaDesligadaTag(resolvedContact.tagNames);
+        // ── Bloqueio por tag: ignora completamente o agente ──
+        // Fixa "IA Desligada" (escalada humana) + etiquetas configuradas pelo
+        // dono (settings.blocked_tags). Reutiliza o contato já carregado.
+        const blockedTags = parseBlockedTags(agentSettings.blocked_tags);
+        const blockingTag =
+          isInbound && resolvedContact
+            ? findBlockingTag(resolvedContact.tagNames, blockedTags)
+            : null;
+        const agentBlockedByTag = !!blockingTag;
         if (agentBlockedByTag) {
-          console.log(`[webhook] agente bloqueado pela tag "IA Desligada" — conv ${convId}`);
+          console.log(`[webhook] agente bloqueado pela tag "${blockingTag}" — conv ${convId}`);
         }
 
         const role = isInbound ? "user" : "assistant";

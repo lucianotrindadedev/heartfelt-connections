@@ -764,6 +764,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           agentId,
           phone: effectivePhone ?? conversationPhone,
           sessionId,
+          helenaContactId: helenaContact?.id,
           reason: finalLeadData.escalation_reason,
         });
       } catch (e) {
