@@ -15,15 +15,24 @@ export interface ExtractedDoc {
 // ── PDF ────────────────────────────────────────────────────────────────────
 
 export async function extractFromPdf(buffer: Buffer): Promise<ExtractedDoc> {
-  // pdf-parse: ESM moderno exporta tudo direto; fallback para default em CJS.
-  const mod = (await import("pdf-parse")) as unknown as {
-    default?: (b: Buffer) => Promise<{ text: string; info?: { Title?: string } }>;
-    pdf?: (b: Buffer) => Promise<{ text: string; info?: { Title?: string } }>;
-  };
-  const pdfParse =
-    mod.default ?? mod.pdf ?? (mod as unknown as (b: Buffer) => Promise<{ text: string; info?: { Title?: string } }>);
+  // pdf-parse v2: API baseada em classe (PDFParse). Era função no v1.
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: buffer });
+  let result: { text: string; info?: { Title?: string } };
+  try {
+    const textResult = await parser.getText();
+    let infoTitle: string | undefined;
+    try {
+      const info = await parser.getInfo();
+      if (typeof info?.info?.Title === "string") infoTitle = info.info.Title;
+    } catch {
+      /* metadata best-effort */
+    }
+    result = { text: textResult.text ?? "", info: infoTitle ? { Title: infoTitle } : undefined };
+  } finally {
+    await parser.destroy().catch(() => {});
+  }
 
-  const result = await pdfParse(buffer);
   const text = (result.text ?? "")
     .replace(/[\t ]+/g, " ")
     .replace(/[ ]{2,}/g, " ")
