@@ -104,3 +104,42 @@ export async function extractFromUrl(url: string): Promise<ExtractedDoc> {
     text: text.slice(0, MAX_TEXT_CHARS),
   };
 }
+
+/**
+ * Extrai { title, text } de um HTML JA baixado. Usado pelo crawler de site,
+ * que baixa cada pagina uma vez (para texto + descoberta de links).
+ */
+export function extractFromHtml(html: string, url: string): ExtractedDoc {
+  let hostname = url;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    /* mantem url */
+  }
+
+  const dom = new JSDOM(html, { url });
+  const reader = new Readability(dom.window.document);
+  const article = reader.parse();
+
+  let title = article?.title?.trim() || dom.window.document.title || hostname;
+  title = title.slice(0, 300);
+
+  let text = article?.textContent
+    ? article.textContent
+    : (dom.window.document.body?.textContent ?? "");
+
+  text = text
+    .replace(/[\t ]+/g, " ")
+    .replace(/[ ]{2,}/g, " ")
+    .replace(/\n[ ]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  if (text.length < 100) {
+    throw new Error(
+      "Conteudo extraido muito curto — talvez a pagina exija JavaScript.",
+    );
+  }
+
+  return { title, text: text.slice(0, MAX_TEXT_CHARS) };
+}

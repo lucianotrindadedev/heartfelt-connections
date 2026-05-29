@@ -105,6 +105,7 @@ import {
 import {
   addUrlDocument,
   addPdfDocument,
+  crawlSiteDocument,
   listKnowledgeDocuments,
   deleteKnowledgeDocument,
 } from "@/lib/knowledge.functions";
@@ -2483,6 +2484,7 @@ function KnowledgeSheet({
   const listFn = useServerFn(listKnowledgeDocuments);
   const addUrl = useServerFn(addUrlDocument);
   const addPdf = useServerFn(addPdfDocument);
+  const crawlSiteFn = useServerFn(crawlSiteDocument);
   const delFn = useServerFn(deleteKnowledgeDocument);
 
   const q = useQuery({
@@ -2495,6 +2497,7 @@ function KnowledgeSheet({
   const [mainTab, setMainTab] = useState<"documentos" | "aprendizado">("documentos");
   const [tab, setTab] = useState<"url" | "pdf">("url");
   const [urlInput, setUrlInput] = useState("");
+  const [crawlWholeSite, setCrawlWholeSite] = useState(false);
   const [pending, setPending] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -2513,6 +2516,29 @@ function KnowledgeSheet({
       setPending(false);
     }
   }
+
+  async function submitSite() {
+    const url = urlInput.trim();
+    if (!url || pending) return;
+    setPending(true);
+    try {
+      const res = await crawlSiteFn({ data: { agentId, url, maxPages: 20 } });
+      setUrlInput("");
+      toast.success(
+        `Site rastreado: ${res.indexed} página(s) indexada(s)` +
+          (res.failed ? `, ${res.failed} com falha` : "") +
+          ".",
+        { duration: 6000 },
+      );
+      qc.invalidateQueries({ queryKey: ["knowledge-docs", agentId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao rastrear o site");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const onSubmitUrlTab = () => (crawlWholeSite ? void submitSite() : void submitUrl());
 
   async function submitPdf(file: File) {
     if (pending) return;
@@ -2621,24 +2647,42 @@ function KnowledgeSheet({
         {/* Formulário */}
         <div className="border-b bg-slate-50/50 px-4 py-3">
           {tab === "url" ? (
-            <div className="flex gap-2">
-              <input
-                type="url"
-                value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !pending) {
-                    e.preventDefault();
-                    void submitUrl();
-                  }
-                }}
-                placeholder="https://site.com/sobre-nos"
-                disabled={pending}
-                className="flex-1 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
-              />
-              <Button onClick={() => void submitUrl()} disabled={!urlInput.trim() || pending}>
-                {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Indexar"}
-              </Button>
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !pending) {
+                      e.preventDefault();
+                      onSubmitUrlTab();
+                    }
+                  }}
+                  placeholder={crawlWholeSite ? "https://site.com" : "https://site.com/sobre-nos"}
+                  disabled={pending}
+                  className="flex-1 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary/20"
+                />
+                <Button onClick={onSubmitUrlTab} disabled={!urlInput.trim() || pending}>
+                  {pending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : crawlWholeSite ? (
+                    "Indexar site"
+                  ) : (
+                    "Indexar"
+                  )}
+                </Button>
+              </div>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={crawlWholeSite}
+                  onChange={(e) => setCrawlWholeSite(e.target.checked)}
+                  disabled={pending}
+                  className="h-3.5 w-3.5 rounded border-slate-300 text-primary focus:ring-primary/30"
+                />
+                Rastrear o <strong>site inteiro</strong> (segue os links internos, até 20 páginas)
+              </label>
             </div>
           ) : (
             <div className="flex items-center gap-2">

@@ -11,7 +11,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { chunkText } from "@/lib/knowledge/chunker";
-import { extractFromUrl, extractFromPdf } from "@/lib/knowledge/extractors.server";
+import {
+  extractFromUrl,
+  extractFromPdf,
+  extractFromHtml,
+} from "@/lib/knowledge/extractors.server";
+import { crawlSite } from "@/lib/knowledge/crawler.server";
 import { embedTexts, vectorLiteral } from "@/lib/knowledge/embedder.server";
 
 const PG_URL = () => process.env.SELFHOST_SUPABASE_URL ?? "";
@@ -139,6 +144,86 @@ export const addUrlDocument = createServerFn({ method: "POST" })
         .eq("id", docId);
       throw new Error(msg);
     }
+  });
+
+// ── Crawlear site inteiro ────────────────────────────────────────────────────
+
+export const crawlSiteDocument = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    z
+      .object({
+        agentId: z.string().uuid(),
+        url: z.string().url(),
+        maxPages: z.number().int().min(1).max(40).default(20),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+
+    // 1. Crawla a mesma origem (BFS) baixando cada página uma vez.
+    const { pages, errors } = await crawlSite(data.url, data.maxPages);
+    if (pages.length === 0) {
+      throw new Error(
+        errors[0]?.error
+          ? `Nenhuma página indexável encontrada (${errors[0].error}).`
+          : "Nenhuma página indexável encontrada no site.",
+      );
+    }
+
+    let indexed = 0;
+    let failed = errors.length;
+
+    // 2. Cada página vira um documento próprio (re-crawl substitui o anterior).
+    for (const page of pages) {
+      // Remove versão anterior desta URL (idempotente em re-crawls). Cascade
+      // apaga os chunks antigos.
+      await sb
+        .from("knowledge_documents")
+        .delete()
+        .eq("agent_id", data.agentId)
+        .eq("source_ref", page.url);
+
+      const ins = await sb
+        .from("knowledge_documents")
+        .insert({
+          agent_id: data.agentId,
+          source_type: "url",
+          source_ref: page.url,
+          title: page.url,
+          status: "pending",
+        })
+        .select("id")
+        .single();
+      if (ins.error || !ins.data) {
+        failed++;
+        continue;
+      }
+      const docId = ins.data.id as string;
+
+      try {
+        const { title, text } = extractFromHtml(page.html, page.url);
+        await sb.from("knowledge_documents").update({ title }).eq("id", docId);
+        await indexDocument({ documentId: docId, agentId: data.agentId, text });
+        indexed++;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await sb
+          .from("knowledge_documents")
+          .update({ status: "failed", error: msg.slice(0, 500) })
+          .eq("id", docId);
+        failed++;
+      }
+    }
+
+    return {
+      ok: true,
+      found: pages.length,
+      indexed,
+      failed,
+      // amostra de erros de fetch (para diagnóstico na UI)
+      errors: errors.slice(0, 8),
+    };
   });
 
 // ── Adicionar PDF ──────────────────────────────────────────────────────────
