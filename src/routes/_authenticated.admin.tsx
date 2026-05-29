@@ -6,6 +6,7 @@ import {
   Activity,
   History,
   Zap,
+  Server,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
@@ -19,6 +20,7 @@ const NAV_ITEMS = [
   { to: "/admin/telemetry", label: "Telemetria", icon: Activity, exact: false },
   { to: "/admin/replay", label: "Replay", icon: History, exact: false },
   { to: "/admin/evolution", label: "Evolution", icon: Zap, exact: false },
+  { to: "/admin/diagnostics", label: "Diagnóstico", icon: Server, exact: false },
 ] as const;
 
 function AdminLayout() {

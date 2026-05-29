@@ -23,6 +23,7 @@ import { Route as AuthenticatedAdminTemplatesRouteImport } from './routes/_authe
 import { Route as AuthenticatedAdminTelemetryRouteImport } from './routes/_authenticated.admin.telemetry'
 import { Route as AuthenticatedAdminReplayRouteImport } from './routes/_authenticated.admin.replay'
 import { Route as AuthenticatedAdminEvolutionRouteImport } from './routes/_authenticated.admin.evolution'
+import { Route as AuthenticatedAdminDiagnosticsRouteImport } from './routes/_authenticated.admin.diagnostics'
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as ApiPublicDiagRunTurnRouteImport } from './routes/api/public/diag/run-turn'
 import { Route as ApiPublicDiagQueueRouteImport } from './routes/api/public/diag/queue'
@@ -113,6 +114,12 @@ const AuthenticatedAdminEvolutionRoute =
   AuthenticatedAdminEvolutionRouteImport.update({
     id: '/evolution',
     path: '/evolution',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
+const AuthenticatedAdminDiagnosticsRoute =
+  AuthenticatedAdminDiagnosticsRouteImport.update({
+    id: '/diagnostics',
+    path: '/diagnostics',
     getParentRoute: () => AuthenticatedAdminRoute,
   } as any)
 const EmbedAccountAccountIdIndexRoute =
@@ -224,6 +231,7 @@ export interface FileRoutesByFullPath {
   '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
+  '/admin/diagnostics': typeof AuthenticatedAdminDiagnosticsRoute
   '/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
   '/admin/replay': typeof AuthenticatedAdminReplayRoute
   '/admin/telemetry': typeof AuthenticatedAdminTelemetryRoute
@@ -255,6 +263,7 @@ export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed': typeof EmbedIndexRoute
+  '/admin/diagnostics': typeof AuthenticatedAdminDiagnosticsRoute
   '/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
   '/admin/replay': typeof AuthenticatedAdminReplayRoute
   '/admin/telemetry': typeof AuthenticatedAdminTelemetryRoute
@@ -289,6 +298,7 @@ export interface FileRoutesById {
   '/api/health': typeof ApiHealthRoute
   '/embed/$accountId': typeof EmbedAccountIdRoute
   '/embed/': typeof EmbedIndexRoute
+  '/_authenticated/admin/diagnostics': typeof AuthenticatedAdminDiagnosticsRoute
   '/_authenticated/admin/evolution': typeof AuthenticatedAdminEvolutionRoute
   '/_authenticated/admin/replay': typeof AuthenticatedAdminReplayRoute
   '/_authenticated/admin/telemetry': typeof AuthenticatedAdminTelemetryRoute
@@ -324,6 +334,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/embed/$accountId'
     | '/embed/'
+    | '/admin/diagnostics'
     | '/admin/evolution'
     | '/admin/replay'
     | '/admin/telemetry'
@@ -355,6 +366,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/embed/$accountId'
     | '/embed'
+    | '/admin/diagnostics'
     | '/admin/evolution'
     | '/admin/replay'
     | '/admin/telemetry'
@@ -388,6 +400,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/embed/$accountId'
     | '/embed/'
+    | '/_authenticated/admin/diagnostics'
     | '/_authenticated/admin/evolution'
     | '/_authenticated/admin/replay'
     | '/_authenticated/admin/telemetry'
@@ -538,6 +551,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminEvolutionRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
+    '/_authenticated/admin/diagnostics': {
+      id: '/_authenticated/admin/diagnostics'
+      path: '/diagnostics'
+      fullPath: '/admin/diagnostics'
+      preLoaderRoute: typeof AuthenticatedAdminDiagnosticsRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
     '/embed/account/$accountId/': {
       id: '/embed/account/$accountId/'
       path: '/'
@@ -668,6 +688,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedAdminRouteChildren {
+  AuthenticatedAdminDiagnosticsRoute: typeof AuthenticatedAdminDiagnosticsRoute
   AuthenticatedAdminEvolutionRoute: typeof AuthenticatedAdminEvolutionRoute
   AuthenticatedAdminReplayRoute: typeof AuthenticatedAdminReplayRoute
   AuthenticatedAdminTelemetryRoute: typeof AuthenticatedAdminTelemetryRoute
@@ -677,6 +698,7 @@ interface AuthenticatedAdminRouteChildren {
 }
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
+  AuthenticatedAdminDiagnosticsRoute: AuthenticatedAdminDiagnosticsRoute,
   AuthenticatedAdminEvolutionRoute: AuthenticatedAdminEvolutionRoute,
   AuthenticatedAdminReplayRoute: AuthenticatedAdminReplayRoute,
   AuthenticatedAdminTelemetryRoute: AuthenticatedAdminTelemetryRoute,
