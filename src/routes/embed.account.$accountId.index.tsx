@@ -53,6 +53,7 @@ import {
   updateLlmConfig,
   updateVoiceConfig,
   updateAudio,
+  listAccountTags,
 } from "@/lib/agent.functions";
 import {
   setOpenRouterKey,
@@ -3107,6 +3108,178 @@ function DiffLine({ op }: { op: DiffOp }) {
   );
 }
 
+// Seletor das etiquetas do CRM que pausam a IA. Carrega as tags via API da
+// Helena (GET /core/v1/tag) e deixa o dono marcar quais bloqueiam. Persiste
+// como string separada por vírgula em settings.blocked_tags (formato lido pelo
+// webhook). Faz fallback para texto livre se a API falhar.
+function BlockedTagsField({
+  accountId,
+  value,
+  onChange,
+}: {
+  accountId: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const listTags = useServerFn(listAccountTags);
+  const [search, setSearch] = useState("");
+
+  const tagsQ = useQuery({
+    queryKey: ["account-tags", accountId],
+    queryFn: () => listTags({ data: { accountId } }),
+    staleTime: 60_000,
+  });
+
+  const selected = useMemo(
+    () =>
+      new Set(
+        value
+          .split(/[,;\n]/)
+          .map((t) => t.trim())
+          .filter(Boolean),
+      ),
+    [value],
+  );
+
+  const allTags = tagsQ.data?.tags ?? [];
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? allTags.filter((t) => t.toLowerCase().includes(q)) : allTags;
+  }, [allTags, search]);
+
+  // Tags já selecionadas que não vieram da listagem (adicionadas manualmente
+  // antes, ou que sumiram do CRM) — preserva pra não perder a config.
+  const orphanSelected = useMemo(
+    () => Array.from(selected).filter((t) => !allTags.includes(t)),
+    [selected, allTags],
+  );
+
+  const commit = (next: Set<string>) =>
+    onChange(Array.from(next).join(", "));
+
+  const toggle = (tag: string) => {
+    const next = new Set(selected);
+    if (next.has(tag)) next.delete(tag);
+    else next.add(tag);
+    commit(next);
+  };
+
+  const removeOrphan = (tag: string) => {
+    const next = new Set(selected);
+    next.delete(tag);
+    commit(next);
+  };
+
+  // Fallback: API falhou → textarea de texto livre.
+  if (tagsQ.data?.error) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-700">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>
+            Não consegui carregar as etiquetas do CRM ({tagsQ.data.error}). Digite os
+            nomes manualmente, separados por vírgula.
+          </span>
+        </div>
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={"Ex.: RESPONSÁVEL, PACIENTE"}
+          rows={3}
+          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Chips selecionados */}
+      {selected.size > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {Array.from(selected).map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => (allTags.includes(tag) ? toggle(tag) : removeOrphan(tag))}
+              className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2.5 py-1 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-200"
+              title="Remover"
+            >
+              {tag}
+              <span className="text-violet-500">×</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Busca */}
+      <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+        <Search className="h-4 w-4 text-slate-400" />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={tagsQ.isLoading ? "Carregando etiquetas…" : "Buscar etiqueta do CRM…"}
+          className="flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
+        />
+        <button
+          type="button"
+          onClick={() => tagsQ.refetch()}
+          disabled={tagsQ.isFetching}
+          className="text-slate-400 hover:text-slate-600 disabled:opacity-50"
+          title="Recarregar etiquetas"
+        >
+          <RotateCcw className={`h-3.5 w-3.5 ${tagsQ.isFetching ? "animate-spin" : ""}`} />
+        </button>
+      </div>
+
+      {/* Lista de etiquetas do CRM */}
+      <div className="max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-white">
+        {tagsQ.isLoading ? (
+          <p className="flex items-center gap-2 p-3 text-xs text-slate-400">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando etiquetas do CRM…
+          </p>
+        ) : filtered.length === 0 ? (
+          <p className="p-3 text-xs text-slate-400">
+            {allTags.length === 0
+              ? "Nenhuma etiqueta encontrada no CRM."
+              : "Nenhuma etiqueta corresponde à busca."}
+          </p>
+        ) : (
+          filtered.map((tag) => {
+            const isOn = selected.has(tag);
+            return (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => toggle(tag)}
+                className={`flex w-full items-center gap-2.5 border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 transition-colors hover:bg-slate-50 ${
+                  isOn ? "text-violet-700" : "text-slate-700"
+                }`}
+              >
+                <span
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                    isOn ? "border-violet-500 bg-violet-500 text-white" : "border-slate-300 bg-white"
+                  }`}
+                >
+                  {isOn && <Check className="h-3 w-3" />}
+                </span>
+                <span className="truncate">{tag}</span>
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      {orphanSelected.length > 0 && (
+        <p className="text-[11px] text-slate-400">
+          {orphanSelected.length} etiqueta(s) selecionada(s) não estão na lista atual do CRM
+          (mantidas mesmo assim).
+        </p>
+      )}
+    </div>
+  );
+}
+
 function AiMagicSheet({
   open,
   onClose,
@@ -5445,12 +5618,10 @@ function AgentSettingsView({
                   A etiqueta <strong>&quot;IA Desligada&quot;</strong> (escalada humana) já pausa
                   automaticamente — não precisa incluí-la.
                 </p>
-                <textarea
+                <BlockedTagsField
+                  accountId={accountId}
                   value={settings.blocked_tags ?? ""}
-                  onChange={(e) => setSetting("blocked_tags", e.target.value)}
-                  placeholder={"Ex.: RESPONSÁVEL, PACIENTE\nCLIENTE VIP"}
-                  rows={3}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  onChange={(v) => setSetting("blocked_tags", v)}
                 />
               </div>
             </div>

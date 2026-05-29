@@ -1,8 +1,40 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { loadHelenaAccount, listHelenaTags } from "@/lib/helena.server";
 
 const accountIdInput = z.object({ accountId: z.string().min(1) });
+
+const AI_DISABLED_TAG_NAME = "IA Desligada";
+
+/**
+ * Lista as etiquetas cadastradas no CRM Helena da conta (GET /core/v1/tag).
+ * Usada na personalização para o dono SELECIONAR quais etiquetas pausam a IA.
+ * "IA Desligada" é omitida (já pausa automaticamente).
+ */
+export const listAccountTags = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }): Promise<{ tags: string[]; error?: string }> => {
+    try {
+      const helena = await loadHelenaAccount(data.accountId);
+      const tags = await listHelenaTags(helena);
+      const names = Array.from(
+        new Set(
+          tags
+            .map((t) => t.name.trim())
+            .filter(
+              (n) => n && n.toUpperCase() !== AI_DISABLED_TAG_NAME.toUpperCase(),
+            ),
+        ),
+      ).sort((a, b) => a.localeCompare(b, "pt-BR"));
+      return { tags: names };
+    } catch (e) {
+      return {
+        tags: [],
+        error: e instanceof Error ? e.message : "Falha ao listar etiquetas do CRM",
+      };
+    }
+  });
 
 /**
  * Verifica se a conta existe (sem auto-provisionar).
