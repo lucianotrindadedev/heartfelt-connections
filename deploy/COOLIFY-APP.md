@@ -64,7 +64,7 @@ VITE_SUPABASE_PUBLISHABLE_KEY=<anon key>
 
 ## 5. Deploy
 
-Clique **Deploy**. Build roda `npm run build:vercel` dentro do Docker (~3–5 min).
+Clique **Deploy**. Build roda `npm run build:coolify` dentro do Docker (~3–5 min).
 
 Teste: abra `https://SEU-DOMINIO/` → tela de login.
 

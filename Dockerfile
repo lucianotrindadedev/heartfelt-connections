@@ -19,7 +19,16 @@ ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
 
 # Vite/SSR deve emitir jsx (production), não jsxDEV — senão o runtime em NODE_ENV=production quebra
 ENV NODE_ENV=production
-RUN npm run build:vercel
+RUN npm run build:coolify
+
+# ── prod deps ──
+# jsdom/pdf-parse NÃO são bundlados (leem arquivos/import.meta em runtime — quebra no
+# bundle único). Carregam do node_modules real; este stage instala só as deps de produção.
+FROM node:22-bookworm-slim AS proddeps
+
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
 
 # ── runtime ──
 FROM node:22-bookworm-slim AS runner
@@ -29,6 +38,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 COPY --from=builder /app/.vercel/output ./.vercel/output
+COPY --from=proddeps /app/node_modules ./node_modules
 COPY --from=builder /app/scripts/start-coolify.cjs ./scripts/start-coolify.cjs
 
 EXPOSE 3000

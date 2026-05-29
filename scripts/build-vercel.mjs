@@ -27,6 +27,14 @@ import { existsSync } from "fs";
 import { join, resolve } from "path";
 import { build as esbuild } from "esbuild";
 
+// --external-deps (build:coolify): NÃO bundla jsdom/pdf-parse — eles leem arquivos
+// (default-stylesheet.css) e usam import.meta.url em runtime, o que quebra quando
+// empacotados num único CJS (__dirname/import.meta viram o dir do bundle). No Coolify
+// eles carregam do node_modules real (enviado ao runner pelo Dockerfile). No Vercel
+// puro (build:vercel) mantemos tudo bundlado, pois a function não tem node_modules.
+const EXTERNAL_DEPS = process.argv.includes("--external-deps");
+const RUNTIME_EXTERNALS = ["jsdom", "pdf-parse"];
+
 const ROOT = resolve(process.cwd());
 const DIST_CLIENT = join(ROOT, "dist/client");
 const DIST_SERVER = join(ROOT, "dist/server");
@@ -79,7 +87,11 @@ await cp(join(DIST_CLIENT, "assets"), join(VERCEL_OUT, "static/assets"), {
 // --splitting: divide dynamic imports em chunks separados (mantém code-splitting)
 // --platform=node: externaliza automaticamente built-ins node:* e fs, crypto, etc.
 // --external:*.node: exclui addons nativos
-console.log("⚙️   Bundleando servidor com esbuild (inclui dependências npm)...");
+console.log(
+  EXTERNAL_DEPS
+    ? `⚙️   Bundleando servidor com esbuild (jsdom/pdf-parse externos: ${RUNTIME_EXTERNALS.join(", ")})...`
+    : "⚙️   Bundleando servidor com esbuild (inclui dependências npm)...",
+);
 // format=cjs: necessário porque algumas dependências usam require() dinâmico
 // (splitting não funciona com cjs, então o bundle é um único arquivo grande)
 await esbuild({
@@ -89,7 +101,7 @@ await esbuild({
   target: "node22",
   format: "cjs",
   outfile: join(FUNC_DIR, "server-bundle.cjs"),
-  external: ["*.node"],
+  external: ["*.node", ...(EXTERNAL_DEPS ? RUNTIME_EXTERNALS : [])],
   logLevel: "warning",
   // Ignora sideEffects:false do package.json — o servidor precisa de TODOS os módulos
   ignoreAnnotations: true,
@@ -200,3 +212,6 @@ console.log(`\n✅  Vercel output pronto!`);
 console.log(`   server-bundle.js : ${(bundleStat.size / 1024 / 1024).toFixed(1)} MB`);
 console.log(`   static/assets    : ${existsSync(join(VERCEL_OUT, "static/assets")) ? "ok" : "MISSING"}`);
 console.log(`   index.func/      : ${existsSync(FUNC_DIR) ? "ok" : "MISSING"}`);
+if (EXTERNAL_DEPS) {
+  console.log(`   externos runtime : ${RUNTIME_EXTERNALS.join(", ")} (exigem node_modules no runner)`);
+}
