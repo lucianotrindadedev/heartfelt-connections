@@ -1,6 +1,7 @@
 import { createRouter, useRouter } from "@tanstack/react-router";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryCache, MutationCache } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
+import { isStaleServerFnError, reloadForStaleClient } from "@/lib/stale-client";
 
 function DefaultErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   const router = useRouter();
@@ -32,11 +33,22 @@ function DefaultErrorComponent({ error, reset }: { error: Error; reset: () => vo
 }
 
 export const getRouter = () => {
+  // Handler global: queries/mutations de polling capturam seus erros (não
+  // chegam ao unhandledrejection), então recarregamos aqui quando o serverFn
+  // está desatualizado após um deploy — para de spammar 500 no servidor.
+  const onStaleError = (error: unknown) => {
+    if (isStaleServerFnError(error)) reloadForStaleClient();
+  };
+
   const queryClient = new QueryClient({
+    queryCache: new QueryCache({ onError: onStaleError }),
+    mutationCache: new MutationCache({ onError: onStaleError }),
     defaultOptions: {
       queries: {
         staleTime: 30_000,
         retry: (failureCount, error) => {
+          // serverFn desatualizado não adianta repetir — só recarregando.
+          if (isStaleServerFnError(error)) return false;
           const msg = error instanceof Error ? error.message : "";
           if (/unauthor|denied|inválido|invalid/i.test(msg)) return false;
           return failureCount < 2;
