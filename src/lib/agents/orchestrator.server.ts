@@ -261,7 +261,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
   const agent = await sb
     .from("agents")
-    .select("id, account_id, ativo, system_prompt, llm_model_override, debounce_segundos, settings")
+    .select("id, account_id, ativo, nome, system_prompt, llm_model_override, debounce_segundos, settings")
     .eq("id", conv.data.agent_id)
     .single();
   if (agent.error || !agent.data) throw new Error("Agente não encontrado");
@@ -766,6 +766,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           sessionId,
           helenaContactId: helenaContact?.id,
           reason: finalLeadData.escalation_reason,
+          agentName: (agent.data.nome as string | undefined) ?? undefined,
+          stage, // estágio em que estava antes do ESCALATED
+          leadData: finalLeadData,
+          history,
+          orKey,
+          summaryModel: ctx.ragGateModel,
         });
       } catch (e) {
         console.error("[orch] escalateToHuman falhou:", e);
