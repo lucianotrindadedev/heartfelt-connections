@@ -108,6 +108,7 @@ const ResultSchema = z.object({
     .object({
       name: z.string().nullish(),
       selected_slot_iso: z.string().nullish(),
+      selected_agenda: z.string().nullish(),
       dentist_person_id: z.number().nullish(),
       commitment_confirmed: z.boolean().nullish(),
       patient_id: z.number().nullish(),
@@ -226,11 +227,87 @@ const SCHEDULER_TOOLS: LlmTool[] = [
   },
 ];
 
+/** True quando a conta tem 2+ agendas Google e o agente deve escolher. */
+function isMultiAgenda(ctx: AgentContext): boolean {
+  return ctx.integrations.googleCalendar && (ctx.googleAgendas?.length ?? 0) >= 2;
+}
+
+/**
+ * Monta as tools do scheduler. Em multi-agenda (2+ agendas Google), injeta o
+ * parâmetro `agenda` (enum dos labels) nas tools que tocam a agenda, para o
+ * agente escolher conforme as regras do prompt. Em agenda única, retorna o
+ * conjunto base inalterado (comportamento idêntico ao atual).
+ */
+function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
+  if (!isMultiAgenda(ctx)) return SCHEDULER_TOOLS;
+
+  const labels = ctx.googleAgendas.map((a) => a.label);
+  const agendaProp = {
+    type: "string",
+    enum: labels,
+    description:
+      "Qual agenda usar nesta operação. Escolha EXATAMENTE um destes labels conforme a situação:\n" +
+      ctx.googleAgendas
+        .map((a) => `- "${a.label}": ${a.descricao || "(sem descrição)"}`)
+        .join("\n"),
+  };
+
+  return SCHEDULER_TOOLS.map((t) => {
+    if (t.function.name !== "listar_horarios" && t.function.name !== "criar_agendamento") {
+      return t;
+    }
+    const params = t.function.parameters as {
+      type: string;
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    return {
+      ...t,
+      function: {
+        ...t.function,
+        parameters: {
+          ...params,
+          properties: { ...(params.properties ?? {}), agenda: agendaProp },
+          required: Array.from(new Set([...(params.required ?? []), "agenda"])),
+        },
+      },
+    };
+  });
+}
+
 // ── Execução das tools ─────────────────────────────────────────────────────
 
 interface ToolOutcome {
   result: string;
   patch?: Partial<LeadData>;
+}
+
+/**
+ * Resolve o calendarId (Google) a partir do label de agenda em multi-agenda.
+ * Retorna:
+ *  - { calendarId } quando o label é válido.
+ *  - { error } quando multi-agenda mas o label está ausente ou é inválido.
+ *  - {} (sem calendarId nem error) em agenda única → usa o calendar_id padrão.
+ */
+function resolveGcalAgenda(
+  ctx: AgentContext,
+  label?: string,
+): { calendarId?: string; agendaLabel?: string; error?: string } {
+  if (!isMultiAgenda(ctx)) return {};
+  const validLabels = ctx.googleAgendas.map((a) => a.label);
+  if (!label || !label.trim()) {
+    return {
+      error: `Esta conta tem várias agendas. Informe o parâmetro "agenda" com um destes valores: ${validLabels.join(", ")}.`,
+    };
+  }
+  const wanted = label.trim().toLowerCase();
+  const match = ctx.googleAgendas.find((a) => a.label.toLowerCase() === wanted);
+  if (!match) {
+    return {
+      error: `Agenda "${label}" não existe. Use exatamente um destes: ${validLabels.join(", ")}.`,
+    };
+  }
+  return { calendarId: match.calendarId, agendaLabel: match.label };
 }
 
 async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
@@ -253,8 +330,13 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
           appointment_id: next.id,
           titulo: next.titulo,
           inicio: next.inicio,
+          ...(next.agendaLabel ? { agenda: next.agendaLabel } : {}),
         }),
-        patch: { appointment_id: next.id },
+        patch: {
+          appointment_id: next.id,
+          // Marca em qual agenda o evento existe → cancelar/remarcar acertam o calendário.
+          ...(next.agendaLabel ? { selected_agenda: next.agendaLabel } : {}),
+        },
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -313,6 +395,7 @@ function formatGCalSlot(s: GCalSlot): {
 async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
+  agendaLabel?: string,
 ): Promise<ToolOutcome> {
   const selected = ctx.leadData.selected_slot_iso;
   if (selected) {
@@ -349,18 +432,31 @@ async function execListarHorarios(
 
   // Google Calendar: usa lógica de janelas com expediente da clínica
   if (ctx.integrations.googleCalendar) {
+    // Multi-agenda: resolve qual calendário consultar a partir do label.
+    const resolved = resolveGcalAgenda(ctx, agendaLabel);
+    if (resolved.error) {
+      return { result: JSON.stringify({ count: 0, slots: [], error: resolved.error }) };
+    }
     const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
     // Granularidade IGUAL à duração → slots não sobrepostos. Ex: duração 30 min
     // gera 08:00, 08:30, 09:00, 09:30... Duração 40 min gera 08:00, 08:40, 09:20...
-    const slots = await listGoogleCalendarSlots(ctx.accountId, {
-      periodoInicio: today.toISOString(),
-      periodoFim: end.toISOString(),
-      tamanhoJanelaMinutos: duracao,
-      granularidade: duracao,
-      amostras: 6,
-      businessHoursJson: ctx.agentSettings.business_hours_json,
-    });
+    const slots = await listGoogleCalendarSlots(
+      ctx.accountId,
+      {
+        periodoInicio: today.toISOString(),
+        periodoFim: end.toISOString(),
+        tamanhoJanelaMinutos: duracao,
+        granularidade: duracao,
+        amostras: 6,
+        businessHoursJson: ctx.agentSettings.business_hours_json,
+      },
+      resolved.calendarId,
+    );
     const formatted = slots.map(formatGCalSlot);
+    // Persiste a agenda escolhida para o booking/cancelamento usarem a mesma.
+    const agendaPatch: Partial<LeadData> = resolved.agendaLabel
+      ? { selected_agenda: resolved.agendaLabel }
+      : {};
 
     // Quando vier vazio, devolve diagnostico p/ o LLM decidir bem
     // (ex: pedir pra suporte, sugerir janela maior, etc.) e nao alucinar.
@@ -381,13 +477,17 @@ async function execListarHorarios(
       console.warn("[scheduler] listar_horarios retornou 0 slots:", diag.debug);
       return {
         result: JSON.stringify(diag),
-        patch: { offered_slots: [] },
+        patch: { offered_slots: [], ...agendaPatch },
       };
     }
 
     return {
-      result: JSON.stringify({ count: formatted.length, slots: formatted }),
-      patch: { offered_slots: formatted },
+      result: JSON.stringify({
+        count: formatted.length,
+        slots: formatted,
+        ...(resolved.agendaLabel ? { agenda: resolved.agendaLabel } : {}),
+      }),
+      patch: { offered_slots: formatted, ...agendaPatch },
     };
   }
 
@@ -404,7 +504,10 @@ async function execListarHorarios(
   };
 }
 
-async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
+async function execCriarAgendamento(
+  ctx: AgentContext,
+  agendaLabel?: string,
+): Promise<ToolOutcome> {
   const ld = ctx.leadData;
 
   // GUARD DE IDEMPOTENCIA — bug "agendamento duplo" (27/05/2026):
@@ -470,15 +573,26 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
   // Google Calendar
   if (ctx.integrations.googleCalendar) {
     try {
+      // Multi-agenda: usa o label informado OU a agenda escolhida na oferta de
+      // horários (selected_agenda). Garante que o evento vá para a MESMA agenda
+      // onde os slots livres foram consultados.
+      const resolved = resolveGcalAgenda(ctx, agendaLabel ?? ld.selected_agenda);
+      if (resolved.error) {
+        return { result: JSON.stringify({ ok: false, error: resolved.error }) };
+      }
       const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
       const { titulo, descricao } = resolveGcalEventTemplates(bookingCtx);
-      const ev = await createGoogleCalendarEvent(ctx.accountId, {
-        eventoInicio: ld.selected_slot_iso,
-        duracaoMinutos: duracao,
-        titulo,
-        descricao,
-        telefone: ctx.effectivePhone,
-      });
+      const ev = await createGoogleCalendarEvent(
+        ctx.accountId,
+        {
+          eventoInicio: ld.selected_slot_iso,
+          duracaoMinutos: duracao,
+          titulo,
+          descricao,
+          telefone: ctx.effectivePhone,
+        },
+        resolved.calendarId,
+      );
       await applyBookedTagSwap(ctx);
       return {
         result: JSON.stringify({
@@ -487,7 +601,12 @@ async function execCriarAgendamento(ctx: AgentContext): Promise<ToolOutcome> {
           datetime: ev.start,
           calendar_event_link: ev.htmlLink,
         }),
-        patch: { appointment_id: ev.id, name: leadName, booked_tag_applied: true },
+        patch: {
+          appointment_id: ev.id,
+          name: leadName,
+          booked_tag_applied: true,
+          ...(resolved.agendaLabel ? { selected_agenda: resolved.agendaLabel } : {}),
+        },
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -579,7 +698,14 @@ async function execCancelarAgendamento(
 
   try {
     if (ctx.integrations.googleCalendar) {
-      await cancelGoogleCalendarEvent(ctx.accountId, String(ld.appointment_id));
+      // Multi-agenda: tenta primeiro a agenda conhecida (selected_agenda); se
+      // não houver, cancelGoogleCalendarEvent varre todas as agendas.
+      const resolved = resolveGcalAgenda(ctx, ld.selected_agenda);
+      await cancelGoogleCalendarEvent(
+        ctx.accountId,
+        String(ld.appointment_id),
+        resolved.calendarId,
+      );
     } else {
       await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
     }
@@ -762,6 +888,21 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
   const bookingFields = getBookingFieldsForChannel(ctx.agentSettings, channelCtx);
   const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
 
+  // Bloco de agendas (multi-agenda). Lista os labels + quando usar cada uma,
+  // e instrui o agente a passar o parâmetro `agenda` nas tools de agenda.
+  const agendasBlock = isMultiAgenda(ctx)
+    ? `\n# AGENDAS DISPONÍVEIS (Google Calendar)
+
+Esta conta tem MAIS DE UMA agenda. Ao chamar **listar_horarios** e **criar_agendamento**, você DEVE preencher o parâmetro \`agenda\` com EXATAMENTE um destes labels, escolhido conforme a situação:
+${ctx.googleAgendas.map((a) => `- "${a.label}": ${a.descricao || "(sem descrição — use seu julgamento pelo nome)"}`).join("\n")}
+
+Regras:
+- Use a MESMA agenda para listar horários e para agendar (não misture).
+- Se não tiver certeza de qual agenda, pergunte ao lead antes de listar horários.
+${ld.selected_agenda ? `- Agenda já escolhida nesta conversa: "${ld.selected_agenda}". Mantenha-a, a menos que o lead peça para trocar.` : ""}
+`
+    : "";
+
   return `# ESTADO ATUAL
 
 - Agora (BRT): ${dateStr}
@@ -769,7 +910,7 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
 - Telefone do lead: ${ctx.effectivePhone ?? "(sem telefone WhatsApp confirmado)"}
 - Canal: ${ctx.channel}
 ${phoneBlock ? `\n${phoneBlock}\n` : ""}${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
-
+${agendasBlock}
 # LEAD_DATA ACUMULADO
 
 ${JSON.stringify(
@@ -779,6 +920,7 @@ ${JSON.stringify(
     interest: ld.interest ?? null,
     selected_slot_iso: ld.selected_slot_iso ?? null,
     dentist_person_id: ld.dentist_person_id ?? null,
+    ...(isMultiAgenda(ctx) ? { selected_agenda: ld.selected_agenda ?? null } : {}),
     commitment_confirmed: ld.commitment_confirmed ?? false,
     patient_id: ld.patient_id ?? null,
     appointment_id: ld.appointment_id ?? null,
@@ -824,6 +966,11 @@ async function ensureOfferedSlots(ctx: AgentContext): Promise<{
   }
   if (!hasBookingIntegration(ctx)) return { patch: {}, toolsCalled: [] };
   if ((ctx.leadData.offered_slots?.length ?? 0) > 0) {
+    return { patch: {}, toolsCalled: [] };
+  }
+  // Multi-agenda: não dá pra auto-listar sem saber QUAL agenda. Deixa o LLM
+  // chamar listar_horarios com o parâmetro `agenda` conforme as regras do prompt.
+  if (isMultiAgenda(ctx)) {
     return { patch: {}, toolsCalled: [] };
   }
 
@@ -920,7 +1067,8 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
     delete ctx.leadData.selected_slot_iso;
     extraPatch = { ...extraPatch };
     delete extraPatch.selected_slot_iso;
-    const refresh = await execListarHorarios(ctx, 14);
+    // Re-lista a MESMA agenda (multi-agenda) — selected_agenda persiste no conflito.
+    const refresh = await execListarHorarios(ctx, 14, ctx.leadData.selected_agenda);
     toolsCalled.push("listar_horarios");
     extraPatch = mergeLeadDataPatch(extraPatch as LeadData, refresh.patch ?? {});
     toolResult += `\n\n# HORÁRIOS ATUALIZADOS (listar_horarios)\n${refresh.result}`;
@@ -1019,7 +1167,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       systemCached: cached,
       systemDynamic: dynamic,
       messages: workingMessages,
-      tools: SCHEDULER_TOOLS,
+      tools: buildSchedulerTools(ctx),
       toolChoice: "auto",
       maxTokens: ctx.maxTokens,
       temperature: Math.min(ctx.temperature, 0.4),
@@ -1069,13 +1217,20 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "listar_horarios_google_calendar":
           case "listar_horarios_clinup":
           case "clinup_buscar_horarios":
-            outcome = await execListarHorarios(ctx, args.dias_a_frente as number | undefined);
+            outcome = await execListarHorarios(
+              ctx,
+              args.dias_a_frente as number | undefined,
+              typeof args.agenda === "string" ? args.agenda : undefined,
+            );
             break;
           case "criar_agendamento":
           case "agendar_clinicorp":
           case "agendar_google_calendar":
           case "agendar_clinup":
-            outcome = await execCriarAgendamento(ctx);
+            outcome = await execCriarAgendamento(
+              ctx,
+              typeof args.agenda === "string" ? args.agenda : undefined,
+            );
             break;
           case "cancelar_agendamento":
           case "cancelar_clinicorp":

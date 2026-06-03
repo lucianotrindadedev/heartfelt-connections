@@ -71,6 +71,8 @@ import {
   disconnectGoogleCalendar,
   listGoogleCalendarsFn,
   selectGoogleCalendarFn,
+  getGoogleAgendasFn,
+  saveGoogleAgendasFn,
   getClinicorpConfig,
   saveClinicorpConfig,
   testClinicorpConnection,
@@ -6007,6 +6009,230 @@ function AudioPanel({
   );
 }
 
+// ── Múltiplas agendas (label → calendário) ──────────────────────────
+// Permite o agente escolher entre VÁRIAS agendas conforme a situação descrita
+// no prompt. Cada agenda vira uma "variável" (label) que o agente usa. Com 0/1
+// agenda aqui, o comportamento é o de agenda única (usa o calendário acima).
+
+interface GCalAgendaRow {
+  label: string;
+  calendarId: string;
+  descricao: string;
+}
+
+function GCalAgendasManager({
+  accountId,
+  calendars,
+}: {
+  accountId: string;
+  calendars: { id: string; summary: string; primary?: boolean }[];
+}) {
+  const qc = useQueryClient();
+  const getAgendas = useServerFn(getGoogleAgendasFn);
+  const saveAgendas = useServerFn(saveGoogleAgendasFn);
+
+  const agendasQ = useQuery({
+    queryKey: ["gcal-agendas", accountId],
+    queryFn: () => getAgendas({ data: { accountId } }),
+  });
+
+  const [rows, setRows] = useState<GCalAgendaRow[]>([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (agendasQ.data?.agendas) {
+      setRows(
+        agendasQ.data.agendas.map((a) => ({
+          label: a.label,
+          calendarId: a.calendarId,
+          descricao: a.descricao ?? "",
+        })),
+      );
+      if (agendasQ.data.agendas.length >= 2) setOpen(true);
+    }
+  }, [agendasQ.data]);
+
+  const saveM = useMutation({
+    mutationFn: (input: GCalAgendaRow[]) =>
+      saveAgendas({
+        data: {
+          accountId,
+          agendas: input
+            .filter((r) => r.label.trim() && r.calendarId.trim())
+            .map((r) => ({
+              label: r.label.trim(),
+              calendarId: r.calendarId.trim(),
+              descricao: r.descricao.trim() || undefined,
+            })),
+        },
+      }),
+    onSuccess: () => {
+      toast.success("Agendas salvas.");
+      qc.invalidateQueries({ queryKey: ["gcal-agendas", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar agendas"),
+  });
+
+  const addRow = () =>
+    setRows((p) => [
+      ...p,
+      { label: "", calendarId: calendars[0]?.id ?? "", descricao: "" },
+    ]);
+
+  const updateRow = (i: number, patch: Partial<GCalAgendaRow>) =>
+    setRows((p) => p.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  const removeRow = (i: number) => setRows((p) => p.filter((_, idx) => idx !== i));
+
+  // Detecta labels duplicados (case-insensitive) para alertar o usuário.
+  const dupLabels = (() => {
+    const seen = new Set<string>();
+    const dups = new Set<string>();
+    for (const r of rows) {
+      const k = r.label.trim().toLowerCase();
+      if (!k) continue;
+      if (seen.has(k)) dups.add(k);
+      seen.add(k);
+    }
+    return dups;
+  })();
+  const hasDup = dupLabels.size > 0;
+
+  return (
+    <div className="space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/40 p-4">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <div>
+          <p className="text-sm font-semibold text-indigo-900">Múltiplas agendas (avançado)</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">
+            Selecione 2+ agendas e o agente escolhe qual usar conforme o prompt.
+          </p>
+        </div>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-indigo-700 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open && (
+        <div className="space-y-3">
+          <div className="rounded-lg border border-indigo-100 bg-white/70 p-3 text-[11px] leading-relaxed text-slate-600">
+            Cada agenda tem um <b>nome (label)</b> — é a "variável" que o agente usa — e uma{" "}
+            <b>descrição (quando usar)</b>. No prompt do agente, escreva as regras, por exemplo:{" "}
+            <code className="font-mono">
+              Use a agenda "Consultório" para presencial e "Telemedicina" para online.
+            </code>{" "}
+            Com 2+ agendas, o agente passa a receber o parâmetro <code className="font-mono">agenda</code>{" "}
+            e decide a cada atendimento. Com 0 ou 1 agenda aqui, ele usa o calendário único selecionado acima.
+          </div>
+
+          {calendars.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Nenhum calendário disponível. Conecte a conta e aguarde a lista carregar.
+            </p>
+          ) : (
+            <>
+              {rows.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Nenhuma agenda adicionada — usando o calendário único acima.
+                </p>
+              )}
+
+              {rows.map((row, i) => (
+                <div key={i} className="space-y-2 rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-medium text-slate-500">Agenda {i + 1}</span>
+                    <button
+                      type="button"
+                      onClick={() => removeRow(i)}
+                      className="text-[11px] font-medium text-destructive hover:underline"
+                    >
+                      Remover
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-medium">Calendário do Google</Label>
+                    <select
+                      value={row.calendarId}
+                      onChange={(e) => {
+                        const cal = calendars.find((c) => c.id === e.target.value);
+                        updateRow(i, {
+                          calendarId: e.target.value,
+                          // Se o label estiver vazio, sugere o nome do calendário.
+                          label: row.label.trim() ? row.label : (cal?.summary ?? row.label),
+                        });
+                      }}
+                      className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="" disabled>
+                        Selecione um calendário...
+                      </option>
+                      {calendars.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.summary} {c.primary ? "(principal)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-medium">Nome / label (o agente usa este nome)</Label>
+                    <Input
+                      value={row.label}
+                      onChange={(e) => updateRow(i, { label: e.target.value })}
+                      placeholder="ex: Consultório, Telemedicina, Dr. Silva"
+                      className="text-sm"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-medium">Quando usar (descrição p/ o agente)</Label>
+                    <Input
+                      value={row.descricao}
+                      onChange={(e) => updateRow(i, { descricao: e.target.value })}
+                      placeholder="ex: consultas presenciais e exames de imagem"
+                      className="text-sm"
+                    />
+                  </div>
+                </div>
+              ))}
+
+              {hasDup && (
+                <p className="text-[11px] text-destructive">
+                  Há labels repetidos — cada agenda precisa de um nome único.
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={addRow}
+                >
+                  <Plus className="mr-1 h-3.5 w-3.5" /> Adicionar agenda
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={saveM.isPending || hasDup}
+                  onClick={() => saveM.mutate(rows)}
+                >
+                  {saveM.isPending && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+                  Salvar agendas
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Google Calendar Panel ───────────────────────────────────────────
 
 function GoogleCalendarPanel({
@@ -6176,6 +6402,12 @@ function GoogleCalendarPanel({
                   O agente buscará janelas livres e criará eventos neste calendário.
                 </p>
               </div>
+
+              {/* Múltiplas agendas (opcional): o agente escolhe conforme o prompt */}
+              <GCalAgendasManager
+                accountId={accountId}
+                calendars={calendarsQ.data?.calendars ?? []}
+              />
 
               {/* Template do evento Google Calendar */}
               <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/50 p-4">

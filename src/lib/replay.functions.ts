@@ -187,6 +187,7 @@ export const replayConversation = createServerFn({ method: "POST" })
         googleCalendar: !!gcalCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
       },
+      googleAgendas: [],
       history,
       dryRun: true,
     });

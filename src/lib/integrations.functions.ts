@@ -7,6 +7,8 @@ import {
   getGoogleCalendarStatus,
   listAvailableCalendars,
   selectGoogleCalendar,
+  listAccountAgendas,
+  saveAccountAgendas,
 } from "@/lib/tools/google-calendar.server";
 
 const accountIdInput = z.object({ accountId: z.string().min(1) });
@@ -99,6 +101,39 @@ export const selectGoogleCalendarFn = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await selectGoogleCalendar(data.accountId, data.calendarId, data.calendarName);
+    return { ok: true };
+  });
+
+/** Lista as agendas múltiplas configuradas (label + calendarId + descrição). */
+export const getGoogleAgendasFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const agendas = await listAccountAgendas(data.accountId);
+    return { agendas };
+  });
+
+/**
+ * Salva a lista de agendas múltiplas. Vazio/1 item → agente usa agenda única.
+ * 2+ → o agente recebe o parâmetro `agenda` e escolhe conforme o prompt.
+ */
+export const saveGoogleAgendasFn = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput
+      .extend({
+        agendas: z
+          .array(
+            z.object({
+              label: z.string().min(1).max(80),
+              calendarId: z.string().min(1).max(300),
+              descricao: z.string().max(500).optional(),
+            }),
+          )
+          .max(20),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    await saveAccountAgendas(data.accountId, data.agendas);
     return { ok: true };
   });
 

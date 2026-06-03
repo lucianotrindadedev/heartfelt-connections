@@ -35,6 +35,9 @@ export interface LeadData {
   selected_slot_iso?: string;
   /** ID do profissional do slot escolhido — obrigatório pelo Clinicorp. */
   dentist_person_id?: number;
+  /** Label da agenda Google escolhida (multi-agenda). Definido ao listar/oferecer
+   *  horários e reusado no booking/cancelamento para agir na agenda certa. */
+  selected_agenda?: string;
   /** Lista atual de horários oferecidos (para validar escolha do lead). */
   offered_slots?: { iso: string; date_label: string; time_label: string; dentist_person_id?: number }[];
   /** ID do agendamento criado (BOOKING → CONFIRMED). */

@@ -173,6 +173,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         googleCalendar: !!gcalCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
       },
+      googleAgendas: [],
       history: data.history.map((m) => ({ role: m.role, content: m.content })),
       dryRun: true, // NÃO tocar Helena/Calendar/Clinicorp
     };

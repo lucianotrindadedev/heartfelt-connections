@@ -54,6 +54,7 @@ import {
   typingDelayMs,
 } from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
+import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import {
   notifyBooking,
   summarizeConversationForNotification,
@@ -405,6 +406,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const hasBookingIntegration =
       !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
 
+    // Agendas Google (multi-agenda). Só consulta quando o GCal está ativo.
+    // Vazio = agenda única (comportamento atual). 2+ = agente escolhe via prompt.
+    const googleAgendas = gcalCfg.data?.ativo ? await listAccountAgendas(accountId) : [];
+
     // Sinais deterministicos extraidos do historico + lead_data.
     const signals = detectSignals({
       stage,
@@ -510,6 +515,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         googleCalendar: !!gcalCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
       },
+      googleAgendas,
       history,
     };
 

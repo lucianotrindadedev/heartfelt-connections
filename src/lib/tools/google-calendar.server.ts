@@ -297,6 +297,104 @@ export async function selectGoogleCalendar(
     .eq("account_id", accountId);
 }
 
+// ── Múltiplas agendas (label → calendar_id) ──────────────────────────────
+// Uma conta pode selecionar várias agendas Google. Cada uma tem um `label`
+// (o "nome da variável" que o agente usa) e uma `descricao` (quando usar).
+// Quando há 2+, o scheduler injeta o parâmetro `agenda` (enum dos labels) e o
+// agente escolhe conforme as regras do prompt.
+
+export interface GCalAgenda {
+  label: string;
+  calendarId: string;
+  descricao?: string;
+}
+
+function parseAgendas(raw: unknown): GCalAgenda[] {
+  if (!Array.isArray(raw)) return [];
+  const out: GCalAgenda[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const label = typeof o.label === "string" ? o.label.trim() : "";
+    const calendarId =
+      typeof o.calendar_id === "string"
+        ? o.calendar_id.trim()
+        : typeof o.calendarId === "string"
+          ? (o.calendarId as string).trim()
+          : "";
+    if (!label || !calendarId) continue;
+    const descricao = typeof o.descricao === "string" ? o.descricao.trim() : undefined;
+    out.push({ label, calendarId, descricao: descricao || undefined });
+  }
+  return out;
+}
+
+/**
+ * Lista as agendas configuradas para a conta. Query própria + try/catch para
+ * que a ausência da coluna `agendas` (migration não aplicada) NÃO quebre o
+ * fluxo de agenda única — nesse caso retorna [] e o caller usa o calendar_id.
+ */
+export async function listAccountAgendas(accountId: string): Promise<GCalAgenda[]> {
+  const sb = getSelfhost();
+  try {
+    const { data, error } = await sb
+      .from("google_calendar_tokens")
+      .select("agendas")
+      .eq("account_id", accountId)
+      .maybeSingle();
+    if (error) return [];
+    return parseAgendas(data?.agendas);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Resolve o `calendar_id` real a partir do label escolhido pelo agente.
+ * - label informado e existente → seu calendar_id.
+ * - label informado mas inexistente → null (caller decide tratar como erro).
+ * - sem label → undefined (usa o calendar_id padrão do token).
+ */
+export async function resolveAgendaCalendarId(
+  accountId: string,
+  label?: string | null,
+): Promise<string | null | undefined> {
+  if (!label || !label.trim()) return undefined;
+  const agendas = await listAccountAgendas(accountId);
+  const wanted = label.trim().toLowerCase();
+  const match = agendas.find((a) => a.label.toLowerCase() === wanted);
+  return match ? match.calendarId : null;
+}
+
+/**
+ * Persiste a lista de agendas da conta (coluna jsonb `agendas`). Normaliza
+ * para o formato canônico {label, calendar_id, descricao} e remove labels
+ * duplicados (case-insensitive, mantendo o primeiro).
+ */
+export async function saveAccountAgendas(
+  accountId: string,
+  agendas: { label: string; calendarId: string; descricao?: string }[],
+): Promise<void> {
+  const seen = new Set<string>();
+  const normalized: { label: string; calendar_id: string; descricao?: string }[] = [];
+  for (const a of agendas) {
+    const label = (a.label ?? "").trim();
+    const calendarId = (a.calendarId ?? "").trim();
+    if (!label || !calendarId) continue;
+    const key = label.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const descricao = (a.descricao ?? "").trim();
+    normalized.push({ label, calendar_id: calendarId, ...(descricao ? { descricao } : {}) });
+  }
+
+  const sb = getSelfhost();
+  await sb
+    .from("google_calendar_tokens")
+    .update({ agendas: normalized, atualizado_em: new Date().toISOString() })
+    .eq("account_id", accountId);
+}
+
 // ── Busca de janelas disponíveis (réplica do n8n) ────────────────────────
 
 export interface GCalSlot {
@@ -321,9 +419,11 @@ const TAMANHOS_VALIDOS = [10, 15, 20, 30, 40, 45, 60, 90, 120];
 export async function listGoogleCalendarSlots(
   accountId: string,
   params: ListSlotsParams,
+  calendarIdOverride?: string,
 ): Promise<GCalSlot[]> {
   const token = await loadTokens(accountId);
   if (!token) throw new Error("Google Calendar não conectado para esta conta");
+  const calendarId = calendarIdOverride || token.calendarId;
 
   const tamanho = params.tamanhoJanelaMinutos ?? 40;
   const gran = params.granularidade ?? 30;
@@ -396,14 +496,14 @@ export async function listGoogleCalendarSlots(
   });
 
   console.log(
-    `[gcal] janelas: ${candidates.length} candidatas → ${janelasNoExpediente.length} dentro do expediente (calendar=${token.calendarId}, temExpediente=${temExpediente}, dias=${Object.keys(disponibilidade).filter((k) => (disponibilidade[k]?.length ?? 0) > 0).join(",")})`,
+    `[gcal] janelas: ${candidates.length} candidatas → ${janelasNoExpediente.length} dentro do expediente (calendar=${calendarId}, temExpediente=${temExpediente}, dias=${Object.keys(disponibilidade).filter((k) => (disponibilidade[k]?.length ?? 0) > 0).join(",")})`,
   );
 
   if (janelasNoExpediente.length === 0) return [];
 
   // 3. Consulta eventos existentes no período
   const accessToken = await refreshTokenIfNeeded(accountId, token);
-  const calId = encodeURIComponent(token.calendarId);
+  const calId = encodeURIComponent(calendarId);
   const eventsUrl = new URL(`${GCAL_BASE}/calendars/${calId}/events`);
   eventsUrl.searchParams.set("timeMin", inicio.toISOString());
   eventsUrl.searchParams.set("timeMax", fim.toISOString());
@@ -491,9 +591,11 @@ export async function createGoogleCalendarEvent(
     descricao?: string;
     telefone?: string;             // injetado na descrição
   },
+  calendarIdOverride?: string,
 ): Promise<CreateGCalEventResult> {
   const token = await loadTokens(accountId);
   if (!token) throw new Error("Google Calendar não conectado para esta conta");
+  const targetCalendarId = calendarIdOverride || token.calendarId;
 
   const start = new Date(params.eventoInicio);
   const end = new Date(start.getTime() + params.duracaoMinutos * 60_000);
@@ -504,7 +606,7 @@ export async function createGoogleCalendarEvent(
   const accessToken = await refreshTokenIfNeeded(accountId, token);
 
   // Conflito direto na agenda (mais confiável que re-gerar janelas).
-  const calIdEnc = encodeURIComponent(token.calendarId);
+  const calIdEnc = encodeURIComponent(targetCalendarId);
   const conflictUrl = new URL(`${GCAL_BASE}/calendars/${calIdEnc}/events`);
   conflictUrl.searchParams.set(
     "timeMin",
@@ -535,7 +637,7 @@ export async function createGoogleCalendarEvent(
   });
   if (hasConflict) {
     console.warn(
-      `[gcal] conflito ao criar evento start=${start.toISOString()} calendar=${token.calendarId} eventos=${conflictJson.items?.length ?? 0}`,
+      `[gcal] conflito ao criar evento start=${start.toISOString()} calendar=${targetCalendarId} eventos=${conflictJson.items?.length ?? 0}`,
     );
     throw new Error("HORÁRIO INDISPONÍVEL");
   }
@@ -578,7 +680,7 @@ export async function createGoogleCalendarEvent(
     end: json.end?.dateTime ?? end.toISOString(),
   };
   console.log(
-    `[gcal] evento criado id=${result.id} calendar=${token.calendarId} start=${result.start}`,
+    `[gcal] evento criado id=${result.id} calendar=${targetCalendarId} start=${result.start}`,
   );
   return result;
 }
@@ -592,8 +694,18 @@ export interface GCalAppointment {
   inicio: string;
   fim: string;
   htmlLink: string;
+  /** ID do calendário onde o evento está (relevante quando há múltiplas agendas). */
+  calendarId: string;
+  /** Label da agenda correspondente (quando o calendarId casa com uma agenda configurada). */
+  agendaLabel?: string;
 }
 
+/**
+ * Busca agendamentos futuros do contato (por telefone na descrição). Quando a
+ * conta tem múltiplas agendas, procura em TODAS e marca cada evento com o
+ * calendarId/label onde foi encontrado — assim cancelamento/remarcação sabem
+ * em qual agenda agir sem o agente precisar rastrear isso.
+ */
 export async function findGoogleCalendarEventsByPhone(
   accountId: string,
   phone: string,
@@ -602,45 +714,60 @@ export async function findGoogleCalendarEventsByPhone(
   if (!token) throw new Error("Google Calendar não conectado");
 
   const accessToken = await refreshTokenIfNeeded(accountId, token);
-  const calId = encodeURIComponent(token.calendarId);
+
+  // Agendas a consultar: as configuradas (multi) ou o calendar_id padrão.
+  const agendas = await listAccountAgendas(accountId);
+  const targets: { calendarId: string; label?: string }[] =
+    agendas.length > 0
+      ? agendas.map((a) => ({ calendarId: a.calendarId, label: a.label }))
+      : [{ calendarId: token.calendarId }];
 
   // Busca eventos futuros (até 1 ano) com `q=phone` (procura na descrição)
   const now = new Date().toISOString();
   const oneYear = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
-  const url = new URL(`${GCAL_BASE}/calendars/${calId}/events`);
-  url.searchParams.set("timeMin", now);
-  url.searchParams.set("timeMax", oneYear);
-  url.searchParams.set("singleEvents", "true");
-  url.searchParams.set("q", phone);
-  url.searchParams.set("showDeleted", "false");
+  const perCalendar = await Promise.all(
+    targets.map(async (t) => {
+      const calId = encodeURIComponent(t.calendarId);
+      const url = new URL(`${GCAL_BASE}/calendars/${calId}/events`);
+      url.searchParams.set("timeMin", now);
+      url.searchParams.set("timeMax", oneYear);
+      url.searchParams.set("singleEvents", "true");
+      url.searchParams.set("q", phone);
+      url.searchParams.set("showDeleted", "false");
 
-  const res = await fetch(url.toString(), {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) return [];
+      const res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) return [] as GCalAppointment[];
 
-  const json = (await res.json()) as {
-    items?: {
-      id?: string;
-      summary?: string;
-      description?: string;
-      start?: { dateTime?: string };
-      end?: { dateTime?: string };
-      htmlLink?: string;
-    }[];
-  };
+      const json = (await res.json()) as {
+        items?: {
+          id?: string;
+          summary?: string;
+          description?: string;
+          start?: { dateTime?: string };
+          end?: { dateTime?: string };
+          htmlLink?: string;
+        }[];
+      };
 
-  return (json.items ?? [])
-    .filter((e) => e.start?.dateTime)
-    .map((e) => ({
-      id: e.id ?? "",
-      titulo: e.summary ?? "",
-      descricao: e.description ?? "",
-      inicio: e.start!.dateTime!,
-      fim: e.end?.dateTime ?? "",
-      htmlLink: e.htmlLink ?? "",
-    }));
+      return (json.items ?? [])
+        .filter((e) => e.start?.dateTime)
+        .map((e) => ({
+          id: e.id ?? "",
+          titulo: e.summary ?? "",
+          descricao: e.description ?? "",
+          inicio: e.start!.dateTime!,
+          fim: e.end?.dateTime ?? "",
+          htmlLink: e.htmlLink ?? "",
+          calendarId: t.calendarId,
+          agendaLabel: t.label,
+        })) as GCalAppointment[];
+    }),
+  );
+
+  return perCalendar.flat();
 }
 
 // ── Atualizar evento (título / descrição) ────────────────────────────────
@@ -648,12 +775,13 @@ export async function findGoogleCalendarEventsByPhone(
 export async function updateGoogleCalendarEvent(
   accountId: string,
   params: { eventId: string; titulo?: string; descricao?: string },
+  calendarIdOverride?: string,
 ): Promise<{ ok: boolean }> {
   const token = await loadTokens(accountId);
   if (!token) throw new Error("Google Calendar não conectado");
 
   const accessToken = await refreshTokenIfNeeded(accountId, token);
-  const calId = encodeURIComponent(token.calendarId);
+  const calId = encodeURIComponent(calendarIdOverride || token.calendarId);
   const eventId = encodeURIComponent(params.eventId);
 
   const patch: Record<string, unknown> = {};
@@ -680,23 +808,43 @@ export async function updateGoogleCalendarEvent(
 export async function cancelGoogleCalendarEvent(
   accountId: string,
   eventId: string,
+  calendarIdOverride?: string,
 ): Promise<{ ok: boolean }> {
   const token = await loadTokens(accountId);
   if (!token) throw new Error("Google Calendar não conectado");
 
   const accessToken = await refreshTokenIfNeeded(accountId, token);
-  const calId = encodeURIComponent(token.calendarId);
   const eId = encodeURIComponent(eventId);
 
-  const res = await fetch(`${GCAL_BASE}/calendars/${calId}/events/${eId}`, {
-    method: "DELETE",
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok && res.status !== 410) {
+  // Lista de calendários a tentar: o override (se houver), senão todas as
+  // agendas configuradas, senão o calendar_id padrão. Sem o calendar certo
+  // o DELETE retorna 404 — por isso, em multi-agenda, tentamos cada uma.
+  const candidates: string[] = [];
+  if (calendarIdOverride) {
+    candidates.push(calendarIdOverride);
+  } else {
+    const agendas = await listAccountAgendas(accountId);
+    if (agendas.length > 0) candidates.push(...agendas.map((a) => a.calendarId));
+    else candidates.push(token.calendarId);
+  }
+
+  let lastErr = "";
+  for (const cal of candidates) {
+    const calId = encodeURIComponent(cal);
+    const res = await fetch(`${GCAL_BASE}/calendars/${calId}/events/${eId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    // 410 = já cancelado; 200/204 = ok. 404 = evento não está NESTE calendário → tenta o próximo.
+    if (res.ok || res.status === 410) return { ok: true };
+    if (res.status === 404) {
+      lastErr = "404 (evento não encontrado neste calendário)";
+      continue;
+    }
     const err = await res.text();
     throw new Error(`Falha ao cancelar evento: ${res.status} ${err.slice(0, 200)}`);
   }
-  return { ok: true };
+  throw new Error(`Falha ao cancelar evento: ${lastErr || "evento não encontrado em nenhuma agenda"}`);
 }
 
 // ── Status (UI) ──────────────────────────────────────────────────────────
