@@ -116,7 +116,8 @@ export async function getAvailableMediaForPrompt(
 
   const lines = ["# 📎 MÍDIAS DISPONÍVEIS\n"];
   lines.push(
-    "Você pode chamar a tool `enviar_midia(slug, caption?)` para enviar uma das mídias abaixo durante a conversa. Use apenas quando fizer sentido no contexto (ex: enviar antes/depois ao falar de um caso, vídeo de localização ao confirmar agendamento). `caption` é uma legenda opcional que acompanha o arquivo.\n",
+    "Você pode chamar a tool `enviar_midia(slug, caption?)` para enviar uma das mídias abaixo durante a conversa. Use apenas quando fizer sentido no contexto (ex: enviar antes/depois ao falar de um caso, vídeo de localização ao confirmar agendamento).\n" +
+      "\nREGRA DA LEGENDA (`caption`): é CURTA e OPCIONAL. NUNCA repita na legenda o mesmo texto que você vai mandar na sua resposta — isso faz a mensagem aparecer duplicada para o lead. Prefira deixar a legenda VAZIA, ou use no máximo uma frase curta e DIFERENTE (uma chamadinha para a mídia). Todo o conteúdo principal (pitch, horários, perguntas) vai na sua resposta normal, não na legenda.\n",
   );
   for (const m of items) {
     const desc = m.description ? ` — ${m.description}` : "";
