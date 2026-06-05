@@ -425,6 +425,7 @@ function EmbedHome() {
   const agentSettings = (agent.settings as Record<string, string> | null) ?? {};
   const testMode = agentSettings.test_mode === "true";
   const testTag = agentSettings.test_tag?.trim() || "Testando";
+  const testEnableCmd = agentSettings.test_enable_command?.trim() || "#teste";
 
   // Full-screen training view replaces the dashboard
   if (openSheet === "training") {
@@ -576,6 +577,12 @@ function EmbedHome() {
                 no CRM. O delay vai a <b>0</b> e as <b>etiquetas ficam desabilitadas</b> (nada é
                 gravado no CRM). As ferramentas (agenda, mídia) continuam funcionando para você
                 testar. Desligue o modo teste antes de atender leads reais.
+              </p>
+              <p className="mt-1.5 text-[13px] text-amber-800">
+                Atalho: o próprio contato pode enviar{" "}
+                <span className="rounded bg-amber-200 px-1 font-mono text-[12px]">{testEnableCmd}</span>{" "}
+                que recebe a etiqueta <b>{testTag}</b> automaticamente e já passa a ser atendido. No
+                modo teste, sem a etiqueta <b>só comandos {testEnableCmd} funcionam</b>.
               </p>
             </div>
           </div>

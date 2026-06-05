@@ -569,6 +569,72 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           });
         }
 
+        // ── Modo teste ──
+        const testMode = agentSettings.test_mode === "true";
+        const testTag = agentSettings.test_tag?.trim() || "Testando";
+
+        // ── Comando #teste (auto opt-in do modo teste) ──
+        // No modo teste, contatos SEM a etiqueta são ignorados — exceto comandos "#".
+        // O #teste aplica a etiqueta de teste no PRÓPRIO contato que enviou, habilitando
+        // o modo teste para ele sem precisar mexer no CRM. Só funciona com o modo teste
+        // ligado; configurável via settings.test_enable_command (default "#teste").
+        const isTestEnableCmd =
+          isInbound &&
+          testMode &&
+          messageMatchesAgentCommand(messageContent, agentSettings.test_enable_command, ["#teste"]);
+
+        if (isTestEnableCmd) {
+          console.log(`[webhook] comando #teste recebido — conv ${convId}`);
+          let tagApplied = false;
+          try {
+            const helena = await loadHelenaAccount(accountId);
+            const contactId = await resolveHelenaContactId(helena, {
+              sessionId,
+              contact: resolvedContact,
+              phone: fromDetails || legacyPhone || resolvedContact?.phoneNumber,
+            });
+            if (contactId) {
+              await sb
+                .from("conversations")
+                .update({ helena_contact_id: contactId, atualizado_em: new Date().toISOString() })
+                .eq("id", convId);
+              const tagRes = await setHelenaContactTags(
+                helena,
+                contactId,
+                [testTag],
+                "InsertIfNotExists",
+              );
+              tagApplied = tagRes.ok;
+              if (!tagRes.ok) {
+                console.error(
+                  `[webhook] #teste tag falhou: ${tagRes.status} ${tagRes.body.slice(0, 200)}`,
+                );
+              } else {
+                console.log(
+                  `[webhook] #teste — etiqueta "${testTag}" aplicada ao contato ${contactId}`,
+                );
+              }
+            } else {
+              console.warn("[webhook] #teste sem contactId — etiqueta não aplicada");
+            }
+            await sendHelenaText(helena, {
+              phone: fromDetails || legacyPhone || undefined,
+              text: tagApplied
+                ? `✅ Modo teste ativado para este contato. Pode conversar normalmente que eu já respondo.`
+                : `Recebi o #teste, mas não consegui aplicar a etiqueta "${testTag}" no CRM. Aplique a etiqueta manualmente para testar.`,
+              sessionId,
+            });
+          } catch (e) {
+            console.error("[webhook] #teste - falha:", e);
+          }
+          return Response.json({
+            ok: true,
+            conversation_id: convId,
+            action: "test_enable",
+            tag_applied: tagApplied,
+          });
+        }
+
         // ── Bloqueio por tag: ignora completamente o agente ──
         // Fixa "IA Desligada" (escalada humana) + etiquetas configuradas pelo
         // dono (settings.blocked_tags). Reutiliza o contato já carregado.
@@ -582,13 +648,10 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           console.log(`[webhook] agente bloqueado pela tag "${blockingTag}" — conv ${convId}`);
         }
 
-        // ── Modo teste ──
-        // Quando ligado (settings.test_mode), o agente SÓ responde contatos que
-        // têm a etiqueta de teste (default "Testando") e o delay vai a 0. As tags
-        // ficam desabilitadas no orquestrador (settings.test_mode). Serve para
-        // testar conversa + ferramentas sem afetar leads reais nem o CRM.
-        const testMode = agentSettings.test_mode === "true";
-        const testTag = agentSettings.test_tag?.trim() || "Testando";
+        // Gate do modo teste: quando ligado, o agente SÓ responde contatos que
+        // têm a etiqueta de teste (default "Testando"). Mensagens comuns de
+        // contatos sem a etiqueta são ignoradas — só o comando #teste (acima)
+        // funciona sem ela, justamente para o contato se auto-habilitar.
         const hasTestTag =
           isInbound && resolvedContact
             ? resolvedContact.tagNames.some(
