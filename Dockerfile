@@ -21,14 +21,11 @@ ENV VITE_SUPABASE_PUBLISHABLE_KEY=$VITE_SUPABASE_PUBLISHABLE_KEY
 ENV NODE_ENV=production
 RUN npm run build:coolify
 
-# ── prod deps ──
-# jsdom/pdf-parse NÃO são bundlados (leem arquivos/import.meta em runtime — quebra no
-# bundle único). Carregam do node_modules real; este stage instala só as deps de produção.
-FROM node:22-bookworm-slim AS proddeps
-
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+# Após o build, remove as devDependencies (vite, esbuild, typescript...) IN-PLACE.
+# jsdom/pdf-parse estão em "dependencies" e sobrevivem ao prune — são os únicos que
+# o runtime precisa (o bundle os externaliza). Evita um SEGUNDO `npm ci` (estágio
+# proddeps anterior), que dobrava disco/memória no build e podia estourar a VPS.
+RUN npm prune --omit=dev
 
 # ── runtime ──
 FROM node:22-bookworm-slim AS runner
@@ -38,7 +35,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 COPY --from=builder /app/.vercel/output ./.vercel/output
-COPY --from=proddeps /app/node_modules ./node_modules
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/scripts/start-coolify.cjs ./scripts/start-coolify.cjs
 
 EXPOSE 3000
