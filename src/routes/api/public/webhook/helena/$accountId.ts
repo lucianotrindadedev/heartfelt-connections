@@ -573,18 +573,25 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         const testMode = agentSettings.test_mode === "true";
         const testTag = agentSettings.test_tag?.trim() || "Testando";
 
-        // ── Comando #teste (auto opt-in do modo teste) ──
-        // No modo teste, contatos SEM a etiqueta são ignorados — exceto comandos "#".
-        // O #teste aplica a etiqueta de teste no PRÓPRIO contato que enviou, habilitando
-        // o modo teste para ele sem precisar mexer no CRM. Só funciona com o modo teste
-        // ligado; configurável via settings.test_enable_command (default "#teste").
+        // ── Comandos #teste / #sair (auto opt-in/out do modo teste) ──
+        // No modo teste, contatos SEM a etiqueta são ignorados — exceto estes comandos.
+        // #teste APLICA a etiqueta de teste no próprio contato (entra no modo teste);
+        // #sair REMOVE a etiqueta (sai do modo teste). Sem mexer no CRM. Só funcionam
+        // com o modo teste ligado; configuráveis via settings.test_enable_command /
+        // settings.test_disable_command (defaults "#teste" / "#sair").
         const isTestEnableCmd =
           isInbound &&
           testMode &&
           messageMatchesAgentCommand(messageContent, agentSettings.test_enable_command, ["#teste"]);
+        const isTestDisableCmd =
+          isInbound &&
+          testMode &&
+          messageMatchesAgentCommand(messageContent, agentSettings.test_disable_command, ["#sair"]);
 
-        if (isTestEnableCmd) {
-          console.log(`[webhook] comando #teste recebido — conv ${convId}`);
+        if (isTestEnableCmd || isTestDisableCmd) {
+          const enabling = isTestEnableCmd; // se ambos casarem, prioriza entrar
+          const cmdLabel = enabling ? "#teste" : "#sair";
+          console.log(`[webhook] comando ${cmdLabel} recebido — conv ${convId}`);
           let tagApplied = false;
           try {
             const helena = await loadHelenaAccount(accountId);
@@ -602,35 +609,39 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
                 helena,
                 contactId,
                 [testTag],
-                "InsertIfNotExists",
+                enabling ? "InsertIfNotExists" : "DeleteIfExists",
               );
               tagApplied = tagRes.ok;
               if (!tagRes.ok) {
                 console.error(
-                  `[webhook] #teste tag falhou: ${tagRes.status} ${tagRes.body.slice(0, 200)}`,
+                  `[webhook] ${cmdLabel} tag falhou: ${tagRes.status} ${tagRes.body.slice(0, 200)}`,
                 );
               } else {
                 console.log(
-                  `[webhook] #teste — etiqueta "${testTag}" aplicada ao contato ${contactId}`,
+                  `[webhook] ${cmdLabel} — etiqueta "${testTag}" ${enabling ? "aplicada" : "removida"} no contato ${contactId}`,
                 );
               }
             } else {
-              console.warn("[webhook] #teste sem contactId — etiqueta não aplicada");
+              console.warn(`[webhook] ${cmdLabel} sem contactId — etiqueta não alterada`);
             }
+            const okText = enabling
+              ? `✅ Modo teste ativado para este contato. Pode conversar normalmente que eu já respondo.`
+              : `✅ Você saiu do modo teste. Enquanto o modo teste estiver ligado, não vou mais responder este contato (envie ${agentSettings.test_enable_command?.trim() || "#teste"} para voltar).`;
+            const failText = enabling
+              ? `Recebi o ${cmdLabel}, mas não consegui aplicar a etiqueta "${testTag}" no CRM. Aplique a etiqueta manualmente para testar.`
+              : `Recebi o ${cmdLabel}, mas não consegui remover a etiqueta "${testTag}" no CRM. Remova a etiqueta manualmente.`;
             await sendHelenaText(helena, {
               phone: fromDetails || legacyPhone || undefined,
-              text: tagApplied
-                ? `✅ Modo teste ativado para este contato. Pode conversar normalmente que eu já respondo.`
-                : `Recebi o #teste, mas não consegui aplicar a etiqueta "${testTag}" no CRM. Aplique a etiqueta manualmente para testar.`,
+              text: tagApplied ? okText : failText,
               sessionId,
             });
           } catch (e) {
-            console.error("[webhook] #teste - falha:", e);
+            console.error(`[webhook] ${cmdLabel} - falha:`, e);
           }
           return Response.json({
             ok: true,
             conversation_id: convId,
-            action: "test_enable",
+            action: enabling ? "test_enable" : "test_disable",
             tag_applied: tagApplied,
           });
         }

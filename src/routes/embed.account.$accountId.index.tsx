@@ -426,6 +426,7 @@ function EmbedHome() {
   const testMode = agentSettings.test_mode === "true";
   const testTag = agentSettings.test_tag?.trim() || "Testando";
   const testEnableCmd = agentSettings.test_enable_command?.trim() || "#teste";
+  const testDisableCmd = agentSettings.test_disable_command?.trim() || "#sair";
 
   // Full-screen training view replaces the dashboard
   if (openSheet === "training") {
@@ -579,10 +580,12 @@ function EmbedHome() {
                 testar. Desligue o modo teste antes de atender leads reais.
               </p>
               <p className="mt-1.5 text-[13px] text-amber-800">
-                Atalho: o próprio contato pode enviar{" "}
+                Atalho: o contato envia{" "}
                 <span className="rounded bg-amber-200 px-1 font-mono text-[12px]">{testEnableCmd}</span>{" "}
-                que recebe a etiqueta <b>{testTag}</b> automaticamente e já passa a ser atendido. No
-                modo teste, sem a etiqueta <b>só comandos {testEnableCmd} funcionam</b>.
+                para entrar (recebe a etiqueta <b>{testTag}</b> e passa a ser atendido) e{" "}
+                <span className="rounded bg-amber-200 px-1 font-mono text-[12px]">{testDisableCmd}</span>{" "}
+                para sair (remove a etiqueta). No modo teste, sem a etiqueta só esses comandos
+                funcionam.
               </p>
             </div>
           </div>
