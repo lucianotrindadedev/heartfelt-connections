@@ -516,6 +516,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         escalation: !!escCfg.data?.ativo,
       },
       googleAgendas,
+      // Modo teste: não escreve tags no CRM (tools seguem vivas).
+      disableTags: agentSettings.test_mode === "true",
       history,
     };
 
@@ -778,6 +780,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           history,
           orKey,
           summaryModel: ctx.ragGateModel,
+          disableTags: ctx.disableTags,
         });
       } catch (e) {
         console.error("[orch] escalateToHuman falhou:", e);

@@ -69,6 +69,12 @@ export interface AgentContext {
    *  cria eventos no GCal/Clinicorp). Usado para simular o agente sem tocar
    *  em nada externo. */
   dryRun?: boolean;
+
+  /** Modo teste (settings.test_mode): desabilita SOMENTE a escrita de tags no
+   *  CRM (interesse, status, "IA Desligada"). As ferramentas continuam vivas
+   *  (agenda, mídia) — o objetivo é testar conversa + tools sem sujar o CRM.
+   *  Diferente de dryRun, que também bloqueia tools/eventos. */
+  disableTags?: boolean;
 }
 
 /** Resultado padronizado de um sub-agente. */

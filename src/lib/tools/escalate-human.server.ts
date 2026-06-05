@@ -54,6 +54,9 @@ export async function escalateToHuman(params: {
   orKey?: string;
   /** Modelo barato para o resumo (ex.: ragGateModel). */
   summaryModel?: string;
+  /** Modo teste: NÃO aplica a tag "IA Desligada" (mantém o contato de teste
+   *  ativo). O alerta da escalada AINDA é enviado, para testar a ferramenta. */
+  disableTags?: boolean;
 }): Promise<{ tagged: boolean; alerted: boolean }> {
   const sb = getSelfhost();
 
@@ -72,7 +75,9 @@ export async function escalateToHuman(params: {
   //    desligava a IA internamente mas nada aparecia no CRM. Com a tag visível,
   //    o atendente vê que foi escalado e, ao REMOVER a tag, a IA volta sozinha
   //    (o webhook checa as tags do contato a cada mensagem recebida).
-  if (params.helenaContactId) {
+  if (params.disableTags) {
+    console.log("[escalate] modo teste — tag 'IA Desligada' NÃO aplicada (só alerta).");
+  } else if (params.helenaContactId) {
     try {
       const helena = await loadHelenaAccount(params.accountId);
       const res = await setHelenaContactTags(

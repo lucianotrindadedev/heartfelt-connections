@@ -36,6 +36,7 @@ import {
   ChevronDown,
   Search,
   FileText,
+  FlaskConical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -319,6 +320,7 @@ function EmbedHome() {
   const fetchAgent = useServerFn(getAgent);
   const updateAgentFn = useServerFn(updateAgent);
   const resetAgentFn = useServerFn(resetAgent);
+  const mergeSettingsFn = useServerFn(mergeAgentSettings);
 
   const [openSheet, setOpenSheet] = useState<SheetKey>(null);
 
@@ -346,6 +348,18 @@ function EmbedHome() {
       toast.success("Histórico do agente limpo.");
       qc.invalidateQueries({ queryKey: ["agent", accountId] });
     },
+  });
+
+  // Modo teste: merge seguro de UMA chave (test_mode) sem tocar nas outras
+  // settings. Fica antes dos early returns (Rules of Hooks).
+  const toggleTestMode = useMutation({
+    mutationFn: (next: boolean) =>
+      mergeSettingsFn({ data: { accountId, settings: { test_mode: next ? "true" : "false" } } }),
+    onSuccess: (_r, next) => {
+      toast.success(next ? "Modo teste ATIVADO." : "Modo teste desativado.");
+      qc.invalidateQueries({ queryKey: ["agent", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao alterar modo teste"),
   });
 
   // Conta não cadastrada → mas pode ser alias do helena_account_id.
@@ -408,6 +422,9 @@ function EmbedHome() {
   const agent = data.agent;
   const ativo = agent.ativo as boolean;
   const agentId = agent.id as string;
+  const agentSettings = (agent.settings as Record<string, string> | null) ?? {};
+  const testMode = agentSettings.test_mode === "true";
+  const testTag = agentSettings.test_tag?.trim() || "Testando";
 
   // Full-screen training view replaces the dashboard
   if (openSheet === "training") {
@@ -532,8 +549,37 @@ function EmbedHome() {
               <Zap className="h-4 w-4" />
               Webhook URL
             </button>
+            <button
+              onClick={() => toggleTestMode.mutate(!testMode)}
+              disabled={toggleTestMode.isPending}
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold backdrop-blur transition-all active:scale-95 disabled:opacity-60 ${
+                testMode
+                  ? "bg-amber-400 text-amber-950 ring-1 ring-amber-300 hover:bg-amber-300"
+                  : "bg-white/10 text-white ring-1 ring-white/20 hover:bg-white/20"
+              }`}
+            >
+              {toggleTestMode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FlaskConical className="h-4 w-4" />}
+              {testMode ? "Modo teste ativo" : "Modo teste"}
+            </button>
           </div>
         </div>
+
+        {/* ── Banner do modo teste ── */}
+        {testMode && (
+          <div className="flex items-start gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4">
+            <FlaskConical className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+            <div className="text-sm text-amber-900">
+              <p className="font-semibold">Modo teste ativo</p>
+              <p className="mt-0.5 text-[13px] text-amber-800">
+                O agente responde <b>apenas</b> contatos com a etiqueta{" "}
+                <span className="rounded bg-amber-200 px-1 font-mono text-[12px]">{testTag}</span>{" "}
+                no CRM. O delay vai a <b>0</b> e as <b>etiquetas ficam desabilitadas</b> (nada é
+                gravado no CRM). As ferramentas (agenda, mídia) continuam funcionando para você
+                testar. Desligue o modo teste antes de atender leads reais.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* ── Ações Principais ── */}
         <section>

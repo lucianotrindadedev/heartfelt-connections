@@ -119,8 +119,14 @@ async function execAplicarTag(
   ctx: AgentContext,
   tag: string,
 ): Promise<ToolOutcome> {
-  if (ctx.dryRun) {
-    return { result: JSON.stringify({ ok: true, tag, dry_run: true }) };
+  if (ctx.dryRun || ctx.disableTags) {
+    return {
+      result: JSON.stringify({
+        ok: true,
+        tag,
+        skipped: ctx.disableTags ? "test_mode" : "dry_run",
+      }),
+    };
   }
   if (!ctx.helenaContact?.id) {
     return { result: JSON.stringify({ ok: false, error: "no_contact_id" }) };
@@ -160,7 +166,7 @@ async function execAplicarTag(
  * uma das variantes esteja cadastrada no CRM.
  */
 async function ensureInitialNotScheduledTag(ctx: AgentContext): Promise<void> {
-  if (ctx.dryRun) return;
+  if (ctx.dryRun || ctx.disableTags) return;
   if (!ctx.helenaContact?.id) return;
   if (ctx.leadData.initial_tag_applied) return; // idempotente
   try {

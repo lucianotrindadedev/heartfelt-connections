@@ -582,6 +582,26 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           console.log(`[webhook] agente bloqueado pela tag "${blockingTag}" — conv ${convId}`);
         }
 
+        // ── Modo teste ──
+        // Quando ligado (settings.test_mode), o agente SÓ responde contatos que
+        // têm a etiqueta de teste (default "Testando") e o delay vai a 0. As tags
+        // ficam desabilitadas no orquestrador (settings.test_mode). Serve para
+        // testar conversa + ferramentas sem afetar leads reais nem o CRM.
+        const testMode = agentSettings.test_mode === "true";
+        const testTag = agentSettings.test_tag?.trim() || "Testando";
+        const hasTestTag =
+          isInbound && resolvedContact
+            ? resolvedContact.tagNames.some(
+                (t) => normalizeTag(t) === normalizeTag(testTag),
+              )
+            : false;
+        const blockedByTestMode = testMode && !hasTestTag;
+        if (blockedByTestMode) {
+          console.log(
+            `[webhook] MODO TESTE ativo — contato sem etiqueta "${testTag}", agente não responde (conv ${convId}).`,
+          );
+        }
+
         const role = isInbound ? "user" : "assistant";
         const meta: Record<string, unknown> = {
           origem,
@@ -619,9 +639,12 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           );
         }
 
-        if (isInbound && agentRow.data.ativo && !agentBlockedByTag) {
-          const debounce = (agentRow.data.debounce_segundos as number | null) ?? 20;
-          console.log(`[webhook] agendando agent turn para ${convId} — debounce=${debounce}s`);
+        if (isInbound && agentRow.data.ativo && !agentBlockedByTag && !blockedByTestMode) {
+          // Modo teste zera o delay (debounce) para iterar rápido nos testes.
+          const debounce = testMode ? 0 : (agentRow.data.debounce_segundos as number | null) ?? 20;
+          console.log(
+            `[webhook] agendando agent turn para ${convId} — debounce=${debounce}s${testMode ? " (modo teste)" : ""}`,
+          );
           try {
             // Um único disparo: waitUntil (Vercel) OU fila pg_cron — nunca os dois.
             await dispatchInboundAgentTurn(convId, debounce);
@@ -630,7 +653,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           }
         } else if (isInbound) {
           console.log(
-            `[webhook] agente NÃO disparado — ativo=${agentRow.data.ativo}, bloqueado=${agentBlockedByTag}`,
+            `[webhook] agente NÃO disparado — ativo=${agentRow.data.ativo}, bloqueado=${agentBlockedByTag}, modo_teste_sem_etiqueta=${blockedByTestMode}`,
           );
         }
 

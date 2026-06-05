@@ -73,7 +73,7 @@ import {
  * MANTÉM a tag de interesse (o swap só toca as 2 tags de status).
  */
 async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
-  if (ctx.dryRun) return;
+  if (ctx.dryRun || ctx.disableTags) return;
   if (!ctx.helenaContact?.id) return;
   if (ctx.leadData.booked_tag_applied) return; // idempotente
   try {
@@ -636,7 +636,7 @@ async function execCriarAgendamento(
 
 /** Reverte as tags pós-cancelamento: remove "Agendado" e volta "Não Agendado". */
 async function applyUnbookedTagSwap(ctx: AgentContext): Promise<void> {
-  if (ctx.dryRun) return;
+  if (ctx.dryRun || ctx.disableTags) return;
   if (!ctx.helenaContact?.id) return;
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
