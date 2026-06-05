@@ -151,7 +151,9 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
       .object({
         accountId: z.string().min(1),
         agentId: z.string().uuid(),
-        userMessage: z.string().min(3).max(2000),
+        // Limite alto: o usuário pode colar um prompt de referência inteiro
+        // (ex: "reescreva com base neste prompt validado: ...") como instrução.
+        userMessage: z.string().min(3).max(20000),
       })
       .parse(d),
   )
