@@ -12,6 +12,20 @@ export interface SendMediaResult {
   error?: string;
 }
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Atraso (ms) após enviar VÍDEO antes de liberar as próximas mensagens. O CRM
+ * sobe o vídeo de forma assíncrona (precisa carregar o arquivo) — sem este
+ * respiro, as mensagens de texto seguintes chegam ANTES do vídeo no WhatsApp.
+ * Configurável por conta via settings.media_video_delay_ms. Default 6s, teto 20s.
+ */
+function videoSendDelayMs(ctx: AgentContext): number {
+  const raw = Number(ctx.agentSettings?.media_video_delay_ms);
+  const v = Number.isFinite(raw) && raw > 0 ? raw : 6000;
+  return Math.min(v, 20000);
+}
+
 export async function sendMediaBySlug(
   ctx: AgentContext,
   slug: string,
@@ -66,6 +80,16 @@ export async function sendMediaBySlug(
       status: "sent",
       caption: caption ?? null,
     });
+
+    // Vídeo: o CRM sobe o arquivo de forma assíncrona. Damos um respiro antes de
+    // liberar o restante do turno (as mensagens de texto seguintes) — assim o
+    // vídeo chega ANTES do texto no WhatsApp, e não por último. Só para vídeo:
+    // imagem/áudio/documento sobem rápido e não precisam de atraso.
+    if (media.media_type === "video" && !ctx.dryRun) {
+      const ms = videoSendDelayMs(ctx);
+      console.log(`[send-media] vídeo "${slug}" enviado — aguardando ${ms}ms antes do texto seguinte`);
+      await sleep(ms);
+    }
 
     return { ok: true, media_title: media.title };
   } catch (e) {
