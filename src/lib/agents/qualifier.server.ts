@@ -286,8 +286,8 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
    • Se a M1 do lead JÁ contém interesse claro (caso B do RECEPTION) → APLIQUE a tag de interesse JÁ no 1º ciclo.
    • Se a M1 é vaga ("Oi", "Tudo bem?") → não aplique tag ainda; aguarde o 2º ciclo, quando o interesse ficar claro.
 9. **NÃO repita pedaços do prompt em sequência sem evolução.** Se o lead respondeu "sim", "ok", "uhum", "blz" — avance: faça a próxima pergunta SPIN ou ofereça horário. NUNCA fique repetindo o mesmo discurso de valor.
-10. **Dados extras do fluxo** (nome da criança, data de nascimento, responsáveis, etc.) → salve em \`lead_data_patch.custom_fields\` com a chave exata (ex: child_name, child_birth_date, guardians). Preserve dados já coletados ao avançar para SLOT_OFFER. **Nunca repita pergunta de campo já presente em LEAD_DATA.**
-10. **Após 3-4 ciclos com interesse claro e lead responsivo, transite para SLOT_OFFER.** Não fique infinitamente em QUALIFICATION.
+10. **Dados extras do fluxo** que o lead fornecer espontaneamente (ou que o prompt do proprietário pedir explicitamente) → salve em \`lead_data_patch.custom_fields\` com uma chave descritiva. NÃO invente nem peça campos que o negócio não solicitou. Preserve dados já coletados ao avançar para SLOT_OFFER. **Nunca repita pergunta de campo já presente em LEAD_DATA.**
+11. **Após 3-4 ciclos com interesse claro e lead responsivo, transite para SLOT_OFFER.** Não fique infinitamente em QUALIFICATION.
 
 # DECISÃO DE next_stage
 
