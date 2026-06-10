@@ -6084,6 +6084,10 @@ interface GCalAgendaRow {
   businessHoursJson: string;
   /** Modo "uma por dia" (ex: festas): 1 horário por dia e bloqueia o dia inteiro. */
   umaPorDia: boolean;
+  /** Título do evento criado nesta agenda (template). Vazio = usa o global. */
+  tituloTemplate: string;
+  /** Descrição do evento criado nesta agenda (template). Vazio = usa o global. */
+  descricaoTemplate: string;
 }
 
 function GCalAgendasManager({
@@ -6115,6 +6119,8 @@ function GCalAgendasManager({
           duracaoMinutos: a.duracaoMinutos ? String(a.duracaoMinutos) : "",
           businessHoursJson: a.businessHoursJson ?? "",
           umaPorDia: a.umaPorDia ?? false,
+          tituloTemplate: a.tituloTemplate ?? "",
+          descricaoTemplate: a.descricaoTemplate ?? "",
         })),
       );
       if (agendasQ.data.agendas.length >= 2) setOpen(true);
@@ -6137,6 +6143,8 @@ function GCalAgendasManager({
                 duracaoMinutos: Number.isFinite(dur) && dur > 0 ? dur : undefined,
                 businessHoursJson: r.businessHoursJson.trim() || undefined,
                 umaPorDia: r.umaPorDia || undefined,
+                tituloTemplate: r.tituloTemplate.trim() || undefined,
+                descricaoTemplate: r.descricaoTemplate.trim() || undefined,
               };
             }),
         },
@@ -6158,6 +6166,8 @@ function GCalAgendasManager({
         duracaoMinutos: "",
         businessHoursJson: "",
         umaPorDia: false,
+        tituloTemplate: "",
+        descricaoTemplate: "",
       },
     ]);
 
@@ -6324,6 +6334,39 @@ function GCalAgendasManager({
                       syncOnMount={false}
                       onChange={(_human, json) => updateRow(i, { businessHoursJson: json })}
                     />
+                  </div>
+
+                  <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                    <p className="text-[11px] font-semibold text-slate-600">
+                      Template do evento desta agenda{" "}
+                      <span className="font-normal text-muted-foreground">(opcional)</span>
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      Em branco = usa o template global definido acima. Use variáveis como{" "}
+                      <code className="font-mono">{"{name}"}</code>,{" "}
+                      <code className="font-mono">{"{child_name}"}</code>,{" "}
+                      <code className="font-mono">{"{slot_date}"}</code>,{" "}
+                      <code className="font-mono">{"{slot_time}"}</code>.
+                    </p>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Título do evento</Label>
+                      <Input
+                        value={row.tituloTemplate}
+                        onChange={(e) => updateRow(i, { tituloTemplate: e.target.value })}
+                        placeholder="ex: Festa - {name}"
+                        className="text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Descrição do evento</Label>
+                      <textarea
+                        value={row.descricaoTemplate}
+                        onChange={(e) => updateRow(i, { descricaoTemplate: e.target.value })}
+                        placeholder={"Responsável: {name}\nTelefone: {phone}\nConvidados: {notes}"}
+                        rows={4}
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
                   </div>
                 </div>
               ))}

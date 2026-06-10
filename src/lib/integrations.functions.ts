@@ -129,6 +129,8 @@ export const saveGoogleAgendasFn = createServerFn({ method: "POST" })
               duracaoMinutos: z.number().int().positive().max(1440).optional(),
               businessHoursJson: z.string().max(4000).optional(),
               umaPorDia: z.boolean().optional(),
+              tituloTemplate: z.string().max(500).optional(),
+              descricaoTemplate: z.string().max(2000).optional(),
             }),
           )
           .max(20),

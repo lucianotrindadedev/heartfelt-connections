@@ -314,6 +314,10 @@ export interface GCalAgenda {
   /** Modo "uma por dia" (ex: festas): oferece no máx. 1 horário por dia livre,
    *  e considera o dia ocupado se já houver QUALQUER evento naquele dia. */
   umaPorDia?: boolean;
+  /** Título do evento desta agenda (template). Vazio = usa o global do agente. */
+  tituloTemplate?: string;
+  /** Descrição do evento desta agenda (template). Vazio = usa o global do agente. */
+  descricaoTemplate?: string;
 }
 
 function parseAgendas(raw: unknown): GCalAgenda[] {
@@ -340,6 +344,12 @@ function parseAgendas(raw: unknown): GCalAgenda[] {
     const businessHoursJson =
       typeof bhRaw === "string" && bhRaw.trim() ? bhRaw.trim() : undefined;
     const umaPorDia = o.uma_por_dia === true || o.umaPorDia === true;
+    const titRaw = o.gcal_event_title_template ?? o.tituloTemplate;
+    const tituloTemplate =
+      typeof titRaw === "string" && titRaw.trim() ? titRaw.trim() : undefined;
+    const descRaw = o.gcal_event_description_template ?? o.descricaoTemplate;
+    const descricaoTemplate =
+      typeof descRaw === "string" && descRaw.trim() ? descRaw : undefined;
     out.push({
       label,
       calendarId,
@@ -347,6 +357,8 @@ function parseAgendas(raw: unknown): GCalAgenda[] {
       duracaoMinutos,
       businessHoursJson,
       ...(umaPorDia ? { umaPorDia: true } : {}),
+      tituloTemplate,
+      descricaoTemplate,
     });
   }
   return out;
@@ -403,6 +415,8 @@ export async function saveAccountAgendas(
     duracaoMinutos?: number;
     businessHoursJson?: string;
     umaPorDia?: boolean;
+    tituloTemplate?: string;
+    descricaoTemplate?: string;
   }[],
 ): Promise<void> {
   const seen = new Set<string>();
@@ -413,6 +427,8 @@ export async function saveAccountAgendas(
     duracao_minutos?: number;
     business_hours_json?: string;
     uma_por_dia?: boolean;
+    gcal_event_title_template?: string;
+    gcal_event_description_template?: string;
   }[] = [];
   for (const a of agendas) {
     const label = (a.label ?? "").trim();
@@ -427,6 +443,8 @@ export async function saveAccountAgendas(
         ? Math.round(a.duracaoMinutos)
         : undefined;
     const bh = (a.businessHoursJson ?? "").trim();
+    const tit = (a.tituloTemplate ?? "").trim();
+    const desc = (a.descricaoTemplate ?? "").replace(/\s+$/, "");
     normalized.push({
       label,
       calendar_id: calendarId,
@@ -434,6 +452,8 @@ export async function saveAccountAgendas(
       ...(duracao ? { duracao_minutos: duracao } : {}),
       ...(bh ? { business_hours_json: bh } : {}),
       ...(a.umaPorDia ? { uma_por_dia: true } : {}),
+      ...(tit ? { gcal_event_title_template: tit } : {}),
+      ...(desc ? { gcal_event_description_template: desc } : {}),
     });
   }
 

@@ -302,6 +302,8 @@ interface ResolvedAgenda {
   duracaoMinutos?: number;
   businessHoursJson?: string;
   umaPorDia?: boolean;
+  tituloTemplate?: string;
+  descricaoTemplate?: string;
   error?: string;
 }
 
@@ -326,6 +328,8 @@ function resolveGcalAgenda(ctx: AgentContext, label?: string): ResolvedAgenda {
     duracaoMinutos: match.duracaoMinutos,
     businessHoursJson: match.businessHoursJson,
     umaPorDia: match.umaPorDia,
+    tituloTemplate: match.tituloTemplate,
+    descricaoTemplate: match.descricaoTemplate,
   };
 }
 
@@ -632,7 +636,11 @@ async function execCriarAgendamento(
       const duracao =
         resolved.duracaoMinutos ??
         (Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40);
-      const { titulo, descricao } = resolveGcalEventTemplates(bookingCtx);
+      // Título/descrição específicos da agenda (multi-agenda); vazio → global.
+      const { titulo, descricao } = resolveGcalEventTemplates(bookingCtx, {
+        titleTemplate: resolved.tituloTemplate,
+        descriptionTemplate: resolved.descricaoTemplate,
+      });
       const ev = await createGoogleCalendarEvent(
         ctx.accountId,
         {

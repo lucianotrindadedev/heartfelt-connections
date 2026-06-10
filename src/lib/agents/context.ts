@@ -67,6 +67,8 @@ export interface AgentContext {
     duracaoMinutos?: number;
     businessHoursJson?: string;
     umaPorDia?: boolean;
+    tituloTemplate?: string;
+    descricaoTemplate?: string;
   }[];
 
   /** Histórico de mensagens já filtrado (sem fallbacks determinísticos). */
