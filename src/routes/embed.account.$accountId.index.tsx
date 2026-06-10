@@ -764,11 +764,15 @@ function bhToHuman(s: WeekSchedule): string {
 function BusinessHoursEditor({
   jsonValue,
   onChange,
+  syncOnMount = true,
 }: {
   /** Valor em JSON (business_hours_json). Pode ser string vazia para usar defaults. */
   jsonValue: string;
   /** Chama com (humanReadable, jsonStr) ao mudar */
   onChange: (human: string, json: string) => void;
+  /** Se true (default), emite o schedule default ao montar. Use false quando
+   *  "vazio" deve significar "herdar o global" (ex: horários por agenda). */
+  syncOnMount?: boolean;
 }) {
   const [schedule, setSchedule] = useState<WeekSchedule>(() => parseBhJson(jsonValue));
 
@@ -779,7 +783,7 @@ function BusinessHoursEditor({
   useEffect(() => {
     if (didSyncRef.current) return;
     didSyncRef.current = true;
-    onChange(bhToHuman(schedule), JSON.stringify(schedule));
+    if (syncOnMount) onChange(bhToHuman(schedule), JSON.stringify(schedule));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -6074,6 +6078,16 @@ interface GCalAgendaRow {
   label: string;
   calendarId: string;
   descricao: string;
+  /** Duração/granularidade dos slots desta agenda em minutos (vazio = usa a global). */
+  duracaoMinutos: string;
+  /** Horários liberados específicos (business_hours_json). Vazio = usa os globais. */
+  businessHoursJson: string;
+  /** Modo "uma por dia" (ex: festas): 1 horário por dia e bloqueia o dia inteiro. */
+  umaPorDia: boolean;
+  /** Título do evento criado nesta agenda (template). Vazio = usa o global. */
+  tituloTemplate: string;
+  /** Descrição do evento criado nesta agenda (template). Vazio = usa o global. */
+  descricaoTemplate: string;
 }
 
 function GCalAgendasManager({
@@ -6102,6 +6116,11 @@ function GCalAgendasManager({
           label: a.label,
           calendarId: a.calendarId,
           descricao: a.descricao ?? "",
+          duracaoMinutos: a.duracaoMinutos ? String(a.duracaoMinutos) : "",
+          businessHoursJson: a.businessHoursJson ?? "",
+          umaPorDia: a.umaPorDia ?? false,
+          tituloTemplate: a.tituloTemplate ?? "",
+          descricaoTemplate: a.descricaoTemplate ?? "",
         })),
       );
       if (agendasQ.data.agendas.length >= 2) setOpen(true);
@@ -6115,11 +6134,19 @@ function GCalAgendasManager({
           accountId,
           agendas: input
             .filter((r) => r.label.trim() && r.calendarId.trim())
-            .map((r) => ({
-              label: r.label.trim(),
-              calendarId: r.calendarId.trim(),
-              descricao: r.descricao.trim() || undefined,
-            })),
+            .map((r) => {
+              const dur = parseInt(r.duracaoMinutos, 10);
+              return {
+                label: r.label.trim(),
+                calendarId: r.calendarId.trim(),
+                descricao: r.descricao.trim() || undefined,
+                duracaoMinutos: Number.isFinite(dur) && dur > 0 ? dur : undefined,
+                businessHoursJson: r.businessHoursJson.trim() || undefined,
+                umaPorDia: r.umaPorDia || undefined,
+                tituloTemplate: r.tituloTemplate.trim() || undefined,
+                descricaoTemplate: r.descricaoTemplate.trim() || undefined,
+              };
+            }),
         },
       }),
     onSuccess: () => {
@@ -6132,7 +6159,16 @@ function GCalAgendasManager({
   const addRow = () =>
     setRows((p) => [
       ...p,
-      { label: "", calendarId: calendars[0]?.id ?? "", descricao: "" },
+      {
+        label: "",
+        calendarId: calendars[0]?.id ?? "",
+        descricao: "",
+        duracaoMinutos: "",
+        businessHoursJson: "",
+        umaPorDia: false,
+        tituloTemplate: "",
+        descricaoTemplate: "",
+      },
     ]);
 
   const updateRow = (i: number, patch: Partial<GCalAgendaRow>) =>
@@ -6250,6 +6286,87 @@ function GCalAgendasManager({
                       placeholder="ex: consultas presenciais e exames de imagem"
                       className="text-sm"
                     />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Duração / intervalo (min)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={row.duracaoMinutos}
+                        onChange={(e) => updateRow(i, { duracaoMinutos: e.target.value })}
+                        placeholder="ex: 60"
+                        disabled={row.umaPorDia}
+                        className="text-sm"
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Vazio = usa a duração global. Ex: visitas a cada 60 min.
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Modo de oferta</Label>
+                      <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2">
+                        <Switch
+                          checked={row.umaPorDia}
+                          onCheckedChange={(v) => updateRow(i, { umaPorDia: v })}
+                        />
+                        <span className="text-xs text-slate-700">
+                          Somente 1 por dia <span className="text-muted-foreground">(festas)</span>
+                        </span>
+                      </label>
+                      <p className="text-[10px] text-muted-foreground">
+                        Reserva o dia inteiro: oferece 1 horário por dia livre.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-medium">
+                      Horários liberados desta agenda{" "}
+                      <span className="text-muted-foreground">(opcional)</span>
+                    </Label>
+                    <p className="text-[10px] text-muted-foreground">
+                      Deixe em branco para usar os horários de funcionamento globais do agente.
+                    </p>
+                    <BusinessHoursEditor
+                      jsonValue={row.businessHoursJson}
+                      syncOnMount={false}
+                      onChange={(_human, json) => updateRow(i, { businessHoursJson: json })}
+                    />
+                  </div>
+
+                  <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                    <p className="text-[11px] font-semibold text-slate-600">
+                      Template do evento desta agenda{" "}
+                      <span className="font-normal text-muted-foreground">(opcional)</span>
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      Em branco = usa o template global definido acima. Use variáveis como{" "}
+                      <code className="font-mono">{"{name}"}</code>,{" "}
+                      <code className="font-mono">{"{child_name}"}</code>,{" "}
+                      <code className="font-mono">{"{slot_date}"}</code>,{" "}
+                      <code className="font-mono">{"{slot_time}"}</code>.
+                    </p>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Título do evento</Label>
+                      <Input
+                        value={row.tituloTemplate}
+                        onChange={(e) => updateRow(i, { tituloTemplate: e.target.value })}
+                        placeholder="ex: Festa - {name}"
+                        className="text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Descrição do evento</Label>
+                      <textarea
+                        value={row.descricaoTemplate}
+                        onChange={(e) => updateRow(i, { descricaoTemplate: e.target.value })}
+                        placeholder={"Responsável: {name}\nTelefone: {phone}\nConvidados: {notes}"}
+                        rows={4}
+                        className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
                   </div>
                 </div>
               ))}
@@ -6471,6 +6588,12 @@ function GoogleCalendarPanel({
                   <p className="text-sm font-semibold text-slate-800">Template do evento na agenda</p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">
                     Define título e descrição ao criar o agendamento. Use variáveis abaixo.
+                  </p>
+                  <p className="text-[11px] text-indigo-700 mt-1">
+                    Com <b>múltiplas agendas</b> (seção avançada abaixo), cada agenda pode
+                    ter seu próprio título e descrição. Quando definidos lá, eles
+                    sobrescrevem este template global para aquela agenda; se deixados em
+                    branco, esta configuração global é usada.
                   </p>
                 </div>
 

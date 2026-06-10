@@ -146,16 +146,23 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "listar_horarios",
       description:
-        "Lista horários disponíveis para os próximos 7 dias na agenda da clínica (Clinicorp OU Google Calendar, conforme integração ativa da conta). " +
+        "Lista horários disponíveis na agenda (Clinicorp OU Google Calendar, conforme integração ativa da conta). " +
         "Use quando precisar oferecer slots ao lead (stage SLOT_OFFER). " +
-        "Retorna lista com no máximo 6 horários alinhados à duração da consulta configurada. " +
+        "Retorna no máximo 6 horários alinhados à duração configurada. " +
+        "IMPORTANTE: se o lead pedir uma DATA específica (ex: '25 de julho', '20/07', 'dia 3'), passe-a em `data_alvo` (formato YYYY-MM-DD) para a busca começar nessa data — caso contrário a busca olha só os próximos dias e NÃO vai alcançar datas distantes. " +
         "Aliases reconhecidos (caso o prompt mencione): listar_horarios_clinicorp, listar_horarios_google_calendar, listar_horarios_clinup.",
       parameters: {
         type: "object",
         properties: {
+          data_alvo: {
+            type: "string",
+            description:
+              "Data específica pedida pelo lead, no formato YYYY-MM-DD (ex: '2026-07-25'). A busca começa nessa data. Omita se o lead não citou uma data.",
+          },
           dias_a_frente: {
             type: "integer",
-            description: "Número de dias à frente para buscar (default 7).",
+            description:
+              "Tamanho da janela de busca em dias a partir do início (default 7). Use um valor maior se quiser oferecer mais alternativas.",
           },
         },
         required: [],
@@ -289,10 +296,18 @@ interface ToolOutcome {
  *  - { error } quando multi-agenda mas o label está ausente ou é inválido.
  *  - {} (sem calendarId nem error) em agenda única → usa o calendar_id padrão.
  */
-function resolveGcalAgenda(
-  ctx: AgentContext,
-  label?: string,
-): { calendarId?: string; agendaLabel?: string; error?: string } {
+interface ResolvedAgenda {
+  calendarId?: string;
+  agendaLabel?: string;
+  duracaoMinutos?: number;
+  businessHoursJson?: string;
+  umaPorDia?: boolean;
+  tituloTemplate?: string;
+  descricaoTemplate?: string;
+  error?: string;
+}
+
+function resolveGcalAgenda(ctx: AgentContext, label?: string): ResolvedAgenda {
   if (!isMultiAgenda(ctx)) return {};
   const validLabels = ctx.googleAgendas.map((a) => a.label);
   if (!label || !label.trim()) {
@@ -307,7 +322,15 @@ function resolveGcalAgenda(
       error: `Agenda "${label}" não existe. Use exatamente um destes: ${validLabels.join(", ")}.`,
     };
   }
-  return { calendarId: match.calendarId, agendaLabel: match.label };
+  return {
+    calendarId: match.calendarId,
+    agendaLabel: match.label,
+    duracaoMinutos: match.duracaoMinutos,
+    businessHoursJson: match.businessHoursJson,
+    umaPorDia: match.umaPorDia,
+    tituloTemplate: match.tituloTemplate,
+    descricaoTemplate: match.descricaoTemplate,
+  };
 }
 
 async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
@@ -392,10 +415,22 @@ function formatGCalSlot(s: GCalSlot): {
   };
 }
 
+/** Converte "YYYY-MM-DD" (data pedida pelo lead) em Date no início do dia BRT.
+ *  Retorna null se o formato for inválido. Aceita ISO mais longo (usa os 10
+ *  primeiros caracteres). */
+function parseDataAlvoBrt(dataAlvo?: string): Date | null {
+  if (!dataAlvo || typeof dataAlvo !== "string") return null;
+  const m = dataAlvo.trim().slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00-03:00`);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
   agendaLabel?: string,
+  dataAlvo?: string,
 ): Promise<ToolOutcome> {
   const selected = ctx.leadData.selected_slot_iso;
   if (selected) {
@@ -427,7 +462,11 @@ async function execListarHorarios(
     };
   }
 
-  const today = new Date();
+  const now = new Date();
+  // Ancoragem na data pedida pelo lead (data_alvo). Se for uma data futura,
+  // a busca começa nela; senão começa agora.
+  const anchor = parseDataAlvoBrt(dataAlvo);
+  const today = anchor && anchor.getTime() > now.getTime() ? anchor : now;
   const end = new Date(today.getTime() + (diasAFrente ?? 7) * 24 * 60 * 60 * 1000);
 
   // Google Calendar: usa lógica de janelas com expediente da clínica
@@ -437,18 +476,31 @@ async function execListarHorarios(
     if (resolved.error) {
       return { result: JSON.stringify({ count: 0, slots: [], error: resolved.error }) };
     }
-    const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
+    // Duração: específica da agenda (multi-agenda) ou a global do agente.
+    const duracao =
+      resolved.duracaoMinutos ??
+      (Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40);
+    // Horários liberados: específicos da agenda ou os globais do agente.
+    const businessHoursJson =
+      resolved.businessHoursJson ?? ctx.agentSettings.business_hours_json;
+    // Modo "uma por dia" (festas): sem data_alvo, amplia a janela padrão para
+    // alcançar os próximos dias livres (festas costumam ser semanas à frente).
+    const gcalEnd =
+      resolved.umaPorDia && !anchor && diasAFrente == null
+        ? new Date(today.getTime() + 60 * 24 * 60 * 60 * 1000)
+        : end;
     // Granularidade IGUAL à duração → slots não sobrepostos. Ex: duração 30 min
     // gera 08:00, 08:30, 09:00, 09:30... Duração 40 min gera 08:00, 08:40, 09:20...
     const slots = await listGoogleCalendarSlots(
       ctx.accountId,
       {
         periodoInicio: today.toISOString(),
-        periodoFim: end.toISOString(),
+        periodoFim: gcalEnd.toISOString(),
         tamanhoJanelaMinutos: duracao,
         granularidade: duracao,
         amostras: 6,
-        businessHoursJson: ctx.agentSettings.business_hours_json,
+        businessHoursJson,
+        umaPorDia: resolved.umaPorDia,
       },
       resolved.calendarId,
     );
@@ -580,8 +632,15 @@ async function execCriarAgendamento(
       if (resolved.error) {
         return { result: JSON.stringify({ ok: false, error: resolved.error }) };
       }
-      const duracao = Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40;
-      const { titulo, descricao } = resolveGcalEventTemplates(bookingCtx);
+      // Duração específica da agenda (multi-agenda) ou a global do agente.
+      const duracao =
+        resolved.duracaoMinutos ??
+        (Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40);
+      // Título/descrição específicos da agenda (multi-agenda); vazio → global.
+      const { titulo, descricao } = resolveGcalEventTemplates(bookingCtx, {
+        titleTemplate: resolved.tituloTemplate,
+        descriptionTemplate: resolved.descricaoTemplate,
+      });
       const ev = await createGoogleCalendarEvent(
         ctx.accountId,
         {
@@ -756,8 +815,10 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
 
 Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
 - **SLOT_OFFER**: ofereça no máx 2 horários. SEMPRE chame listar_horarios
-  primeiro (se selected_slot_iso vazio). Nunca invente horários. Só avance
-  para NAME_COLLECT quando selected_slot_iso estiver preenchido.
+  primeiro (se selected_slot_iso vazio). Nunca invente horários. Se o lead
+  pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em
+  \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios. Só avance para
+  NAME_COLLECT quando selected_slot_iso estiver preenchido.
 - **NAME_COLLECT**: só se selected_slot_iso existir. Confirme o slot. NÃO
   chame listar_horarios. Colete os campos obrigatórios (UM por mensagem).${commitmentEnabled ? ` Ao final dos campos, pergunte: "${commitmentQ}"` : ""}
 - **BOOKING**: o sistema cria o agendamento. Se criar_agendamento ok=true,
@@ -817,7 +878,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
-- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
+- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Se o lead pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios — sem isso a busca não alcança datas distantes. Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
 - **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou — peça desculpas e ofereça outro horário.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
@@ -894,11 +955,18 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
     ? `\n# AGENDAS DISPONÍVEIS (Google Calendar)
 
 Esta conta tem MAIS DE UMA agenda. Ao chamar **listar_horarios** e **criar_agendamento**, você DEVE preencher o parâmetro \`agenda\` com EXATAMENTE um destes labels, escolhido conforme a situação:
-${ctx.googleAgendas.map((a) => `- "${a.label}": ${a.descricao || "(sem descrição — use seu julgamento pelo nome)"}`).join("\n")}
+${ctx.googleAgendas
+  .map(
+    (a) =>
+      `- "${a.label}": ${a.descricao || "(sem descrição — use seu julgamento pelo nome)"}` +
+      (a.umaPorDia ? " [reserva o DIA inteiro — 1 por dia]" : ""),
+  )
+  .join("\n")}
 
 Regras:
 - Use a MESMA agenda para listar horários e para agendar (não misture).
 - Se não tiver certeza de qual agenda, pergunte ao lead antes de listar horários.
+- Cada agenda tem sua própria duração e horários liberados — você não precisa se preocupar com isso, a tool já aplica conforme a agenda escolhida.
 ${ld.selected_agenda ? `- Agenda já escolhida nesta conversa: "${ld.selected_agenda}". Mantenha-a, a menos que o lead peça para trocar.` : ""}
 `
     : "";
@@ -1221,6 +1289,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
               ctx,
               args.dias_a_frente as number | undefined,
               typeof args.agenda === "string" ? args.agenda : undefined,
+              typeof args.data_alvo === "string" ? args.data_alvo : undefined,
             );
             break;
           case "criar_agendamento":

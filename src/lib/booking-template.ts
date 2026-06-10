@@ -619,11 +619,22 @@ export function defaultCommitmentQuestion(settings: Record<string, string>): str
   return `Posso garantir ao ${prof} que você estará presente nesse horário?`;
 }
 
-export function resolveGcalEventTemplates(ctx: AgentContext): { titulo: string; descricao: string } {
+export function resolveGcalEventTemplates(
+  ctx: AgentContext,
+  overrides?: { titleTemplate?: string; descriptionTemplate?: string },
+): { titulo: string; descricao: string } {
   const s = ctx.agentSettings;
   const vars = buildTemplateVars(ctx);
-  const titleTpl = s.gcal_event_title_template?.trim() || defaultGcalTitleTemplate(s);
-  const descTpl = s.gcal_event_description_template?.trim() || defaultGcalDescriptionTemplate(s);
+  // Precedência: template específico da agenda (multi-agenda) → global do
+  // agente → default derivado do tipo de agendamento.
+  const titleTpl =
+    overrides?.titleTemplate?.trim() ||
+    s.gcal_event_title_template?.trim() ||
+    defaultGcalTitleTemplate(s);
+  const descTpl =
+    overrides?.descriptionTemplate?.trim() ||
+    s.gcal_event_description_template?.trim() ||
+    defaultGcalDescriptionTemplate(s);
 
   let titulo = renderBookingTemplate(titleTpl, vars);
   let descricao = renderBookingTemplate(descTpl, vars, { preserveNewlines: true });

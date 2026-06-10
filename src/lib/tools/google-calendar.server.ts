@@ -307,6 +307,17 @@ export interface GCalAgenda {
   label: string;
   calendarId: string;
   descricao?: string;
+  /** Duração/granularidade dos slots desta agenda (min). Fallback: duracao_consulta_minutos. */
+  duracaoMinutos?: number;
+  /** Horários liberados específicos desta agenda (business_hours_json). Fallback: o do agente. */
+  businessHoursJson?: string;
+  /** Modo "uma por dia" (ex: festas): oferece no máx. 1 horário por dia livre,
+   *  e considera o dia ocupado se já houver QUALQUER evento naquele dia. */
+  umaPorDia?: boolean;
+  /** Título do evento desta agenda (template). Vazio = usa o global do agente. */
+  tituloTemplate?: string;
+  /** Descrição do evento desta agenda (template). Vazio = usa o global do agente. */
+  descricaoTemplate?: string;
 }
 
 function parseAgendas(raw: unknown): GCalAgenda[] {
@@ -324,7 +335,31 @@ function parseAgendas(raw: unknown): GCalAgenda[] {
           : "";
     if (!label || !calendarId) continue;
     const descricao = typeof o.descricao === "string" ? o.descricao.trim() : undefined;
-    out.push({ label, calendarId, descricao: descricao || undefined });
+    const duracaoRaw = o.duracao_minutos ?? o.duracaoMinutos;
+    const duracaoMinutos =
+      typeof duracaoRaw === "number" && Number.isFinite(duracaoRaw) && duracaoRaw > 0
+        ? Math.round(duracaoRaw)
+        : undefined;
+    const bhRaw = o.business_hours_json ?? o.businessHoursJson;
+    const businessHoursJson =
+      typeof bhRaw === "string" && bhRaw.trim() ? bhRaw.trim() : undefined;
+    const umaPorDia = o.uma_por_dia === true || o.umaPorDia === true;
+    const titRaw = o.gcal_event_title_template ?? o.tituloTemplate;
+    const tituloTemplate =
+      typeof titRaw === "string" && titRaw.trim() ? titRaw.trim() : undefined;
+    const descRaw = o.gcal_event_description_template ?? o.descricaoTemplate;
+    const descricaoTemplate =
+      typeof descRaw === "string" && descRaw.trim() ? descRaw : undefined;
+    out.push({
+      label,
+      calendarId,
+      descricao: descricao || undefined,
+      duracaoMinutos,
+      businessHoursJson,
+      ...(umaPorDia ? { umaPorDia: true } : {}),
+      tituloTemplate,
+      descricaoTemplate,
+    });
   }
   return out;
 }
@@ -373,10 +408,28 @@ export async function resolveAgendaCalendarId(
  */
 export async function saveAccountAgendas(
   accountId: string,
-  agendas: { label: string; calendarId: string; descricao?: string }[],
+  agendas: {
+    label: string;
+    calendarId: string;
+    descricao?: string;
+    duracaoMinutos?: number;
+    businessHoursJson?: string;
+    umaPorDia?: boolean;
+    tituloTemplate?: string;
+    descricaoTemplate?: string;
+  }[],
 ): Promise<void> {
   const seen = new Set<string>();
-  const normalized: { label: string; calendar_id: string; descricao?: string }[] = [];
+  const normalized: {
+    label: string;
+    calendar_id: string;
+    descricao?: string;
+    duracao_minutos?: number;
+    business_hours_json?: string;
+    uma_por_dia?: boolean;
+    gcal_event_title_template?: string;
+    gcal_event_description_template?: string;
+  }[] = [];
   for (const a of agendas) {
     const label = (a.label ?? "").trim();
     const calendarId = (a.calendarId ?? "").trim();
@@ -385,7 +438,23 @@ export async function saveAccountAgendas(
     if (seen.has(key)) continue;
     seen.add(key);
     const descricao = (a.descricao ?? "").trim();
-    normalized.push({ label, calendar_id: calendarId, ...(descricao ? { descricao } : {}) });
+    const duracao =
+      typeof a.duracaoMinutos === "number" && a.duracaoMinutos > 0
+        ? Math.round(a.duracaoMinutos)
+        : undefined;
+    const bh = (a.businessHoursJson ?? "").trim();
+    const tit = (a.tituloTemplate ?? "").trim();
+    const desc = (a.descricaoTemplate ?? "").replace(/\s+$/, "");
+    normalized.push({
+      label,
+      calendar_id: calendarId,
+      ...(descricao ? { descricao } : {}),
+      ...(duracao ? { duracao_minutos: duracao } : {}),
+      ...(bh ? { business_hours_json: bh } : {}),
+      ...(a.umaPorDia ? { uma_por_dia: true } : {}),
+      ...(tit ? { gcal_event_title_template: tit } : {}),
+      ...(desc ? { gcal_event_description_template: desc } : {}),
+    });
   }
 
   const sb = getSelfhost();
@@ -412,6 +481,9 @@ interface ListSlotsParams {
   amostras?: number;             // se omitido, retorna tudo
   /** JSON do business_hours_json do agente. Se vazio → sem restrição de expediente. */
   businessHoursJson?: string | null;
+  /** Modo "uma por dia" (ex: festas): no máx. 1 janela por dia e o dia é
+   *  considerado ocupado se houver QUALQUER evento nele. */
+  umaPorDia?: boolean;
 }
 
 const TAMANHOS_VALIDOS = [10, 15, 20, 30, 40, 45, 60, 90, 120];
@@ -530,24 +602,47 @@ export async function listGoogleCalendarSlots(
     }));
 
   // 4. Remove janelas que conflitam
-  const semConflito = janelasNoExpediente.filter(({ inicio: s, fim: e }) => {
-    for (const ev of eventos) {
-      if (s < ev.fim && e > ev.inicio) return false;
+  // Chave de dia no fuso BR (YYYY-MM-DD) para agrupar/comparar por dia.
+  const dateKeyBr = (d: Date) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d);
+
+  let semConflito: { inicio: Date; fim: Date }[];
+  if (params.umaPorDia) {
+    // Modo "uma por dia" (festas): o dia inteiro fica ocupado se houver QUALQUER
+    // evento nele. Oferece no máximo 1 janela (a primeira) por dia livre.
+    const diasOcupados = new Set(eventos.map((ev) => dateKeyBr(ev.inicio)));
+    const usados = new Set<string>();
+    semConflito = [];
+    for (const janela of janelasNoExpediente) {
+      const dia = dateKeyBr(janela.inicio);
+      if (diasOcupados.has(dia) || usados.has(dia)) continue;
+      usados.add(dia);
+      semConflito.push(janela);
     }
-    return true;
-  });
+  } else {
+    semConflito = janelasNoExpediente.filter(({ inicio: s, fim: e }) => {
+      for (const ev of eventos) {
+        if (s < ev.fim && e > ev.inicio) return false;
+      }
+      return true;
+    });
+  }
 
   console.log(
-    `[gcal] após eventos: ${janelasNoExpediente.length} → ${semConflito.length} sem conflito (${eventos.length} eventos no período)`,
+    `[gcal] após eventos: ${janelasNoExpediente.length} → ${semConflito.length} sem conflito (${eventos.length} eventos no período${params.umaPorDia ? ", modo=uma_por_dia" : ""})`,
   );
 
-  // 5. Embaralha + corta amostras
+  // 5. Corta amostras. No modo "uma por dia" (festas), preserva a ordem
+  // cronológica (os próximos dias livres). Caso contrário, embaralha para
+  // variar os horários ofertados dentro do período.
   let resultado = [...semConflito];
   if (typeof params.amostras === "number" && params.amostras > 0) {
-    // Fisher-Yates
-    for (let i = resultado.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [resultado[i], resultado[j]] = [resultado[j], resultado[i]];
+    if (!params.umaPorDia) {
+      // Fisher-Yates
+      for (let i = resultado.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [resultado[i], resultado[j]] = [resultado[j], resultado[i]];
+      }
     }
     resultado = resultado.slice(0, params.amostras);
     // Ordena de volta cronologicamente
