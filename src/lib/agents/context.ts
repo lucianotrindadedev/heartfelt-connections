@@ -60,7 +60,14 @@ export interface AgentContext {
   /** Agendas Google selecionadas (vazio = agenda única via calendar_id padrão).
    *  Com 2+ entradas, o scheduler injeta o parâmetro `agenda` (enum dos labels)
    *  e o agente escolhe qual usar conforme as regras do prompt. */
-  googleAgendas: { label: string; calendarId: string; descricao?: string }[];
+  googleAgendas: {
+    label: string;
+    calendarId: string;
+    descricao?: string;
+    duracaoMinutos?: number;
+    businessHoursJson?: string;
+    umaPorDia?: boolean;
+  }[];
 
   /** Histórico de mensagens já filtrado (sem fallbacks determinísticos). */
   history: { role: "user" | "assistant"; content: string }[];

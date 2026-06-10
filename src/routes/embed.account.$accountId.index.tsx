@@ -764,11 +764,15 @@ function bhToHuman(s: WeekSchedule): string {
 function BusinessHoursEditor({
   jsonValue,
   onChange,
+  syncOnMount = true,
 }: {
   /** Valor em JSON (business_hours_json). Pode ser string vazia para usar defaults. */
   jsonValue: string;
   /** Chama com (humanReadable, jsonStr) ao mudar */
   onChange: (human: string, json: string) => void;
+  /** Se true (default), emite o schedule default ao montar. Use false quando
+   *  "vazio" deve significar "herdar o global" (ex: horários por agenda). */
+  syncOnMount?: boolean;
 }) {
   const [schedule, setSchedule] = useState<WeekSchedule>(() => parseBhJson(jsonValue));
 
@@ -779,7 +783,7 @@ function BusinessHoursEditor({
   useEffect(() => {
     if (didSyncRef.current) return;
     didSyncRef.current = true;
-    onChange(bhToHuman(schedule), JSON.stringify(schedule));
+    if (syncOnMount) onChange(bhToHuman(schedule), JSON.stringify(schedule));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -6074,6 +6078,12 @@ interface GCalAgendaRow {
   label: string;
   calendarId: string;
   descricao: string;
+  /** Duração/granularidade dos slots desta agenda em minutos (vazio = usa a global). */
+  duracaoMinutos: string;
+  /** Horários liberados específicos (business_hours_json). Vazio = usa os globais. */
+  businessHoursJson: string;
+  /** Modo "uma por dia" (ex: festas): 1 horário por dia e bloqueia o dia inteiro. */
+  umaPorDia: boolean;
 }
 
 function GCalAgendasManager({
@@ -6102,6 +6112,9 @@ function GCalAgendasManager({
           label: a.label,
           calendarId: a.calendarId,
           descricao: a.descricao ?? "",
+          duracaoMinutos: a.duracaoMinutos ? String(a.duracaoMinutos) : "",
+          businessHoursJson: a.businessHoursJson ?? "",
+          umaPorDia: a.umaPorDia ?? false,
         })),
       );
       if (agendasQ.data.agendas.length >= 2) setOpen(true);
@@ -6115,11 +6128,17 @@ function GCalAgendasManager({
           accountId,
           agendas: input
             .filter((r) => r.label.trim() && r.calendarId.trim())
-            .map((r) => ({
-              label: r.label.trim(),
-              calendarId: r.calendarId.trim(),
-              descricao: r.descricao.trim() || undefined,
-            })),
+            .map((r) => {
+              const dur = parseInt(r.duracaoMinutos, 10);
+              return {
+                label: r.label.trim(),
+                calendarId: r.calendarId.trim(),
+                descricao: r.descricao.trim() || undefined,
+                duracaoMinutos: Number.isFinite(dur) && dur > 0 ? dur : undefined,
+                businessHoursJson: r.businessHoursJson.trim() || undefined,
+                umaPorDia: r.umaPorDia || undefined,
+              };
+            }),
         },
       }),
     onSuccess: () => {
@@ -6132,7 +6151,14 @@ function GCalAgendasManager({
   const addRow = () =>
     setRows((p) => [
       ...p,
-      { label: "", calendarId: calendars[0]?.id ?? "", descricao: "" },
+      {
+        label: "",
+        calendarId: calendars[0]?.id ?? "",
+        descricao: "",
+        duracaoMinutos: "",
+        businessHoursJson: "",
+        umaPorDia: false,
+      },
     ]);
 
   const updateRow = (i: number, patch: Partial<GCalAgendaRow>) =>
@@ -6249,6 +6275,54 @@ function GCalAgendasManager({
                       onChange={(e) => updateRow(i, { descricao: e.target.value })}
                       placeholder="ex: consultas presenciais e exames de imagem"
                       className="text-sm"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Duração / intervalo (min)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={row.duracaoMinutos}
+                        onChange={(e) => updateRow(i, { duracaoMinutos: e.target.value })}
+                        placeholder="ex: 60"
+                        disabled={row.umaPorDia}
+                        className="text-sm"
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Vazio = usa a duração global. Ex: visitas a cada 60 min.
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Modo de oferta</Label>
+                      <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2">
+                        <Switch
+                          checked={row.umaPorDia}
+                          onCheckedChange={(v) => updateRow(i, { umaPorDia: v })}
+                        />
+                        <span className="text-xs text-slate-700">
+                          Somente 1 por dia <span className="text-muted-foreground">(festas)</span>
+                        </span>
+                      </label>
+                      <p className="text-[10px] text-muted-foreground">
+                        Reserva o dia inteiro: oferece 1 horário por dia livre.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-[11px] font-medium">
+                      Horários liberados desta agenda{" "}
+                      <span className="text-muted-foreground">(opcional)</span>
+                    </Label>
+                    <p className="text-[10px] text-muted-foreground">
+                      Deixe em branco para usar os horários de funcionamento globais do agente.
+                    </p>
+                    <BusinessHoursEditor
+                      jsonValue={row.businessHoursJson}
+                      syncOnMount={false}
+                      onChange={(_human, json) => updateRow(i, { businessHoursJson: json })}
                     />
                   </div>
                 </div>
