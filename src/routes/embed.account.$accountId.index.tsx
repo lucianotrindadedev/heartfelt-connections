@@ -6589,6 +6589,12 @@ function GoogleCalendarPanel({
                   <p className="text-[11px] text-muted-foreground mt-0.5">
                     Define título e descrição ao criar o agendamento. Use variáveis abaixo.
                   </p>
+                  <p className="text-[11px] text-indigo-700 mt-1">
+                    Com <b>múltiplas agendas</b> (seção avançada abaixo), cada agenda pode
+                    ter seu próprio título e descrição. Quando definidos lá, eles
+                    sobrescrevem este template global para aquela agenda; se deixados em
+                    branco, esta configuração global é usada.
+                  </p>
                 </div>
 
                 <div className="space-y-1.5">
