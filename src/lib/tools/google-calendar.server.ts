@@ -99,7 +99,7 @@ function removeAcento(str: string): string {
 }
 
 /** Retorna a chave de dia da semana sem acento ("segunda", "terca", "quarta", ...). */
-function diaSemanaChave(dateObj: Date): string {
+export function diaSemanaChave(dateObj: Date): string {
   const diaPt = new Intl.DateTimeFormat("pt-BR", {
     weekday: "long",
     timeZone: TZ,
@@ -153,6 +153,12 @@ const SHORT_DAY_MAP: Record<string, string> = {
   sex: "sexta",
   sab: "sabado",
 };
+
+/** Dias da semana com ao menos um bloco ativo no business_hours_json (ex: ["segunda","terca"]). */
+export function activeWeekdayKeys(businessHoursJson: string | undefined | null): string[] {
+  const disp = parseDisponibilidadeFromSettings(businessHoursJson);
+  return Object.keys(disp).filter((k) => (disp[k]?.length ?? 0) > 0);
+}
 
 /** Lê business_hours_json do agente e devolve no formato {segunda: [...], terca: [...], ...}. */
 function parseDisponibilidadeFromSettings(
@@ -505,13 +511,16 @@ export async function listGoogleCalendarSlots(
   // Em "uma por dia" (festas) a janela é grande (4h+) e serve só para marcar o
   // horário de início; a grade de candidatos usa um passo fino para alinhar o
   // horário ao início do expediente liberado.
-  const gran = params.umaPorDia ? 60 : (params.granularidade ?? 30);
+  let gran = params.umaPorDia ? 60 : (params.granularidade ?? 30);
 
   if (tamanho < DURACAO_MIN || tamanho > DURACAO_MAX) {
     throw new Error(`Duração inválida (${tamanho}). Use entre ${DURACAO_MIN} e ${DURACAO_MAX} minutos.`);
   }
   if (!GRAN_VALIDOS.includes(gran)) {
-    throw new Error(`Granularidade inválida. Use uma destas: ${GRAN_VALIDOS.join(", ")}`);
+    // Duração longa sem "uma por dia" (ex: 240) chega aqui via granularidade=
+    // duração. Cai para 60 em vez de quebrar a tool — slots de hora em hora.
+    console.warn(`[gcal] granularidade ${gran} inválida — usando 60`);
+    gran = 60;
   }
 
   const inicio = new Date(params.periodoInicio);

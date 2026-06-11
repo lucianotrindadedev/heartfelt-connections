@@ -23,6 +23,8 @@ import {
   createGoogleCalendarEvent,
   cancelGoogleCalendarEvent,
   findGoogleCalendarEventsByPhone,
+  activeWeekdayKeys,
+  diaSemanaChave,
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
 import { loadHelenaAccount } from "@/lib/helena.server";
@@ -526,7 +528,30 @@ async function execListarHorarios(
     // Quando vier vazio, devolve diagnostico p/ o LLM decidir bem
     // (ex: pedir pra suporte, sugerir janela maior, etc.) e nao alucinar.
     if (formatted.length === 0) {
-      const hasBusinessHours = !!(ctx.agentSettings.business_hours_json?.trim());
+      const hasBusinessHours = !!businessHoursJson?.trim();
+      const diasAtivos = activeWeekdayKeys(businessHoursJson);
+      // Data especifica pedida: verifica se o dia da semana esta habilitado
+      // nos horarios liberados — sem isso o LLM conclui "tudo ocupado" e
+      // responde errado quando na verdade o dia nem abre (ex: sabado).
+      let dataAlvoDebug: Record<string, unknown> = {};
+      let causa: string;
+      if (!hasBusinessHours) {
+        causa = "Horario de funcionamento nao esta configurado nas Settings.";
+      } else if (anchor) {
+        const diaAlvo = diaSemanaChave(anchor);
+        const diaAtivo = diasAtivos.includes(diaAlvo);
+        dataAlvoDebug = {
+          data_alvo: anchor.toISOString().slice(0, 10),
+          dia_semana_alvo: diaAlvo,
+          dia_ativo_no_expediente: diaAtivo,
+        };
+        causa = diaAtivo
+          ? "A data pedida esta com todos os horarios ocupados nesta agenda. Ofereca a data livre mais proxima (chame de novo sem data_alvo ou com outra data)."
+          : `A data pedida cai em ${diaAlvo.toUpperCase()}, dia que NAO esta habilitado nos horarios desta agenda (dias ativos: ${diasAtivos.join(", ") || "nenhum"}). Informe ao lead que nao atendemos nesse dia da semana e ofereca um dia ativo.`;
+      } else {
+        causa =
+          "Todos os horarios no periodo consultado estao ocupados na agenda Google. Tente um periodo maior OU verifique se realmente ha disponibilidade.";
+      }
       const diag = {
         count: 0,
         slots: [],
@@ -534,9 +559,9 @@ async function execListarHorarios(
           duracao_consulta_min: duracao,
           dias_consultados: diasAFrente ?? 7,
           tem_horario_funcionamento: hasBusinessHours,
-          possivel_causa: !hasBusinessHours
-            ? "Horario de funcionamento da clinica nao esta configurado nas Settings."
-            : "Todos os horarios no periodo consultado estao ocupados na agenda Google. Tente um periodo maior OU verifique se a clinica realmente tem disponibilidade.",
+          dias_ativos: diasAtivos,
+          ...dataAlvoDebug,
+          possivel_causa: causa,
         },
       };
       console.warn("[scheduler] listar_horarios retornou 0 slots:", diag.debug);
