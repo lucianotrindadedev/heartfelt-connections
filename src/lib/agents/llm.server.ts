@@ -404,7 +404,18 @@ export async function callLlmWithFallback(
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     try {
-      const r = await callLlm(orKey, { ...req, model });
+      let r = await callLlm(orKey, { ...req, model });
+      // finish_reason=length: texto cortado no meio (modelos com reasoning
+      // queimam o orçamento em raciocínio oculto). Retry com budget maior
+      // antes de entregar mensagem truncada ao lead.
+      if (r.finishReason === "length" && r.content && (r.toolCalls?.length ?? 0) === 0) {
+        const biggerBudget = Math.max(2048, (req.maxTokens ?? 1024) * 2);
+        console.warn(
+          `[llm-fallback] finish_reason=length model=${model} tokens_out=${r.tokensOut} — retry com max_tokens=${biggerBudget}`,
+        );
+        const retry = await callLlm(orKey, { ...req, model, maxTokens: biggerBudget });
+        if (retry.content) r = retry;
+      }
       // Content vazio + finish=tool_calls é COMPORTAMENTO CORRETO: o LLM
       // decidiu chamar uma tool em vez de responder. Não pode ser tratado
       // como falha — senão o fallback executa o mesmo prompt em outro
@@ -476,6 +487,20 @@ export async function callLlmStructured<T>(
   parse: (raw: unknown) => T,
 ): Promise<{ result: T; response: LlmResponse }> {
   let response = await callLlm(orKey, { ...req, jsonMode: true });
+
+  // finish_reason=length → o modelo estourou max_tokens no meio do JSON.
+  // Modelos com reasoning (gpt-mini, gemini-flash) queimam o orçamento em
+  // raciocínio oculto e sobra um reply de ~40 chars. Se aceitarmos o salvage
+  // (recoverTruncatedJson), o lead recebe mensagem CORTADA no meio da palavra.
+  // Retry com orçamento maior antes de qualquer tentativa de parse/salvage.
+  if (response.finishReason === "length") {
+    const biggerBudget = Math.max(2048, (req.maxTokens ?? 1024) * 2);
+    console.warn(
+      `[llm] finish_reason=length model=${req.model} tokens_out=${response.tokensOut} — retry com max_tokens=${biggerBudget}`,
+    );
+    const retry = await callLlm(orKey, { ...req, maxTokens: biggerBudget, jsonMode: true });
+    if (retry.content) response = retry;
+  }
 
   // Retry quando o modelo retorna content vazio (alguns modelos travam em
   // response_format: json_object, ou erram a 1ª chamada). Retry sem jsonMode
