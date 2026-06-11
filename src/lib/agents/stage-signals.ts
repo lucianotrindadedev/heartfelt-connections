@@ -12,6 +12,7 @@
 
 import {
   isSlotAcceptanceMessage,
+  looksLikeBirthDate,
   looksLikeSchedulingPreference,
 } from "@/lib/booking-template";
 import type { LeadData, Stage } from "./stage";
@@ -40,6 +41,10 @@ export interface DetectedSignals {
   isShortYes: boolean;
   /** QUALIFICATION + assistente propos agendar + usuario disse sim. */
   userAcceptedSchedulingProposal: boolean;
+  /** RECEPTION/QUALIFICATION + lead perguntou disponibilidade/data especifica
+   *  ("tem disponibilidade para 25/07?"). Roteia direto pro scheduler — o
+   *  qualifier nao tem tool de agenda e alucina "vou verificar" sem voltar. */
+  userAskedDateAvailability: boolean;
 }
 
 const SCHEDULING_PROPOSAL_REGEX =
@@ -47,6 +52,12 @@ const SCHEDULING_PROPOSAL_REGEX =
 
 const SHORT_YES_REGEX =
   /^(sim|ok|claro|topo|topa|pode|aceito|aceita|quero|isso|vamos|bora|blz|beleza|combinado|fechado|perfeito|com certeza|por favor)[!.?\s]*$/i;
+
+// Lead perguntando disponibilidade ou citando data especifica (dd/mm ou
+// "25 de julho"). Mantido conservador para evitar falso positivo em
+// QUALIFICATION (ex: "sábado" sozinho NAO casa).
+const DATE_AVAILABILITY_REGEX =
+  /(disponibilidade|dispon[ií]vel|tem\s+(?:data|vaga|hor[aá]rio|agenda)|data\s+(?:livre|dispon[ií]vel)|agenda\s+(?:livre|aberta)|\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b|\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b)/i;
 
 export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
   const lastUserMsg =
@@ -62,6 +73,13 @@ export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
   const userAcceptedSchedulingProposal =
     ctx.stage === "QUALIFICATION" && lastAssistantProposedScheduling && isShortYes;
 
+  // Data de nascimento (resposta de campo) nunca conta como pedido de
+  // disponibilidade — evita roteamento errado quando o lead responde "15/03/2019".
+  const userAskedDateAvailability =
+    (ctx.stage === "RECEPTION" || ctx.stage === "QUALIFICATION") &&
+    DATE_AVAILABILITY_REGEX.test(lastUserMsg) &&
+    !looksLikeBirthDate(lastUserMsg);
+
   return {
     lastUserMsg,
     lastAssistantMsg,
@@ -69,6 +87,7 @@ export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
     lastAssistantProposedScheduling,
     isShortYes,
     userAcceptedSchedulingProposal,
+    userAskedDateAvailability,
   };
 }
 
@@ -98,6 +117,21 @@ export function inferEffectiveStage(
     return {
       effectiveStage: "SLOT_OFFER",
       reason: "lead_accepted_scheduling_proposal",
+    };
+  }
+
+  // Lead pediu disponibilidade/data especifica → scheduler responde JA neste
+  // turno com horarios reais (listar_horarios + data_alvo). Sem isso, o
+  // qualifier (sem tool de agenda) promete "vou verificar" e a conversa morre.
+  if (
+    (stage === "RECEPTION" || stage === "QUALIFICATION") &&
+    hasBookingIntegration &&
+    signals.userAskedDateAvailability &&
+    !leadData.appointment_id
+  ) {
+    return {
+      effectiveStage: "SLOT_OFFER",
+      reason: "lead_asked_date_availability",
     };
   }
 
@@ -165,6 +199,20 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
   ) {
     result = "SLOT_OFFER";
     reason = "force_slot_offer_after_accept";
+  }
+
+  // Pedido de disponibilidade roteado pro scheduler (effectiveStage=SLOT_OFFER):
+  // persiste o avanco mesmo vindo de RECEPTION, onde a tabela de transicoes
+  // bloqueia RECEPTION → SLOT_OFFER (o resolveNextStage devolve o stage antigo).
+  if (
+    signals.userAskedDateAvailability &&
+    hasBookingIntegration &&
+    effectiveStage === "SLOT_OFFER" &&
+    (originalStage === "RECEPTION" || originalStage === "QUALIFICATION") &&
+    (result === "RECEPTION" || result === "QUALIFICATION")
+  ) {
+    result = "SLOT_OFFER";
+    reason = reason ?? "force_slot_offer_after_date_ask";
   }
 
   if (

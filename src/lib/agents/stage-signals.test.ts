@@ -99,6 +99,62 @@ describe("detectSignals", () => {
     );
     expect(s.slotSelectionTurn).toBe(false);
   });
+
+  it("detecta pedido de disponibilidade com data em RECEPTION", () => {
+    const s = detectSignals(
+      baseCtx({
+        stage: "RECEPTION",
+        history: [
+          { role: "assistant", content: "Como posso te ajudar com a sua festa?" },
+          { role: "user", content: "Quero saber se tem disponibilidade para o dia 25/07" },
+        ],
+      }),
+    );
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
+  it("detecta pedido de disponibilidade com data por extenso em QUALIFICATION", () => {
+    const s = detectSignals(
+      baseCtx({
+        stage: "QUALIFICATION",
+        history: [{ role: "user", content: "Tem data livre dia 25 de julho?" }],
+      }),
+    );
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
+  it("NAO marca disponibilidade para data de nascimento", () => {
+    const s = detectSignals(
+      baseCtx({
+        stage: "QUALIFICATION",
+        history: [
+          { role: "assistant", content: "Qual a data de nascimento da criança?" },
+          { role: "user", content: "25/07/2019" },
+        ],
+      }),
+    );
+    expect(s.userAskedDateAvailability).toBe(false);
+  });
+
+  it("NAO marca disponibilidade fora de RECEPTION/QUALIFICATION", () => {
+    const s = detectSignals(
+      baseCtx({
+        stage: "SLOT_OFFER",
+        history: [{ role: "user", content: "tem disponibilidade dia 25/07?" }],
+      }),
+    );
+    expect(s.userAskedDateAvailability).toBe(false);
+  });
+
+  it("NAO marca disponibilidade em mensagem comum de qualificacao", () => {
+    const s = detectSignals(
+      baseCtx({
+        stage: "QUALIFICATION",
+        history: [{ role: "user", content: "Quero uma festa para 150 convidados" }],
+      }),
+    );
+    expect(s.userAskedDateAvailability).toBe(false);
+  });
 });
 
 // ── inferEffectiveStage ───────────────────────────────────────────────────
@@ -129,6 +185,29 @@ describe("inferEffectiveStage", () => {
     });
     const signals = detectSignals(ctx);
     const res = inferEffectiveStage(ctx, signals, false);
+    expect(res.effectiveStage).toBe("QUALIFICATION");
+  });
+
+  it("roteia RECEPTION → SLOT_OFFER quando lead pergunta disponibilidade de data", () => {
+    const ctx = baseCtx({
+      stage: "RECEPTION",
+      history: [
+        { role: "assistant", content: "Como posso te ajudar com a sua festa?" },
+        { role: "user", content: "Quero saber se tem disponibilidade para o dia 25/07" },
+      ],
+    });
+    const res = inferEffectiveStage(ctx, detectSignals(ctx), false);
+    expect(res.effectiveStage).toBe("SLOT_OFFER");
+    expect(res.reason).toBe("lead_asked_date_availability");
+  });
+
+  it("NAO roteia pedido de data quando ja existe appointment_id", () => {
+    const ctx = baseCtx({
+      stage: "QUALIFICATION",
+      leadData: { appointment_id: "evt123" },
+      history: [{ role: "user", content: "tem disponibilidade dia 25/07?" }],
+    });
+    const res = inferEffectiveStage(ctx, detectSignals(ctx), false);
     expect(res.effectiveStage).toBe("QUALIFICATION");
   });
 
@@ -190,6 +269,29 @@ describe("applyDeterministicStageOverrides", () => {
     });
     expect(res.stage).toBe("SLOT_OFFER");
     expect(res.reason).toBe("force_slot_offer_after_accept");
+  });
+
+  it("persiste SLOT_OFFER apos pedido de data mesmo vindo de RECEPTION", () => {
+    const ctx = baseCtx({
+      stage: "RECEPTION",
+      history: [
+        { role: "assistant", content: "Como posso te ajudar com a sua festa?" },
+        { role: "user", content: "Quero saber se tem disponibilidade para o dia 25/07" },
+      ],
+    });
+    const signals = detectSignals(ctx);
+    // resolveNextStage bloqueia RECEPTION → SLOT_OFFER e devolve RECEPTION;
+    // o override deterministico precisa forcar o avanco.
+    const res = applyDeterministicStageOverrides({
+      proposedNextStage: "RECEPTION",
+      originalStage: "RECEPTION",
+      effectiveStage: "SLOT_OFFER",
+      leadData: {},
+      hasBookingIntegration: true,
+      signals,
+    });
+    expect(res.stage).toBe("SLOT_OFFER");
+    expect(res.reason).toBe("force_slot_offer_after_date_ask");
   });
 
   it("avanca SLOT_OFFER → NAME_COLLECT quando slot foi selecionado", () => {
