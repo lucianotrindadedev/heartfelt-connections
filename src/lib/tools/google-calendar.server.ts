@@ -486,7 +486,11 @@ interface ListSlotsParams {
   umaPorDia?: boolean;
 }
 
-const TAMANHOS_VALIDOS = [10, 15, 20, 30, 40, 45, 60, 90, 120];
+// Granularidades válidas (passo da grade de horários).
+const GRAN_VALIDOS = [10, 15, 20, 30, 40, 45, 60, 90, 120];
+// Duração do compromisso: pode ser bem maior (ex: festa de 4h = 240).
+const DURACAO_MIN = 5;
+const DURACAO_MAX = 720; // 12h
 
 export async function listGoogleCalendarSlots(
   accountId: string,
@@ -498,12 +502,16 @@ export async function listGoogleCalendarSlots(
   const calendarId = calendarIdOverride || token.calendarId;
 
   const tamanho = params.tamanhoJanelaMinutos ?? 40;
-  const gran = params.granularidade ?? 30;
+  // Em "uma por dia" (festas) a janela é grande (4h+) e serve só para marcar o
+  // horário de início; a grade de candidatos usa um passo fino para alinhar o
+  // horário ao início do expediente liberado.
+  const gran = params.umaPorDia ? 60 : (params.granularidade ?? 30);
 
-  if (!TAMANHOS_VALIDOS.includes(tamanho) || !TAMANHOS_VALIDOS.includes(gran)) {
-    throw new Error(
-      `Tamanho/granularidade inválidos. Use um destes: ${TAMANHOS_VALIDOS.join(", ")}`,
-    );
+  if (tamanho < DURACAO_MIN || tamanho > DURACAO_MAX) {
+    throw new Error(`Duração inválida (${tamanho}). Use entre ${DURACAO_MIN} e ${DURACAO_MAX} minutos.`);
+  }
+  if (!GRAN_VALIDOS.includes(gran)) {
+    throw new Error(`Granularidade inválida. Use uma destas: ${GRAN_VALIDOS.join(", ")}`);
   }
 
   const inicio = new Date(params.periodoInicio);
@@ -546,7 +554,9 @@ export async function listGoogleCalendarSlots(
   const temExpediente = Object.values(disponibilidade).some((arr) => arr.length > 0);
 
   const janelasNoExpediente = candidates.filter(({ inicio: s, fim: e }) => {
-    if (!mesmaDataNoFuso(s, e)) return false;
+    // Em "uma por dia" (festa reserva o dia), basta o INÍCIO estar no horário
+    // liberado — a duração (ex: 4h) pode passar do fim do bloco/expediente.
+    if (!params.umaPorDia && !mesmaDataNoFuso(s, e)) return false;
     if (!temExpediente) return true; // sem expediente cadastrado → permite tudo
 
     const dia = diaSemanaChave(s);
@@ -560,11 +570,12 @@ export async function listGoogleCalendarSlots(
 
     const startMin = minutosNoDia(s);
     const endMin = minutosNoDia(e);
-    return blocos.some(
-      (b) =>
-        startMin >= tempoParaMinutos(b.inicio) &&
-        endMin <= tempoParaMinutos(b.fim),
-    );
+    return blocos.some((b) => {
+      const bIni = tempoParaMinutos(b.inicio);
+      const bFim = tempoParaMinutos(b.fim);
+      if (params.umaPorDia) return startMin >= bIni && startMin < bFim;
+      return startMin >= bIni && endMin <= bFim;
+    });
   });
 
   console.log(

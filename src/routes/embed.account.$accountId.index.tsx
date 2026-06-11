@@ -6290,18 +6290,21 @@ function GCalAgendasManager({
 
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
-                      <Label className="text-[11px] font-medium">Duração / intervalo (min)</Label>
+                      <Label className="text-[11px] font-medium">
+                        {row.umaPorDia ? "Duração da festa (min)" : "Duração / intervalo (min)"}
+                      </Label>
                       <Input
                         type="number"
                         min={1}
                         value={row.duracaoMinutos}
                         onChange={(e) => updateRow(i, { duracaoMinutos: e.target.value })}
-                        placeholder="ex: 60"
-                        disabled={row.umaPorDia}
+                        placeholder={row.umaPorDia ? "ex: 240 (4h)" : "ex: 60"}
                         className="text-sm"
                       />
                       <p className="text-[10px] text-muted-foreground">
-                        Vazio = usa a duração global. Ex: visitas a cada 60 min.
+                        {row.umaPorDia
+                          ? "Duração do evento da festa. Ex: 240 = 4 horas. O horário ofertado é o início do expediente liberado do dia."
+                          : "Vazio = usa a duração global. Ex: visitas a cada 60 min."}
                       </p>
                     </div>
                     <div className="space-y-1.5">
