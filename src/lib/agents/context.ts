@@ -67,6 +67,10 @@ export interface AgentContext {
     duracaoMinutos?: number;
     businessHoursJson?: string;
     umaPorDia?: boolean;
+    diasUmaPorDia?: string[];
+    granularidadeMinutos?: number;
+    bufferMinutos?: number;
+    bufferDias?: string[];
     tituloTemplate?: string;
     descricaoTemplate?: string;
   }[];

@@ -6084,10 +6084,51 @@ interface GCalAgendaRow {
   businessHoursJson: string;
   /** Modo "uma por dia" (ex: festas): 1 horário por dia e bloqueia o dia inteiro. */
   umaPorDia: boolean;
+  /** Dias (dom..sab) onde vale "1 evento por dia" mas o cliente escolhe o horário. */
+  diasUmaPorDia: string[];
+  /** Passo entre as opções de horário (min). Vazio = igual à duração. */
+  granularidadeMinutos: string;
+  /** Folga mínima entre eventos (min). Vazio = sem folga. */
+  bufferMinutos: string;
+  /** Dias (dom..sab) onde a folga vale. Vazio = todos. */
+  bufferDias: string[];
   /** Título do evento criado nesta agenda (template). Vazio = usa o global. */
   tituloTemplate: string;
   /** Descrição do evento criado nesta agenda (template). Vazio = usa o global. */
   descricaoTemplate: string;
+}
+
+/** Chips de seleção de dias da semana (dom..sab). */
+function DayChips({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (days: string[]) => void;
+}) {
+  const toggle = (key: string) =>
+    onChange(value.includes(key) ? value.filter((d) => d !== key) : [...value, key]);
+  return (
+    <div className="flex flex-wrap gap-1">
+      {BH_DAYS.map((d) => {
+        const on = value.includes(d.key);
+        return (
+          <button
+            key={d.key}
+            type="button"
+            onClick={() => toggle(d.key)}
+            className={`rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
+              on
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-slate-200 bg-white text-slate-500 hover:border-slate-300"
+            }`}
+          >
+            {d.key}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function GCalAgendasManager({
@@ -6119,6 +6160,10 @@ function GCalAgendasManager({
           duracaoMinutos: a.duracaoMinutos ? String(a.duracaoMinutos) : "",
           businessHoursJson: a.businessHoursJson ?? "",
           umaPorDia: a.umaPorDia ?? false,
+          diasUmaPorDia: a.diasUmaPorDia ?? [],
+          granularidadeMinutos: a.granularidadeMinutos ? String(a.granularidadeMinutos) : "",
+          bufferMinutos: a.bufferMinutos ? String(a.bufferMinutos) : "",
+          bufferDias: a.bufferDias ?? [],
           tituloTemplate: a.tituloTemplate ?? "",
           descricaoTemplate: a.descricaoTemplate ?? "",
         })),
@@ -6143,6 +6188,16 @@ function GCalAgendasManager({
                 duracaoMinutos: Number.isFinite(dur) && dur > 0 ? dur : undefined,
                 businessHoursJson: r.businessHoursJson.trim() || undefined,
                 umaPorDia: r.umaPorDia || undefined,
+                diasUmaPorDia: r.diasUmaPorDia.length > 0 ? r.diasUmaPorDia : undefined,
+                granularidadeMinutos: (() => {
+                  const g = parseInt(r.granularidadeMinutos, 10);
+                  return Number.isFinite(g) && g > 0 ? g : undefined;
+                })(),
+                bufferMinutos: (() => {
+                  const b = parseInt(r.bufferMinutos, 10);
+                  return Number.isFinite(b) && b > 0 ? b : undefined;
+                })(),
+                bufferDias: r.bufferDias.length > 0 ? r.bufferDias : undefined,
                 tituloTemplate: r.tituloTemplate.trim() || undefined,
                 descricaoTemplate: r.descricaoTemplate.trim() || undefined,
               };
@@ -6166,6 +6221,10 @@ function GCalAgendasManager({
         duracaoMinutos: "",
         businessHoursJson: "",
         umaPorDia: false,
+        diasUmaPorDia: [],
+        granularidadeMinutos: "",
+        bufferMinutos: "",
+        bufferDias: [],
         tituloTemplate: "",
         descricaoTemplate: "",
       },
@@ -6315,7 +6374,7 @@ function GCalAgendasManager({
                           onCheckedChange={(v) => updateRow(i, { umaPorDia: v })}
                         />
                         <span className="text-xs text-slate-700">
-                          Somente 1 por dia <span className="text-muted-foreground">(festas)</span>
+                          Somente 1 por dia <span className="text-muted-foreground">(todos os dias)</span>
                         </span>
                       </label>
                       <p className="text-[10px] text-muted-foreground">
@@ -6323,6 +6382,66 @@ function GCalAgendasManager({
                       </p>
                     </div>
                   </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Intervalo entre opções (min)</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={row.granularidadeMinutos}
+                        onChange={(e) => updateRow(i, { granularidadeMinutos: e.target.value })}
+                        placeholder="ex: 30"
+                        className="text-sm"
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Passo dos horários ofertados (ex: 12:00, 12:30, 13:00). Vazio = igual à duração.
+                      </p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Folga entre eventos (min)</Label>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={row.bufferMinutos}
+                        onChange={(e) => updateRow(i, { bufferMinutos: e.target.value })}
+                        placeholder="ex: 120"
+                        className="text-sm"
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Tempo mínimo entre o fim de um evento e o início do próximo (limpeza/arrumação).
+                      </p>
+                    </div>
+                  </div>
+
+                  {row.bufferMinutos.trim() !== "" && (
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">
+                        Folga vale nestes dias <span className="text-muted-foreground">(nenhum = todos)</span>
+                      </Label>
+                      <DayChips
+                        value={row.bufferDias}
+                        onChange={(days) => updateRow(i, { bufferDias: days })}
+                      />
+                    </div>
+                  )}
+
+                  {!row.umaPorDia && (
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">
+                        Apenas 1 evento por dia nestes dias{" "}
+                        <span className="text-muted-foreground">(opcional)</span>
+                      </Label>
+                      <DayChips
+                        value={row.diasUmaPorDia}
+                        onChange={(days) => updateRow(i, { diasUmaPorDia: days })}
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Nesses dias só 1 evento é aceito, mas o cliente escolhe o horário livremente
+                        (ex: domingo com festa única).
+                      </p>
+                    </div>
+                  )}
 
                   <div className="space-y-1.5">
                     <Label className="text-[11px] font-medium">

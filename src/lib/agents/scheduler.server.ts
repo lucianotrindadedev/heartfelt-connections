@@ -317,6 +317,10 @@ interface ResolvedAgenda {
   duracaoMinutos?: number;
   businessHoursJson?: string;
   umaPorDia?: boolean;
+  diasUmaPorDia?: string[];
+  granularidadeMinutos?: number;
+  bufferMinutos?: number;
+  bufferDias?: string[];
   tituloTemplate?: string;
   descricaoTemplate?: string;
   error?: string;
@@ -343,6 +347,10 @@ function resolveGcalAgenda(ctx: AgentContext, label?: string): ResolvedAgenda {
     duracaoMinutos: match.duracaoMinutos,
     businessHoursJson: match.businessHoursJson,
     umaPorDia: match.umaPorDia,
+    diasUmaPorDia: match.diasUmaPorDia,
+    granularidadeMinutos: match.granularidadeMinutos,
+    bufferMinutos: match.bufferMinutos,
+    bufferDias: match.bufferDias,
     tituloTemplate: match.tituloTemplate,
     descricaoTemplate: match.descricaoTemplate,
   };
@@ -504,18 +512,21 @@ async function execListarHorarios(
       resolved.umaPorDia && !anchor && diasAFrente == null
         ? new Date(today.getTime() + 60 * 24 * 60 * 60 * 1000)
         : end;
-    // Granularidade IGUAL à duração → slots não sobrepostos. Ex: duração 30 min
-    // gera 08:00, 08:30, 09:00, 09:30... Duração 40 min gera 08:00, 08:40, 09:20...
+    // Granularidade: passo configurado da agenda OU igual à duração (slots não
+    // sobrepostos). Ex: festas de 240min com opções a cada 30min (12:00, 12:30...).
     const slots = await listGoogleCalendarSlots(
       ctx.accountId,
       {
         periodoInicio: today.toISOString(),
         periodoFim: gcalEnd.toISOString(),
         tamanhoJanelaMinutos: duracao,
-        granularidade: duracao,
+        granularidade: resolved.granularidadeMinutos ?? duracao,
         amostras: 6,
         businessHoursJson,
         umaPorDia: resolved.umaPorDia,
+        umaPorDiaDias: resolved.diasUmaPorDia,
+        bufferMinutos: resolved.bufferMinutos,
+        bufferDias: resolved.bufferDias,
       },
       resolved.calendarId,
     );

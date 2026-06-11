@@ -333,6 +333,18 @@ export interface GCalAgenda {
   /** Modo "uma por dia" (ex: festas): oferece no máx. 1 horário por dia livre,
    *  e considera o dia ocupado se já houver QUALQUER evento naquele dia. */
   umaPorDia?: boolean;
+  /** Dias da semana (chaves curtas: dom..sab) onde vale "1 evento por dia".
+   *  Diferente de umaPorDia global: o dia bloqueia com qualquer evento, mas
+   *  oferece VÁRIAS opções de início enquanto livre (cliente escolhe). */
+  diasUmaPorDia?: string[];
+  /** Passo entre as opções de horário ofertadas (min). Vazio = igual à duração
+   *  (slots não sobrepostos). Ex: festas de 240min com opções a cada 30min. */
+  granularidadeMinutos?: number;
+  /** Folga mínima entre eventos (min). Ex: 120 → festa terminando 17:00
+   *  bloqueia inícios antes de 19:00. */
+  bufferMinutos?: number;
+  /** Dias da semana (dom..sab) onde a folga se aplica. Vazio = todos os dias. */
+  bufferDias?: string[];
   /** Título do evento desta agenda (template). Vazio = usa o global do agente. */
   tituloTemplate?: string;
   /** Descrição do evento desta agenda (template). Vazio = usa o global do agente. */
@@ -363,6 +375,26 @@ function parseAgendas(raw: unknown): GCalAgenda[] {
     const businessHoursJson =
       typeof bhRaw === "string" && bhRaw.trim() ? bhRaw.trim() : undefined;
     const umaPorDia = o.uma_por_dia === true || o.umaPorDia === true;
+    const parseDayList = (raw: unknown): string[] | undefined => {
+      if (!Array.isArray(raw)) return undefined;
+      const days = raw
+        .filter((d): d is string => typeof d === "string")
+        .map((d) => d.trim().toLowerCase())
+        .filter(Boolean);
+      return days.length > 0 ? days : undefined;
+    };
+    const diasUmaPorDia = parseDayList(o.dias_uma_por_dia ?? o.diasUmaPorDia);
+    const granRaw = o.granularidade_minutos ?? o.granularidadeMinutos;
+    const granularidadeMinutos =
+      typeof granRaw === "number" && Number.isFinite(granRaw) && granRaw > 0
+        ? Math.round(granRaw)
+        : undefined;
+    const bufRaw = o.buffer_minutos ?? o.bufferMinutos;
+    const bufferMinutos =
+      typeof bufRaw === "number" && Number.isFinite(bufRaw) && bufRaw > 0
+        ? Math.round(bufRaw)
+        : undefined;
+    const bufferDias = parseDayList(o.buffer_dias ?? o.bufferDias);
     const titRaw = o.gcal_event_title_template ?? o.tituloTemplate;
     const tituloTemplate =
       typeof titRaw === "string" && titRaw.trim() ? titRaw.trim() : undefined;
@@ -376,6 +408,10 @@ function parseAgendas(raw: unknown): GCalAgenda[] {
       duracaoMinutos,
       businessHoursJson,
       ...(umaPorDia ? { umaPorDia: true } : {}),
+      ...(diasUmaPorDia ? { diasUmaPorDia } : {}),
+      ...(granularidadeMinutos ? { granularidadeMinutos } : {}),
+      ...(bufferMinutos ? { bufferMinutos } : {}),
+      ...(bufferDias ? { bufferDias } : {}),
       tituloTemplate,
       descricaoTemplate,
     });
@@ -434,6 +470,10 @@ export async function saveAccountAgendas(
     duracaoMinutos?: number;
     businessHoursJson?: string;
     umaPorDia?: boolean;
+    diasUmaPorDia?: string[];
+    granularidadeMinutos?: number;
+    bufferMinutos?: number;
+    bufferDias?: string[];
     tituloTemplate?: string;
     descricaoTemplate?: string;
   }[],
@@ -446,6 +486,10 @@ export async function saveAccountAgendas(
     duracao_minutos?: number;
     business_hours_json?: string;
     uma_por_dia?: boolean;
+    dias_uma_por_dia?: string[];
+    granularidade_minutos?: number;
+    buffer_minutos?: number;
+    buffer_dias?: string[];
     gcal_event_title_template?: string;
     gcal_event_description_template?: string;
   }[] = [];
@@ -464,6 +508,22 @@ export async function saveAccountAgendas(
     const bh = (a.businessHoursJson ?? "").trim();
     const tit = (a.tituloTemplate ?? "").trim();
     const desc = (a.descricaoTemplate ?? "").replace(/\s+$/, "");
+    const cleanDays = (days?: string[]): string[] | undefined => {
+      const out = (days ?? [])
+        .map((d) => d.trim().toLowerCase())
+        .filter((d) => d in SHORT_DAY_MAP);
+      return out.length > 0 ? Array.from(new Set(out)) : undefined;
+    };
+    const diasUmaPorDia = cleanDays(a.diasUmaPorDia);
+    const bufferDias = cleanDays(a.bufferDias);
+    const gran =
+      typeof a.granularidadeMinutos === "number" && a.granularidadeMinutos > 0
+        ? Math.round(a.granularidadeMinutos)
+        : undefined;
+    const buffer =
+      typeof a.bufferMinutos === "number" && a.bufferMinutos > 0
+        ? Math.round(a.bufferMinutos)
+        : undefined;
     normalized.push({
       label,
       calendar_id: calendarId,
@@ -471,6 +531,10 @@ export async function saveAccountAgendas(
       ...(duracao ? { duracao_minutos: duracao } : {}),
       ...(bh ? { business_hours_json: bh } : {}),
       ...(a.umaPorDia ? { uma_por_dia: true } : {}),
+      ...(diasUmaPorDia ? { dias_uma_por_dia: diasUmaPorDia } : {}),
+      ...(gran ? { granularidade_minutos: gran } : {}),
+      ...(buffer ? { buffer_minutos: buffer } : {}),
+      ...(bufferDias ? { buffer_dias: bufferDias } : {}),
       ...(tit ? { gcal_event_title_template: tit } : {}),
       ...(desc ? { gcal_event_description_template: desc } : {}),
     });
@@ -503,6 +567,16 @@ interface ListSlotsParams {
   /** Modo "uma por dia" (ex: festas): no máx. 1 janela por dia e o dia é
    *  considerado ocupado se houver QUALQUER evento nele. */
   umaPorDia?: boolean;
+  /** Dias da semana (dom..sab ou por extenso) onde vale "1 evento por dia":
+   *  o dia bloqueia com qualquer evento, mas enquanto livre oferece VÁRIAS
+   *  opções de início (diferente de umaPorDia global, que oferece só 1). */
+  umaPorDiaDias?: string[];
+  /** Folga mínima entre eventos (min): expande eventos existentes nos dois
+   *  sentidos no teste de conflito. Ex: 120 → festa até 17:00 bloqueia
+   *  inícios antes de 19:00. */
+  bufferMinutos?: number;
+  /** Dias da semana onde a folga vale. Vazio/ausente = todos os dias. */
+  bufferDias?: string[];
 }
 
 // Granularidades válidas (passo da grade de horários).
@@ -575,14 +649,25 @@ export async function listGoogleCalendarSlots(
   const disponibilidade = parseDisponibilidadeFromSettings(params.businessHoursJson);
   const temExpediente = Object.values(disponibilidade).some((arr) => arr.length > 0);
 
+  // Listas de dias em chave longa ("domingo"), aceitando curta ("dom") na config.
+  const toLongDay = (d: string) => SHORT_DAY_MAP[removeAcento(d)] ?? removeAcento(d);
+  const umaPorDiaDias = (params.umaPorDiaDias ?? []).map(toLongDay);
+  const bufferDias = (params.bufferDias ?? []).map(toLongDay);
+  /** "1 evento por dia" vale neste dia? (modo global OU dia listado) */
+  const isUmaPorDiaNoDia = (diaLong: string) =>
+    !!params.umaPorDia || umaPorDiaDias.includes(diaLong);
+  const bufferValeNoDia = (diaLong: string) =>
+    bufferDias.length === 0 || bufferDias.includes(diaLong);
+
   const janelasNoExpediente = candidates.filter(({ inicio: s, fim: e }) => {
+    const dia = diaSemanaChave(s);
+    const umaPorDiaAqui = isUmaPorDiaNoDia(dia);
     // Em "uma por dia" (festa reserva o dia), basta o INÍCIO estar no horário
     // liberado — a duração (ex: 4h) pode passar do fim do bloco/expediente.
     // Janela terminando EXATAMENTE à meia-noite conta como mesmo dia (e-1ms).
-    if (!params.umaPorDia && !mesmaDataNoFuso(s, new Date(e.getTime() - 1))) return false;
+    if (!umaPorDiaAqui && !mesmaDataNoFuso(s, new Date(e.getTime() - 1))) return false;
     if (!temExpediente) return true; // sem expediente cadastrado → permite tudo
 
-    const dia = diaSemanaChave(s);
     const blocos =
       disponibilidade[dia] ??
       disponibilidade[removeAcento(dia)] ??
@@ -598,7 +683,7 @@ export async function listGoogleCalendarSlots(
     return blocos.some((b) => {
       const bIni = tempoParaMinutos(b.inicio);
       const bFim = fimParaMinutos(b.fim);
-      if (params.umaPorDia) return startMin >= bIni && startMin < bFim;
+      if (umaPorDiaAqui) return startMin >= bIni && startMin <= bFim;
       return startMin >= bIni && endMin <= bFim;
     });
   });
@@ -642,26 +727,43 @@ export async function listGoogleCalendarSlots(
   const dateKeyBr = (d: Date) =>
     new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d);
 
-  let semConflito: { inicio: Date; fim: Date }[];
-  if (params.umaPorDia) {
-    // Modo "uma por dia" (festas): o dia inteiro fica ocupado se houver QUALQUER
-    // evento nele. Oferece no máximo 1 janela (a primeira) por dia livre.
-    const diasOcupados = new Set(eventos.map((ev) => dateKeyBr(ev.inicio)));
-    const usados = new Set<string>();
-    semConflito = [];
-    for (const janela of janelasNoExpediente) {
-      const dia = dateKeyBr(janela.inicio);
-      if (diasOcupados.has(dia) || usados.has(dia)) continue;
-      usados.add(dia);
-      semConflito.push(janela);
-    }
-  } else {
-    semConflito = janelasNoExpediente.filter(({ inicio: s, fim: e }) => {
-      for (const ev of eventos) {
-        if (s < ev.fim && e > ev.inicio) return false;
+  const diasOcupados = new Set(eventos.map((ev) => dateKeyBr(ev.inicio)));
+  const usadosUmaPorDia = new Set<string>();
+  const bufferMs = Math.max(0, params.bufferMinutos ?? 0) * 60_000;
+
+  const semConflito: { inicio: Date; fim: Date }[] = [];
+  for (const janela of janelasNoExpediente) {
+    const diaKey = dateKeyBr(janela.inicio);
+    const diaLong = diaSemanaChave(janela.inicio);
+
+    if (isUmaPorDiaNoDia(diaLong)) {
+      // Dia com "1 evento por dia": bloqueia se houver QUALQUER evento.
+      if (diasOcupados.has(diaKey)) continue;
+      if (params.umaPorDia) {
+        // Modo GLOBAL: oferece só a primeira janela do dia (reserva o dia).
+        if (usadosUmaPorDia.has(diaKey)) continue;
+        usadosUmaPorDia.add(diaKey);
       }
-      return true;
-    });
+      // Dia listado (ex: domingo): dia livre → oferece TODAS as opções de
+      // início, o cliente escolhe o horário.
+      semConflito.push(janela);
+      continue;
+    }
+
+    // Dia normal: conflito com eventos existentes, aplicando a folga mínima
+    // quando configurada para este dia (ex: sábado, 2h entre festas).
+    const buf = bufferMs > 0 && bufferValeNoDia(diaLong) ? bufferMs : 0;
+    let conflita = false;
+    for (const ev of eventos) {
+      if (
+        janela.inicio.getTime() < ev.fim.getTime() + buf &&
+        janela.fim.getTime() > ev.inicio.getTime() - buf
+      ) {
+        conflita = true;
+        break;
+      }
+    }
+    if (!conflita) semConflito.push(janela);
   }
 
   console.log(
