@@ -658,6 +658,32 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
     }
 
+    // Guard anti escalada-fantasma: ESCALATED sem escalation_reason e sem o
+    // lead ter pedido humano é quase sempre alucinação (JSON truncado, modelo
+    // fraco). Escalar silencia a IA permanentemente — bloqueia e mantém o
+    // stage para a conversa continuar viva.
+    if (newStage === "ESCALATED" && stage !== "ESCALATED") {
+      const explicitHumanAsk =
+        /\b(humano|atendente|falar com (?:algu[ée]m|uma pessoa|o respons[áa]vel|a equipe|o gerente)|pessoa (?:real|de verdade)|atendimento humano)\b/i.test(
+          lastUserMsg,
+        );
+      if (!finalLeadData.escalation_reason?.trim() && !explicitHumanAsk) {
+        console.warn(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "escalation_blocked_no_reason",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            route,
+            stage_from: stage,
+            model: ctx.model,
+            reply_preview: result.reply.slice(0, 120),
+          })}`,
+        );
+        newStage = stage;
+      }
+    }
+
     let reply = result.reply;
     // Flags de telemetria do turn (vao para meta da mensagem + agent_runs).
     let duplicateReplyBlocked = false;

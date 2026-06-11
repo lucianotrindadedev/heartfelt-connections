@@ -157,6 +157,11 @@ export async function callLlm(
     // fazendo o JSON quebrar no meio do campo lead_data_patch.
     max_tokens: req.maxTokens ?? 2048,
     temperature: req.temperature ?? 0.5,
+    // Modelos com reasoning (gemini-flash, gpt-mini) queimam o max_tokens em
+    // raciocínio oculto e truncam o reply (vimos tokens_out=2031 com ~150
+    // chars de texto). Para agentes operacionais, reasoning curto basta.
+    // OpenRouter ignora o parâmetro em modelos sem reasoning.
+    reasoning: { effort: "low" },
   };
 
   if (req.tools && req.tools.length > 0) {
@@ -409,7 +414,7 @@ export async function callLlmWithFallback(
       // queimam o orçamento em raciocínio oculto). Retry com budget maior
       // antes de entregar mensagem truncada ao lead.
       if (r.finishReason === "length" && r.content && (r.toolCalls?.length ?? 0) === 0) {
-        const biggerBudget = Math.max(2048, (req.maxTokens ?? 1024) * 2);
+        const biggerBudget = Math.max(4096, (req.maxTokens ?? 1024) * 2);
         console.warn(
           `[llm-fallback] finish_reason=length model=${model} tokens_out=${r.tokensOut} — retry com max_tokens=${biggerBudget}`,
         );
@@ -494,7 +499,7 @@ export async function callLlmStructured<T>(
   // (recoverTruncatedJson), o lead recebe mensagem CORTADA no meio da palavra.
   // Retry com orçamento maior antes de qualquer tentativa de parse/salvage.
   if (response.finishReason === "length") {
-    const biggerBudget = Math.max(2048, (req.maxTokens ?? 1024) * 2);
+    const biggerBudget = Math.max(4096, (req.maxTokens ?? 1024) * 2);
     console.warn(
       `[llm] finish_reason=length model=${req.model} tokens_out=${response.tokensOut} — retry com max_tokens=${biggerBudget}`,
     );
