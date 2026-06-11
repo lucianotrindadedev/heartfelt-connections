@@ -126,6 +126,13 @@ function tempoParaMinutos(tempo: string): number {
   return h * 60 + m;
 }
 
+/** Minutos do FIM de um bloco: "00:00" e "24:00" significam meia-noite (1440),
+ *  não o minuto 0 — senão um expediente "12:00–00:00" vira bloco impossível. */
+function fimParaMinutos(tempo: string): number {
+  const min = tempoParaMinutos(tempo);
+  return min === 0 ? 1440 : min;
+}
+
 function mesmaDataNoFuso(inicio: Date, fim: Date): boolean {
   const fmt = (d: Date) =>
     new Intl.DateTimeFormat("pt-BR", {
@@ -204,7 +211,13 @@ function parseDisponibilidadeFromSettings(
 
         // Se há intervalo de almoço (e ele faz sentido), divide em 2 blocos:
         // [start..lunchStart] + [lunchEnd..end]. Senão, bloco único.
-        if (lunchStart && lunchEnd && lunchStart < lunchEnd && lunchStart > start && lunchEnd < end) {
+        // Comparação NUMÉRICA (não string) — end "00:00" significa meia-noite
+        // (fim do dia = 1440), e como string "00:00" < qualquer hora quebra tudo.
+        const sM = tempoParaMinutos(start);
+        const eM = fimParaMinutos(end);
+        const lsM = lunchStart ? tempoParaMinutos(lunchStart) : -1;
+        const leM = lunchEnd ? tempoParaMinutos(lunchEnd) : -1;
+        if (lunchStart && lunchEnd && lsM < leM && lsM > sM && leM < eM) {
           out[key] = [
             { inicio: start, fim: lunchStart },
             { inicio: lunchEnd, fim: end },
@@ -565,7 +578,8 @@ export async function listGoogleCalendarSlots(
   const janelasNoExpediente = candidates.filter(({ inicio: s, fim: e }) => {
     // Em "uma por dia" (festa reserva o dia), basta o INÍCIO estar no horário
     // liberado — a duração (ex: 4h) pode passar do fim do bloco/expediente.
-    if (!params.umaPorDia && !mesmaDataNoFuso(s, e)) return false;
+    // Janela terminando EXATAMENTE à meia-noite conta como mesmo dia (e-1ms).
+    if (!params.umaPorDia && !mesmaDataNoFuso(s, new Date(e.getTime() - 1))) return false;
     if (!temExpediente) return true; // sem expediente cadastrado → permite tudo
 
     const dia = diaSemanaChave(s);
@@ -578,10 +592,12 @@ export async function listGoogleCalendarSlots(
     if (!blocos || blocos.length === 0) return false;
 
     const startMin = minutosNoDia(s);
-    const endMin = minutosNoDia(e);
+    const endMinRaw = minutosNoDia(e);
+    // Fim à meia-noite = 1440 (fim do dia), não minuto 0.
+    const endMin = endMinRaw === 0 ? 1440 : endMinRaw;
     return blocos.some((b) => {
       const bIni = tempoParaMinutos(b.inicio);
-      const bFim = tempoParaMinutos(b.fim);
+      const bFim = fimParaMinutos(b.fim);
       if (params.umaPorDia) return startMin >= bIni && startMin < bFim;
       return startMin >= bIni && endMin <= bFim;
     });
