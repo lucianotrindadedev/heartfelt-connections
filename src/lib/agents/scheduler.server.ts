@@ -100,6 +100,19 @@ async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
 
 const VALID_STAGES = ["SLOT_OFFER", "NAME_COLLECT", "BOOKING", "CONFIRMED", "ESCALATED"] as const;
 
+// custom_fields é Record<string,string>, mas o LLM às vezes manda número
+// (ex: convidados: 150) ou boolean. Coage para string em vez de quebrar o
+// turn; descarta null/objeto/array.
+const coercibleStringRecord = z.preprocess((val) => {
+  if (val == null || typeof val !== "object" || Array.isArray(val)) return val;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+  }
+  return out;
+}, z.record(z.string()));
+
 const ResultSchema = z.object({
   reply: z.string().min(1, "Reply não pode ser vazio"),
   // next_stage opcional — fallback aplicado no runSchedulerAgent (mantém stage atual).
@@ -115,7 +128,7 @@ const ResultSchema = z.object({
       appointment_id: z.union([z.number(), z.string()]).nullish(),
       notes: z.string().nullish(),
       escalation_reason: z.string().nullish(),
-      custom_fields: z.record(z.string()).nullish(),
+      custom_fields: coercibleStringRecord.nullish(),
     })
     .optional(),
   reasoning: z.string().optional(),
