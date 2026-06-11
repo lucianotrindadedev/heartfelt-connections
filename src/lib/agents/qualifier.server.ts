@@ -40,6 +40,21 @@ import {
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
+// custom_fields deve ser Record<string,string>, mas o LLM às vezes devolve
+// números (ex: convidados: 150) ou booleans. Em vez de quebrar o turn inteiro
+// na validação, coage número/boolean para string e descarta valores não
+// representáveis (null, objetos, arrays).
+const coercibleStringRecord = z.preprocess((val) => {
+  if (val == null || typeof val !== "object" || Array.isArray(val)) return val;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+    if (typeof v === "string") out[k] = v;
+    else if (typeof v === "number" || typeof v === "boolean") out[k] = String(v);
+    // null/undefined/objeto/array: descarta silenciosamente
+  }
+  return out;
+}, z.record(z.string()));
+
 const ResultSchema = z.object({
   reply: z.string().min(1),
   // next_stage opcional — alguns modelos (Gemini Flash, Llama) as vezes omitem.
@@ -51,7 +66,7 @@ const ResultSchema = z.object({
       interest: z.string().nullish(),
       notes: z.string().nullish(),
       escalation_reason: z.string().nullish(),
-      custom_fields: z.record(z.string()).nullish(),
+      custom_fields: coercibleStringRecord.nullish(),
     })
     .optional(),
   reasoning: z.string().optional(),
