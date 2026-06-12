@@ -829,6 +829,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           history,
         );
         if (!summary) summary = (finalLeadData.notes as string | undefined) ?? "";
+        // Rótulo da notificação: a agenda escolhida pode definir o seu próprio
+        // (ex: agenda "Festas" → "FESTA AGENDADA" em vez de "VISITA AGENDADA").
+        let appointmentLabel = agentSettings.appointment_type_label || "Consulta";
+        const selectedAgenda = (finalLeadData.selected_agenda ?? "").trim();
+        if (selectedAgenda) {
+          try {
+            const agendas = await listAccountAgendas(accountId);
+            const match = agendas.find(
+              (a) => a.label.toLowerCase() === selectedAgenda.toLowerCase(),
+            );
+            if (match?.rotuloNotificacao) appointmentLabel = match.rotuloNotificacao;
+          } catch (e) {
+            console.warn("[orch] rótulo de notificação da agenda indisponível:", e);
+          }
+        }
         await notifyBooking({
           agentId,
           accountId,
@@ -841,7 +856,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           datetimeIso: justBooked
             ? (finalLeadData.selected_slot_iso as string | undefined) ?? ""
             : slotIsoBefore,
-          appointmentLabel: agentSettings.appointment_type_label || "Consulta",
+          appointmentLabel,
           summary,
         });
       } catch (e) {

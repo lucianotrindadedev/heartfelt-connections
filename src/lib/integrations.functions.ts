@@ -135,6 +135,7 @@ export const saveGoogleAgendasFn = createServerFn({ method: "POST" })
               bufferDias: z.array(z.string().max(10)).max(7).optional(),
               tituloTemplate: z.string().max(500).optional(),
               descricaoTemplate: z.string().max(2000).optional(),
+              rotuloNotificacao: z.string().max(80).optional(),
             }),
           )
           .max(20),

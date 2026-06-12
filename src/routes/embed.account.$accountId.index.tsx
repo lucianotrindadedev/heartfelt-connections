@@ -6096,6 +6096,8 @@ interface GCalAgendaRow {
   tituloTemplate: string;
   /** Descrição do evento criado nesta agenda (template). Vazio = usa o global. */
   descricaoTemplate: string;
+  /** Rótulo da notificação de agendamento (ex: "Festa" → "*FESTA AGENDADA*"). Vazio = usa o rótulo global. */
+  rotuloNotificacao: string;
 }
 
 /** Chips de seleção de dias da semana (dom..sab). */
@@ -6166,6 +6168,7 @@ function GCalAgendasManager({
           bufferDias: a.bufferDias ?? [],
           tituloTemplate: a.tituloTemplate ?? "",
           descricaoTemplate: a.descricaoTemplate ?? "",
+          rotuloNotificacao: a.rotuloNotificacao ?? "",
         })),
       );
       if (agendasQ.data.agendas.length >= 2) setOpen(true);
@@ -6200,6 +6203,7 @@ function GCalAgendasManager({
                 bufferDias: r.bufferDias.length > 0 ? r.bufferDias : undefined,
                 tituloTemplate: r.tituloTemplate.trim() || undefined,
                 descricaoTemplate: r.descricaoTemplate.trim() || undefined,
+                rotuloNotificacao: r.rotuloNotificacao.trim() || undefined,
               };
             }),
         },
@@ -6227,6 +6231,7 @@ function GCalAgendasManager({
         bufferDias: [],
         tituloTemplate: "",
         descricaoTemplate: "",
+        rotuloNotificacao: "",
       },
     ]);
 
@@ -6487,6 +6492,28 @@ function GCalAgendasManager({
                         placeholder={"Responsável: {name}\nTelefone: {phone}\nConvidados: {notes}"}
                         rows={4}
                         className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                    <p className="text-[11px] font-semibold text-slate-600">
+                      Notificação de agendamento desta agenda{" "}
+                      <span className="font-normal text-muted-foreground">(opcional)</span>
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      Rótulo usado na mensagem enviada ao grupo da equipe quando um lead agenda
+                      nesta agenda. Ex: <code className="font-mono">Festa</code> →{" "}
+                      <b>"FESTA AGENDADA"</b> e "...acabou de agendar festa para o dia...". Em
+                      branco = usa o rótulo global do agente (ex: "Visita").
+                    </p>
+                    <div className="space-y-1.5">
+                      <Label className="text-[11px] font-medium">Rótulo na notificação</Label>
+                      <Input
+                        value={row.rotuloNotificacao}
+                        onChange={(e) => updateRow(i, { rotuloNotificacao: e.target.value })}
+                        placeholder="ex: Festa, Visita, Consulta"
+                        className="text-sm"
                       />
                     </div>
                   </div>

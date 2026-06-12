@@ -349,6 +349,9 @@ export interface GCalAgenda {
   tituloTemplate?: string;
   /** Descrição do evento desta agenda (template). Vazio = usa o global do agente. */
   descricaoTemplate?: string;
+  /** Rótulo usado na notificação de agendamento ao grupo (ex: "Festa" →
+   *  "*FESTA AGENDADA*"). Vazio = usa o appointment_type_label do agente. */
+  rotuloNotificacao?: string;
 }
 
 function parseAgendas(raw: unknown): GCalAgenda[] {
@@ -401,6 +404,9 @@ function parseAgendas(raw: unknown): GCalAgenda[] {
     const descRaw = o.gcal_event_description_template ?? o.descricaoTemplate;
     const descricaoTemplate =
       typeof descRaw === "string" && descRaw.trim() ? descRaw : undefined;
+    const notifRaw = o.notificacao_rotulo ?? o.rotuloNotificacao;
+    const rotuloNotificacao =
+      typeof notifRaw === "string" && notifRaw.trim() ? notifRaw.trim() : undefined;
     out.push({
       label,
       calendarId,
@@ -414,6 +420,7 @@ function parseAgendas(raw: unknown): GCalAgenda[] {
       ...(bufferDias ? { bufferDias } : {}),
       tituloTemplate,
       descricaoTemplate,
+      ...(rotuloNotificacao ? { rotuloNotificacao } : {}),
     });
   }
   return out;
@@ -476,6 +483,7 @@ export async function saveAccountAgendas(
     bufferDias?: string[];
     tituloTemplate?: string;
     descricaoTemplate?: string;
+    rotuloNotificacao?: string;
   }[],
 ): Promise<void> {
   const seen = new Set<string>();
@@ -492,6 +500,7 @@ export async function saveAccountAgendas(
     buffer_dias?: string[];
     gcal_event_title_template?: string;
     gcal_event_description_template?: string;
+    notificacao_rotulo?: string;
   }[] = [];
   for (const a of agendas) {
     const label = (a.label ?? "").trim();
@@ -508,6 +517,7 @@ export async function saveAccountAgendas(
     const bh = (a.businessHoursJson ?? "").trim();
     const tit = (a.tituloTemplate ?? "").trim();
     const desc = (a.descricaoTemplate ?? "").replace(/\s+$/, "");
+    const notif = (a.rotuloNotificacao ?? "").trim();
     const cleanDays = (days?: string[]): string[] | undefined => {
       const out = (days ?? [])
         .map((d) => d.trim().toLowerCase())
@@ -537,6 +547,7 @@ export async function saveAccountAgendas(
       ...(bufferDias ? { buffer_dias: bufferDias } : {}),
       ...(tit ? { gcal_event_title_template: tit } : {}),
       ...(desc ? { gcal_event_description_template: desc } : {}),
+      ...(notif ? { notificacao_rotulo: notif } : {}),
     });
   }
 
