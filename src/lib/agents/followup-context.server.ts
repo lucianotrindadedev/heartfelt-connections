@@ -140,7 +140,12 @@ prefixos, sem "Resposta:", apenas o texto.`;
         },
       ],
       temperature: 0.7,
-      max_tokens: 300,
+      // Modelos com reasoning (gemini-flash, gpt-mini) queimam o max_tokens em
+      // raciocínio oculto e truncam o texto no meio (vimos "Fiquei pensando em…"
+      // cortado). reasoning.effort=low + budget folgado evita o corte; o
+      // OpenRouter ignora o parâmetro em modelos sem reasoning.
+      reasoning: { effort: "low" },
+      max_tokens: 800,
     }),
     signal: AbortSignal.timeout(45_000),
   });
@@ -150,13 +155,23 @@ prefixos, sem "Resposta:", apenas o texto.`;
     throw new Error(`OpenRouter ${res.status}: ${body.slice(0, 200)}`);
   }
   const json = (await res.json()) as {
-    choices?: { message?: { content?: string; reasoning?: string } }[];
+    choices?: {
+      message?: { content?: string; reasoning?: string };
+      finish_reason?: string;
+    }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
   };
-  const choice = json.choices?.[0]?.message;
+  const choice = json.choices?.[0];
+  const message = choice?.message;
   const reply =
-    (choice?.content?.trim() ?? "") || (choice?.reasoning?.trim() ?? "");
+    (message?.content?.trim() ?? "") || (message?.reasoning?.trim() ?? "");
   if (!reply) throw new Error("LLM retornou resposta vazia.");
+  // Texto cortado no meio (estourou max_tokens): não envia mensagem incompleta.
+  if (choice?.finish_reason === "length") {
+    throw new Error(
+      `Follow-up truncado (finish_reason=length, tokens_out=${json.usage?.completion_tokens ?? "?"}) — mensagem descartada.`,
+    );
+  }
 
   void t0; // métricas internas (não usadas no retorno final aqui)
 
