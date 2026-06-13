@@ -17,9 +17,11 @@ import {
   looksLikeIntentMessage,
   looksLikeSchedulingPreference,
   preflightBookingFields,
+  resolveCollectedPhone,
   sanitizeLeadDataPatch,
   type BookingFieldDef,
 } from "./booking-template";
+import { normalizeBrazilPhone } from "./conversation-channel.server";
 import type { LeadData } from "./agents/stage";
 
 const SCHOOL_FIELDS: BookingFieldDef[] = [
@@ -466,5 +468,53 @@ describe("clearBookingFields", () => {
   it("e idempotente quando lista vazia", () => {
     const ld: LeadData = { custom_fields: { child_name: "Helena" } };
     expect(clearBookingFields(ld, [])).toEqual(ld);
+  });
+});
+
+// ── resolveCollectedPhone ──────────────────────────────────────────────────
+// Bug "telefone ausente" (13/06/2026): o lead informava o WhatsApp na conversa
+// (salvo em custom_fields), mas o agendamento ignorava e dizia "telefone
+// ausente" porque o contato de teste nao tinha numero no CRM.
+
+describe("resolveCollectedPhone", () => {
+  const PHONE_FIELD: BookingFieldDef = {
+    key: "whatsapp_phone",
+    label: "WhatsApp",
+    question: "Qual seu WhatsApp?",
+    required: true,
+  };
+
+  it("acha telefone no campo de booking declarado", () => {
+    const ld: LeadData = { custom_fields: { whatsapp_phone: "(32) 99160-7088" } };
+    expect(resolveCollectedPhone([PHONE_FIELD], ld, normalizeBrazilPhone)).toBe(
+      "32991607088",
+    );
+  });
+
+  it("normaliza numero com prefixo 55", () => {
+    const ld: LeadData = { custom_fields: { whatsapp_phone: "5532991607088" } };
+    expect(resolveCollectedPhone([PHONE_FIELD], ld, normalizeBrazilPhone)).toBe(
+      "32991607088",
+    );
+  });
+
+  it("acha por chave que parece telefone mesmo sem campo declarado", () => {
+    const ld: LeadData = { custom_fields: { telefone_contato: "32991607088" } };
+    expect(resolveCollectedPhone([], ld, normalizeBrazilPhone)).toBe("32991607088");
+  });
+
+  it("ignora valor que nao parece telefone BR", () => {
+    const ld: LeadData = { custom_fields: { whatsapp_phone: "nao tenho" } };
+    expect(resolveCollectedPhone([PHONE_FIELD], ld, normalizeBrazilPhone)).toBeNull();
+  });
+
+  it("retorna null sem custom_fields", () => {
+    const ld: LeadData = {};
+    expect(resolveCollectedPhone([PHONE_FIELD], ld, normalizeBrazilPhone)).toBeNull();
+  });
+
+  it("nao confunde campo de nome com telefone", () => {
+    const ld: LeadData = { name: "Luciano", custom_fields: { child_name: "Helena" } };
+    expect(resolveCollectedPhone(SCHOOL_FIELDS, ld, normalizeBrazilPhone)).toBeNull();
   });
 });

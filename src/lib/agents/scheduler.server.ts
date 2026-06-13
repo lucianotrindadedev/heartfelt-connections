@@ -49,13 +49,16 @@ import {
   type LlmMessage,
   type LlmTool,
 } from "./llm.server";
+import { normalizeBrazilPhone } from "@/lib/conversation-channel.server";
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
   buildBookingFieldsPromptBlock,
   clearBookingFields,
   defaultCommitmentQuestion,
+  getBookingFields,
   getBookingFieldsForChannel,
+  resolveCollectedPhone,
   buildChannelPhonePromptBlock,
   getMissingBookingFields,
   isCommitmentRequired,
@@ -605,6 +608,24 @@ async function execListarHorarios(
   };
 }
 
+/**
+ * Telefone a usar no agendamento. Prefere o `effectivePhone` (telefone do
+ * WhatsApp / CRM resolvido pelo orquestrador). Quando ele está ausente — caso
+ * típico de canais sem telefone no contato (Instagram/Messenger) ou contato de
+ * teste sem número no CRM —, cai para o telefone que o próprio lead informou na
+ * conversa e que ficou salvo em `lead_data.custom_fields` (ex.: whatsapp_phone).
+ * Sem esse fallback, o lead enviava o número, mas `criar_agendamento` devolvia
+ * "telefone ausente" mesmo assim.
+ */
+function resolveBookingPhone(ctx: AgentContext): string | null {
+  if (ctx.effectivePhone) return ctx.effectivePhone;
+  return resolveCollectedPhone(
+    getBookingFields(ctx.agentSettings),
+    ctx.leadData,
+    normalizeBrazilPhone,
+  );
+}
+
 async function execCriarAgendamento(
   ctx: AgentContext,
   agendaLabel?: string,
@@ -662,12 +683,14 @@ async function execCriarAgendamento(
   if (!leadName) {
     return { result: JSON.stringify({ ok: false, error: "name ausente" }) };
   }
-  if (!ctx.effectivePhone) {
+  const bookingPhone = resolveBookingPhone(ctx);
+  if (!bookingPhone) {
     return { result: JSON.stringify({ ok: false, error: "telefone ausente" }) };
   }
 
   const bookingCtx: AgentContext = {
     ...ctx,
+    effectivePhone: bookingPhone,
     leadData: { ...ld, name: leadName },
   };
 
@@ -697,7 +720,7 @@ async function execCriarAgendamento(
           duracaoMinutos: duracao,
           titulo,
           descricao,
-          telefone: ctx.effectivePhone,
+          telefone: bookingPhone,
         },
         resolved.calendarId,
       );
@@ -726,7 +749,7 @@ async function execCriarAgendamento(
   // Default: Clinicorp
   try {
     const appt = await createClinicorpAppointment(ctx.accountId, {
-      phone: ctx.effectivePhone,
+      phone: bookingPhone,
       name: leadName,
       datetime: ld.selected_slot_iso,
       dentistPersonId: ld.dentist_person_id,

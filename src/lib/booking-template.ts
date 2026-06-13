@@ -108,7 +108,7 @@ export interface BookingChannelContext {
   effectivePhone: string | null | undefined;
 }
 
-function isPhoneRelatedBookingField(field: BookingFieldDef): boolean {
+export function isPhoneRelatedBookingField(field: BookingFieldDef): boolean {
   const k = field.key.toLowerCase();
   const l = field.label.toLowerCase();
   const q = field.question.toLowerCase();
@@ -132,6 +132,46 @@ export function shouldSkipPhoneCollection(
   effectivePhone: string | null | undefined,
 ): boolean {
   return channel === "whatsapp" && !!effectivePhone?.trim();
+}
+
+/**
+ * Telefone que o lead informou na conversa e que ficou salvo em
+ * `lead_data.custom_fields` (ex.: whatsapp_phone). Usado como fallback no
+ * agendamento quando não há telefone do contexto (`effectivePhone`) — caso de
+ * contato de teste sem número no CRM ou canais sem telefone. `normalize` recebe
+ * o normalizador de telefone (server-only) por parâmetro para manter este
+ * módulo livre de imports de servidor.
+ */
+export function resolveCollectedPhone(
+  fields: BookingFieldDef[],
+  ld: LeadData,
+  normalize: (raw: string | null | undefined) => string | null,
+): string | null {
+  const cf = ld.custom_fields ?? {};
+
+  // 1) Campos de telefone declarados no template de booking_fields.
+  for (const f of fields) {
+    if (!isPhoneRelatedBookingField(f)) continue;
+    const norm = normalize(cf[f.key]);
+    if (norm) return norm;
+  }
+
+  // 2) Qualquer custom_field cuja chave pareça telefone (whatsapp_phone, etc.).
+  for (const [k, v] of Object.entries(cf)) {
+    const kl = k.toLowerCase();
+    if (
+      kl.includes("phone") ||
+      kl.includes("whatsapp") ||
+      kl.includes("telefone") ||
+      kl.includes("celular") ||
+      kl.includes("fone")
+    ) {
+      const norm = normalize(v);
+      if (norm) return norm;
+    }
+  }
+
+  return null;
 }
 
 export function getBookingFieldsForChannel(
