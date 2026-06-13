@@ -903,7 +903,7 @@ Responda APENAS em JSON válido:
 }
 
 Campos válidos em lead_data_patch:
-- name (string): nome do responsável / lead
+- name (string): nome COMPLETO do responsável / lead (nome + sobrenome) — guarde sempre o nome inteiro informado, nunca só o primeiro nome (vai para a agenda e cadastro do paciente)
 - custom_fields (object): { "child_name": "...", "child_birth_date": "...", "guardians": "..." }
 - selected_slot_iso (string): ISO do slot escolhido (copie de offered_slots)
 - dentist_person_id (number): copie de offered_slots (Clinicorp)
@@ -958,7 +958,7 @@ Responda APENAS em JSON válido:
 }
 
 Campos válidos em lead_data_patch:
-- name (string): nome do responsável / lead
+- name (string): nome COMPLETO do responsável / lead (nome + sobrenome) — guarde sempre o nome inteiro informado, nunca só o primeiro nome (vai para a agenda e cadastro do paciente)
 - custom_fields (object): campos extras { "child_name": "...", "child_birth_date": "...", "guardians": "..." }
 - selected_slot_iso (string): ISO do slot escolhido (copie do offered_slots)
 - dentist_person_id (number): copie do offered_slots correspondente (Clinicorp)

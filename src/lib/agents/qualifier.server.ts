@@ -239,7 +239,7 @@ Responda APENAS em JSON válido:
   "next_stage": "RECEPTION" | "QUALIFICATION" | "SLOT_OFFER" | "ESCALATED",
   "lead_data_patch": {
     "interest": "interesse identificado",
-    "name": "nome se já mencionado",
+    "name": "nome COMPLETO (nome + sobrenome) se já mencionado — nunca abrevie nem guarde só o primeiro nome",
     "notes": "queixa principal em 1 frase",
     "custom_fields": { "chave": "valor" },
     "escalation_reason": "se next_stage=ESCALATED"
@@ -336,7 +336,7 @@ Responda APENAS em JSON válido:
   "next_stage": "RECEPTION" | "QUALIFICATION" | "SLOT_OFFER" | "ESCALATED",
   "lead_data_patch": {
     "interest": "IMPLANTE | FACETAS | PROTESE | CLAREAMENTO | ORTODONTIA | OUTRO",
-    "name": "nome se já mencionado",
+    "name": "nome COMPLETO (nome + sobrenome) se já mencionado — nunca abrevie nem guarde só o primeiro nome",
     "notes": "queixa principal em 1 frase",
     "escalation_reason": "se next_stage=ESCALATED"
   },

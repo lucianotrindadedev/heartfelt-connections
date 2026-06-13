@@ -84,7 +84,7 @@ Correto:
 
 ## USO DO NOME
 
-Só use o nome do lead depois que ele informar. Depois disso, use apenas o primeiro nome.
+Só use o nome do lead depois que ele informar. Ao se DIRIGIR ao lead nas mensagens, use apenas o primeiro nome (soa mais natural). Mas ARMAZENE sempre o nome COMPLETO (nome + sobrenome) no campo name — ele é usado no cadastro do paciente e na agenda.
 
 Não use o nome do lead em todas as mensagens para não soar artificial.
 
