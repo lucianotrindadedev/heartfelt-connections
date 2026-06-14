@@ -5,8 +5,9 @@
 //
 // Lógica:
 // 1. Para cada agente com followup_steps habilitados (enabled=true):
-//    a. Busca conversas elegíveis: agente ativo, última msg do lead = user,
-//       não tem tag "IA Desligada", última msg foi há tempo suficiente.
+//    a. Busca conversas elegíveis: agente ativo, última msg NÃO é do lead,
+//       lead NÃO está agendado/escalado (conversations.meta), última msg foi
+//       há tempo suficiente.
 //    b. Para cada conversa, identifica qual é o PRÓXIMO step a enviar
 //       (consultando followup_step_runs).
 //    c. Verifica se o tempo do step bateu (delay desde a última interação
@@ -73,6 +74,29 @@ function isAllowedNow(
     if (!allowedDays.includes(weekdayKey)) return false;
   }
   return true;
+}
+
+interface ConversationMeta {
+  stage?: string;
+  lead_data?: { appointment_id?: number | string; booked_tag_applied?: boolean } | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Lead já agendado (ou escalado para humano) NÃO deve receber follow-up.
+ * Fonte da verdade local (conversations.meta), equivalente à etiqueta "Agendado":
+ *  - lead_data.appointment_id presente → agendamento ativo (limpo ao cancelar);
+ *  - stage CONFIRMED → pós-agendamento;
+ *  - stage ESCALATED → handoff humano, o bot não deve insistir.
+ * Se o lead cancelar, appointment_id é limpo e o stage volta p/ SLOT_OFFER, então
+ * o follow-up volta a ser elegível naturalmente.
+ */
+function shouldSkipFollowup(meta: ConversationMeta | null): boolean {
+  if (!meta) return false;
+  const ld = meta.lead_data ?? null;
+  if (ld && (ld.appointment_id != null || ld.booked_tag_applied === true)) return true;
+  if (meta.stage === "CONFIRMED" || meta.stage === "ESCALATED") return true;
+  return false;
 }
 
 interface FollowupStep {
@@ -165,7 +189,7 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
           // Busca conversas desse agente cuja ÚLTIMA mensagem foi do lead
           const { data: convs } = await sb
             .from("conversations")
-            .select("id, phone, helena_session_id, channel")
+            .select("id, phone, helena_session_id, channel, meta")
             .eq("agent_id", agentId)
             .limit(500);
           if (!convs?.length) continue;
@@ -173,6 +197,9 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
           for (const conv of convs) {
             try {
               const convId = conv.id as string;
+
+              // Lead já agendado/escalado → nunca enviar follow-up.
+              if (shouldSkipFollowup(conv.meta as ConversationMeta | null)) continue;
 
               // Última mensagem da conversa
               const { data: lastMsg } = await sb
