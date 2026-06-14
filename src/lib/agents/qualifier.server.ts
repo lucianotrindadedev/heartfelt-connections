@@ -19,7 +19,7 @@ import {
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
-import { buildChannelPhonePromptBlock } from "@/lib/booking-template";
+import { buildChannelPhonePromptBlock, tagGateMissingField } from "@/lib/booking-template";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
 import { loadHelenaAccount } from "@/lib/helena.server";
@@ -130,10 +130,35 @@ interface ToolOutcome {
   patch?: Partial<LeadData>;
 }
 
+/** Trava de etiquetagem: chave do dado que ainda falta (ou null). Detalhes em
+ *  tagGateMissingField (booking-template). Ex.: escola só etiqueta turma após a
+ *  data de nascimento (settings.tag_gate_field). */
+function tagGateMissing(ctx: AgentContext): string | null {
+  return tagGateMissingField(ctx.agentSettings, ctx.leadData);
+}
+
 async function execAplicarTag(
   ctx: AgentContext,
   tag: string,
 ): Promise<ToolOutcome> {
+  // Trava: não etiquetar antes de ter o dado que define a tag (ex.: data de
+  // nascimento → turma). Roda ANTES do test_mode para o LLM receber o feedback
+  // certo ("colete o dado") mesmo durante testes.
+  const missingField = tagGateMissing(ctx);
+  if (missingField) {
+    console.log(
+      `[qualifier] aplicar_tag bloqueada — falta '${missingField}' (tag_gate_field) tag pedida='${tag}'`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        reason: "missing_required_data",
+        required_field: missingField,
+        note: `Não aplique nenhuma tag de interesse antes de coletar '${missingField}'. Pergunte esse dado ao lead primeiro.`,
+      }),
+    };
+  }
+
   if (ctx.dryRun || ctx.disableTags) {
     return {
       result: JSON.stringify({
@@ -378,6 +403,13 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
   const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
   const ownerPromptDominant = !!(ctx.basePrompt && ctx.basePrompt.trim());
 
+  // Trava de pré-requisito de etiquetagem (ex.: só etiquetar após a data de
+  // nascimento). Quando o dado ainda falta, avisamos o LLM para não tentar.
+  const tagGateField = tagGateMissing(ctx);
+  const tagGateBlock = tagGateField
+    ? `\n- ⛔ NÃO aplique NENHUMA tag de interesse ainda: falta o dado obrigatório "${tagGateField}". Pergunte/colete esse dado primeiro; só depois escolha a tag correspondente.`
+    : "";
+
   // Bloco de ESTADO + tags = DADOS, não comportamento. Sempre presente.
   const stateBlock = `# ESTADO ATUAL
 
@@ -410,7 +442,7 @@ ${candidateTags.length > 0 ? candidateTags.map((t) => `- ${t}`).join("\n") : "  
 - A tag de status inicial ("N/A Não Agendado" ou equivalente) já é aplicada
   automaticamente — você não precisa pedir.
 - A tag "Agendado" é aplicada automaticamente quando o agendamento conclui
-  — você também não precisa pedir.
+  — você também não precisa pedir.${tagGateBlock}
 
 # LEAD_DATA JÁ COLETADO
 

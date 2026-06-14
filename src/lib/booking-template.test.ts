@@ -19,6 +19,7 @@ import {
   preflightBookingFields,
   resolveCollectedPhone,
   sanitizeLeadDataPatch,
+  tagGateMissingField,
   type BookingFieldDef,
 } from "./booking-template";
 import { normalizeBrazilPhone } from "./conversation-channel.server";
@@ -516,5 +517,70 @@ describe("resolveCollectedPhone", () => {
   it("nao confunde campo de nome com telefone", () => {
     const ld: LeadData = { name: "Luciano", custom_fields: { child_name: "Helena" } };
     expect(resolveCollectedPhone(SCHOOL_FIELDS, ld, normalizeBrazilPhone)).toBeNull();
+  });
+});
+
+// ── tagGateMissingField ────────────────────────────────────────────────────
+// Bug "etiqueta cedo demais" (14/06/2026): o agente da escola (MB Osasco)
+// etiquetava a turma antes de ter a data de nascimento. A trava
+// settings.tag_gate_field bloqueia a tag ate o dado existir.
+
+describe("tagGateMissingField", () => {
+  // ── Automático (sem config): escola gateia na data de nascimento ──────────
+
+  it("escola (auto): sem data de nascimento → trava em child_birth_date", () => {
+    const ld: LeadData = { custom_fields: { child_name: "Helena" } };
+    expect(tagGateMissingField(SCHOOL_SETTINGS, ld)).toBe("child_birth_date");
+  });
+
+  it("escola (auto): data de nascimento valida → libera (null)", () => {
+    const ld: LeadData = { custom_fields: { child_birth_date: "25/07/2019" } };
+    expect(tagGateMissingField(SCHOOL_SETTINGS, ld)).toBeNull();
+  });
+
+  it("escola (auto) via company_type → trava na data", () => {
+    const settings = { company_type: "escola bilingue" };
+    expect(tagGateMissingField(settings, { custom_fields: {} })).toBe("child_birth_date");
+  });
+
+  it("clinica (auto): so 'name', sem campo de data → sem trava", () => {
+    const ld: LeadData = {};
+    expect(tagGateMissingField({}, ld)).toBeNull();
+  });
+
+  it("campo de data ausente → retorna a chave faltante", () => {
+    const settings = { tag_gate_field: "child_birth_date" };
+    const ld: LeadData = { custom_fields: {} };
+    expect(tagGateMissingField(settings, ld)).toBe("child_birth_date");
+  });
+
+  it("campo de data preenchido com lixo → ainda falta (exige data valida)", () => {
+    const settings = { tag_gate_field: "child_birth_date" };
+    const ld: LeadData = { custom_fields: { child_birth_date: "nao sei" } };
+    expect(tagGateMissingField(settings, ld)).toBe("child_birth_date");
+  });
+
+  it("campo de data com data valida → libera (null)", () => {
+    const settings = { tag_gate_field: "child_birth_date" };
+    const ld: LeadData = { custom_fields: { child_birth_date: "25/07/2019" } };
+    expect(tagGateMissingField(settings, ld)).toBeNull();
+  });
+
+  it("multiplas chaves: retorna a primeira que falta", () => {
+    const settings = { tag_gate_field: "name, child_birth_date" };
+    const ld: LeadData = { custom_fields: { child_birth_date: "25/07/2019" } };
+    expect(tagGateMissingField(settings, ld)).toBe("name");
+  });
+
+  it("chave 'name' usa lead_data.name", () => {
+    const settings = { tag_gate_field: "name" };
+    expect(tagGateMissingField(settings, { name: "Luciano" })).toBeNull();
+    expect(tagGateMissingField(settings, {})).toBe("name");
+  });
+
+  it("campo nao-data so exige presenca (nao valida formato)", () => {
+    const settings = { tag_gate_field: "turno" };
+    const ld: LeadData = { custom_fields: { turno: "manha" } };
+    expect(tagGateMissingField(settings, ld)).toBeNull();
   });
 });

@@ -174,6 +174,45 @@ export function resolveCollectedPhone(
   return null;
 }
 
+/**
+ * Chaves que travam a etiquetagem de interesse até serem coletadas.
+ *
+ * PADRÃO AUTOMÁTICO (sem config): escolas (template MB / MB Escolas) classificam
+ * a turma — e portanto a tag (Y226, SK26, ...) — a partir da DATA DE NASCIMENTO.
+ * Como o fluxo de escola já tem um campo de data de nascimento nos booking
+ * fields, derivamos a trava dele: enquanto não houver data de nascimento válida,
+ * o agente não etiqueta. Clínicas (só "name") não têm campo de data → sem trava,
+ * seguem etiquetando cedo como antes.
+ *
+ * OVERRIDE OPCIONAL (interno, raramente necessário): settings.tag_gate_field —
+ * uma ou mais chaves de custom_fields separadas por vírgula; "name" = nome do
+ * lead. Quando presente, substitui a derivação automática.
+ */
+function tagGateKeys(settings: Record<string, string>): string[] {
+  const explicit = settings.tag_gate_field?.trim();
+  if (explicit) return explicit.split(",").map((k) => k.trim()).filter(Boolean);
+  // Automático: campo(s) de data de nascimento do fluxo (escola).
+  return getBookingFields(settings).filter(isDateFieldKey).map((f) => f.key);
+}
+
+/**
+ * Retorna a chave do dado que ainda falta para poder etiquetar (ou null se já
+ * pode). Para chaves que parecem data (birth/nasc/data), exige que o valor
+ * pareça uma data válida — não basta estar preenchido com lixo.
+ */
+export function tagGateMissingField(
+  settings: Record<string, string>,
+  ld: LeadData,
+): string | null {
+  for (const key of tagGateKeys(settings)) {
+    const value = (key === "name" ? ld.name : ld.custom_fields?.[key]) ?? "";
+    const v = String(value).trim();
+    if (!v) return key;
+    if (/birth|nasc|data/i.test(key) && !looksLikeBirthDate(v)) return key;
+  }
+  return null;
+}
+
 export function getBookingFieldsForChannel(
   settings: Record<string, string>,
   channelCtx?: BookingChannelContext,
