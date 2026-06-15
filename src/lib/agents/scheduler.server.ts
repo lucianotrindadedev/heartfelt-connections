@@ -933,7 +933,7 @@ Campos válidos em lead_data_patch:
 - commitment_confirmed (boolean): true quando o lead confirma compromisso
 - patient_id (number): do retorno de buscar_paciente
 - appointment_id (string|number): do retorno de criar_agendamento
-- notes (string): observações relevantes para a agenda`;
+- notes (string): RESUMO RICO do agendamento para quem vai atender. Reúna o que foi descoberto na conversa, uma informação por linha (2 a 4 linhas curtas), por exemplo: motivo/motivação do contato; situação atual (ex.: escola e série atuais da criança); turma/interesse identificado; preferências (turno, observações). NÃO escreva apenas uma frase genérica — capture os detalhes úteis do histórico. Preserve notes já existentes e acrescente o que faltar.`;
 
   // Prompt do proprietário DOMINA quando presente.
   if (ctx.basePrompt && ctx.basePrompt.trim()) {
@@ -988,7 +988,7 @@ Campos válidos em lead_data_patch:
 - commitment_confirmed (boolean): true quando o lead confirma compromisso
 - patient_id (number): do retorno de buscar_paciente
 - appointment_id (string|number): do retorno de criar_agendamento
-- notes (string): observações relevantes para a agenda
+- notes (string): RESUMO RICO do agendamento para quem vai atender. Reúna o que foi descoberto na conversa, uma informação por linha (2 a 4 linhas curtas), por exemplo: motivo/motivação do contato; situação atual (ex.: escola e série atuais da criança); turma/interesse identificado; preferências (turno, observações). NÃO escreva apenas uma frase genérica — capture os detalhes úteis do histórico. Preserve notes já existentes e acrescente o que faltar.
 
 # DADOS DO NEGÓCIO
 
@@ -1468,13 +1468,84 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Fallback: se LLM omitiu next_stage, mantem o stage atual.
   const finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;
 
+  let reply = result.reply;
+  let outStage: Stage = finalStage;
+  let outPatch = mergedPatch;
   const mergedTelemetry: Record<string, unknown> = { ...(autoBooking.telemetry ?? {}) };
   if (doubleBookingBlocked) mergedTelemetry.double_booking_blocked = true;
 
+  // ── Agendamento no MESMO turn em que o último campo obrigatório chega ──────
+  // Quando o lead manda o último dado (ex.: CPF) AGORA, o tryDeterministicBooking
+  // do início do turn não o viu (só entra em lead_data_patch depois). Sem isto, o
+  // agendamento só acontecia no turn seguinte (lead precisava mandar "ok").
+  // Aqui mesclamos o patch recém-extraído e tentamos agendar de novo; se criar,
+  // geramos a confirmação no mesmo turn.
+  if (
+    !ctx.leadData.appointment_id &&
+    (ctx.stage === "NAME_COLLECT" || ctx.stage === "BOOKING")
+  ) {
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, outPatch);
+    const lateBooking = await tryDeterministicBooking(ctx);
+    if (lateBooking.toolsCalled.length > 0) {
+      toolsCalled.push(...lateBooking.toolsCalled);
+      outPatch = mergeLeadDataPatch(outPatch as LeadData, lateBooking.patch);
+      ctx.leadData = mergeLeadDataPatch(ctx.leadData, lateBooking.patch);
+      Object.assign(mergedTelemetry, lateBooking.telemetry ?? {}, {
+        same_turn_late_booking: !!ctx.leadData.appointment_id,
+      });
+    }
+
+    if (ctx.leadData.appointment_id) {
+      // Agendou agora → regenera a resposta como CONFIRMAÇÃO no mesmo turn.
+      const confirmBase =
+        buildDynamicSystemPrompt(ctx) +
+        `\n\n# RESULTADO criar_agendamento (automático)\n${lateBooking.toolResult ?? '{"ok":true}'}\n` +
+        "Evento criado na agenda. Confirme ao lead de forma calorosa e use next_stage=CONFIRMED.";
+      const confirmDynamic = extras ? confirmBase + "\n\n" + extras : confirmBase;
+      console.log(
+        `[scheduler] late booking ok conv=${ctx.conversationId} — confirmando no mesmo turn`,
+      );
+      const { result: cRes, response: cResp } =
+        await callLlmStructuredWithFallback<SchedulerJsonResult>(
+          ctx.orKey,
+          {
+            model: ctx.model,
+            systemCached: cached,
+            systemDynamic: confirmDynamic,
+            messages: [
+              ...workingMessages,
+              {
+                role: "user",
+                content:
+                  "O agendamento acabou de ser criado com sucesso na agenda. Gere a confirmação final ao lead em JSON conforme o schema (next_stage=CONFIRMED).",
+              },
+            ],
+            maxTokens: ctx.maxTokens,
+            temperature: ctx.temperature,
+            enableCaching: ctx.model.startsWith("anthropic/"),
+            toolChoice: "none",
+          },
+          (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
+          ctx.fallbackModels,
+        );
+      totalTokensIn += cResp.tokensIn;
+      totalTokensOut += cResp.tokensOut;
+      totalCostUsd += cResp.costUsd;
+      reply = cRes.reply;
+      outStage = (cRes.next_stage as Stage | undefined) ?? "CONFIRMED";
+      outPatch = mergeLeadDataPatch(
+        outPatch as LeadData,
+        stripNullishFields(
+          (cRes.lead_data_patch ?? {}) as Record<string, unknown>,
+        ) as Partial<LeadData>,
+      );
+    }
+  }
+
   return {
-    reply: result.reply,
-    next_stage: finalStage,
-    lead_data_patch: mergedPatch,
+    reply,
+    next_stage: outStage,
+    lead_data_patch: outPatch,
     reasoning: result.reasoning,
     tools_called: toolsCalled,
     tokens_in: totalTokensIn,

@@ -628,6 +628,10 @@ export function buildTemplateVars(ctx: AgentContext): Record<string, string> {
 
   for (const [k, v] of Object.entries(cf)) {
     vars[`custom.${k}`] = String(v);
+    // Também expõe a chave "crua" ({cpf}, {turno}, ...) — o proprietário
+    // naturalmente escreve {cpf} no template, igual a {child_name}/{guardians}.
+    // Não sobrescreve uma var padrão já definida (name, notes, interest, etc.).
+    if (!(k in vars)) vars[k] = String(v);
   }
   for (const [k, v] of Object.entries(s)) {
     if (!vars[k] && v?.trim()) vars[k] = v.trim();

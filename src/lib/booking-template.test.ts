@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   backfillBookingFieldsFromHistory,
+  buildTemplateVars,
   clearBookingFields,
   getMissingBookingFields,
   isReadyForBooking,
@@ -17,11 +18,13 @@ import {
   looksLikeIntentMessage,
   looksLikeSchedulingPreference,
   preflightBookingFields,
+  renderBookingTemplate,
   resolveCollectedPhone,
   sanitizeLeadDataPatch,
   tagGateMissingField,
   type BookingFieldDef,
 } from "./booking-template";
+import type { AgentContext } from "./agents/context";
 import { normalizeBrazilPhone } from "./conversation-channel.server";
 import type { LeadData } from "./agents/stage";
 
@@ -582,5 +585,46 @@ describe("tagGateMissingField", () => {
     const settings = { tag_gate_field: "turno" };
     const ld: LeadData = { custom_fields: { turno: "manha" } };
     expect(tagGateMissingField(settings, ld)).toBeNull();
+  });
+});
+
+// ── buildTemplateVars / renderBookingTemplate ──────────────────────────────
+// Bug "{cpf} literal na agenda" (16/06/2026): custom_fields só eram expostos
+// como {custom.cpf}; o proprietario escreveu {cpf} (igual a {child_name}) e o
+// placeholder ficava literal no evento.
+
+describe("buildTemplateVars + custom fields", () => {
+  const ctx = {
+    agentSettings: { company_name: "Maple Bear" },
+    leadData: {
+      name: "Luciano Trindade",
+      custom_fields: {
+        child_name: "Helena",
+        child_birth_date: "25/07/2019",
+        guardians: "Luciano",
+        cpf: "123.456.789-00",
+      },
+    },
+    effectivePhone: "32991607088",
+    conversationPhone: "32991607088",
+    helenaContact: { name: "Luciano" },
+  } as unknown as AgentContext;
+
+  it("expoe custom field como chave crua ({cpf}) e como {custom.cpf}", () => {
+    const vars = buildTemplateVars(ctx);
+    expect(vars["cpf"]).toBe("123.456.789-00");
+    expect(vars["custom.cpf"]).toBe("123.456.789-00");
+  });
+
+  it("renderiza {cpf} no template (nao deixa literal)", () => {
+    const vars = buildTemplateVars(ctx);
+    const out = renderBookingTemplate("{guardians} - {cpf}", vars);
+    expect(out).toBe("Luciano - 123.456.789-00");
+  });
+
+  it("nao deixa a var padrao ser sobrescrita por custom field homonimo", () => {
+    const vars = buildTemplateVars(ctx);
+    // child_name e var padrao — continua resolvendo normalmente
+    expect(vars["child_name"]).toBe("Helena");
   });
 });
