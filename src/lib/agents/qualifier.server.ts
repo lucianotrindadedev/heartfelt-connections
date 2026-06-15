@@ -437,6 +437,14 @@ ${candidateTags.length > 0 ? candidateTags.map((t) => `- ${t}`).join("\n") : "  
 - O agente atende negócios variados (clínicas, escolas, cursos, etc.) —
   use a tag que melhor represente o interesse, independente do nicho.
 - Aplique APENAS UMA tag de interesse por contato.
+- ⚠️ COERÊNCIA OBRIGATÓRIA: a tag DEVE corresponder EXATAMENTE à
+  turma/interesse que você identificou e comunicou ao lead. Se você disse ao
+  lead que a turma é "YEAR 2", aplique a tag dessa MESMA turma (ex.: a tag
+  "YEAR 2" ou o código equivalente "Y226") — NUNCA a de outra turma (Nursery,
+  TODDLER, etc.). Antes de chamar aplicar_tag_interesse, releia a turma que
+  você afirmou e confira, na lista acima, o nome EXATO da tag que corresponde a
+  ELA. Se a lista tiver tanto código (Y226) quanto nome (YEAR 2) para a mesma
+  turma, qualquer um serve — desde que seja da turma CERTA.
 - Se nenhuma tag bate com o interesse identificado, NÃO invente — deixe sem
   tag de interesse (melhor sem tag do que com a tag errada).
 - A tag de status inicial ("N/A Não Agendado" ou equivalente) já é aplicada

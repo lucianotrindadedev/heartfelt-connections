@@ -231,20 +231,61 @@ async function postHelenaContactTags(
   return { ok: res.ok, status: res.status, body: text };
 }
 
+function normalizeTagName(s: string): string {
+  return (s ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
 export async function setHelenaContactTags(
   account: HelenaAccount,
   contactId: string,
   tagNames: string[],
   operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
 ): Promise<{ ok: boolean; status: number; body: string }> {
-  const withOp = await postHelenaContactTags(account, contactId, { tagNames, operation });
+  // IMPORTANTE: algumas instâncias do Helena tratam TODO POST de tags como
+  // ReplaceAll (ignoram/rejeitam o campo "operation"). Enviar 1 tag para
+  // inserir/remover acabava APAGANDO as demais (ex.: a tag de interesse era
+  // perdida ao aplicar "IA Agendou"). Para ser correto em qualquer instância,
+  // computamos o ESTADO FINAL desejado a partir das tags atuais do contato e
+  // enviamos o conjunto COMPLETO via ReplaceAll.
+  let finalTagNames = tagNames;
+  let finalOperation = operation;
+  if (operation !== "ReplaceAll") {
+    const contact = await loadHelenaContactById(account, contactId);
+    if (contact) {
+      const current = contact.tagNames ?? [];
+      const targetNorm = new Set(tagNames.map(normalizeTagName));
+      if (operation === "DeleteIfExists") {
+        finalTagNames = current.filter((t) => !targetNorm.has(normalizeTagName(t)));
+      } else {
+        // InsertIfNotExists → união (atuais + novas), sem duplicar.
+        const byNorm = new Map<string, string>();
+        for (const t of [...current, ...tagNames]) byNorm.set(normalizeTagName(t), t);
+        finalTagNames = [...byNorm.values()];
+      }
+      finalOperation = "ReplaceAll";
+    }
+    // Se não conseguimos ler o contato, mantemos a operação nativa abaixo —
+    // melhor não arriscar um ReplaceAll cego (que apagaria tudo).
+  }
+
+  const withOp = await postHelenaContactTags(account, contactId, {
+    tagNames: finalTagNames,
+    operation: finalOperation,
+  });
   if (withOp.ok) return withOp;
 
-  // n8n "Add Tag IA Desligada" envia só { tagNames } — retry no insert
-  if (operation === "InsertIfNotExists") {
-    const minimal = await postHelenaContactTags(account, contactId, { tagNames });
-    if (minimal.ok) return minimal;
-    return minimal;
+  // Retry sem "operation" (instâncias que rejeitam o campo). Só é seguro quando
+  // já temos o conjunto COMPLETO desejado (finalOperation === ReplaceAll), pois
+  // o POST sem operation é tratado como ReplaceAll.
+  if (finalOperation === "ReplaceAll") {
+    const minimal = await postHelenaContactTags(account, contactId, {
+      tagNames: finalTagNames,
+    });
+    return minimal.ok ? minimal : withOp;
   }
 
   return withOp;
