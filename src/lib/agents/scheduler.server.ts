@@ -78,8 +78,21 @@ import {
  * MANTÉM a tag de interesse (o swap só toca as 2 tags de status).
  */
 async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
-  if (ctx.dryRun || ctx.disableTags) return;
-  if (!ctx.helenaContact?.id) return;
+  if (ctx.dryRun || ctx.disableTags) {
+    // Causa nº1 de "a etiqueta não mudou para IA AGENDOU": em MODO TESTE
+    // (settings.test_mode) a visita É agendada, mas a escrita de tags fica
+    // desligada de propósito. Logamos para não parecer bug silencioso.
+    console.log(
+      `[scheduler] tag swap pós-agendamento PULADO (${ctx.dryRun ? "dry_run" : "test_mode"}) conv=${ctx.conversationId}`,
+    );
+    return;
+  }
+  if (!ctx.helenaContact?.id) {
+    console.warn(
+      `[scheduler] tag swap pós-agendamento PULADO — contato Helena não resolvido conv=${ctx.conversationId}`,
+    );
+    return;
+  }
   if (ctx.leadData.booked_tag_applied) return; // idempotente
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
