@@ -51,6 +51,7 @@ import { conversationNeedsAgentReply } from "@/lib/conversation-reply.server";
 import {
   MIN_INTER_PART_DELAY_MS,
   splitMessage,
+  stripProtectedMarkers,
   typingDelayMs,
 } from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
@@ -222,7 +223,8 @@ async function deliverReply(
   await sb.from("messages").insert({
     conversation_id: conversationId,
     role: "assistant",
-    content: reply,
+    // Sem os marcadores [[NOSPLIT]] — não devem aparecer no histórico/CRM.
+    content: stripProtectedMarkers(reply),
     meta: {
       origem: "agente",
       delivery_status: sentCount === parts.length ? "delivered" : "partial",

@@ -13,6 +13,9 @@ const MAX_CHARS = 600;
 const MIN_LLM_SPLIT_CHARS = 80;
 const MIN_PART_CHARS = 8;
 const MAX_PARTS = 5;
+/** Limite mais alto quando há blocos protegidos (preço, lista de serviços etc.)
+ *  — evita descartar conteúdo que o agente marcou para enviar inteiro. */
+const MAX_PARTS_PROTECTED = 8;
 /** Não quebrar mensagens menores que isto — costumam ser 1 bolha só. */
 const NO_SPLIT_BELOW_CHARS = 220;
 /** Pausa mínima entre bolhas no WhatsApp (Helena/WhatsApp podem fundir envios muito rápidos). */
@@ -29,6 +32,51 @@ Regras:
 6. Responda SOMENTE com JSON: {"partes":["parte1","parte2",...]}`;
 
 const ABBREV_BEFORE_DOT = /\b(?:Dra|Dr|Sr|Sra|Prof|Eng|etc|vs|ex)\.$/i;
+
+// ── Blocos protegidos ([[NOSPLIT]]...[[/NOSPLIT]]) ──────────────────────────
+// O agente envolve trechos que devem ir em UMA bolha só (ex.: tabela de preços,
+// lista de serviços inclusos), mesmo contendo linhas em branco. O splitter
+// mantém o bloco inteiro e remove os marcadores antes do envio.
+const PROTECTED_OPEN_RE = /\[\[\s*NOSPLIT\s*\]\]/i;
+const PROTECTED_BLOCK_RE = /\[\[\s*NOSPLIT\s*\]\]([\s\S]*?)\[\[\s*\/\s*NOSPLIT\s*\]\]/gi;
+const PROTECTED_ANY_MARKER_RE = /\[\[\s*\/?\s*NOSPLIT\s*\]\]/gi;
+
+/** Remove os marcadores [[NOSPLIT]] / [[/NOSPLIT]] (inclusive soltos). */
+export function stripProtectedMarkers(text: string): string {
+  return text
+    .replace(PROTECTED_ANY_MARKER_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function hasProtectedBlock(text: string): boolean {
+  return PROTECTED_OPEN_RE.test(text);
+}
+
+/**
+ * Divide respeitando blocos protegidos: cada [[NOSPLIT]]...[[/NOSPLIT]] vira UMA
+ * parte atômica; o texto fora dos blocos é dividido pelas regras normais.
+ */
+function splitWithProtectedBlocks(text: string): string[] {
+  const parts: string[] = [];
+  const re = new RegExp(PROTECTED_BLOCK_RE);
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const before = text.slice(last, m.index).trim();
+    if (before) parts.push(...ruleBasedSplit(before));
+    const block = stripProtectedMarkers(m[1] ?? "");
+    if (block) parts.push(block);
+    last = m.index + m[0].length;
+  }
+  const after = text.slice(last).trim();
+  if (after) parts.push(...ruleBasedSplit(after));
+
+  return parts
+    .map(stripProtectedMarkers)
+    .filter((p) => p.length > 0)
+    .slice(0, MAX_PARTS_PROTECTED);
+}
 
 function capParts(parts: string[]): string[] {
   return parts.filter((p) => p.trim().length >= MIN_PART_CHARS).slice(0, MAX_PARTS);
@@ -214,6 +262,17 @@ export async function splitMessage(
 ): Promise<string[]> {
   const trimmed = text.trim();
   if (!trimmed) return [];
+
+  // Blocos protegidos: o agente marcou trechos que devem ir em UMA bolha só.
+  // Respeitamos e NÃO acionamos o splitter LLM (a divisão já é explícita).
+  if (hasProtectedBlock(trimmed)) {
+    const parts = splitWithProtectedBlocks(trimmed);
+    if (parts.length > 0) {
+      console.log(`[split] blocos protegidos → ${parts.length} parte(s)`);
+      return parts;
+    }
+    return [stripProtectedMarkers(trimmed)];
+  }
 
   const ruleResult = ruleBasedSplit(trimmed);
   if (ruleResult.length > 1) {
