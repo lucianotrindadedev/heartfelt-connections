@@ -19,7 +19,12 @@ import {
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
-import { buildChannelPhonePromptBlock, tagGateMissingField } from "@/lib/booking-template";
+import {
+  backfillBookingFieldsFromHistory,
+  buildChannelPhonePromptBlock,
+  mergeLeadDataPatch,
+  tagGateMissingField,
+} from "@/lib/booking-template";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
 import { loadHelenaAccount } from "@/lib/helena.server";
@@ -527,6 +532,31 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     initialTagApplied = true; // marca mesmo se a tag não existe no CRM, evita re-tentar
   }
 
+  // Backfill determinístico dos campos de booking a partir do histórico (nome da
+  // criança, DATA DE NASCIMENTO, etc. coletados durante a qualificação). CRÍTICO
+  // para a etiquetagem por turma: o dado que chega NESTE turn (ex.: a data de
+  // nascimento) só entraria em lead_data depois do tool loop. Sem este backfill,
+  // o gate de etiquetagem (que exige data de nascimento) bloquearia a tag da
+  // turma exatamente no turn em que a turma é identificada — e o qualifier não
+  // roda de novo após avançar para o agendamento. Também garante que esses
+  // campos persistam para o scheduler.
+  const channelCtxBackfill =
+    ctx.channel != null
+      ? { channel: ctx.channel, effectivePhone: ctx.effectivePhone ?? null }
+      : undefined;
+  const backfillPatch = backfillBookingFieldsFromHistory(
+    ctx.leadData,
+    ctx.history,
+    ctx.agentSettings,
+    channelCtxBackfill,
+  );
+  if (Object.keys(backfillPatch).length > 0) {
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, backfillPatch);
+    console.log(
+      `[qualifier] backfill campos do histórico: ${Object.keys(backfillPatch.custom_fields ?? {}).join(",") || "—"}`,
+    );
+  }
+
   // RAG com Gate: primeiro um modelo barato decide se a msg precisa de RAG.
   // Quando precisa, ele já reescreve a query pra busca semântica. Isso
   // economiza embedding API call + vector search + ~700 tokens injetados
@@ -557,7 +587,10 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
 
   let workingMessages: LlmMessage[] = [...history];
   const toolsCalled: string[] = [];
-  let accumulatedPatch: Partial<LeadData> = { initial_tag_applied: initialTagApplied };
+  let accumulatedPatch: Partial<LeadData> = mergeLeadDataPatch(
+    { initial_tag_applied: initialTagApplied } as LeadData,
+    backfillPatch,
+  );
   let totalTokensIn = 0;
   let totalTokensOut = 0;
   let totalCostUsd = 0;
