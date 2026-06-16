@@ -471,6 +471,17 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
     ? `\n- ⛔ NÃO aplique NENHUMA tag de interesse ainda: falta o dado obrigatório "${tagGateField}". Pergunte/colete esse dado primeiro; só depois escolha a tag correspondente.`
     : "";
 
+  // Turma determinística (turma_auto): o CÓDIGO calcula a turma e etiqueta. O
+  // prompt recebe a turma oficial para o LLM FALAR a mesma coisa que a tag —
+  // sem recalcular (o LLM erra o corte 31/03 e contradizia a etiqueta).
+  const turmaAuto = agentUsesTurmaClassifier(ctx.agentSettings);
+  const turmaCalc = turmaAuto ? turmaTagForLead(ctx.agentSettings, ctx.leadData) : null;
+  const turmaBlock = !turmaAuto
+    ? ""
+    : turmaCalc
+      ? `\n\n# TURMA — CÁLCULO OFICIAL DO SISTEMA\nA turma correta para a data de nascimento informada é **${turmaCalc}**. Ao falar com o lead, use EXATAMENTE "${turmaCalc}" — NÃO recalcule e NÃO diga outra turma. A etiqueta da turma já é aplicada automaticamente; você NÃO deve etiquetar.`
+      : `\n\n# TURMA\nAinda não há data de nascimento válida. NÃO afirme nenhuma turma ao lead enquanto não tiver a data. Quando a data chegar, o sistema calcula e etiqueta a turma automaticamente.`;
+
   // Bloco de ESTADO + tags = DADOS, não comportamento. Sempre presente.
   const stateBlock = `# ESTADO ATUAL
 
@@ -481,7 +492,7 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
 ${phoneBlock ? `\n${phoneBlock}\n` : ""}${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
 ${utm?.source ? `- UTM Source: ${utm.source}` : ""}
 ${utm?.medium ? `- UTM Medium: ${utm.medium}` : ""}
-${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}
+${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}${turmaBlock}
 
 # TAGS DE INTERESSE DISPONÍVEIS NO CRM
 
