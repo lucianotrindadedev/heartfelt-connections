@@ -162,7 +162,7 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
               // Resolve sessionId: olha conversa do agente por phone
               const { data: conv } = await sb
                 .from("conversations")
-                .select("helena_session_id")
+                .select("helena_session_id, meta")
                 .eq("agent_id", agentId)
                 .eq("phone", appt.patientPhone)
                 .not("helena_session_id", "is", null)
@@ -170,6 +170,18 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
                 .maybeSingle();
 
               const sessionId = conv?.helena_session_id as string | undefined;
+
+              // Nome para o lembrete = RESPONSÁVEL que agendou (não a criança).
+              // Vem do lead_data da conversa (name = quem falou com o bot; ou
+              // guardians). Cai para o nome do evento só se não houver lead_data.
+              const convMeta = (conv?.meta ?? null) as {
+                lead_data?: { name?: string; custom_fields?: Record<string, string> };
+              } | null;
+              const ldWarm = convMeta?.lead_data ?? {};
+              const responsavelNome =
+                ldWarm.name?.trim() ||
+                ldWarm.custom_fields?.guardians?.trim() ||
+                appt.patientName;
               if (!sessionId) {
                 await sb.from("warmup_sends").insert({
                   step_id: step.id, agent_id: agentId, account_id: accountId,
@@ -225,7 +237,7 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
               }).replace(",", " às");
               const parameters: Record<string, string> = {
                 horario,
-                nome: appt.patientName,
+                nome: responsavelNome,
                 data: appt.start.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }),
                 hora: appt.start.toLocaleTimeString("pt-BR", {
                   timeZone: "America/Sao_Paulo",
