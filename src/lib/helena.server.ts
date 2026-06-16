@@ -244,6 +244,7 @@ export async function setHelenaContactTags(
   contactId: string,
   tagNames: string[],
   operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
+  opts?: { currentTags?: string[] },
 ): Promise<{ ok: boolean; status: number; body: string }> {
   // IMPORTANTE: algumas instâncias do Helena tratam TODO POST de tags como
   // ReplaceAll (ignoram/rejeitam o campo "operation"). Enviar 1 tag para
@@ -251,12 +252,19 @@ export async function setHelenaContactTags(
   // perdida ao aplicar "IA Agendou"). Para ser correto em qualquer instância,
   // computamos o ESTADO FINAL desejado a partir das tags atuais do contato e
   // enviamos o conjunto COMPLETO via ReplaceAll.
+  //
+  // As tags atuais vêm preferencialmente de opts.currentTags (já carregadas no
+  // contexto do turn) — mais confiável e SEM corrida. Só refazemos o GET se não
+  // vier o hint.
   let finalTagNames = tagNames;
   let finalOperation = operation;
   if (operation !== "ReplaceAll") {
-    const contact = await loadHelenaContactById(account, contactId);
-    if (contact) {
-      const current = contact.tagNames ?? [];
+    let current = opts?.currentTags;
+    if (!current) {
+      const contact = await loadHelenaContactById(account, contactId);
+      current = contact?.tagNames;
+    }
+    if (current) {
       const targetNorm = new Set(tagNames.map(normalizeTagName));
       if (operation === "DeleteIfExists") {
         finalTagNames = current.filter((t) => !targetNorm.has(normalizeTagName(t)));
@@ -289,6 +297,71 @@ export async function setHelenaContactTags(
   }
 
   return withOp;
+}
+
+/**
+ * Lista os IDs das sequências (cadências) do CRM Helena.
+ * Endpoint: GET /chat/v1/sequence
+ */
+export async function listHelenaSequenceIds(account: HelenaAccount): Promise<string[]> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}/chat/v1/sequence`, {
+      headers: { Authorization: account.token, accept: "application/json" },
+    });
+    if (!res.ok) return [];
+    const json = (await res.json()) as unknown;
+    const arr: unknown[] = Array.isArray(json)
+      ? json
+      : ((json as { data?: unknown[]; items?: unknown[] })?.data ??
+         (json as { items?: unknown[] })?.items ??
+         []);
+    return arr
+      .map((s) => String((s as { id?: string | number })?.id ?? "").trim())
+      .filter(Boolean);
+  } catch (e) {
+    console.warn("[helena] listHelenaSequenceIds falhou:", e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
+/**
+ * Remove o contato de TODAS as sequências (cadências) do CRM.
+ * Endpoint: DELETE /chat/v1/sequence/{id}/contact  body: { contactId | phoneNumber }
+ * Best-effort: varre as sequências e tenta remover de cada uma (no-op onde não
+ * estiver). Usado no agendamento — lead agendado sai de qualquer cadência.
+ */
+export async function removeContactFromAllSequences(
+  account: HelenaAccount,
+  who: { contactId?: string | null; phoneNumber?: string | null },
+): Promise<{ removed: number; attempted: number }> {
+  const ids = await listHelenaSequenceIds(account);
+  if (ids.length === 0) return { removed: 0, attempted: 0 };
+
+  const base = account.baseUrl.replace(/\/$/, "");
+  const body: Record<string, unknown> = {};
+  if (who.contactId) body.contactId = who.contactId;
+  else if (who.phoneNumber) body.phoneNumber = formatPhoneE164(who.phoneNumber);
+  if (Object.keys(body).length === 0) return { removed: 0, attempted: 0 };
+
+  let removed = 0;
+  for (const id of ids) {
+    try {
+      const res = await fetch(`${base}/chat/v1/sequence/${id}/contact`, {
+        method: "DELETE",
+        headers: {
+          Authorization: account.token,
+          "Content-Type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) removed++;
+    } catch {
+      /* tenta a próxima sequência */
+    }
+  }
+  return { removed, attempted: ids.length };
 }
 
 /** Resolve contactId para tags: sessão, contato já carregado ou telefone. */

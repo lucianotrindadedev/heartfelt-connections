@@ -184,6 +184,7 @@ async function applyTurmaTagDeterministic(ctx: AgentContext): Promise<string | n
       ctx.helenaContact.id,
       turma,
       "InsertIfNotExists",
+      { currentTags: ctx.helenaContact.tagNames },
     );
     if (res.ok) {
       console.log(`[qualifier] turma determinística aplicada: ${res.tag}`);
@@ -241,6 +242,7 @@ async function execAplicarTag(
       ctx.helenaContact.id,
       tag,
       "InsertIfNotExists",
+      { currentTags: ctx.helenaContact.tagNames },
     );
     if (!result.ok) {
       return {
@@ -277,6 +279,7 @@ async function ensureInitialNotScheduledTag(ctx: AgentContext): Promise<void> {
       ctx.helenaContact.id,
       NOT_SCHEDULED_SYNONYMS,
       "InsertIfNotExists",
+      { currentTags: ctx.helenaContact.tagNames },
     );
     if (res.ok) {
       console.log(`[qualifier] tag inicial aplicada: ${res.tag}`);

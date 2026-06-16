@@ -18,6 +18,7 @@
 
 import {
   listHelenaTags,
+  loadHelenaContactById,
   setHelenaContactTags,
   type HelenaAccount,
   type HelenaTag,
@@ -147,12 +148,13 @@ export async function applyTagByApproxName(
   contactId: string,
   approximateName: string,
   operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
+  opts?: { currentTags?: string[] },
 ): Promise<{ ok: boolean; tag?: string; reason?: string; status?: number; body?: string }> {
   const exact = await resolveTagName(account, approximateName);
   if (!exact) {
     return { ok: false, reason: "not_found" };
   }
-  const res = await setHelenaContactTags(account, contactId, [exact], operation);
+  const res = await setHelenaContactTags(account, contactId, [exact], operation, opts);
   if (!res.ok) {
     return { ok: false, reason: "helena_error", status: res.status, body: res.body };
   }
@@ -169,6 +171,7 @@ export async function swapTagBySynonyms(
   contactId: string,
   removeSynonyms: readonly string[],
   addSynonyms: readonly string[],
+  opts?: { currentTags?: string[] },
 ): Promise<{ ok: boolean; removed?: string; added?: string; reason?: string }> {
   // Resolve a tag de remoção primeiro e a EXCLUI da resolução da tag de
   // adição. Sem isso, o sinônimo "Agendado" casaria por substring com a tag
@@ -183,13 +186,30 @@ export async function swapTagBySynonyms(
 
   if (!addExact) return { ok: false, reason: "add_tag_not_found" };
 
-  if (removeExact) {
-    await setHelenaContactTags(account, contactId, [removeExact], "DeleteIfExists");
+  // Swap em UMA única operação (sem corrida): lê as tags atuais, remove a de
+  // status antiga e adiciona a nova, mantendo TODAS as demais (interesse/turma).
+  // Fazer Delete + Insert em duas chamadas reintroduzia a tag removida quando a
+  // 2ª leitura via stale (era por isso que a N/A não saía no agendamento).
+  let current = opts?.currentTags;
+  if (!current) {
+    const contact = await loadHelenaContactById(account, contactId);
+    current = contact?.tagNames ?? [];
   }
-  const res = await setHelenaContactTags(account, contactId, [addExact], "InsertIfNotExists");
-  if (!res.ok) {
-    return { ok: false, reason: "helena_error" };
+  const removeNorm = removeExact ? normalize(removeExact) : null;
+  const seen = new Set<string>();
+  const finalSet: string[] = [];
+  for (const t of current) {
+    const n = normalize(t);
+    if (removeNorm && n === removeNorm) continue; // remove a tag de status antiga
+    if (!seen.has(n)) {
+      seen.add(n);
+      finalSet.push(t);
+    }
   }
+  if (!seen.has(normalize(addExact))) finalSet.push(addExact); // garante a nova
+
+  const res = await setHelenaContactTags(account, contactId, finalSet, "ReplaceAll");
+  if (!res.ok) return { ok: false, reason: "helena_error" };
   return { ok: true, removed: removeExact ?? undefined, added: addExact };
 }
 
@@ -203,11 +223,12 @@ export async function applyOneOfTags(
   contactId: string,
   synonyms: readonly string[],
   operation: "InsertIfNotExists" | "DeleteIfExists" | "ReplaceAll" = "InsertIfNotExists",
+  opts?: { currentTags?: string[] },
 ): Promise<{ ok: boolean; tag?: string; reason?: string }> {
   const exact = await resolveOneOf(account, synonyms);
   if (!exact) return { ok: false, reason: "no_synonym_found" };
 
-  const res = await setHelenaContactTags(account, contactId, [exact], operation);
+  const res = await setHelenaContactTags(account, contactId, [exact], operation, opts);
   if (!res.ok) return { ok: false, reason: "helena_error" };
   return { ok: true, tag: exact };
 }

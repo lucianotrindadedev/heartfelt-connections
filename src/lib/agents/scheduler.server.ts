@@ -27,7 +27,7 @@ import {
   diaSemanaChave,
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
-import { loadHelenaAccount } from "@/lib/helena.server";
+import { loadHelenaAccount, removeContactFromAllSequences } from "@/lib/helena.server";
 import {
   swapTagBySynonyms,
   NOT_SCHEDULED_SYNONYMS,
@@ -101,6 +101,7 @@ async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
       ctx.helenaContact.id,
       NOT_SCHEDULED_SYNONYMS,
       SCHEDULED_SYNONYMS,
+      { currentTags: ctx.helenaContact.tagNames },
     );
     if (res.ok) {
       console.log(
@@ -111,6 +112,28 @@ async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
     }
   } catch (e) {
     console.warn("[scheduler] erro ao trocar tags pós-agendamento:", e);
+  }
+}
+
+/**
+ * Lead agendado sai de QUALQUER sequência (cadência) do CRM — requisito de
+ * negócio: não pode receber follow-up de cadência depois de agendar. Roda em
+ * todo agendamento bem-sucedido (qualquer agente). Best-effort; só é pulado em
+ * dryRun (trainer/replay). NÃO pula em test_mode (queremos validar de verdade).
+ */
+async function removeLeadFromSequences(ctx: AgentContext): Promise<void> {
+  if (ctx.dryRun) return;
+  const contactId = ctx.helenaContact?.id ?? null;
+  const phoneNumber = ctx.effectivePhone ?? null;
+  if (!contactId && !phoneNumber) return;
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    const res = await removeContactFromAllSequences(helena, { contactId, phoneNumber });
+    console.log(
+      `[scheduler] lead removido de sequências: ${res.removed}/${res.attempted} conv=${ctx.conversationId}`,
+    );
+  } catch (e) {
+    console.warn("[scheduler] erro ao remover lead de sequências:", e);
   }
 }
 
@@ -740,6 +763,7 @@ async function execCriarAgendamento(
         resolved.calendarId,
       );
       await applyBookedTagSwap(ctx);
+      await removeLeadFromSequences(ctx);
       return {
         result: JSON.stringify({
           ok: true,
@@ -770,6 +794,7 @@ async function execCriarAgendamento(
       dentistPersonId: ld.dentist_person_id,
     });
     await applyBookedTagSwap(ctx);
+    await removeLeadFromSequences(ctx);
     return {
       result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
       patch: { appointment_id: appt.id, name: leadName, booked_tag_applied: true },
@@ -791,6 +816,7 @@ async function applyUnbookedTagSwap(ctx: AgentContext): Promise<void> {
       ctx.helenaContact.id,
       SCHEDULED_SYNONYMS,
       NOT_SCHEDULED_SYNONYMS,
+      { currentTags: ctx.helenaContact.tagNames },
     );
     if (res.ok) {
       console.log(
