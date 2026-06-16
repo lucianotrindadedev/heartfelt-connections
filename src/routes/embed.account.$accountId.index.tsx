@@ -6873,6 +6873,23 @@ function GoogleCalendarPanel({
                   </p>
                 </div>
 
+                <div className="flex items-start justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+                  <div className="space-y-0.5">
+                    <Label className="text-xs font-medium">Classificação automática de turma (Maple Bear)</Label>
+                    <p className="text-[10px] text-muted-foreground">
+                      Calcula a turma pela data de nascimento (corte 31/03) e aplica a tag certa
+                      (YEAR 2, JK, NURSERY…), mantendo a N/A. O agente para de etiquetar turma no chute.
+                      Ative apenas em agentes de escola.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={bookingSettings.turma_auto === "true"}
+                    onCheckedChange={(v) =>
+                      setBookingSettings((p) => ({ ...p, turma_auto: v ? "true" : "false" }))
+                    }
+                  />
+                </div>
+
                 <Button
                   type="button"
                   className="w-full"
@@ -6885,6 +6902,7 @@ function GoogleCalendarPanel({
                         bookingSettings.gcal_event_description_template ?? "",
                       booking_commitment_question: bookingSettings.booking_commitment_question ?? "",
                       booking_fields_json: bookingSettings.booking_fields_json ?? "",
+                      turma_auto: bookingSettings.turma_auto === "true" ? "true" : "false",
                     })
                   }
                 >
