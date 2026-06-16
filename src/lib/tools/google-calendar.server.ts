@@ -11,6 +11,7 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue, encryptValue } from "@/lib/crypto.server";
+import { normalizeBrazilPhone } from "@/lib/conversation-channel.server";
 
 const GCAL_BASE = "https://www.googleapis.com/calendar/v3";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -1008,6 +1009,109 @@ export async function findGoogleCalendarEventsByPhone(
           calendarId: t.calendarId,
           agendaLabel: t.label,
         })) as GCalAppointment[];
+    }),
+  );
+
+  return perCalendar.flat();
+}
+
+// ── Listar agendamentos próximos (warm-up / lembretes) ───────────────────
+
+export interface UpcomingGCalEvent {
+  id: string;
+  start: Date;
+  phone: string | null;
+  name: string;
+  calendarId: string;
+}
+
+/** Extrai o telefone gravado na descrição do evento ("Telefone: <num>"). */
+function extractPhoneFromDescription(description: string): string | null {
+  const m = description.match(/telefone[:\s]*([+\d][\d\s()\-.]{7,})/i);
+  if (m) {
+    const norm = normalizeBrazilPhone(m[1]);
+    if (norm) return norm;
+  }
+  // Fallback: qualquer sequência que pareça telefone BR na descrição.
+  const any = description.match(/(\+?55)?\s*\(?\d{2}\)?\s*\d{4,5}-?\d{4}/);
+  return any ? normalizeBrazilPhone(any[0]) : null;
+}
+
+/** Nome do paciente: depois do " - " no título, ou "Criança/Nome" na descrição. */
+function extractNameFromEvent(summary: string, description: string): string {
+  const dash = summary.split(" - ");
+  if (dash.length > 1) {
+    const tail = dash.slice(1).join(" - ").trim();
+    if (tail) return tail;
+  }
+  const m = description.match(/(?:criança|crianca|nome|aluno|aluna)[:\s]+([^\n]+)/i);
+  if (m) return m[1].trim();
+  return summary.trim();
+}
+
+/**
+ * Lista eventos do Google Calendar no intervalo [fromDate, toDate) em TODAS as
+ * agendas da conta. Usado pelo warm-up para enviar lembretes. Extrai telefone
+ * (da descrição) e nome (do título) de cada evento.
+ */
+export async function listUpcomingGoogleCalendarEvents(
+  accountId: string,
+  fromDate: Date,
+  toDate: Date,
+): Promise<UpcomingGCalEvent[]> {
+  const token = await loadTokens(accountId);
+  if (!token) return [];
+  const accessToken = await refreshTokenIfNeeded(accountId, token);
+
+  const agendas = await listAccountAgendas(accountId);
+  const targets: string[] =
+    agendas.length > 0 ? agendas.map((a) => a.calendarId) : [token.calendarId];
+
+  const perCalendar = await Promise.all(
+    targets.map(async (calendarId) => {
+      const calId = encodeURIComponent(calendarId);
+      const url = new URL(`${GCAL_BASE}/calendars/${calId}/events`);
+      url.searchParams.set("timeMin", fromDate.toISOString());
+      url.searchParams.set("timeMax", toDate.toISOString());
+      url.searchParams.set("singleEvents", "true");
+      url.searchParams.set("orderBy", "startTime");
+      url.searchParams.set("showDeleted", "false");
+      url.searchParams.set("maxResults", "250");
+
+      try {
+        const res = await fetch(url.toString(), {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!res.ok) {
+          console.warn(`[gcal] listUpcoming falhou ${res.status} calendar=${calendarId}`);
+          return [] as UpcomingGCalEvent[];
+        }
+        const json = (await res.json()) as {
+          items?: {
+            id?: string;
+            summary?: string;
+            description?: string;
+            status?: string;
+            start?: { dateTime?: string };
+          }[];
+        };
+        return (json.items ?? [])
+          .filter((e) => e.start?.dateTime && e.status !== "cancelled")
+          .map((e) => {
+            const description = e.description ?? "";
+            return {
+              id: e.id ?? "",
+              start: new Date(e.start!.dateTime!),
+              phone: extractPhoneFromDescription(description),
+              name: extractNameFromEvent(e.summary ?? "", description),
+              calendarId,
+            } as UpcomingGCalEvent;
+          })
+          .filter((e) => e.id && !Number.isNaN(e.start.getTime()));
+      } catch (e) {
+        console.warn("[gcal] listUpcoming erro:", e instanceof Error ? e.message : e);
+        return [] as UpcomingGCalEvent[];
+      }
     }),
   );
 

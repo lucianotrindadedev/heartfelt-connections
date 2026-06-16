@@ -5,6 +5,7 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { listClinicorpUpcomingAppointments } from "@/lib/tools/clinicorp.server";
+import { listUpcomingGoogleCalendarEvents } from "@/lib/tools/google-calendar.server";
 
 export interface UpcomingAppointment {
   source: "clinicorp" | "google_calendar" | "clinup";
@@ -59,12 +60,29 @@ export async function listAllUpcomingAppointments(
     }
   }
 
-  // ─── Google Calendar (TODO: implementar listUpcomingGoogleEvents) ──
-  // const { data: gcal } = await sb.from("google_calendar_tokens")...
-  // if (gcal?.ativo) {
-  //   const events = await listUpcomingGoogleEvents(accountId, fromDate, toDate);
-  //   for (const e of events) out.push({ source: 'google_calendar', ... })
-  // }
+  // ─── Google Calendar ────────────────────────────────────────
+  const { data: gcal } = await sb
+    .from("google_calendar_tokens")
+    .select("account_id")
+    .eq("account_id", accountId)
+    .maybeSingle();
+  if (gcal) {
+    try {
+      const events = await listUpcomingGoogleCalendarEvents(accountId, fromDate, toDate);
+      for (const e of events) {
+        if (!e.phone) continue; // sem telefone não dá pra casar a conversa/sessão
+        out.push({
+          source: "google_calendar",
+          externalId: e.id,
+          start: e.start,
+          patientPhone: e.phone,
+          patientName: e.name,
+        });
+      }
+    } catch (e) {
+      console.error("[warmup-sources] google calendar falhou:", e);
+    }
+  }
 
   // ─── Clinup (TODO: implementar quando o adapter expor listUpcoming) ──
   // const { data: clinup } = await sb.from("clinup_config")...
