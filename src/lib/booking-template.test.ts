@@ -8,8 +8,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  agentUsesTurmaClassifier,
   backfillBookingFieldsFromHistory,
   buildTemplateVars,
+  classifyMapleBearTurma,
   clearBookingFields,
   getMissingBookingFields,
   isReadyForBooking,
@@ -20,6 +22,7 @@ import {
   preflightBookingFields,
   renderBookingTemplate,
   resolveCollectedPhone,
+  turmaTagForLead,
   sanitizeLeadDataPatch,
   tagGateMissingField,
   type BookingFieldDef,
@@ -520,6 +523,76 @@ describe("resolveCollectedPhone", () => {
   it("nao confunde campo de nome com telefone", () => {
     const ld: LeadData = { name: "Luciano", custom_fields: { child_name: "Helena" } };
     expect(resolveCollectedPhone(SCHOOL_FIELDS, ld, normalizeBrazilPhone)).toBeNull();
+  });
+});
+
+// ── classifyMapleBearTurma (determinístico) ────────────────────────────────
+// Tabela 2026, corte 31/03. Tira do LLM a decisão de qual turma etiquetar.
+
+describe("classifyMapleBearTurma (ref 2026)", () => {
+  it.each([
+    ["25/07/2019", "YEAR 1"], // 01/04/2019–31/03/2020
+    ["15/02/2019", "YEAR 2"], // jan–mar → cohort do ano anterior (2018)
+    ["10/05/2018", "YEAR 2"], // 01/04/2018–31/03/2019
+    ["01/04/2020", "SK"],
+    ["31/03/2021", "SK"], // ainda na janela 2020
+    ["10/06/2021", "JK"],
+    ["10/06/2022", "NURSERY"],
+    ["10/06/2023", "TODDLER"],
+    ["10/06/2024", "BEAR CARE"], // abr–out/2024
+    ["15/11/2024", "FBC"], // a partir de 01/11 → futuro bear care
+    ["10/01/2025", "FBC"],
+    ["10/06/2017", "YEAR 3"], // não atendida em 2026, mas ainda etiqueta
+    ["10/06/2008", "YEAR 12"],
+    ["10/03/2008", null], // ≤ 31/03/2008 → não atende, sem tag
+  ])("classifyMapleBearTurma(%s) → %s", (input, expected) => {
+    expect(classifyMapleBearTurma(input, 2026)).toBe(expected);
+  });
+
+  it("aceita formato textual e com hifen", () => {
+    expect(classifyMapleBearTurma("25 de julho de 2019", 2026)).toBe("YEAR 1");
+    expect(classifyMapleBearTurma("25-07-2019", 2026)).toBe("YEAR 1");
+  });
+
+  it("data invalida → null", () => {
+    expect(classifyMapleBearTurma("nao sei", 2026)).toBeNull();
+    expect(classifyMapleBearTurma("", 2026)).toBeNull();
+  });
+
+  it("avanca de turma no ano letivo seguinte (2027)", () => {
+    expect(classifyMapleBearTurma("25/07/2019", 2027)).toBe("YEAR 2"); // YEAR 1 em 2026
+    expect(classifyMapleBearTurma("10/06/2021", 2027)).toBe("SK"); // JK em 2026
+  });
+});
+
+describe("turmaTagForLead / agentUsesTurmaClassifier", () => {
+  const TURMA_SETTINGS = {
+    booking_fields_json: JSON.stringify(SCHOOL_FIELDS),
+    turma_auto: "true",
+  };
+
+  it("agentUsesTurmaClassifier só com turma_auto=true", () => {
+    expect(agentUsesTurmaClassifier({})).toBe(false);
+    expect(agentUsesTurmaClassifier({ turma_auto: "true" })).toBe(true);
+  });
+
+  it("retorna a turma quando turma_auto ligado e ha data de nascimento", () => {
+    const ld: LeadData = { custom_fields: { child_birth_date: "25/07/2019" } };
+    expect(turmaTagForLead(TURMA_SETTINGS, ld)).toBe("YEAR 1");
+  });
+
+  it("sem turma_auto → null (nao afeta outros agentes)", () => {
+    const ld: LeadData = { custom_fields: { child_birth_date: "25/07/2019" } };
+    expect(turmaTagForLead({ booking_fields_json: JSON.stringify(SCHOOL_FIELDS) }, ld)).toBeNull();
+  });
+
+  it("respeita turma_ano_letivo configuravel", () => {
+    const ld: LeadData = { custom_fields: { child_birth_date: "25/07/2019" } };
+    expect(turmaTagForLead({ ...TURMA_SETTINGS, turma_ano_letivo: "2027" }, ld)).toBe("YEAR 2");
+  });
+
+  it("sem data de nascimento → null", () => {
+    expect(turmaTagForLead(TURMA_SETTINGS, { custom_fields: {} })).toBeNull();
   });
 });
 

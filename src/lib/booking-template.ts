@@ -213,6 +213,103 @@ export function tagGateMissingField(
   return null;
 }
 
+// ── Classificação determinística de TURMA (Maple Bear / escolas) ────────────
+//
+// Tira do LLM a decisão de QUAL turma e QUANDO etiquetar: o código calcula a
+// turma a partir da DATA DE NASCIMENTO (corte 31/03) e o agente aplica a tag
+// certa. Opt-in por agente via settings.turma_auto="true" (e ano letivo de
+// referência via settings.turma_ano_letivo, padrão 2026). Sem a flag, NADA muda
+// — clínicas e agentes de festa seguem com a etiquetagem normal pelo LLM.
+
+const MONTHS_PT: Record<string, number> = {
+  janeiro: 1, fevereiro: 2, marco: 3, "março": 3, abril: 4, maio: 5, junho: 6,
+  julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12,
+};
+
+/** Extrai {year, month, day} de uma data de nascimento em formatos comuns. */
+export function parseBirthDateParts(
+  raw: string | null | undefined,
+): { year: number; month: number; day: number } | null {
+  if (!raw?.trim()) return null;
+  const t = raw.trim().toLowerCase();
+
+  let day: number, month: number, year: number;
+  const numeric = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/);
+  if (numeric) {
+    day = Number(numeric[1]);
+    month = Number(numeric[2]);
+    year = Number(numeric[3]);
+  } else {
+    // "25 de julho de 2019" / "25 julho 2019"
+    const textual = t.match(/\b(\d{1,2})\s*(?:de\s+)?([a-zçã]+)\s*(?:de\s+)?(\d{4})\b/);
+    if (!textual || MONTHS_PT[textual[2]] === undefined) return null;
+    day = Number(textual[1]);
+    month = MONTHS_PT[textual[2]]!;
+    year = Number(textual[3]);
+  }
+
+  if (year < 100) year += 2000;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (year < 1990 || year > 2100) return null;
+  return { year, month, day };
+}
+
+/**
+ * Calcula a turma Maple Bear a partir da data de nascimento, com corte em 31/03.
+ * `refYear` é o ano letivo de referência (a tabela base é a de 2026). Retorna o
+ * nome da turma (ex.: "YEAR 2", "JK", "NURSERY", "BEAR CARE", "FBC") ou null
+ * quando não há turma (faixa muito acima da atendida — não etiqueta).
+ */
+export function classifyMapleBearTurma(
+  birthDate: string | null | undefined,
+  refYear = 2026,
+): string | null {
+  const p = parseBirthDateParts(birthDate);
+  if (!p) return null;
+
+  // Janela do ano letivo: 01/04 a 31/03. Quem nasce em jan–mar pertence ao
+  // "cohort" do ano anterior.
+  const cohort = p.month >= 4 ? p.year : p.year - 1;
+  // Normaliza para a tabela base de 2026 (cada ano à frente sobe uma turma).
+  const ec = cohort - (refYear - 2026);
+
+  if (ec <= 2007) return null; // nascido ≤ 31/03/2008 → não atende, sem tag
+  if (ec <= 2019) return `YEAR ${2020 - ec}`; // 2008..2019 → YEAR 12..YEAR 1
+  if (ec === 2020) return "SK";
+  if (ec === 2021) return "JK";
+  if (ec === 2022) return "NURSERY";
+  if (ec === 2023) return "TODDLER";
+  if (ec === 2024) {
+    // BEAR CARE: 01/04–31/10; a partir de 01/11 → futuro BEAR CARE (18 meses).
+    return p.month >= 4 && p.month <= 10 ? "BEAR CARE" : "FBC";
+  }
+  return "FBC"; // ec ≥ 2025 (mais novos) → futuro BEAR CARE
+}
+
+/** Agente usa classificação determinística de turma? (opt-in, isolado). */
+export function agentUsesTurmaClassifier(settings: Record<string, string>): boolean {
+  return settings.turma_auto === "true";
+}
+
+/**
+ * Nome da turma a etiquetar para o lead atual, ou null. Lê a data de nascimento
+ * do campo de data dos booking fields (ou custom_fields.child_birth_date) e
+ * classifica. Só atua se o agente tiver turma_auto ligado.
+ */
+export function turmaTagForLead(
+  settings: Record<string, string>,
+  ld: LeadData,
+): string | null {
+  if (!agentUsesTurmaClassifier(settings)) return null;
+  const dateField = getBookingFields(settings).find(isDateFieldKey);
+  const birth =
+    (dateField ? ld.custom_fields?.[dateField.key] : undefined) ??
+    ld.custom_fields?.child_birth_date;
+  if (!birth) return null;
+  const refYear = Number(settings.turma_ano_letivo) || 2026;
+  return classifyMapleBearTurma(birth, refYear);
+}
+
 export function getBookingFieldsForChannel(
   settings: Record<string, string>,
   channelCtx?: BookingChannelContext,

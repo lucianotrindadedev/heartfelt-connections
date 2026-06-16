@@ -20,10 +20,12 @@ import {
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
+  agentUsesTurmaClassifier,
   backfillBookingFieldsFromHistory,
   buildChannelPhonePromptBlock,
   mergeLeadDataPatch,
   tagGateMissingField,
+  turmaTagForLead,
 } from "@/lib/booking-template";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
@@ -130,6 +132,19 @@ const QUALIFIER_TOOLS: LlmTool[] = [
   },
 ];
 
+/** Ferramentas do qualifier para este agente. Em agentes com classificação
+ *  determinística de turma (turma_auto), removemos aplicar_tag_interesse — a
+ *  tag de turma é aplicada pelo código, nunca pelo LLM (evita etiqueta no chute
+ *  ou turma errada). Os demais agentes seguem com a tool normal. */
+function buildQualifierTools(ctx: AgentContext): LlmTool[] {
+  if (agentUsesTurmaClassifier(ctx.agentSettings)) {
+    return QUALIFIER_TOOLS.filter(
+      (t) => t.function.name !== "aplicar_tag_interesse",
+    );
+  }
+  return QUALIFIER_TOOLS;
+}
+
 interface ToolOutcome {
   result: string;
   patch?: Partial<LeadData>;
@@ -140,6 +155,46 @@ interface ToolOutcome {
  *  data de nascimento (settings.tag_gate_field). */
 function tagGateMissing(ctx: AgentContext): string | null {
   return tagGateMissingField(ctx.agentSettings, ctx.leadData);
+}
+
+/**
+ * Aplica a tag de TURMA de forma determinística (Maple Bear / turma_auto):
+ * calcula a turma pela data de nascimento e aplica a tag certa, MANTENDO a tag
+ * N/A (InsertIfNotExists não remove as demais). Retorna a turma aplicada (para
+ * gravar em interest) ou null. Idempotente: só aplica se a turma mudou.
+ */
+async function applyTurmaTagDeterministic(ctx: AgentContext): Promise<string | null> {
+  const turma = turmaTagForLead(ctx.agentSettings, ctx.leadData);
+  if (!turma) return null;
+  if (ctx.leadData.interest === turma) return null; // já aplicada neste lead
+
+  if (ctx.dryRun || ctx.disableTags) {
+    console.log(
+      `[qualifier] turma determinística '${turma}' (pulada: ${ctx.disableTags ? "test_mode" : "dry_run"})`,
+    );
+    return turma; // grava interest mesmo assim (sem tocar o CRM em teste)
+  }
+  if (!ctx.helenaContact?.id) return turma;
+
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    const res = await applyTagByApproxName(
+      helena,
+      ctx.helenaContact.id,
+      turma,
+      "InsertIfNotExists",
+    );
+    if (res.ok) {
+      console.log(`[qualifier] turma determinística aplicada: ${res.tag}`);
+    } else {
+      console.warn(
+        `[qualifier] turma '${turma}' não encontrada no CRM (${res.reason}) — crie a tag com esse nome`,
+      );
+    }
+  } catch (e) {
+    console.warn("[qualifier] erro ao aplicar tag de turma:", e);
+  }
+  return turma;
 }
 
 async function execAplicarTag(
@@ -595,6 +650,19 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   let totalTokensOut = 0;
   let totalCostUsd = 0;
 
+  // Etiquetagem de TURMA determinística (turma_auto): assim que houver data de
+  // nascimento válida, o CÓDIGO aplica a tag da turma certa (mantendo N/A). O
+  // LLM nem tem a tool de tag nesses agentes — acaba a "etiqueta no chute".
+  if (agentUsesTurmaClassifier(ctx.agentSettings)) {
+    const turmaApplied = await applyTurmaTagDeterministic(ctx);
+    if (turmaApplied) {
+      accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, {
+        interest: turmaApplied,
+      });
+      ctx.leadData = mergeLeadDataPatch(ctx.leadData, { interest: turmaApplied });
+    }
+  }
+
   // No 1º ciclo, tools são proibidas — EXCETO quando a M1 já carrega interesse
   // explícito ("quero saber sobre tráfego pago", "tô com dor no dente").
   // Nesses casos, faz sentido aplicar a tag de interesse JÁ no 1º turno.
@@ -614,7 +682,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       systemCached: cached,
       systemDynamic: dynamic,
       messages: workingMessages,
-      tools: QUALIFIER_TOOLS,
+      tools: buildQualifierTools(ctx),
       toolChoice: "auto",
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature,
