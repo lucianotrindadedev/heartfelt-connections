@@ -286,9 +286,13 @@ export function classifyMapleBearTurma(
   return "FBC"; // ec ≥ 2025 (mais novos) → futuro BEAR CARE
 }
 
-/** Agente usa classificação determinística de turma? (opt-in, isolado). */
+/** Agente usa classificação determinística de turma? (opt-in, isolado).
+ *  Tolerante ao formato do valor: "true"/true/"1"/"sim"/"on" (qualquer caixa). */
 export function agentUsesTurmaClassifier(settings: Record<string, string>): boolean {
-  return settings.turma_auto === "true";
+  const v = String((settings as Record<string, unknown>).turma_auto ?? "")
+    .trim()
+    .toLowerCase();
+  return v === "true" || v === "1" || v === "sim" || v === "on" || v === "yes";
 }
 
 /**

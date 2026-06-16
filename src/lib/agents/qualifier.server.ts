@@ -75,7 +75,8 @@ const ResultSchema = z.object({
       escalation_reason: z.string().nullish(),
       custom_fields: coercibleStringRecord.nullish(),
     })
-    .optional(),
+    // .nullish(): alguns modelos devolvem lead_data_patch:null em vez de omitir.
+    .nullish(),
   reasoning: z.string().optional(),
 });
 
@@ -661,6 +662,12 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       });
       ctx.leadData = mergeLeadDataPatch(ctx.leadData, { interest: turmaApplied });
     }
+  } else if (ctx.leadData.custom_fields?.child_birth_date) {
+    // Hint de diagnóstico: já há data de nascimento mas a classificação de turma
+    // está desligada — provavelmente falta a flag settings.turma_auto="true".
+    console.log(
+      `[qualifier] turma_auto DESLIGADO (settings.turma_auto=${JSON.stringify((ctx.agentSettings as Record<string, unknown>).turma_auto)}) — defina "true" p/ etiquetar turma automaticamente conv=${ctx.conversationId}`,
+    );
   }
 
   // No 1º ciclo, tools são proibidas — EXCETO quando a M1 já carrega interesse

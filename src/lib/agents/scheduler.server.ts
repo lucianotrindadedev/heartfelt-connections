@@ -148,7 +148,9 @@ const ResultSchema = z.object({
       escalation_reason: z.string().nullish(),
       custom_fields: coercibleStringRecord.nullish(),
     })
-    .optional(),
+    // .nullish(): alguns modelos devolvem lead_data_patch:null (em vez de omitir)
+    // — sem isto o turn inteiro quebrava na validação Zod.
+    .nullish(),
   reasoning: z.string().optional(),
 });
 
