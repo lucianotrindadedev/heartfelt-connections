@@ -5,6 +5,7 @@ import { attachSelfhostAuth } from "@/integrations/selfhost/auth-attacher";
 import { requireSuperAdmin } from "@/integrations/selfhost/auth-middleware";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { encryptValue } from "@/lib/crypto.server";
+import { DEFAULT_ACCOUNT_LLM_CONFIG } from "@/lib/llm-defaults";
 
 
 export const listAccounts = createServerFn({ method: "GET" })
@@ -358,7 +359,7 @@ export const createAccount = createServerFn({ method: "POST" })
       sb.from("channels_whatsapp").insert({ agent_id: agentIns.data.id }),
       sb.from("webchat_config").insert({ agent_id: agentIns.data.id }),
       sb.from("account_secrets").insert({ account_id: internalId }),
-      sb.from("account_llm_config").insert({ account_id: internalId }),
+      sb.from("account_llm_config").insert({ account_id: internalId, ...DEFAULT_ACCOUNT_LLM_CONFIG }),
       sb.from("account_voice_config").insert({ account_id: internalId }),
     ]);
 

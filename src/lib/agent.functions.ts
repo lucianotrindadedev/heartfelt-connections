@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { loadHelenaAccount, listHelenaTags } from "@/lib/helena.server";
+import { DEFAULT_ACCOUNT_LLM_CONFIG } from "@/lib/llm-defaults";
 
 const accountIdInput = z.object({ accountId: z.string().min(1) });
 
@@ -77,7 +78,7 @@ async function ensureAccount(accountId: string): Promise<string | null> {
       sb.from("channels_whatsapp").insert({ agent_id: agentId }),
       sb.from("webchat_config").insert({ agent_id: agentId }),
       sb.from("account_secrets").insert({ account_id: accountId }),
-      sb.from("account_llm_config").insert({ account_id: accountId }),
+      sb.from("account_llm_config").insert({ account_id: accountId, ...DEFAULT_ACCOUNT_LLM_CONFIG }),
       sb.from("account_voice_config").insert({ account_id: accountId }),
     ]);
   }

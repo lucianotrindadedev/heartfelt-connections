@@ -5,6 +5,20 @@ export const DEFAULT_LLM_MODEL = "google/gemini-2.5-flash";
 export const DEFAULT_TOOL_MODEL = "openai/gpt-4.1-mini";
 
 /**
+ * Configuração de LLM padrão de NOVOS agentes/contas (account_llm_config).
+ * Mantida em sincronia com a migração 0034. Usada no insert da criação do
+ * agente para garantir os defaults mesmo sem depender do default da coluna.
+ */
+export const DEFAULT_ACCOUNT_LLM_CONFIG = {
+  default_model: "google/gemini-3.5-flash",
+  splitter_model: "openai/gpt-4.1-mini",
+  formatter_model: "openai/gpt-4.1-mini",
+  rag_gate_model: "openai/gpt-4.1-mini",
+  tool_model: "openai/gpt-4.1-mini",
+  fallback_models: ["openai/gpt-4.1-mini"],
+} as const;
+
+/**
  * Modelo dedicado ao qualifier. O qualifier toma decisoes de roteamento
  * (next_stage, aplicar_tag_interesse, enviar_midia) e segue regras nuance
  * — por isso precisa de um modelo mais robusto em instructions-following
