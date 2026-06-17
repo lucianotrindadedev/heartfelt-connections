@@ -4,6 +4,7 @@
 // aciona o segundo modelo imediatamente, exatamente o comportamento pedido na UI.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { callLlm, callLlmWithFallback, callLlmStructuredWithFallback } from "./llm.server";
 
@@ -173,6 +174,55 @@ describe("callLlmStructuredWithFallback (fallback em saída estruturada)", () =>
     expect(r.modelUsed).toBe("x/fallback");
     expect(r.result.reply).toBe("salvo pelo fallback");
     expect(calls).toContain("x/fallback");
+  });
+});
+
+// Reproduz fielmente o turno que quebrou em produção: o scheduler pede a
+// resposta estruturada; o gemini-2.5-flash devolve content vazio + reasoning
+// ("Confirming Visit Logistics…"); antes isso virava "JSON inválido" e derrubava
+// o turno. Agora o fallback assume e o turno é salvo.
+describe("cenário real do scheduler (gemini reasoning → fallback)", () => {
+  // Schema no mesmo formato do scheduler (reply/next_stage/lead_data_patch).
+  const SchedulerSchema = z.object({
+    reply: z.string().min(1),
+    next_stage: z
+      .enum(["SLOT_OFFER", "NAME_COLLECT", "BOOKING", "CONFIRMED", "ESCALATED"])
+      .optional(),
+    lead_data_patch: z.object({}).passthrough().nullish(),
+  });
+
+  it("gemini devolve só reasoning → fallback responde JSON válido e o turno é salvo", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body?: string }) => {
+        const model = modelFromInit(init);
+        calls.push(model);
+        if (model === "google/gemini-2.5-flash") {
+          return emptyWithReasoning(
+            "**Confirming Visit Logistics** The user has confirmed their visit. The conversation is naturally winding down.",
+          ) as unknown as Response;
+        }
+        return okResponse(
+          '{"reply":"Perfeito! Sua visita está confirmada. Estamos te esperando 😊","next_stage":"CONFIRMED","lead_data_patch":null}',
+        ) as unknown as Response;
+      }),
+    );
+
+    const { result, modelUsed, fallbackUsed } = await callLlmStructuredWithFallback<
+      z.infer<typeof SchedulerSchema>
+    >(
+      "key",
+      { model: "google/gemini-2.5-flash", messages: MSG },
+      (raw) => SchedulerSchema.parse(raw),
+      ["openai/gpt-4.1-mini"],
+    );
+
+    expect(modelUsed).toBe("openai/gpt-4.1-mini");
+    expect(fallbackUsed).toBe(true);
+    expect(result.next_stage).toBe("CONFIRMED");
+    expect(result.reply).toContain("confirmada");
+    expect(calls).toContain("openai/gpt-4.1-mini");
   });
 });
 
