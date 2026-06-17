@@ -205,9 +205,14 @@ export async function callLlm(
   const primaryContent = message?.content?.trim() ?? "";
   const reasoning =
     (message?.reasoning ?? "").trim() || (message?.reasoning_content ?? "").trim();
-  const finalContent = primaryContent || reasoning || null;
+  // Em jsonMode, o reasoning é "pensamento" em prosa — NUNCA JSON válido. Usá-lo
+  // como content quebra o JSON.parse e ainda impede o retry de content-vazio do
+  // callLlmStructured (que precisa ver content vazio para reagir). Só
+  // aproveitamos reasoning como conteúdo em respostas de TEXTO LIVRE.
+  const useReasoningAsContent = !primaryContent && !!reasoning && !req.jsonMode;
+  const finalContent = primaryContent || (useReasoningAsContent ? reasoning : null);
 
-  if (!primaryContent && reasoning) {
+  if (useReasoningAsContent) {
     console.warn(
       `[llm] content vazio mas reasoning preenchido (${reasoning.length} chars) — usando reasoning como fallback. model=${req.model}`,
     );
@@ -477,7 +482,12 @@ export async function callLlmStructuredWithFallback<T>(
       return { ...r, modelUsed: model, fallbackUsed: i > 0 };
     } catch (e) {
       lastErr = e;
-      if (!isFallbackWorthy(e)) throw e;
+      // Além dos erros de disponibilidade, também acionamos o fallback quando o
+      // modelo devolve content vazio / JSON inválido (LlmError 200). Isso é
+      // comum em modelos com reasoning (ex.: gemini-flash gastando o output em
+      // "pensamento") — o modelo de fallback costuma salvar o turno.
+      const contentIssue = e instanceof LlmError && e.status === 200;
+      if (!isFallbackWorthy(e) && !contentIssue) throw e;
       console.warn(
         `[llm-fallback-structured] model=${model} falhou (${e instanceof Error ? e.message : e}) — tentando próximo`,
       );

@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { callLlmWithFallback, callLlmStructuredWithFallback } from "./llm.server";
+import { callLlm, callLlmWithFallback, callLlmStructuredWithFallback } from "./llm.server";
 
 function okResponse(content: string) {
   return {
@@ -22,6 +22,22 @@ function okResponse(content: string) {
 
 function errResponse(status: number, body = "provider returned error") {
   return { ok: false, status, text: async () => body, json: async () => ({}) };
+}
+
+// content vazio mas com reasoning (caso gemini-flash gastando output em "pensamento")
+function emptyWithReasoning(reasoning: string) {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => "",
+    json: async () => ({
+      id: "gen-test",
+      choices: [
+        { message: { content: "", reasoning, tool_calls: [] }, finish_reason: "stop" },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 5 },
+    }),
+  };
 }
 
 function modelFromInit(init: { body?: string }): string {
@@ -132,5 +148,50 @@ describe("callLlmStructuredWithFallback (fallback em saída estruturada)", () =>
     expect(r.modelUsed).toBe("x/fallback");
     expect(r.fallbackUsed).toBe(true);
     expect(r.result.reply).toBe("do fallback");
+  });
+
+  it("primário devolve content vazio (só reasoning) → aciona o fallback", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body?: string }) => {
+        const model = modelFromInit(init);
+        calls.push(model);
+        return (model === "x/primary"
+          ? emptyWithReasoning("só pensamento em prosa, sem JSON")
+          : okResponse('{"reply":"salvo pelo fallback"}')) as unknown as Response;
+      }),
+    );
+
+    const r = await callLlmStructuredWithFallback<{ reply: string }>(
+      "key",
+      { model: "x/primary", messages: MSG },
+      (raw) => raw as { reply: string },
+      ["x/fallback"],
+    );
+
+    expect(r.modelUsed).toBe("x/fallback");
+    expect(r.result.reply).toBe("salvo pelo fallback");
+    expect(calls).toContain("x/fallback");
+  });
+});
+
+describe("callLlm — reasoning não vira content em JSON", () => {
+  it("jsonMode: content vazio + reasoning → content fica null (não usa prosa)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => emptyWithReasoning("pensamento interno") as unknown as Response),
+    );
+    const r = await callLlm("key", { model: "x", messages: MSG, jsonMode: true });
+    expect(r.content).toBeNull();
+  });
+
+  it("texto livre: content vazio + reasoning → usa o reasoning como content", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => emptyWithReasoning("resposta veio no reasoning") as unknown as Response),
+    );
+    const r = await callLlm("key", { model: "x", messages: MSG });
+    expect(r.content).toBe("resposta veio no reasoning");
   });
 });
