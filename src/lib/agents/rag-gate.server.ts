@@ -14,7 +14,8 @@
 // isso?" referenciando algo da conversa, o Gate transforma em uma query
 // bem formada pra busca vetorial.
 
-import { callLlm, type LlmMessage } from "./llm.server";
+import { callLlmWithFallback, type LlmMessage } from "./llm.server";
+import { DEFAULT_AUX_FALLBACK_MODEL } from "@/lib/llm-defaults";
 
 export interface RagGateDecision {
   need: boolean;
@@ -74,15 +75,22 @@ Regras:
   ];
 
   try {
-    const res = await callLlm(orKey, {
-      model,
-      systemDynamic: systemPrompt,
-      messages,
-      jsonMode: true,
-      maxTokens: 200,
-      temperature: 0.1,
-      timeoutMs: 10_000,
-    });
+    // Timeout curto (8s) + fallback rápido: se o modelo do gate travar, tenta um
+    // modelo rápido antes de degradar. Evita o gate ficar "preso" no provedor
+    // lento (era a causa dos [rag-gate] falhou timeout).
+    const res = await callLlmWithFallback(
+      orKey,
+      {
+        model,
+        systemDynamic: systemPrompt,
+        messages,
+        jsonMode: true,
+        maxTokens: 200,
+        temperature: 0.1,
+        timeoutMs: 8_000,
+      },
+      model === DEFAULT_AUX_FALLBACK_MODEL ? [] : [DEFAULT_AUX_FALLBACK_MODEL],
+    );
     if (!res.content) return { need: true, query: lastUserMsg, reasoning: "gate_empty_content" };
 
     try {

@@ -4,7 +4,7 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
-import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
+import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_SPLITTER_MODEL = DEFAULT_LLM_MODEL;
@@ -205,53 +205,73 @@ function ruleBasedSplit(text: string): string[] {
   return [trimmed];
 }
 
-async function llmSplit(text: string, orKey: string, model: string): Promise<string[] | null> {
+async function llmSplitOne(
+  text: string,
+  orKey: string,
+  model: string,
+): Promise<string[] | null> {
+  const res = await fetch(OPENROUTER_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${orKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: SPLIT_PROMPT },
+        { role: "user", content: text },
+      ],
+      max_tokens: 1024,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+    }),
+    // Timeout curto: o split é best-effort. Se demorar, cai pra fallback/regras
+    // em vez de segurar a resposta ao lead por 25s.
+    signal: AbortSignal.timeout(12_000),
+  });
+
+  if (!res.ok) {
+    console.warn(`[split] LLM HTTP ${res.status} (model=${model})`);
+    return null;
+  }
+
+  const json = (await res.json()) as {
+    choices?: { message?: { content?: string } }[];
+  };
+  const raw = (json.choices?.[0]?.message?.content ?? "").trim();
+  if (!raw) return null;
+
+  let parsed: { partes?: unknown };
   try {
-    const res = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${orKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: SPLIT_PROMPT },
-          { role: "user", content: text },
-        ],
-        max_tokens: 1024,
-        temperature: 0.1,
-        response_format: { type: "json_object" },
-      }),
-      signal: AbortSignal.timeout(25_000),
-    });
+    parsed = JSON.parse(raw) as { partes?: unknown };
+  } catch {
+    const match = raw.match(/\{[\s\S]*"partes"[\s\S]*\}/);
+    if (!match) return null;
+    parsed = JSON.parse(match[0]) as { partes?: unknown };
+  }
 
-    if (!res.ok) {
-      console.warn(`[split] LLM HTTP ${res.status}`);
-      return null;
-    }
+  if (Array.isArray(parsed.partes) && parsed.partes.length > 0) {
+    const parts = (parsed.partes as string[]).map((p) => String(p).trim()).filter(Boolean);
+    return parts.length > 1 ? capParts(parts) : null;
+  }
+  return null;
+}
 
-    const json = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
-    };
-    const raw = (json.choices?.[0]?.message?.content ?? "").trim();
-    if (!raw) return null;
-
-    let parsed: { partes?: unknown };
+/** Tenta o splitter em cada modelo da lista (primário + fallback) até um
+ *  responder. Timeout/erro num modelo → tenta o próximo; se todos falharem,
+ *  retorna null e o chamador usa a divisão por regras. */
+async function llmSplit(text: string, orKey: string, models: string[]): Promise<string[] | null> {
+  const chain = models.filter((m, i) => m && models.indexOf(m) === i);
+  for (const model of chain) {
     try {
-      parsed = JSON.parse(raw) as { partes?: unknown };
-    } catch {
-      const match = raw.match(/\{[\s\S]*"partes"[\s\S]*\}/);
-      if (!match) return null;
-      parsed = JSON.parse(match[0]) as { partes?: unknown };
+      const r = await llmSplitOne(text, orKey, model);
+      if (r && r.length > 1) return r;
+    } catch (e) {
+      console.warn(
+        `[split] LLM splitter falhou (model=${model}): ${e instanceof Error ? e.message : e} — tentando próximo/regras`,
+      );
     }
-
-    if (Array.isArray(parsed.partes) && parsed.partes.length > 0) {
-      const parts = (parsed.partes as string[]).map((p) => String(p).trim()).filter(Boolean);
-      return parts.length > 1 ? capParts(parts) : null;
-    }
-  } catch (e) {
-    console.warn("[split] LLM splitter falhou:", e instanceof Error ? e.message : e);
   }
   return null;
 }
@@ -294,7 +314,7 @@ export async function splitMessage(
           const model =
             (llmRow.data as Record<string, unknown> | null)?.splitter_model as string | undefined
             || DEFAULT_SPLITTER_MODEL;
-          const llmResult = await llmSplit(trimmed, orKey, model);
+          const llmResult = await llmSplit(trimmed, orKey, [model, DEFAULT_AUX_FALLBACK_MODEL]);
           if (llmResult && llmResult.length > 1) {
             console.log(`[split] LLM → ${llmResult.length} parte(s)`);
             return llmResult;

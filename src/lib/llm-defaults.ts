@@ -25,6 +25,11 @@ export const DEFAULT_TOOL_FALLBACK_MODELS = [
   DEFAULT_LLM_MODEL,
 ] as const;
 
+/** Fallback rápido para chamadas auxiliares (RAG-gate, splitter). Quando o
+ *  modelo principal dessas tarefas trava/timeout, tenta um modelo rápido antes
+ *  de cair no comportamento degradado (RAG: need=true; splitter: regras). */
+export const DEFAULT_AUX_FALLBACK_MODEL = "openai/gpt-4o-mini";
+
 /** Slugs legados migrados automaticamente para {@link DEFAULT_LLM_MODEL}. */
 export const LEGACY_GEMINI_FLASH_MODELS = [
   "google/gemini-2.5-flash-lite",
