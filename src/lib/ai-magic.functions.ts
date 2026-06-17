@@ -233,7 +233,10 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
           temperature: 0.3,
           max_tokens: 8192, // prompt completo + resumo
         }),
-        signal: AbortSignal.timeout(60_000),
+        // Reescrever o prompt INTEIRO (14k+ chars) no gpt-4.1 leva tempo; 60s
+        // estourava ("operation aborted due to timeout"). É uma ação interativa
+        // de admin — 180s dá folga sem prejudicar o usuário.
+        signal: AbortSignal.timeout(180_000),
       });
 
       const respBody = await res.text();
