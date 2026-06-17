@@ -4,10 +4,9 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
-import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
+import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_SPLITTER_MODEL } from "@/lib/llm-defaults";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_SPLITTER_MODEL = DEFAULT_LLM_MODEL;
 
 const MAX_CHARS = 600;
 const MIN_LLM_SPLIT_CHARS = 80;

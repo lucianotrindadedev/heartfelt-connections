@@ -25,6 +25,12 @@ export const DEFAULT_TOOL_FALLBACK_MODELS = [
   DEFAULT_LLM_MODEL,
 ] as const;
 
+/** Modelo padrão do splitter de mensagens (divide a resposta em bolhas).
+ *  GPT-4.1-mini é rápido e estável em JSON curto — o gemini-flash travava aqui
+ *  (gastava o output em "pensamento" e estourava o timeout). Pode ser
+ *  sobrescrito por conta via account_llm_config.splitter_model. */
+export const DEFAULT_SPLITTER_MODEL = "openai/gpt-4.1-mini";
+
 /** Fallback rápido para chamadas auxiliares (RAG-gate, splitter). Quando o
  *  modelo principal dessas tarefas trava/timeout, tenta um modelo rápido antes
  *  de cair no comportamento degradado (RAG: need=true; splitter: regras). */
