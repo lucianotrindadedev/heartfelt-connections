@@ -6,9 +6,8 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
-import { DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
-
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
+import { callLlmWithFallback, type LlmMessage } from "./llm.server";
 
 interface FollowupContextInput {
   accountId: string;
@@ -118,68 +117,48 @@ ${basePrompt.slice(0, 3000)}
 Responda APENAS com o texto da mensagem que será enviada. Sem JSON, sem
 prefixos, sem "Resposta:", apenas o texto.`;
 
-  // 5. Chama LLM
-  const t0 = Date.now();
-  const res = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${orKey}`,
-      "Content-Type": "application/json",
+  // 5. Chama LLM via callLlmWithFallback — ele já faz: retry com budget MAIOR
+  //    quando finish_reason=length (modelos com reasoning, ex.: gemini-flash,
+  //    queimam tokens em "pensamento" e truncavam o follow-up) + fallback de
+  //    modelo se o principal falhar. Antes, o fetch cru descartava a mensagem na
+  //    1ª truncagem (era a causa de "[followup-seq] contextual falhou").
+  const messages: LlmMessage[] = [
+    ...history,
+    {
+      role: "user",
+      content:
+        "(Sistema: o lead não respondeu desde sua última mensagem. Gere agora APENAS o texto do follow-up #" +
+        input.stepOrdem +
+        ".)",
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: followupSystem },
-        ...history,
-        {
-          role: "user",
-          content:
-            "(Sistema: o lead não respondeu desde sua última mensagem. Gere agora APENAS o texto do follow-up #" +
-            input.stepOrdem +
-            ".)",
-        },
-      ],
-      temperature: 0.7,
-      // Modelos com reasoning (gemini-flash, gpt-mini) queimam o max_tokens em
-      // raciocínio oculto e truncam o texto no meio (vimos "Fiquei pensando em…"
-      // cortado). reasoning.effort=low + budget folgado evita o corte; o
-      // OpenRouter ignora o parâmetro em modelos sem reasoning.
-      reasoning: { effort: "low" },
-      max_tokens: 800,
-    }),
-    signal: AbortSignal.timeout(45_000),
-  });
+  ];
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`OpenRouter ${res.status}: ${body.slice(0, 200)}`);
-  }
-  const json = (await res.json()) as {
-    choices?: {
-      message?: { content?: string; reasoning?: string };
-      finish_reason?: string;
-    }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-  };
-  const choice = json.choices?.[0];
-  const message = choice?.message;
-  const reply =
-    (message?.content?.trim() ?? "") || (message?.reasoning?.trim() ?? "");
+  const turn = await callLlmWithFallback(
+    orKey,
+    {
+      model,
+      systemDynamic: followupSystem,
+      messages,
+      temperature: 0.7,
+      maxTokens: 1500,
+    },
+    model === DEFAULT_AUX_FALLBACK_MODEL ? [] : [DEFAULT_AUX_FALLBACK_MODEL],
+  );
+
+  const reply = (turn.content ?? "").trim();
   if (!reply) throw new Error("LLM retornou resposta vazia.");
-  // Texto cortado no meio (estourou max_tokens): não envia mensagem incompleta.
-  if (choice?.finish_reason === "length") {
+  // Salvaguarda: se ainda truncou mesmo após o retry de budget maior, descarta.
+  if (turn.finishReason === "length") {
     throw new Error(
-      `Follow-up truncado (finish_reason=length, tokens_out=${json.usage?.completion_tokens ?? "?"}) — mensagem descartada.`,
+      `Follow-up truncado mesmo após retry (tokens_out=${turn.tokensOut}) — mensagem descartada.`,
     );
   }
 
-  void t0; // métricas internas (não usadas no retorno final aqui)
-
   return {
     reply,
-    model,
-    tokens_in: json.usage?.prompt_tokens ?? 0,
-    tokens_out: json.usage?.completion_tokens ?? 0,
-    cost_usd: json.usage?.cost ?? 0,
+    model: turn.modelUsed,
+    tokens_in: turn.tokensIn,
+    tokens_out: turn.tokensOut,
+    cost_usd: turn.costUsd,
   };
 }
