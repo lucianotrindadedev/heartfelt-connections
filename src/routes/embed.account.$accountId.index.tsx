@@ -451,6 +451,7 @@ function EmbedHome() {
         agentId={agentId}
         agentSettings={(agent.settings as Record<string, string> | null) ?? {}}
         currentModel={(agent.llm_model_override as string | null) ?? (data.llm?.default_model as string | null) ?? ""}
+        currentFallbackModel={((data.llm?.fallback_models as string[] | null) ?? [])[0] ?? ""}
         currentVoice={(data.voice?.elevenlabs_voice_id as string | null) ?? null}
         debounceSegundos={(agent.debounce_segundos as number | null) ?? 20}
         hasOpenRouter={!!data.secrets?.openrouter_last4}
@@ -5291,6 +5292,7 @@ function AgentSettingsView({
   agentId,
   agentSettings,
   currentModel,
+  currentFallbackModel,
   currentVoice,
   debounceSegundos,
   hasOpenRouter,
@@ -5306,6 +5308,7 @@ function AgentSettingsView({
   agentId: string;
   agentSettings: Record<string, string>;
   currentModel: string;
+  currentFallbackModel: string;
   currentVoice: string | null;
   debounceSegundos: number;
   hasOpenRouter: boolean;
@@ -5325,6 +5328,7 @@ function AgentSettingsView({
   const listVoices = useServerFn(listElevenLabsVoices);
 
   const [model, setModel] = useState(currentModel);
+  const [fallbackModel, setFallbackModel] = useState(currentFallbackModel);
   const [voiceId, setVoiceId] = useState(currentVoice ?? "");
   const [debounce, setDebounce] = useState(debounceSegundos);
   const [settings, setSettings] = useState<Record<string, string>>(agentSettings);
@@ -5332,6 +5336,9 @@ function AgentSettingsView({
   // Combobox do modelo: busca + abre/fecha dropdown
   const [modelSearch, setModelSearch] = useState("");
   const [modelOpen, setModelOpen] = useState(false);
+  // Combobox do modelo de fallback (busca/abre independentes)
+  const [fallbackSearch, setFallbackSearch] = useState("");
+  const [fallbackOpen, setFallbackOpen] = useState(false);
 
   const models = useQuery({
     queryKey: ["openrouter-models", accountId],
@@ -5367,9 +5374,33 @@ function AgentSettingsView({
     return found?.name ?? model;
   }, [models.data, model]);
 
+  const filteredSortedFallbackModels = useMemo(() => {
+    const list = models.data?.models ?? [];
+    const q = fallbackSearch.trim().toLowerCase();
+    const filtered = !q
+      ? list
+      : list.filter(
+          (m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
+        );
+    return [...filtered].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  }, [models.data, fallbackSearch]);
+
+  const selectedFallbackLabel = useMemo(() => {
+    if (!fallbackModel) return "";
+    const found = (models.data?.models ?? []).find((m) => m.id === fallbackModel);
+    return found?.name ?? fallbackModel;
+  }, [models.data, fallbackModel]);
+
   const save = useMutation({
     mutationFn: async () => {
-      await updateLlm({ data: { accountId, default_model: model } });
+      await updateLlm({
+        data: {
+          accountId,
+          default_model: model,
+          // [] limpa o fallback; senão envia o modelo escolhido.
+          fallback_models: fallbackModel ? [fallbackModel] : [],
+        },
+      });
       await updateVoice({ data: { accountId, elevenlabs_voice_id: voiceId || null } });
       await updateAgentFn({ data: { accountId, debounce_segundos: debounce, settings } });
     },
@@ -5663,6 +5694,79 @@ function AgentSettingsView({
                   </div>
                 )}
               </div>
+
+              {/* Modelo de fallback */}
+              {hasOpenRouter && !models.isLoading && (
+                <div>
+                  <Label className="text-sm font-semibold">Modelo de fallback (opcional)</Label>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Se o modelo principal falhar, o sistema aciona este imediatamente. Deixe vazio para não usar fallback.
+                  </p>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={fallbackOpen ? fallbackSearch : selectedFallbackLabel}
+                      onChange={(e) => {
+                        setFallbackSearch(e.target.value);
+                        setFallbackOpen(true);
+                      }}
+                      onFocus={() => {
+                        setFallbackOpen(true);
+                        setFallbackSearch("");
+                      }}
+                      placeholder="— sem fallback (buscar modelo) —"
+                      className="w-full rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    />
+                    {fallbackModel && !fallbackOpen && (
+                      <button
+                        type="button"
+                        onClick={() => setFallbackModel("")}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        limpar
+                      </button>
+                    )}
+                    {fallbackOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-10"
+                          onClick={() => {
+                            setFallbackOpen(false);
+                            setFallbackSearch("");
+                          }}
+                        />
+                        <div className="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl">
+                          {filteredSortedFallbackModels.length === 0 ? (
+                            <div className="px-3 py-3 text-xs text-muted-foreground">
+                              Nenhum modelo encontrado para "{fallbackSearch}".
+                            </div>
+                          ) : (
+                            filteredSortedFallbackModels
+                              .filter((m) => m.id !== model)
+                              .map((m) => (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setFallbackModel(m.id);
+                                    setFallbackOpen(false);
+                                    setFallbackSearch("");
+                                  }}
+                                  className={`block w-full border-b border-slate-50 px-3 py-2 text-left text-sm transition-colors last:border-b-0 hover:bg-slate-50 ${
+                                    m.id === fallbackModel ? "bg-primary/5 text-primary" : "text-foreground"
+                                  }`}
+                                >
+                                  <div className="font-medium">{m.name}</div>
+                                  <div className="font-mono text-[10px] text-muted-foreground">{m.id}</div>
+                                </button>
+                              ))
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Voz do assistente (ElevenLabs TTS) — oculto: ainda não
                   implementado (resposta em voz). Reativar quando o TTS

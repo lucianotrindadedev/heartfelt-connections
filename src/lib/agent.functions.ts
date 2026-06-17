@@ -236,6 +236,9 @@ export const updateLlmConfig = createServerFn({ method: "POST" })
     accountIdInput
       .extend({
         default_model: z.string().min(1).max(120).optional(),
+        // Lista de modelos de fallback (em ordem) acionados quando o principal
+        // falha. A UI envia [modelo_fallback] ou [] para limpar.
+        fallback_models: z.array(z.string().min(1).max(120)).max(5).optional(),
         max_tokens: z.number().int().min(64).max(8192).optional(),
         temperature: z.number().min(0).max(2).optional(),
       })
