@@ -49,6 +49,13 @@ import {
 } from "@/lib/conversation-lock.server";
 import { conversationNeedsAgentReply } from "@/lib/conversation-reply.server";
 import {
+  resolveLeads360Config,
+  sendLeads360Lead,
+  sendLeads360Interest,
+  sendLeads360Scheduled,
+  sendLeads360Transfer,
+} from "@/lib/integrations/leads360.server";
+import {
   MIN_INTER_PART_DELAY_MS,
   splitMessage,
   stripProtectedMarkers,
@@ -359,6 +366,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // cancelamento, já que o appointment_id/slot são limpos ao cancelar).
     const hadAppointmentBefore = !!leadData.appointment_id;
     const slotIsoBefore = (leadData.selected_slot_iso as string | undefined) ?? "";
+    // Interesse ANTES do turn — para enviar ao Leads360 só quando muda/é definido.
+    const interestBefore = (leadData.interest ?? "").trim();
+    const leads360Synced = !!leadData.leads360_lead_sent;
     const agentSettings = (agent.data.settings as Record<string, string> | null) ?? {};
 
     if (leadData.custom_fields) {
@@ -753,6 +763,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
+    // Leads360: decide o que sincronizar neste turn. O envio HTTP é best-effort
+    // e roda DEPOIS do persist; aqui só marcamos o flag de dedup do lead para
+    // ser persistido (evita reenviar /leads a cada turn).
+    const leads360 = resolveLeads360Config(agentSettings);
+    const leads360SendLead = leads360.enabled && !leads360Synced;
+    const leads360InterestNow =
+      leads360.enabled &&
+      !!finalLeadData.interest?.trim() &&
+      finalLeadData.interest.trim() !== interestBefore;
+    if (leads360SendLead) finalLeadData.leads360_lead_sent = true;
+
     const cfKeys = Object.keys(finalLeadData.custom_fields ?? {}).join(",");
     console.log(
       `[orch] persist conv=${conversationId} stage=${newStage} custom_fields=${cfKeys || "(vazio)"}`,
@@ -863,6 +884,44 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         });
       } catch (e) {
         console.error("[orch] notifyBooking falhou:", e);
+      }
+    }
+
+    // 15. Leads360 (gestão de leads) — envios best-effort por webhook. Cada
+    //     função engole falhas internamente, então não quebram o turn.
+    if (leads360.enabled) {
+      const leads360Name =
+        resolveBookingLeadName(finalLeadData) ||
+        (finalLeadData.name as string | undefined) ||
+        helenaContact?.name ||
+        "(sem nome)";
+      const leads360Phone = effectivePhone ?? conversationPhone;
+      if (leads360SendLead) {
+        await sendLeads360Lead(leads360, {
+          name: helenaContact?.name || leads360Name,
+          phone: leads360Phone,
+          utm: helenaContact?.utm ?? null,
+        });
+      }
+      if (leads360InterestNow) {
+        await sendLeads360Interest(leads360, {
+          name: leads360Name,
+          phone: leads360Phone,
+          interest: finalLeadData.interest!.trim(),
+        });
+      }
+      if (justBooked) {
+        await sendLeads360Scheduled(leads360, {
+          name: leads360Name,
+          phone: leads360Phone,
+          datetimeIso: (finalLeadData.selected_slot_iso as string | undefined) ?? null,
+        });
+      }
+      if (newStage === "ESCALATED" && stage !== "ESCALATED") {
+        await sendLeads360Transfer(leads360, {
+          name: leads360Name,
+          phone: leads360Phone,
+        });
       }
     }
 

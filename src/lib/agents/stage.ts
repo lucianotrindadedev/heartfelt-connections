@@ -60,6 +60,8 @@ export interface LeadData {
   appointment_cancelled?: boolean;
   /** Sinal transitório: cancelamento foi para REMARCAR — limpar também o slot. */
   reoffer_after_cancel?: boolean;
+  /** Lead já enviado ao Leads360 (POST /leads) — evita reenviar a cada turn. */
+  leads360_lead_sent?: boolean;
 }
 
 /** Transições válidas entre stages. `*` = qualquer origem. */

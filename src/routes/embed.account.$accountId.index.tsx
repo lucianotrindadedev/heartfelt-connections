@@ -5847,6 +5847,26 @@ function AgentSettingsView({
                   onChange={(v) => setSetting("blocked_tags", v)}
                 />
               </div>
+
+              <div className="border-t border-slate-100" />
+
+              {/* Integração Leads360 — envia lead/interesse/agendamento/escalada */}
+              <div>
+                <Label className="text-sm font-semibold">Integração Leads360</Label>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Cole o <strong>token da empresa</strong> no Leads360. Com ele, o agente envia
+                  automaticamente: <strong>lead</strong> no 1º contato (com UTM/anúncio),
+                  o <strong>interesse</strong> identificado, o <strong>agendamento</strong> e a
+                  <strong> escalada para humano</strong>. Vazio = integração desligada.
+                </p>
+                <input
+                  type="text"
+                  value={settings.leads360_token ?? ""}
+                  onChange={(e) => setSetting("leads360_token", e.target.value)}
+                  placeholder="Cole aqui o token do Leads360"
+                  className="w-full rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
             </div>
 
             {/* Save button */}
