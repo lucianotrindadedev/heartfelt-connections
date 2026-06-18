@@ -20,6 +20,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { loadHelenaAccount, sendHelenaText } from "@/lib/helena.server";
 import { generateContextualFollowup } from "@/lib/agents/followup-context.server";
+import {
+  clearStaleConversationLock,
+  releaseConversationLock,
+  tryAcquireConversationLock,
+} from "@/lib/conversation-lock.server";
 
 function validateCronSecret(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -277,6 +282,26 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 continue;
               }
 
+              // Lock por conversa: o cron roda a cada minuto e a geração
+              // contextual pode passar de 60s — ticks sobrepostos liam "step
+              // pendente" ao mesmo tempo e enviavam o MESMO follow-up várias
+              // vezes (ex.: 4 seguidos). O lock atômico serializa os ticks e
+              // também impede follow-up durante um turno real do agente.
+              await clearStaleConversationLock(convId);
+              if (!(await tryAcquireConversationLock(convId))) continue;
+              try {
+                // Re-checa SOB o lock: outro tick pode ter acabado de enviar
+                // este step entre a leitura inicial e a aquisição do lock.
+                const { data: justSent } = await sb
+                  .from("followup_step_runs")
+                  .select("step_id")
+                  .eq("conversation_id", convId)
+                  .eq("step_id", nextStep.id)
+                  .eq("status", "sent")
+                  .gt("sent_at", cycleStartAt.toISOString())
+                  .limit(1);
+                if (justSent && justSent.length > 0) continue;
+
               attempted++;
 
               // Resolve o texto: fixo ou contextual
@@ -366,6 +391,9 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
               });
 
               processed++;
+              } finally {
+                await releaseConversationLock(convId);
+              }
             } catch (e) {
               console.error("[followup-seq] erro na conversa:", e);
             }
