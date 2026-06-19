@@ -2618,10 +2618,8 @@ function KnowledgeSheet({
 
   async function submitPdf(file: File) {
     if (pending) return;
-    if (file.size > 25 * 1024 * 1024) {
-      toast.error("Arquivo maior que 25MB.");
-      return;
-    }
+    // Sem limite de tamanho (por pedido). Arquivos muito grandes podem demorar
+    // mais para processar ou esbarrar no limite de corpo do servidor/proxy.
     setPending(true);
     try {
       const base64 = await new Promise<string>((resolve, reject) => {

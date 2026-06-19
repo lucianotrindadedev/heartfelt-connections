@@ -262,7 +262,8 @@ export const addPdfDocument = createServerFn({ method: "POST" })
       throw new Error("Base64 inválido.");
     }
     if (buffer.length < 100) throw new Error("Arquivo muito pequeno.");
-    if (buffer.length > 25 * 1024 * 1024) throw new Error("Arquivo maior que 25MB.");
+    // Sem limite de tamanho por pedido do produto. (PDFs muito grandes podem
+    // esbarrar no limite de corpo da requisição do servidor/proxy — não no app.)
 
     // 2. Cria registro pending
     const ins = await sb
