@@ -32,11 +32,41 @@ export const Route = createFileRoute("/api/public/diag/knowledge")({
         const url = new URL(request.url);
         const agentId = url.searchParams.get("agent_id")?.trim();
         const q = url.searchParams.get("q")?.trim();
-        if (!agentId) {
-          return new Response("agent_id required", { status: 400 });
-        }
 
         const sb = getSelfhost();
+
+        // Modo descoberta: sem agent_id, lista quais agentes TÊM documentos na
+        // base — para achar onde os PDFs foram realmente parar.
+        if (!agentId) {
+          const { data: allDocs } = await sb
+            .from("knowledge_documents")
+            .select("agent_id, status")
+            .limit(5000);
+          const counts = new Map<string, { docs: number; ready: number }>();
+          for (const d of allDocs ?? []) {
+            const id = d.agent_id as string;
+            const cur = counts.get(id) ?? { docs: 0, ready: 0 };
+            cur.docs++;
+            if (d.status === "ready") cur.ready++;
+            counts.set(id, cur);
+          }
+          const ids = [...counts.keys()];
+          const { data: agents } = ids.length
+            ? await sb.from("agents").select("id, nome, account_id").in("id", ids)
+            : { data: [] as { id: string; nome: string; account_id: string }[] };
+          const nameById = new Map((agents ?? []).map((a) => [a.id as string, a]));
+          return Response.json({
+            ok: true,
+            mode: "discovery",
+            agentes_com_base: ids.map((id) => ({
+              agent_id: id,
+              nome: nameById.get(id)?.nome ?? "(agente não encontrado)",
+              account_id: nameById.get(id)?.account_id ?? null,
+              docs: counts.get(id)!.docs,
+              docs_ready: counts.get(id)!.ready,
+            })),
+          });
+        }
 
         // 1. Documentos do agente
         const { data: docs, error: docsErr } = await sb
