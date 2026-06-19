@@ -27,6 +27,7 @@ import { Route as AuthenticatedAdminDiagnosticsRouteImport } from './routes/_aut
 import { Route as EmbedAccountAccountIdIndexRouteImport } from './routes/embed.account.$accountId.index'
 import { Route as ApiPublicDiagRunTurnRouteImport } from './routes/api/public/diag/run-turn'
 import { Route as ApiPublicDiagQueueRouteImport } from './routes/api/public/diag/queue'
+import { Route as ApiPublicDiagKnowledgeRouteImport } from './routes/api/public/diag/knowledge'
 import { Route as ApiPublicDiagHelenaSendRouteImport } from './routes/api/public/diag/helena-send'
 import { Route as ApiPublicDiagGcalSlotsRouteImport } from './routes/api/public/diag/gcal-slots'
 import { Route as ApiPublicDiagFollowupRouteImport } from './routes/api/public/diag/followup'
@@ -136,6 +137,11 @@ const ApiPublicDiagRunTurnRoute = ApiPublicDiagRunTurnRouteImport.update({
 const ApiPublicDiagQueueRoute = ApiPublicDiagQueueRouteImport.update({
   id: '/api/public/diag/queue',
   path: '/api/public/diag/queue',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicDiagKnowledgeRoute = ApiPublicDiagKnowledgeRouteImport.update({
+  id: '/api/public/diag/knowledge',
+  path: '/api/public/diag/knowledge',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicDiagHelenaSendRoute = ApiPublicDiagHelenaSendRouteImport.update({
@@ -249,6 +255,7 @@ export interface FileRoutesByFullPath {
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/gcal-slots': typeof ApiPublicDiagGcalSlotsRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
+  '/api/public/diag/knowledge': typeof ApiPublicDiagKnowledgeRoute
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
@@ -280,6 +287,7 @@ export interface FileRoutesByTo {
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/gcal-slots': typeof ApiPublicDiagGcalSlotsRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
+  '/api/public/diag/knowledge': typeof ApiPublicDiagKnowledgeRoute
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
@@ -316,6 +324,7 @@ export interface FileRoutesById {
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
   '/api/public/diag/gcal-slots': typeof ApiPublicDiagGcalSlotsRoute
   '/api/public/diag/helena-send': typeof ApiPublicDiagHelenaSendRoute
+  '/api/public/diag/knowledge': typeof ApiPublicDiagKnowledgeRoute
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
@@ -352,6 +361,7 @@ export interface FileRouteTypes {
     | '/api/public/diag/followup'
     | '/api/public/diag/gcal-slots'
     | '/api/public/diag/helena-send'
+    | '/api/public/diag/knowledge'
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
     | '/embed/account/$accountId/'
@@ -383,6 +393,7 @@ export interface FileRouteTypes {
     | '/api/public/diag/followup'
     | '/api/public/diag/gcal-slots'
     | '/api/public/diag/helena-send'
+    | '/api/public/diag/knowledge'
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
     | '/embed/account/$accountId'
@@ -418,6 +429,7 @@ export interface FileRouteTypes {
     | '/api/public/diag/followup'
     | '/api/public/diag/gcal-slots'
     | '/api/public/diag/helena-send'
+    | '/api/public/diag/knowledge'
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
     | '/embed/account/$accountId/'
@@ -443,6 +455,7 @@ export interface RootRouteChildren {
   ApiPublicDiagFollowupRoute: typeof ApiPublicDiagFollowupRoute
   ApiPublicDiagGcalSlotsRoute: typeof ApiPublicDiagGcalSlotsRoute
   ApiPublicDiagHelenaSendRoute: typeof ApiPublicDiagHelenaSendRoute
+  ApiPublicDiagKnowledgeRoute: typeof ApiPublicDiagKnowledgeRoute
   ApiPublicDiagQueueRoute: typeof ApiPublicDiagQueueRoute
   ApiPublicDiagRunTurnRoute: typeof ApiPublicDiagRunTurnRoute
   ApiPublicAuthGoogleCallbackRoute: typeof ApiPublicAuthGoogleCallbackRoute
@@ -577,6 +590,13 @@ declare module '@tanstack/react-router' {
       path: '/api/public/diag/queue'
       fullPath: '/api/public/diag/queue'
       preLoaderRoute: typeof ApiPublicDiagQueueRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/diag/knowledge': {
+      id: '/api/public/diag/knowledge'
+      path: '/api/public/diag/knowledge'
+      fullPath: '/api/public/diag/knowledge'
+      preLoaderRoute: typeof ApiPublicDiagKnowledgeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/diag/helena-send': {
@@ -766,6 +786,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicDiagFollowupRoute: ApiPublicDiagFollowupRoute,
   ApiPublicDiagGcalSlotsRoute: ApiPublicDiagGcalSlotsRoute,
   ApiPublicDiagHelenaSendRoute: ApiPublicDiagHelenaSendRoute,
+  ApiPublicDiagKnowledgeRoute: ApiPublicDiagKnowledgeRoute,
   ApiPublicDiagQueueRoute: ApiPublicDiagQueueRoute,
   ApiPublicDiagRunTurnRoute: ApiPublicDiagRunTurnRoute,
   ApiPublicAuthGoogleCallbackRoute: ApiPublicAuthGoogleCallbackRoute,
