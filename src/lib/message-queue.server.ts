@@ -2,21 +2,22 @@
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { runAgentTurn, ConversationLockedError } from "@/lib/agent-turn.server";
 import { conversationNeedsAgentReply } from "@/lib/conversation-reply.server";
-import {
-  cancelAgentTurnJobs,
-  enqueueAgentTurn,
-} from "@/lib/agent-queue-redis.server";
-import { isRedisAgentQueueActive, isRedisConfigured } from "@/lib/redis.server";
+import { cancelAgentTurnJobs } from "@/lib/agent-queue-redis.server";
 
+/**
+ * Backup INDEPENDENTE em Postgres (message_queue + pg_cron `queue-tick`, 1/min).
+ *
+ * Grava SEMPRE — inclusive com Redis ativo. Antes, com Redis ativo, esta função
+ * re-roteava para o mesmo job do Redis (mesmo jobId=conversa), então NÃO havia
+ * rede de segurança: se o job do Redis se perdesse (worker reiniciando, hiccup,
+ * eviction, corrida do debounce remove/add), a mensagem sumia e só voltava com
+ * reenvio manual. Agora o pg_cron recupera. O lock do orquestrador +
+ * conversationNeedsAgentReply evitam processamento/duplicação de resposta.
+ */
 export async function enqueueMessage(
   conversationId: string,
   delaySeconds: number,
 ): Promise<void> {
-  if (isRedisAgentQueueActive()) {
-    await enqueueAgentTurn(conversationId, delaySeconds);
-    return;
-  }
-
   const sb = getSelfhost();
   const executeAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
   await sb.from("message_queue").insert({
@@ -39,10 +40,10 @@ export async function clearConversationQueue(conversationId: string): Promise<vo
 }
 
 export async function processQueue(): Promise<{ processed: number; skipped: number }> {
-  if (isRedisAgentQueueActive()) {
-    return { processed: 0, skipped: 0 };
-  }
-
+  // Processa SEMPRE (inclusive com Redis ativo): este é o backup que recupera
+  // mensagens cujo job do Redis se perdeu. Itens já atendidos pelo Redis são
+  // descartados aqui pelo check conversationNeedsAgentReply (last msg já é do
+  // agente) — sem risco de resposta dupla.
   const sb = getSelfhost();
   const now = new Date().toISOString();
 
