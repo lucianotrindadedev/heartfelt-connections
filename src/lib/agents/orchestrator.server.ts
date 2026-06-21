@@ -188,8 +188,12 @@ async function deliverReply(
   );
 
   const helena = await loadHelenaAccount(accountId);
-  const multiPart = parts.length > 1;
 
+  // Entrega bolha por bolha pelo endpoint PADRÃO /chat/v1/session/{id}/message
+  // (o MESMO do follow-up, que entrega de verdade). O /message/sync (viaWhatsApp)
+  // retornava 200 mas NÃO entregava ao WhatsApp em respostas multi-bolha — a
+  // resposta do agente "sumia" enquanto o follow-up chegava. As pausas entre
+  // partes (>=1,2s) já mantêm as bolhas separadas sem precisar do /sync.
   let sentCount = 0;
   for (let i = 0; i < parts.length; i++) {
     if (i > 0) {
@@ -200,7 +204,6 @@ async function deliverReply(
       phone,
       text: parts[i],
       sessionId,
-      viaWhatsApp: multiPart,
     });
     if (!sendRes.ok) {
       await delay(500);
@@ -208,7 +211,6 @@ async function deliverReply(
         phone,
         text: parts[i],
         sessionId,
-        viaWhatsApp: multiPart,
       });
     }
     if (!sendRes.ok) {
