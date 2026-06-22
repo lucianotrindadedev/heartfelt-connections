@@ -231,12 +231,14 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
           ],
           response_format: { type: "json_object" },
           temperature: 0.3,
-          max_tokens: 8192, // prompt completo + resumo
+          // O proposed_prompt traz o PROMPT INTEIRO reescrito (pode passar de
+          // 30k chars). Com 8192 tokens a saída era cortada no meio da string
+          // → "Unterminated string in JSON". gpt-4.1 suporta até 32768 de saída.
+          max_tokens: 32000,
         }),
-        // Reescrever o prompt INTEIRO (14k+ chars) no gpt-4.1 leva tempo; 60s
-        // estourava ("operation aborted due to timeout"). É uma ação interativa
-        // de admin — 180s dá folga sem prejudicar o usuário.
-        signal: AbortSignal.timeout(180_000),
+        // Reescrever o prompt INTEIRO no gpt-4.1 com saída grande leva tempo; é
+        // uma ação interativa de admin — 300s dá folga sem prejudicar o usuário.
+        signal: AbortSignal.timeout(300_000),
       });
 
       const respBody = await res.text();
@@ -244,7 +246,7 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
         throw new Error(`OpenRouter ${res.status}: ${respBody.slice(0, 300)}`);
       }
       const json = JSON.parse(respBody) as {
-        choices?: { message?: { content?: string } }[];
+        choices?: { message?: { content?: string }; finish_reason?: string }[];
         usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
       };
 
@@ -254,6 +256,13 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
 
       const content = (json.choices?.[0]?.message?.content ?? "").trim();
       if (!content) throw new Error("GPT-4 retornou content vazio.");
+      // Saída cortada por limite de tokens → JSON inválido. Erro claro em vez de
+      // "Unterminated string in JSON".
+      if (json.choices?.[0]?.finish_reason === "length") {
+        throw new Error(
+          `A reescrita ficou grande demais e foi truncada (tokens_out=${tokensOut}). Tente um pedido mais específico/pontual, ou divida em duas edições.`,
+        );
+      }
 
       const parsed = JSON.parse(content) as {
         summary?: string;
