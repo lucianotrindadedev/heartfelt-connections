@@ -492,16 +492,23 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           }
         }
 
+        // `direction` é a fonte da verdade: TO_HUB = SAÍDA (mensagem que partiu
+        // da clínica — bot, atendente OU alguém digitando direto no WhatsApp do
+        // número), FROM_HUB = ENTRADA (mensagem do lead). Uma msg enviada direto
+        // pelo WhatsApp da própria clínica chega como TO_HUB porém com
+        // origin=GATEWAY — e o GATEWAY vencia a direção, fazendo a IA tratar o
+        // próprio envio como mensagem do lead e responder. Tornamos a direção
+        // autoritativa: TO_HUB NUNCA é entrada.
+        const isOutbound = c.direction === "TO_HUB";
         const isInbound =
-          c.direction === "FROM_HUB" ||
-          c.origin === "GATEWAY" ||
-          c.origin === "CUSTOMER" ||
-          (eventType === "MESSAGE_RECEIVED" &&
-            c.direction !== "TO_HUB" &&
-            (c.direction === "FROM_HUB" || !c.direction)) ||
-          (body.evento ?? "").toLowerCase() === "mensagem_recebida" ||
-          (body.origem ?? "").toLowerCase() === "lead" ||
-          (body.origem ?? "").toLowerCase() === "cliente";
+          !isOutbound &&
+          (c.direction === "FROM_HUB" ||
+            c.origin === "GATEWAY" ||
+            c.origin === "CUSTOMER" ||
+            (eventType === "MESSAGE_RECEIVED" && !c.direction) ||
+            (body.evento ?? "").toLowerCase() === "mensagem_recebida" ||
+            (body.origem ?? "").toLowerCase() === "lead" ||
+            (body.origem ?? "").toLowerCase() === "cliente");
 
         const isHuman =
           !isInbound &&
