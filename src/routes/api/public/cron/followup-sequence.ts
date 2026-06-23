@@ -20,6 +20,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { loadHelenaAccount, sendHelenaText } from "@/lib/helena.server";
 import { generateContextualFollowup } from "@/lib/agents/followup-context.server";
+import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import {
   clearStaleConversationLock,
   releaseConversationLock,
@@ -185,11 +186,13 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
           // Verifica se agente está ativo
           const agentRow = await sb
             .from("agents")
-            .select("id, account_id, ativo")
+            .select("id, account_id, ativo, settings")
             .eq("id", agentId)
             .single();
           if (!agentRow.data?.ativo) continue;
           const accountId = agentRow.data.account_id as string;
+          const blockedTagsRaw =
+            (agentRow.data.settings as Record<string, string> | null)?.blocked_tags ?? null;
 
           // Busca conversas desse agente cuja ÚLTIMA mensagem foi do lead
           const { data: convs } = await sb
@@ -301,6 +304,21 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                   .gt("sent_at", cycleStartAt.toISOString())
                   .limit(1);
                 if (justSent && justSent.length > 0) continue;
+
+                // Respeita "IA Desligada"/blocked_tags: se o contato tem a
+                // etiqueta de pausa no CRM, NÃO envia follow-up. (Antes o
+                // follow-up ignorava a etiqueta e falava com leads pausados.)
+                const block = await checkContactBlockedBySession({
+                  accountId,
+                  sessionId: (conv.helena_session_id as string | null) ?? undefined,
+                  blockedTagsRaw,
+                });
+                if (block.blocked) {
+                  console.log(
+                    `[followup-seq] pulando conv ${convId} — IA pausada pela etiqueta "${block.tag}"`,
+                  );
+                  continue;
+                }
 
               attempted++;
 
