@@ -10,6 +10,7 @@ import {
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
 import { dispatchInboundAgentTurn } from "@/lib/schedule-agent-turn.server";
+import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
 import { getGroqApiKey, transcribeAudioFromUrl } from "@/lib/groq.server";
 import {
@@ -163,6 +164,64 @@ function timingSafeEqual(a: string, b: string) {
   let r = 0;
   for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return r === 0;
+}
+
+/** Origens das mensagens que ESTA plataforma gera e envia (não são do lead nem
+ *  de atendente humano). Usadas para detectar o eco/loopback. */
+const OWN_OUTBOUND_ORIGINS = new Set(["agente", "followup", "warmup", "warm-up"]);
+
+function normalizeEcho(s: string | null | undefined): string {
+  return (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Anti-eco/loopback: a Helena reentrega como evento (TO_HUB, e às vezes até
+ * FROM_HUB) as mensagens que a própria plataforma enviou — resposta do agente,
+ * follow-up, warm-up. Esses ecos chegam com `userId` (parecendo atendente
+ * humano), eram gravados como mensagem do histórico e poluíam o contexto do LLM
+ * — inclusive CRUZANDO leads quando uma saudação em massa caía na sessão errada
+ * (agente chamava o lead pelo nome de outra pessoa).
+ *
+ * Detecção sem depender de campos internos da Helena: o eco é sempre uma cópia
+ * de algo que NÓS enviamos há pouco. Comparamos o texto recebido com as
+ * mensagens que esta plataforma gerou nos últimos minutos (qualquer conversa da
+ * conta — pega eco cruzado). Mensagem real de atendente humano é texto livre,
+ * diferente das nossas, e passa normalmente.
+ *
+ * O envio em bolhas faz a mensagem gravada (reply completo, multi-bolha) ser
+ * diferente do eco (uma bolha só) — por isso comparamos por containment nos
+ * dois sentidos.
+ */
+async function isOwnRecentOutboundEcho(
+  sb: ReturnType<typeof getSelfhost>,
+  accountId: string,
+  content: string,
+): Promise<boolean> {
+  const target = normalizeEcho(content);
+  if (target.length < 25) return false; // curto demais: risco de falso positivo com msg real
+
+  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  // Escopo por conta: messages → conversations(agent_id) → agents(account_id).
+  const { data, error } = await sb
+    .from("messages")
+    .select("content, meta, conversations!inner(agents!inner(account_id))")
+    .eq("role", "assistant")
+    .eq("conversations.agents.account_id", accountId)
+    .gte("criado_em", since)
+    .order("criado_em", { ascending: false })
+    .limit(300);
+  if (error || !data) return false;
+
+  for (const m of data as Array<{ content: string | null; meta: Record<string, unknown> | null }>) {
+    const origem = (m.meta?.origem as string | undefined) ?? "";
+    if (!OWN_OUTBOUND_ORIGINS.has(origem)) continue; // ignora ecos já gravados (origem "humano") e msgs do lead
+    const stored = normalizeEcho(m.content);
+    if (!stored) continue;
+    if (stored === target || stored.includes(target) || target.includes(stored)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 interface ConversationUpsertInput {
@@ -383,6 +442,17 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         let messageContent = (c.text ?? "").toString();
         const messageType = c.type ?? "TEXT";
 
+        // Eventos TRACK (rastreamento/status da Helena: entrega, "contato enviou
+        // mensagem", saudação automática) NÃO são mensagens de chat — chegam com
+        // content vazio e, sendo TO_HUB+userId, eram gravados como assistant/humano,
+        // virando a ÚLTIMA mensagem da conversa e SUPRIMINDO a resposta do agente
+        // (conversationNeedsAgentReply via última msg = assistant → não responde).
+        // Causava leads sem resposta (ex.: mensagens à noite que só eram atendidas
+        // quando chegava outro evento real horas depois). Ignorar por completo.
+        if (messageType.toUpperCase() === "TRACK") {
+          return Response.json({ ok: true, skipped: "track-event" });
+        }
+
         // ── Áudio: detecta arquivo de áudio no payload e transcreve via Groq ──
         // Helena entrega o anexo em content.details.file { mimeType, publicUrl }.
         const helenaFile = c.details?.file ?? null;
@@ -448,6 +518,18 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // Eco do bot/plataforma (TO_HUB sem atendente) — não grava no histórico do LLM
         if (!isInbound && !isHuman) {
           return Response.json({ ok: true, skipped: "outbound-bot" });
+        }
+
+        // Anti-eco/loopback: descarta a reentrega das mensagens que ESTA
+        // plataforma enviou (chegam como "humano" por carregarem userId, e até
+        // como "lead" em alguns casos). Roda para QUALQUER classificação porque a
+        // Helena ecoa nossos envios ora como TO_HUB, ora como FROM_HUB. Mensagem
+        // real de atendente humano é texto livre e não casa com nossos envios.
+        if (await isOwnRecentOutboundEcho(sb, accountId, messageContent)) {
+          console.log(
+            `[webhook] eco da própria plataforma descartado (conv-key=${fromDetails || legacyPhone || sessionId}) — não gravado`,
+          );
+          return Response.json({ ok: true, skipped: "self-echo" });
         }
 
         const inboundLeadPhone = isInbound
@@ -650,13 +732,32 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // Fixa "IA Desligada" (escalada humana) + etiquetas configuradas pelo
         // dono (settings.blocked_tags). Reutiliza o contato já carregado.
         const blockedTags = parseBlockedTags(agentSettings.blocked_tags);
-        const blockingTag =
+        let blockingTag =
           isInbound && resolvedContact
             ? findBlockingTag(resolvedContact.tagNames, blockedTags)
             : null;
+        // Fail-safe: numa msg de entrada, se o contato NÃO carregou do CRM, não
+        // dá pra saber se a IA está pausada ("IA Desligada"). Antes a IA
+        // respondia mesmo assim (furava o bloqueio). Tenta resolver de novo via
+        // sessão; se ainda não der, NÃO respondemos (na dúvida, silêncio).
+        let contactTagsKnown = !isInbound || !!resolvedContact;
+        if (isInbound && !resolvedContact && sessionId) {
+          const recheck = await checkContactBlockedBySession({
+            accountId,
+            sessionId,
+            blockedTagsRaw: agentSettings.blocked_tags,
+          });
+          contactTagsKnown = recheck.resolved;
+          if (recheck.resolved && recheck.blocked) blockingTag = recheck.tag;
+        }
         const agentBlockedByTag = !!blockingTag;
+        const blockUnverifiable = isInbound && !contactTagsKnown && !!sessionId;
         if (agentBlockedByTag) {
           console.log(`[webhook] agente bloqueado pela tag "${blockingTag}" — conv ${convId}`);
+        } else if (blockUnverifiable) {
+          console.warn(
+            `[webhook] contato não carregou do CRM — NÃO vou responder (fail-safe "IA Desligada") conv ${convId}`,
+          );
         }
 
         // Gate do modo teste: quando ligado, o agente SÓ responde contatos que
@@ -713,7 +814,13 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           );
         }
 
-        if (isInbound && agentRow.data.ativo && !agentBlockedByTag && !blockedByTestMode) {
+        if (
+          isInbound &&
+          agentRow.data.ativo &&
+          !agentBlockedByTag &&
+          !blockedByTestMode &&
+          !blockUnverifiable
+        ) {
           // Modo teste zera o delay (debounce) para iterar rápido nos testes.
           const debounce = testMode ? 0 : (agentRow.data.debounce_segundos as number | null) ?? 20;
           console.log(
@@ -727,7 +834,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           }
         } else if (isInbound) {
           console.log(
-            `[webhook] agente NÃO disparado — ativo=${agentRow.data.ativo}, bloqueado=${agentBlockedByTag}, modo_teste_sem_etiqueta=${blockedByTestMode}`,
+            `[webhook] agente NÃO disparado — ativo=${agentRow.data.ativo}, bloqueado=${agentBlockedByTag}, modo_teste_sem_etiqueta=${blockedByTestMode}, contato_nao_verificavel=${blockUnverifiable}`,
           );
         }
 

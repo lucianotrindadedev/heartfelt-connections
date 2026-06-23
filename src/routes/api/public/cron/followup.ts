@@ -3,6 +3,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { loadHelenaAccount, sendHelenaText } from "@/lib/helena.server";
+import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 
 function validateCronSecret(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -53,13 +54,27 @@ export const Route = createFileRoute("/api/public/cron/followup")({
 
           const agent = await sb
             .from("agents")
-            .select("id, account_id, ativo")
+            .select("id, account_id, ativo, settings")
             .eq("id", conv.data.agent_id)
             .single();
           if (!agent.data?.ativo) continue;
 
           const accountId = agent.data.account_id as string;
           const agentId = agent.data.id as string;
+
+          // Respeita "IA Desligada"/blocked_tags (mesma regra do webhook).
+          const block = await checkContactBlockedBySession({
+            accountId,
+            sessionId,
+            blockedTagsRaw:
+              (agent.data.settings as Record<string, string> | null)?.blocked_tags ?? null,
+          });
+          if (block.blocked) {
+            console.log(
+              `[followup] pulando conv ${convId} — IA pausada pela etiqueta "${block.tag}"`,
+            );
+            continue;
+          }
 
           const fu = await sb
             .from("agent_followup")

@@ -335,7 +335,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       .from("messages")
       .select("role, content, meta")
       .eq("conversation_id", conversationId)
+      // Desempate por id: em rajadas com mesmo criado_em a ordem fica estável.
       .order("criado_em", { ascending: false })
+      .order("id", { ascending: false })
       .limit(MAX_HISTORY);
     if (msgs.error) throw new Error(msgs.error.message);
 
@@ -343,6 +345,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const history: { role: "user" | "assistant"; content: string }[] = [];
     for (const m of ordered) {
       if (m.meta && (m.meta as Record<string, unknown>).fallback === true) continue;
+      // Eco/loopback da Helena (mensagem que a própria plataforma enviou e voltou
+      // pelo webhook). Marcado is_echo=true no webhook e na limpeza — nunca entra
+      // no histórico do LLM (poluía o contexto e misturava leads).
+      if (m.meta && (m.meta as Record<string, unknown>).is_echo === true) continue;
+      // Eventos vazios (TRACK/status, mídia sem legenda) só confundem o LLM.
+      if (!(m.content ?? "").trim()) continue;
       if (m.role === "user") history.push({ role: "user", content: m.content ?? "" });
       else if (m.role === "assistant") history.push({ role: "assistant", content: m.content ?? "" });
     }
