@@ -12,6 +12,7 @@ import {
 import { dispatchInboundAgentTurn } from "@/lib/schedule-agent-turn.server";
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
+import { isOptOutMessage } from "@/lib/opt-out.server";
 import { getGroqApiKey, transcribeAudioFromUrl } from "@/lib/groq.server";
 import {
   isResetCommand,
@@ -654,6 +655,74 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
             ok: true,
             conversation_id: convId,
             action: isPauseCmd ? "pause" : "resume",
+            tag_applied: tagApplied,
+          });
+        }
+
+        // ── Opt-out: "sair" (qualquer caixa) ou pedido p/ não receber mais ──
+        // Remove o lead de TODA sequência automática (follow-up/warm-up) e o
+        // etiqueta como "IA Desligada". A etiqueta já é respeitada por todos os
+        // caminhos de envio, então aplicá-la é o que efetivamente para as
+        // sequências; aqui só decidimos disparar isso a partir do texto do lead.
+        const isOptOut = isInbound && isOptOutMessage(messageContent, agentSettings.opt_out_command);
+        if (isOptOut) {
+          console.log(`[webhook] opt-out detectado — conv ${convId} (texto="${messageContent.slice(0, 60)}")`);
+
+          let tagApplied = false;
+          try {
+            const helena = await loadHelenaAccount(accountId);
+            const contactId = await resolveHelenaContactId(helena, {
+              sessionId,
+              contact: resolvedContact,
+              phone: fromDetails || legacyPhone || resolvedContact?.phoneNumber,
+            });
+
+            if (contactId) {
+              await sb
+                .from("conversations")
+                .update({ helena_contact_id: contactId, atualizado_em: new Date().toISOString() })
+                .eq("id", convId);
+
+              const tagResult = await setHelenaContactTags(
+                helena,
+                contactId,
+                [AI_DISABLED_TAG],
+                "InsertIfNotExists",
+              );
+              tagApplied = tagResult.ok;
+              if (!tagResult.ok) {
+                console.error(
+                  `[webhook] opt-out tag falhou: ${tagResult.status} ${tagResult.body.slice(0, 300)}`,
+                );
+              } else {
+                console.log(`[webhook] opt-out — etiqueta "${AI_DISABLED_TAG}" aplicada ao contato ${contactId}`);
+              }
+            } else {
+              console.warn("[webhook] opt-out sem contactId — etiqueta não aplicada");
+            }
+
+            // Confirmação única de saída (configurável via settings.opt_out_message).
+            const confirmText =
+              agentSettings.opt_out_message?.trim() ||
+              "Pronto! Você não receberá mais mensagens automáticas por aqui. 👋 Se precisar de algo no futuro, é só mandar uma mensagem.";
+            await sendHelenaText(helena, {
+              phone: fromDetails || legacyPhone || undefined,
+              text: confirmText,
+              sessionId,
+            });
+          } catch (e) {
+            console.error("[webhook] opt-out - falha:", e);
+          }
+
+          // Cancela qualquer turn pendente da IA e mensagens enfileiradas.
+          // O follow-up/warm-up param sozinhos ao ver a etiqueta "IA Desligada".
+          const { clearConversationQueue } = await import("@/lib/message-queue.server");
+          await clearConversationQueue(convId);
+
+          return Response.json({
+            ok: true,
+            conversation_id: convId,
+            action: "opt_out",
             tag_applied: tagApplied,
           });
         }
