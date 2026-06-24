@@ -9,6 +9,7 @@ import {
   applyDeterministicStageOverrides,
   detectSignals,
   inferEffectiveStage,
+  looksLikeStallReply,
   type StageSignalsContext,
 } from "./stage-signals";
 
@@ -345,4 +346,40 @@ describe("applyDeterministicStageOverrides", () => {
     expect(res.stage).toBe("QUALIFICATION");
     expect(res.reason).toBeUndefined();
   });
+});
+
+// ── looksLikeStallReply ───────────────────────────────────────────────────
+
+describe("looksLikeStallReply", () => {
+  // Casos reais do bug SLOT_OFFER→BOOKING (lead some apos escolher horario).
+  const stalls = [
+    "Fabíola, vou finalizar seu cadastro rapidinho aqui.",
+    "Só um instante, por favor. 😊",
+    "Fabíola, vou criar seu cadastro aqui rapidinho para confirmar tudo certinho. 😊",
+    "Tô finalizando seu agendamento aqui, já te confirmo.",
+    "Deixa eu organizar tudo certinho aqui, um momentinho.",
+    "Estou registrando seus dados, aguarde um instante.",
+    "Já te retorno com a confirmação.",
+    "Vou cadastrar você no sistema rapidinho.",
+  ];
+  for (const r of stalls) {
+    it(`detecta stall: ${JSON.stringify(r.slice(0, 40))}`, () => {
+      expect(looksLikeStallReply(r)).toBe(true);
+    });
+  }
+
+  // Replies legitimos: perguntam algo (progresso) ou dao informacao concreta.
+  const naoStall = [
+    "Perfeito! Anotei o horário. Qual o seu nome completo?",
+    "Posso garantir esse horário pra você?",
+    "Seu agendamento está confirmado para terça às 14h! 🎉",
+    "Temos horários terça às 14h ou quinta às 10h. Qual prefere?",
+    "Claro! O endereço é Rua das Flores, 123.",
+    "",
+  ];
+  for (const r of naoStall) {
+    it(`NAO marca: ${JSON.stringify(r.slice(0, 40))}`, () => {
+      expect(looksLikeStallReply(r)).toBe(false);
+    });
+  }
 });

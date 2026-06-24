@@ -239,3 +239,26 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
 
   return { stage: result, reason };
 }
+
+// Resposta "stall/filler": o agente PROMETE agir ("vou finalizar seu cadastro",
+// "só um instante", "já te confirmo", "estou organizando") mas NÃO entrega — e
+// a conversa morre esperando uma ação que nunca vem. Diferente da afirmação
+// FALSA de agendamento ("agendei/marquei/confirmado"), que é tratada à parte:
+// aqui o agente nem afirma que concluiu, só enrola. Bug real observado no
+// SLOT_OFFER→BOOKING (lead escolhe o horário e o agente fica "vou criar seu
+// cadastro rapidinho" sem nunca agendar).
+const STALL_REPLY_REGEX =
+  /(s[óo]\s+um\s+(instante|minut(?:o|inho)|moment(?:o|inho)|segund(?:o|inho))|um\s+(instante|moment(?:o|inho)|minutinho)|aguard[ae]\b|aguardar\b|j[áa]\s+(?:te\s+)?(retorno|volto|confirmo|aviso|respondo|envio|finalizo)|vou\s+(finalizar|criar|fazer|registrar|organizar|gerar|preparar|montar|cadastrar)\b|estou\s+(finalizando|criando|organizando|registrando|preparando|gerando|cadastrando)|t[ôo]\s+(finalizando|criando|organizando|registrando|cadastrando)|deixa?\s+eu\s+(finalizar|criar|organizar|registrar|cadastrar)|pe[çc]o\s+que\s+aguarde|me\s+d[êe]\s+um\s+(instante|momento|minutinho)|rapidinho\s+(aqui|aí|pra))/i;
+
+/**
+ * True quando o `reply` do agente é só "enrolação" (promessa de agir / pedido
+ * para aguardar) sem fazer pergunta. Um reply que faz pergunta ("Qual seu nome
+ * completo?") é progresso, não stall — por isso a presença de "?" desqualifica.
+ * PURA: o orquestrador decide o que fazer (perguntar campo, ofertar slot, etc.).
+ */
+export function looksLikeStallReply(reply: string): boolean {
+  const r = (reply ?? "").trim();
+  if (!r) return false;
+  if (r.includes("?")) return false; // perguntar é avançar, não enrolar
+  return STALL_REPLY_REGEX.test(r);
+}

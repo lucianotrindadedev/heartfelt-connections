@@ -17,8 +17,10 @@ import {
 } from "@/lib/conversation-channel.server";
 import {
   backfillBookingFieldsFromHistory,
+  defaultCommitmentQuestion,
   getBookingFieldsForChannel,
   getMissingBookingFields,
+  isCommitmentRequired,
   isReadyForBooking,
   type BookingChannelContext,
   looksLikeSchedulingPreference,
@@ -83,6 +85,7 @@ import {
   applyDeterministicStageOverrides,
   detectSignals,
   inferEffectiveStage,
+  looksLikeStallReply,
 } from "./stage-signals";
 
 const MAX_HISTORY = 50;
@@ -710,6 +713,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Flags de telemetria do turn (vao para meta da mensagem + agent_runs).
     let duplicateReplyBlocked = false;
     let falseBookingClaimBlocked = false;
+    let stallReplyBlocked = false;
     let forcedSchedulingAdvance = userAcceptedSchedulingProposal;
 
     if (
@@ -740,6 +744,70 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
           newStage = finalLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
         }
+      }
+    }
+
+    // Guard anti-"stall": o agente PROMETE agir ("vou finalizar seu cadastro",
+    // "só um instante", "vou criar seu cadastro", "já te confirmo") mas NÃO criou
+    // agendamento e não perguntou nada — a conversa morre esperando uma ação que
+    // nunca vem (bug real no SLOT_OFFER→BOOKING: lead escolhe o horário e o agente
+    // fica enrolando). Diferente da confirmação FALSA (tratada acima), aqui o
+    // agente nem afirma ter agendado. Substitui o filler pelo próximo passo
+    // concreto: pedir o campo que falta, a confirmação de compromisso, ou o slot.
+    const inBookingStage =
+      stage === "NAME_COLLECT" ||
+      stage === "BOOKING" ||
+      effectiveStage === "NAME_COLLECT" ||
+      effectiveStage === "BOOKING";
+    if (
+      !falseBookingClaimBlocked &&
+      hasBookingIntegration &&
+      !finalLeadData.appointment_id &&
+      !appointmentJustCancelled &&
+      inBookingStage &&
+      looksLikeStallReply(reply)
+    ) {
+      stallReplyBlocked = true;
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "stall_reply_blocked",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          route,
+          stage_from: stage,
+          stage_effective: effectiveStage,
+          model: ctx.model,
+          reply_preview: reply.slice(0, 120),
+        })}`,
+      );
+      const missingFields = getMissingBookingFields(
+        getBookingFieldsForChannel(agentSettings, channelCtx),
+        finalLeadData,
+      );
+      if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
+        const nextField = missingFields[0]!;
+        reply = `Perfeito, já anotei o horário aqui! 😊\n\n${nextField.question}`;
+        newStage = "NAME_COLLECT";
+      } else if (
+        finalLeadData.selected_slot_iso &&
+        isCommitmentRequired(agentSettings) &&
+        !finalLeadData.commitment_confirmed
+      ) {
+        reply =
+          defaultCommitmentQuestion(agentSettings) ||
+          "Posso confirmar esse horário pra você?";
+        newStage = "NAME_COLLECT";
+      } else if (finalLeadData.selected_slot_iso) {
+        // Tudo coletado: o agendamento determinístico deveria ter criado o evento.
+        // Se chegou aqui sem appointment_id, a criação na agenda falhou — não
+        // enrola: pede a confirmação que dispara nova tentativa no próximo turn.
+        reply =
+          "Quase lá! Só me confirma que posso garantir esse horário pra você que eu finalizo o agendamento. 😊";
+        newStage = "BOOKING";
+      } else {
+        reply = "Pra seguir com seu agendamento, qual horário fica melhor pra você?";
+        newStage = "SLOT_OFFER";
       }
     }
 
@@ -812,6 +880,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // Telemetria: marcadores de intervencoes deterministicas.
         duplicate_reply_blocked: duplicateReplyBlocked || undefined,
         false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
+        stall_reply_blocked: stallReplyBlocked || undefined,
         forced_scheduling_advance: forcedSchedulingAdvance || undefined,
         preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,
         preflight_dirty_fields: (result.telemetry?.dirty_fields as string[]) || undefined,
