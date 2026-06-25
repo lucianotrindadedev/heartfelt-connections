@@ -131,7 +131,7 @@ function AdminAccountDetail() {
               Setup / Integração
             </TabButton>
             <TabButton active={tab === "escalation"} onClick={() => setTab("escalation")}>
-              Escalada humana
+              Notificações
             </TabButton>
           </div>
 
