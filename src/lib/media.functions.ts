@@ -5,6 +5,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { getGroqApiKey, transcribeAudioBytes } from "@/lib/groq.server";
 
 const BUCKET = "agent_media";
 
@@ -145,6 +146,33 @@ export const listAgentMedia = createServerFn({ method: "GET" })
       .order("criado_em", { ascending: false });
     if (res.error) throw new Error(res.error.message);
     return { media: res.data ?? [] };
+  });
+
+// ── Transcrição de áudio (GROQ Whisper) ───────────────────────────────────
+// Usada pelo AI Magic: o usuário grava áudio no navegador, manda em base64 e
+// recebe o texto transcrito para usar como solicitação.
+
+export const transcribeAudio = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    z
+      .object({
+        accountId: z.string().min(1),
+        // data URL (data:audio/webm;base64,....) ou base64 puro
+        audioBase64: z.string().min(50),
+        language: z.string().max(10).optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const apiKey = await getGroqApiKey(data.accountId);
+    if (!apiKey) {
+      return { ok: false, text: "", error: "GROQ não configurada no servidor." };
+    }
+    const m = data.audioBase64.match(/^data:([^;]+);base64,(.*)$/);
+    const mime = m?.[1] ?? "audio/webm";
+    const base64 = m?.[2] ?? data.audioBase64;
+    const bytes = new Uint8Array(Buffer.from(base64, "base64"));
+    return transcribeAudioBytes(bytes, mime, apiKey, { language: data.language ?? "pt" });
   });
 
 // ── Update (slug, título, descrição) ──────────────────────────────────────

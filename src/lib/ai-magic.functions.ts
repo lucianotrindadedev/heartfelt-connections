@@ -154,6 +154,13 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
         // Limite alto: o usuário pode colar um prompt de referência inteiro
         // (ex: "reescreva com base neste prompt validado: ...") como instrução.
         userMessage: z.string().min(3).max(20000),
+        // Imagem opcional (data URL) colada pelo usuário — ex.: print de um erro
+        // a corrigir. Enviada ao GPT-4.1 (visão) como contexto da solicitação.
+        imageBase64: z
+          .string()
+          .regex(/^data:image\/[a-zA-Z+.-]+;base64,/, "imagem inválida")
+          .max(8_000_000)
+          .optional(),
       })
       .parse(d),
   )
@@ -226,7 +233,15 @@ export const requestPromptEdit = createServerFn({ method: "POST" })
             { role: "system", content: AI_MAGIC_SYSTEM + historyContext },
             {
               role: "user",
-              content: `# PROMPT ATUAL DO AGENTE (${(agent.data.nome as string) ?? "Assistente"})\n\n${promptBefore}\n\n---\n\n# SOLICITAÇÃO DO USUÁRIO\n\n${data.userMessage}`,
+              content: data.imageBase64
+                ? [
+                    {
+                      type: "text",
+                      text: `# PROMPT ATUAL DO AGENTE (${(agent.data.nome as string) ?? "Assistente"})\n\n${promptBefore}\n\n---\n\n# SOLICITAÇÃO DO USUÁRIO\n\n${data.userMessage}\n\n(O usuário anexou uma imagem como contexto — ex.: print de um problema/erro a corrigir. Analise-a junto com a solicitação.)`,
+                    },
+                    { type: "image_url", image_url: { url: data.imageBase64 } },
+                  ]
+                : `# PROMPT ATUAL DO AGENTE (${(agent.data.nome as string) ?? "Assistente"})\n\n${promptBefore}\n\n---\n\n# SOLICITAÇÃO DO USUÁRIO\n\n${data.userMessage}`,
             },
           ],
           response_format: { type: "json_object" },

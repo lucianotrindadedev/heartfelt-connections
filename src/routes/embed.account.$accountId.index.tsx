@@ -37,6 +37,10 @@ import {
   Search,
   FileText,
   FlaskConical,
+  Mic,
+  Square,
+  ImagePlus,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -139,6 +143,7 @@ import {
   listAgentMedia,
   updateAgentMedia,
   deleteAgentMedia,
+  transcribeAudio,
 } from "@/lib/media.functions";
 import { lineDiff, diffChangeBlocks, diffStats, type DiffOp } from "@/lib/text-diff";
 
@@ -1287,7 +1292,8 @@ function TrainerMode({
   const turnFn = useServerFn(runTrainerTurn);
   const improveFn = useServerFn(requestTrainerImprovement);
   const applyFn = useServerFn(applyPromptEdit);
-  const listMediaFn = useServerFn(listAgentMedia);
+  const requestFn = useServerFn(requestPromptEdit);
+  const uploadMediaFn = useServerFn(uploadAgentMedia);
 
   const [messages, setMessages] = useState<TrainerMessage[]>([]);
   const [input, setInput] = useState("");
@@ -1296,17 +1302,22 @@ function TrainerMode({
   const [annotatingFor, setAnnotatingFor] = useState<TrainerMessage | null>(null);
   const [annotationDraft, setAnnotationDraft] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [showMediaPicker, setShowMediaPicker] = useState(false);
   // Estado de máquina (igual à produção) — começa em RECEPTION
   const [currentStage, setCurrentStage] = useState<string>("RECEPTION");
   const [leadData, setLeadData] = useState<Record<string, unknown>>({});
 
-  // Lista mídias do agente (cache 5min)
-  const mediaQ = useQuery({
-    queryKey: ["agent-media", agentId],
-    queryFn: () => listMediaFn({ data: { agentId } }),
-    staleTime: 5 * 60 * 1000,
-  });
+  // "Adicionar mídia ao prompt" (igual ao AI Magic): sobe mídia nova e pede ao
+  // AI Magic para inserir a chamada de enviar_midia no prompt. O resultado cai
+  // no mesmo `proposal` (revisão + Aplicar) já usado pelo fluxo de correções.
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+  const [pendingMedia, setPendingMedia] = useState<{
+    file: File;
+    title: string;
+    description: string;
+    moment: string;
+  } | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+
   const [proposal, setProposal] = useState<{
     request_id: string;
     summary: string;
@@ -1392,24 +1403,51 @@ function TrainerMode({
     }
   }
 
-  function sendMediaManually(media: {
-    slug: string;
-    title: string;
-    media_type: "image" | "video" | "audio" | "document";
-    file_url: string;
-  }) {
-    const idxAsst = messages.length;
-    setMessages((prev) => [
-      ...prev,
-      {
-        idx: idxAsst,
-        role: "assistant",
-        parts: [`📎 [Mídia enviada: ${media.title}]`],
-        at: nowTime(),
-        media,
-      },
-    ]);
-    setShowMediaPicker(false);
+  // Sobe a mídia e pede ao AI Magic para inserir a chamada de enviar_midia no
+  // prompt no momento certo. A proposta vai pro modal de revisão (`proposal`).
+  async function confirmMediaUpload() {
+    if (!pendingMedia || !pendingMedia.title.trim() || !pendingMedia.moment.trim() || uploadingMedia)
+      return;
+    setUploadingMedia(true);
+    try {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = reject;
+        r.readAsDataURL(pendingMedia.file);
+      });
+      const uploaded = await uploadMediaFn({
+        data: {
+          agentId,
+          filename: pendingMedia.file.name,
+          fileBase64: base64,
+          title: pendingMedia.title.trim(),
+          description: pendingMedia.description.trim() || undefined,
+        },
+      });
+      const moment = pendingMedia.moment.trim() || "no momento adequado da conversa";
+      const promptRequest = `Acabei de cadastrar uma nova mídia para esse agente. Slug: \`${uploaded.slug}\`. Título: "${pendingMedia.title.trim()}". ${pendingMedia.description.trim() ? `Quando usar: ${pendingMedia.description.trim()}.` : ""} Por favor, ajuste o prompt do agente para que ele chame a tool \`enviar_midia\` com o slug \`${uploaded.slug}\` ${moment}. Mantenha o fluxo natural — a tool deve ser acionada quando fizer sentido na conversa, sem soar forçado.`;
+
+      const res = await requestFn({ data: { accountId, agentId, userMessage: promptRequest } });
+      if (res.no_changes || !res.proposed_prompt) {
+        toast.info("O AI Magic não propôs alterações para essa mídia.");
+      } else {
+        setProposal({
+          request_id: res.request_id,
+          summary: res.summary,
+          proposed_prompt: res.proposed_prompt,
+          prompt_before: res.prompt_before,
+          sections_changed: res.sections_changed,
+          reasoning: res.reasoning,
+        });
+      }
+      toast.success(`Mídia "${pendingMedia.title.trim()}" cadastrada.`);
+      setPendingMedia(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao adicionar mídia");
+    } finally {
+      setUploadingMedia(false);
+    }
   }
 
   function saveAnnotation() {
@@ -1644,17 +1682,37 @@ function TrainerMode({
             </div>
           </div>
 
+          {/* Barra: adicionar mídia ao prompt (igual ao AI Magic) */}
+          <input
+            ref={mediaInputRef}
+            type="file"
+            accept="image/*,video/*,audio/*,application/pdf"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) {
+                setPendingMedia({
+                  file: f,
+                  title: f.name.replace(/\.[^.]+$/, ""),
+                  description: "",
+                  moment: "",
+                });
+              }
+              e.target.value = "";
+            }}
+          />
+          <div className="flex items-center border-t border-slate-200 bg-[#f0f2f5] px-3 pt-2">
+            <button
+              onClick={() => mediaInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-800"
+            >
+              <ImagePlus className="h-3.5 w-3.5" />
+              Adicionar mídia ao prompt
+            </button>
+          </div>
+
           {/* Input WhatsApp */}
           <div className="relative flex items-center gap-2 bg-[#f0f2f5] px-3 py-2.5">
-            {/* Botão 📎 (mídia manual) */}
-            <button
-              onClick={() => setShowMediaPicker((v) => !v)}
-              title="Enviar mídia do agente"
-              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition-colors hover:bg-slate-200 hover:text-slate-700"
-            >
-              📎
-            </button>
-
             <input
               type="text"
               value={input}
@@ -1676,62 +1734,6 @@ function TrainerMode({
             >
               {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
             </button>
-
-            {/* Popover de mídias */}
-            {showMediaPicker && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowMediaPicker(false)} />
-                <div className="absolute bottom-full left-3 z-20 mb-2 w-80 rounded-xl border border-slate-200 bg-white p-2 shadow-2xl">
-                  <p className="border-b border-slate-100 px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                    Mídias do agente
-                  </p>
-                  <div className="max-h-72 overflow-y-auto">
-                    {!mediaQ.data?.media || mediaQ.data.media.length === 0 ? (
-                      <p className="px-3 py-4 text-center text-xs text-muted-foreground">
-                        Nenhuma mídia cadastrada.<br />
-                        Adicione em <strong>Mídias</strong>.
-                      </p>
-                    ) : (
-                      mediaQ.data.media.map((m) => {
-                        const item = m as AgentMediaItem;
-                        return (
-                          <button
-                            key={item.id}
-                            onClick={() =>
-                              sendMediaManually({
-                                slug: item.slug,
-                                title: item.title,
-                                media_type: item.media_type,
-                                file_url: item.file_url,
-                              })
-                            }
-                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-slate-50"
-                          >
-                            <div className="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100">
-                              {item.media_type === "image" ? (
-                                <img src={item.file_url} alt="" className="h-full w-full object-cover" />
-                              ) : item.media_type === "video" ? (
-                                <video src={item.file_url} className="h-full w-full object-cover" />
-                              ) : (
-                                <div className="flex h-full w-full items-center justify-center text-slate-400">
-                                  {item.media_type === "audio" ? "🎵" : "📄"}
-                                </div>
-                              )}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-xs font-medium text-foreground">{item.title}</p>
-                              <p className="truncate text-[10px] font-mono text-muted-foreground">
-                                {item.slug}
-                              </p>
-                            </div>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-              </>
-            )}
           </div>
         </div>
 
@@ -1833,7 +1835,11 @@ function TrainerMode({
                   ✕
                 </button>
               </div>
-              <p className="mt-1 text-[11px] text-muted-foreground">{assistantName} · GPT-4 analisou {annotations.length} correção(ões)</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {annotations.length > 0
+                  ? `${assistantName} · GPT-4 analisou ${annotations.length} correção(ões)`
+                  : `${assistantName} · revise a alteração antes de aplicar`}
+              </p>
             </div>
             <div className="flex-1 space-y-3 overflow-y-auto p-5">
               <div className="rounded-md border bg-slate-50 p-3 text-sm text-slate-800">{proposal.summary}</div>
@@ -1858,6 +1864,70 @@ function TrainerMode({
               <Button size="sm" onClick={() => void applyProposal()}>
                 <Check className="mr-1.5 h-3.5 w-3.5" />
                 Aplicar no prompt
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dialog: adicionar mídia ao prompt (igual ao AI Magic) */}
+      {pendingMedia && (
+        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 p-4 sm:items-center">
+          <div className="w-full max-w-md rounded-xl border bg-white p-5 shadow-2xl">
+            <div className="mb-3 flex items-start gap-2">
+              <ImagePlus className="mt-0.5 h-5 w-5 text-primary" />
+              <div>
+                <p className="text-sm font-semibold">Adicionar mídia ao prompt</p>
+                <p className="text-[11px] text-muted-foreground truncate">{pendingMedia.file.name}</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <Label className="text-xs">Título *</Label>
+                <Input
+                  value={pendingMedia.title}
+                  onChange={(e) => setPendingMedia((p) => (p ? { ...p, title: e.target.value } : p))}
+                  placeholder="Ex: Antes e depois implante"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Quando enviar essa mídia? *</Label>
+                <textarea
+                  value={pendingMedia.moment}
+                  onChange={(e) => setPendingMedia((p) => (p ? { ...p, moment: e.target.value } : p))}
+                  placeholder="Ex: quando o lead demonstrar interesse em ver casos reais"
+                  rows={2}
+                  className="mt-1 w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+                <p className="mt-0.5 text-[10px] text-muted-foreground">
+                  O AI Magic vai usar isso para inserir a chamada da tool no momento certo do prompt.
+                </p>
+              </div>
+              <div>
+                <Label className="text-xs">Descrição (opcional)</Label>
+                <textarea
+                  value={pendingMedia.description}
+                  onChange={(e) =>
+                    setPendingMedia((p) => (p ? { ...p, description: e.target.value } : p))
+                  }
+                  placeholder="Detalhe adicional sobre o conteúdo da mídia"
+                  rows={2}
+                  className="mt-1 w-full resize-none rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setPendingMedia(null)} disabled={uploadingMedia}>
+                Cancelar
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void confirmMediaUpload()}
+                disabled={!pendingMedia.title.trim() || !pendingMedia.moment.trim() || uploadingMedia}
+              >
+                {uploadingMedia && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+                Adicionar e gerar ajuste
               </Button>
             </div>
           </div>
@@ -3087,6 +3157,8 @@ interface AiMagicMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** Imagem de contexto anexada à solicitação (data URL), exibida no balão. */
+  imageUrl?: string;
   proposed_prompt?: string;
   prompt_before?: string;
   sections_changed?: string[];
@@ -3416,12 +3488,94 @@ function AiMagicSheet({
   const historyFn = useServerFn(listAiMagicHistory);
   const suggestionsFn = useServerFn(getAiMagicSuggestions);
   const uploadMediaFn = useServerFn(uploadAgentMedia);
+  const transcribeFn = useServerFn(transcribeAudio);
 
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<AiMagicMessage[]>([]);
   const [pending, setPending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const mediaInputRef = useRef<HTMLInputElement>(null);
+
+  // Imagem de CONTEXTO colada/anexada (ex.: print de um erro a corrigir). É
+  // enviada ao GPT-4.1 (visão) junto com a solicitação — diferente da mídia que
+  // vai pro prompt do agente (botão "Adicionar mídia ao prompt").
+  const [contextImage, setContextImage] = useState<string | null>(null);
+
+  // Gravação de áudio → GROQ transcreve → vira texto no input.
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+
+  function fileToDataUrl(file: File | Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+  }
+
+  // Cola imagem direto no campo (Ctrl+V de um print) → vira contexto visual.
+  async function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const img = Array.from(e.clipboardData.items).find((it) =>
+      it.type.startsWith("image/"),
+    );
+    if (!img) return; // texto normal segue o fluxo padrão
+    e.preventDefault();
+    const file = img.getAsFile();
+    if (!file) return;
+    try {
+      setContextImage(await fileToDataUrl(file));
+      toast.success("Imagem anexada como contexto.");
+    } catch {
+      toast.error("Não consegui ler a imagem colada.");
+    }
+  }
+
+  async function startRecording() {
+    if (recording || transcribing) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+      };
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        if (blob.size === 0) return;
+        setTranscribing(true);
+        try {
+          const dataUrl = await fileToDataUrl(blob);
+          const res = await transcribeFn({ data: { accountId, audioBase64: dataUrl } });
+          if (res.ok && res.text) {
+            setInput((prev) => (prev ? prev + " " : "") + res.text);
+          } else {
+            toast.error(res.error || "Falha na transcrição.");
+          }
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Falha na transcrição.");
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+    } catch {
+      toast.error("Não consegui acessar o microfone. Verifique a permissão do navegador.");
+    }
+  }
+
+  function stopRecording() {
+    if (recorderRef.current && recording) {
+      recorderRef.current.stop();
+      recorderRef.current = null;
+      setRecording(false);
+    }
+  }
 
   // Dialog de upload de mídia (acionado pelo botão 📎)
   const [pendingMedia, setPendingMedia] = useState<{
@@ -3511,14 +3665,29 @@ function AiMagicSheet({
 
   async function send() {
     const text = input.trim();
-    if (!text || pending) return;
+    if ((!text && !contextImage) || pending) return;
+    const effectiveText =
+      text ||
+      "Analise a imagem anexada (print) e ajuste o prompt conforme o problema mostrado.";
+    const img = contextImage;
     setInput("");
-    const userMsg: AiMagicMessage = { id: `u-${Date.now()}`, role: "user", text };
+    setContextImage(null);
+    const userMsg: AiMagicMessage = {
+      id: `u-${Date.now()}`,
+      role: "user",
+      text: text || "🖼️ Imagem anexada",
+      imageUrl: img ?? undefined,
+    };
     setMessages((prev) => [...prev, userMsg]);
     setPending(true);
     try {
       const res = await requestFn({
-        data: { accountId, agentId, userMessage: text },
+        data: {
+          accountId,
+          agentId,
+          userMessage: effectiveText,
+          ...(img ? { imageBase64: img } : {}),
+        },
       });
       const asstMsg: AiMagicMessage = {
         id: `a-${Date.now()}`,
@@ -3613,8 +3782,17 @@ function AiMagicSheet({
           {messages.map((m) =>
             m.role === "user" ? (
               <div key={m.id} className="flex justify-end">
-                <div className="max-w-[85%] rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-xs text-white">
-                  {m.text}
+                <div className="max-w-[85%] space-y-1.5">
+                  {m.imageUrl && (
+                    <img
+                      src={m.imageUrl}
+                      alt="contexto"
+                      className="ml-auto max-h-40 w-auto rounded-lg border border-primary/30 object-contain"
+                    />
+                  )}
+                  <div className="rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-xs text-white">
+                    {m.text}
+                  </div>
                 </div>
               </div>
             ) : (
@@ -3686,31 +3864,74 @@ function AiMagicSheet({
 
         {/* Input */}
         <div className="border-t bg-white p-3">
-          <div className="flex gap-2">
-            <input
-              ref={mediaInputRef}
-              type="file"
-              accept="image/*,video/*,audio/*,application/pdf"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) {
-                  setPendingMedia({
-                    file: f,
-                    title: f.name.replace(/\.[^.]+$/, ""),
-                    description: "",
-                    moment: "",
-                  });
-                }
-              }}
-            />
+          <input
+            ref={mediaInputRef}
+            type="file"
+            accept="image/*,video/*,audio/*,application/pdf"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) {
+                setPendingMedia({
+                  file: f,
+                  title: f.name.replace(/\.[^.]+$/, ""),
+                  description: "",
+                  moment: "",
+                });
+              }
+              e.target.value = "";
+            }}
+          />
+
+          {/* Botão: adicionar mídia ao prompt do agente */}
+          <div className="mb-2 flex items-center">
             <button
               onClick={() => mediaInputRef.current?.click()}
-              title="Anexar mídia para o agente enviar"
               disabled={pending}
-              className="flex h-9 w-9 items-end justify-center self-end rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-800 disabled:opacity-60"
             >
-              <span className="pb-1.5 text-lg">📎</span>
+              <ImagePlus className="h-3.5 w-3.5" />
+              Adicionar mídia ao prompt
+            </button>
+          </div>
+
+          {/* Preview da imagem de contexto (print colado) */}
+          {contextImage && (
+            <div className="relative mb-2 inline-block">
+              <img
+                src={contextImage}
+                alt="contexto"
+                className="max-h-28 w-auto rounded-md border border-slate-200 object-contain"
+              />
+              <button
+                onClick={() => setContextImage(null)}
+                title="Remover imagem"
+                className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full bg-slate-700 text-white shadow hover:bg-slate-900"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            {/* Microfone — grava e transcreve via GROQ */}
+            <button
+              onClick={() => (recording ? stopRecording() : void startRecording())}
+              disabled={pending || transcribing}
+              title={recording ? "Parar e transcrever" : "Gravar áudio (transcrição automática)"}
+              className={`flex h-9 w-9 shrink-0 items-center justify-center self-end rounded-md transition-colors disabled:opacity-60 ${
+                recording
+                  ? "animate-pulse bg-red-500 text-white hover:bg-red-600"
+                  : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+              }`}
+            >
+              {transcribing ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : recording ? (
+                <Square className="h-4 w-4" />
+              ) : (
+                <Mic className="h-4 w-4" />
+              )}
             </button>
             <textarea
               value={input}
@@ -3721,14 +3942,21 @@ function AiMagicSheet({
                   void send();
                 }
               }}
-              placeholder="O que quer ajustar no prompt?"
-              rows={2}
+              onPaste={handlePaste}
+              placeholder={
+                recording
+                  ? "Gravando… fale e clique no quadrado pra parar"
+                  : transcribing
+                    ? "Transcrevendo áudio…"
+                    : "O que quer ajustar? (cole um print do erro com Ctrl+V)"
+              }
+              rows={5}
               disabled={pending}
               className="flex-1 resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary focus:ring-1 focus:ring-primary/20 disabled:opacity-60"
             />
             <Button
               onClick={() => void send()}
-              disabled={!input.trim() || pending}
+              disabled={(!input.trim() && !contextImage) || pending}
               size="sm"
               className="self-end"
             >
@@ -3736,7 +3964,7 @@ function AiMagicSheet({
             </Button>
           </div>
           <p className="mt-1.5 text-[10px] text-muted-foreground">
-            ⏎ envia · Shift+⏎ nova linha · 📎 anexa mídia · GPT-4 analisa e propõe a edição
+            ⏎ envia · Shift+⏎ nova linha · 🎤 grava e transcreve · cole um print (Ctrl+V) pra IA analisar
           </p>
         </div>
 

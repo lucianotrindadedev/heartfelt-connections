@@ -44,6 +44,61 @@ export interface TranscribeResult {
   error?: string;
 }
 
+/** Extensão de arquivo reconhecida pelo Whisper a partir do mime. */
+function extForMime(mime: string): string {
+  const m = (mime || "").toLowerCase();
+  if (m.includes("webm")) return "webm";
+  if (m.includes("ogg")) return "ogg";
+  if (m.includes("mp4") || m.includes("m4a")) return "m4a";
+  if (m.includes("wav")) return "wav";
+  if (m.includes("mpeg") || m.includes("mp3")) return "mp3";
+  return "webm";
+}
+
+/**
+ * Transcreve um áudio já em memória (bytes) via Groq Whisper. Usado pela UI
+ * (gravação no navegador via MediaRecorder → base64 → server fn), enquanto
+ * {@link transcribeAudioFromUrl} cobre o webhook (áudio do WhatsApp por URL).
+ */
+export async function transcribeAudioBytes(
+  bytes: Uint8Array,
+  mime: string,
+  apiKey: string,
+  opts: { language?: string } = {},
+): Promise<TranscribeResult> {
+  try {
+    if (!bytes || bytes.byteLength === 0) {
+      return { ok: false, text: "", error: "áudio vazio" };
+    }
+    const blob = new Blob([bytes], { type: mime || "audio/webm" });
+    const form = new FormData();
+    form.append("file", blob, `audio.${extForMime(mime)}`);
+    form.append("model", GROQ_WHISPER_MODEL);
+    form.append("temperature", "0");
+    form.append("response_format", "json");
+    if (opts.language) form.append("language", opts.language);
+
+    const res = await fetch(GROQ_TRANSCRIBE_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { ok: false, text: "", error: `groq ${res.status}: ${body.slice(0, 200)}` };
+    }
+    const json = (await res.json()) as { text?: string };
+    return { ok: true, text: (json.text ?? "").trim() };
+  } catch (e) {
+    return {
+      ok: false,
+      text: "",
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
 /**
  * Baixa um áudio de uma URL pública e transcreve via Groq Whisper.
  * Espelha o fluxo n8n: download → multipart POST → whisper-large-v3-turbo.
