@@ -14,6 +14,7 @@ import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
 import { isOptOutMessage } from "@/lib/opt-out.server";
 import { getGroqApiKey, transcribeAudioFromUrl } from "@/lib/groq.server";
+import { describeImageFromUrl, getOpenAiKey } from "@/lib/openai-vision.server";
 import {
   isResetCommand,
   resetConversationHistory,
@@ -494,11 +495,11 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         }
 
         // ── Outras mídias (imagem / vídeo / documento / sticker / contato / loc) ──
-        // Sem visão computacional/OCR, o agente não consegue ler o conteúdo. Antes,
-        // estas mensagens chegavam com content="" e o LLM "alucinava" — repetia
-        // saudação, e o guard anti-duplicata caía no fallback hardcoded falando em
-        // "agendamento" (mesmo em agente que não agenda). Inserimos um placeholder
-        // que dá contexto ao LLM e o orienta a reagir educadamente.
+        // Imagens: descritas via OpenAI Vision (GPT-4o-mini) quando OPENAI_API_KEY
+        // estiver configurada — o agente passa a "enxergar" foto enviada pelo lead.
+        // Demais mídias (vídeo, doc, contato, localização) caem em placeholder.
+        const mediaUrl: string | null =
+          helenaFile?.publicUrl ?? helenaFile?.url ?? null;
         if (!messageContent.trim() && !isAudioMessage) {
           const type = messageType.toUpperCase();
           const isImage =
@@ -513,20 +514,44 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
               !fileMime.startsWith("audio/"));
           const isContact = type === "CONTACT";
           const isLocation = type === "LOCATION";
-          const kindLabel = isImage
-            ? "uma imagem"
-            : isVideo
-              ? "um vídeo"
-              : isContact
-                ? "um contato"
-                : isLocation
-                  ? "uma localização"
-                  : isDoc
-                    ? "um documento"
-                    : "um anexo";
-          if (isImage || isVideo || isDoc || isContact || isLocation) {
-            messageContent = `[O lead enviou ${kindLabel} sem nenhum texto. Você não tem acesso ao conteúdo — agradeça brevemente e peça para descrever em texto o que ele gostaria de tratar, ou siga o fluxo natural da conversa.]`;
-            console.log(`[webhook] mídia ${type || fileMime} sem texto — placeholder injetado`);
+
+          // Tenta descrever imagens via Vision antes do placeholder.
+          if (isImage && mediaUrl && getOpenAiKey()) {
+            // Contexto do negócio ajuda o vision a focar (ex.: "Costa Lima
+            // Odontologia" → descreve foto de boca; "Rota 98 Tour" → descreve
+            // destino/passagem). agentSettings já foi lido logo no início.
+            const companyContext =
+              agentSettings.company_name || agentSettings.assistant_name || "";
+            const desc = await describeImageFromUrl(mediaUrl, {
+              context: companyContext,
+            });
+            if (desc.ok && desc.text) {
+              messageContent = `[O lead enviou uma imagem. Descrição automática: ${desc.text}]`;
+              console.log(
+                `[webhook] imagem descrita via OpenAI Vision (${desc.text.length} chars)`,
+              );
+            } else {
+              console.warn(`[webhook] vision falhou: ${desc.error ?? "sem detalhe"}`);
+            }
+          }
+
+          // Placeholder genérico (também cobre quando vision falhou).
+          if (!messageContent.trim()) {
+            const kindLabel = isImage
+              ? "uma imagem"
+              : isVideo
+                ? "um vídeo"
+                : isContact
+                  ? "um contato"
+                  : isLocation
+                    ? "uma localização"
+                    : isDoc
+                      ? "um documento"
+                      : "um anexo";
+            if (isImage || isVideo || isDoc || isContact || isLocation) {
+              messageContent = `[O lead enviou ${kindLabel} sem nenhum texto. Você não tem acesso ao conteúdo — agradeça brevemente e peça para descrever em texto o que ele gostaria de tratar, ou siga o fluxo natural da conversa.]`;
+              console.log(`[webhook] mídia ${type || fileMime} sem texto — placeholder injetado`);
+            }
           }
         }
 
