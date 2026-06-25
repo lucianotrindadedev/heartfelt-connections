@@ -65,10 +65,7 @@ import {
 } from "@/lib/message-splitter.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
-import {
-  notifyBooking,
-  summarizeConversationForNotification,
-} from "@/lib/agents/notify-booking.server";
+import { notifyBooking } from "@/lib/agents/notify-booking.server";
 import type { AgentContext, AgentResult } from "./context";
 import { stripNullishFields } from "./parse-llm-json.server";
 import { runQualifierAgent } from "./qualifier.server";
@@ -925,12 +922,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     if (justBooked || appointmentJustCancelled) {
       try {
         const event = justBooked ? "created" : "cancelled";
-        let summary = await summarizeConversationForNotification(
-          ctx.orKey,
-          ctx.ragGateModel,
-          history,
-        );
-        if (!summary) summary = (finalLeadData.notes as string | undefined) ?? "";
         // Rótulo da notificação: a agenda escolhida pode definir o seu próprio
         // (ex: agenda "Festas" → "FESTA AGENDADA" em vez de "VISITA AGENDADA").
         let appointmentLabel = agentSettings.appointment_type_label || "Consulta";
@@ -946,6 +937,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             console.warn("[orch] rótulo de notificação da agenda indisponível:", e);
           }
         }
+        // Custom fields como Record<string, string> p/ uso em {{cf.<chave>}}.
+        const cfRaw = (finalLeadData.custom_fields ?? {}) as Record<string, unknown>;
+        const customFields: Record<string, string> = {};
+        for (const [k, v] of Object.entries(cfRaw)) {
+          if (typeof v === "string") customFields[k] = v;
+          else if (typeof v === "number" || typeof v === "boolean") customFields[k] = String(v);
+        }
+        // O resumo agora é gerado DENTRO de notifyBooking quando habilitado e o
+        // template realmente usa {{resumo}} — economiza tokens em quem desliga.
         await notifyBooking({
           agentId,
           accountId,
@@ -959,7 +959,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             ? (finalLeadData.selected_slot_iso as string | undefined) ?? ""
             : slotIsoBefore,
           appointmentLabel,
-          summary,
+          agenda: selectedAgenda,
+          interesse: (finalLeadData.interest as string | undefined) ?? "",
+          observacoes: (finalLeadData.notes as string | undefined) ?? "",
+          agenteNome: (agent.data.nome as string | undefined) ?? "",
+          empresa: agentSettings.company_name ?? "",
+          customFields,
+          history,
+          orKey: ctx.orKey,
+          summaryModel: ctx.ragGateModel,
         });
       } catch (e) {
         console.error("[orch] notifyBooking falhou:", e);

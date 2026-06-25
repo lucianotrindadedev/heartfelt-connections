@@ -29,6 +29,7 @@ import {
 import { AlertCircle, Check, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
+import { NotificationFormatEditor } from "./NotificationFormatEditor";
 
 export function AccountEscalationTab({ accountId }: { accountId: string }) {
   const fetchSys = useServerFn(getSystemEvolutionConfig);
@@ -126,6 +127,9 @@ interface AgentRow {
   evolution_instance: string;
   grupo_alerta: string;
   notificar_agendamentos: boolean;
+  notification_template: string;
+  notification_summary_enabled: boolean;
+  notification_summary_instruction: string;
 }
 
 interface InstanceRow {
@@ -150,6 +154,9 @@ function AgentEscalationRow({
   const [instance, setInstance] = useState(agent.evolution_instance);
   const [grupo, setGrupo] = useState(agent.grupo_alerta);
   const [notify, setNotify] = useState(agent.notificar_agendamentos);
+  const [tmpl, setTmpl] = useState(agent.notification_template);
+  const [sumEn, setSumEn] = useState(agent.notification_summary_enabled);
+  const [sumInstr, setSumInstr] = useState(agent.notification_summary_instruction);
 
   const groupsQ = useQuery({
     queryKey: ["admin", "evolution", "groups", instance],
@@ -165,6 +172,9 @@ function AgentEscalationRow({
           evolution_instance: instance || undefined,
           grupo_alerta: grupo || undefined,
           notificar_agendamentos: notify,
+          notification_template: tmpl,
+          notification_summary_enabled: sumEn,
+          notification_summary_instruction: sumInstr,
         },
       }),
     onSuccess: () => {
@@ -186,7 +196,10 @@ function AgentEscalationRow({
   const dirty =
     instance !== agent.evolution_instance ||
     grupo !== agent.grupo_alerta ||
-    notify !== agent.notificar_agendamentos;
+    notify !== agent.notificar_agendamentos ||
+    tmpl !== agent.notification_template ||
+    sumEn !== agent.notification_summary_enabled ||
+    sumInstr !== agent.notification_summary_instruction;
 
   return (
     <Card className="space-y-3 p-4">
@@ -273,20 +286,35 @@ function AgentEscalationRow({
         </div>
       </div>
 
-      <div className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-        <div className="min-w-0">
-          <Label className="text-sm font-medium">Notificar agendamentos</Label>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            Envia uma mensagem a este grupo sempre que um agendamento for
-            confirmado (paciente, data/hora, telefone e resumo da conversa).
-          </p>
-          {notify && (!instance || !grupo) && (
-            <p className="mt-1 text-xs text-amber-600">
-              Selecione uma instância e um grupo acima para as notificações funcionarem.
+      <div className="space-y-4 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <Label className="text-sm font-medium">Notificar agendamentos</Label>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Envia uma mensagem a este grupo sempre que um agendamento for
+              confirmado, cancelado ou remarcado.
             </p>
-          )}
+            {notify && (!instance || !grupo) && (
+              <p className="mt-1 text-xs text-amber-600">
+                Selecione uma instância e um grupo acima para as notificações funcionarem.
+              </p>
+            )}
+          </div>
+          <Switch checked={notify} onCheckedChange={setNotify} />
         </div>
-        <Switch checked={notify} onCheckedChange={setNotify} />
+        {notify && (
+          <NotificationFormatEditor
+            template={tmpl}
+            summaryEnabled={sumEn}
+            summaryInstruction={sumInstr}
+            onChange={(patch) => {
+              if (patch.template !== undefined) setTmpl(patch.template);
+              if (patch.summaryEnabled !== undefined) setSumEn(patch.summaryEnabled);
+              if (patch.summaryInstruction !== undefined)
+                setSumInstr(patch.summaryInstruction);
+            }}
+          />
+        )}
       </div>
 
       <div className="flex items-center justify-end gap-2">

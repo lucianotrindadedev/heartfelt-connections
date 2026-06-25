@@ -142,14 +142,23 @@ export const listAccountAgentsEscalation = createServerFn({ method: "GET" })
     const agentIds = (agents ?? []).map((a) => a.id as string);
     if (agentIds.length === 0) return { agents: [] };
 
-    const { data: escs } = await sb
+    interface EscRow {
+      agent_id: string;
+      evolution_instance: string | null;
+      grupo_alerta: string | null;
+      ativo: boolean | null;
+      notificar_agendamentos: boolean | null;
+      notification_template: string | null;
+      notification_summary_enabled: boolean | null;
+      notification_summary_instruction: string | null;
+    }
+    const { data: escsRaw } = await sb
       .from("agent_escalation")
-      .select("agent_id, evolution_instance, grupo_alerta, ativo, notificar_agendamentos")
+      .select("agent_id, evolution_instance, grupo_alerta, ativo, notificar_agendamentos, notification_template, notification_summary_enabled, notification_summary_instruction")
       .in("agent_id", agentIds);
+    const escs = (escsRaw ?? []) as unknown as EscRow[];
 
-    const escByAgent = new Map(
-      (escs ?? []).map((e) => [e.agent_id as string, e]),
-    );
+    const escByAgent = new Map(escs.map((e) => [e.agent_id, e]));
 
     return {
       agents: (agents ?? []).map((a) => {
@@ -158,9 +167,13 @@ export const listAccountAgentsEscalation = createServerFn({ method: "GET" })
           id: a.id as string,
           nome: a.nome as string,
           ativo: !!e?.ativo,
-          evolution_instance: (e?.evolution_instance as string | null) ?? "",
-          grupo_alerta: (e?.grupo_alerta as string | null) ?? "",
+          evolution_instance: e?.evolution_instance ?? "",
+          grupo_alerta: e?.grupo_alerta ?? "",
           notificar_agendamentos: !!e?.notificar_agendamentos,
+          notification_template: e?.notification_template ?? "",
+          // default true: NULL/undefined contam como ligado
+          notification_summary_enabled: e?.notification_summary_enabled !== false,
+          notification_summary_instruction: e?.notification_summary_instruction ?? "",
         };
       }),
     };
@@ -176,15 +189,24 @@ export const saveAgentEscalationAdmin = createServerFn({ method: "POST" })
         grupo_alerta: z.string().max(120).optional(),
         ativo: z.boolean().optional(),
         notificar_agendamentos: z.boolean().optional(),
+        // Empty string = restaurar default (NULL no banco).
+        notification_template: z.string().max(4000).optional(),
+        notification_summary_enabled: z.boolean().optional(),
+        notification_summary_instruction: z.string().max(2000).optional(),
       })
       .parse(d),
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
     const { agentId, ...rest } = data;
+    // String vazia em campos opcionais = NULL (volta ao default do código).
+    const normalized: Record<string, unknown> = { ...rest };
+    for (const k of ["notification_template", "notification_summary_instruction"] as const) {
+      if (normalized[k] === "") normalized[k] = null;
+    }
     const patch: Record<string, unknown> = {
       agent_id: agentId,
-      ...rest,
+      ...normalized,
       atualizado_em: new Date().toISOString(),
     };
     const { error } = await sb
@@ -192,4 +214,62 @@ export const saveAgentEscalationAdmin = createServerFn({ method: "POST" })
       .upsert(patch, { onConflict: "agent_id" });
     if (error) throw new Error(error.message);
     return { ok: true };
+  });
+
+// ── Pré-visualização da notificação ────────────────────────────────────────
+//
+// Renderiza um template com dados de exemplo fixos. NÃO chama o LLM (usa um
+// resumo simulado), para a UI dar feedback instantâneo enquanto o usuário
+// edita o template.
+
+export const previewBookingNotification = createServerFn({ method: "POST" })
+  .middleware([attachSelfhostAuth, requireSuperAdmin])
+  .inputValidator((d) =>
+    z
+      .object({
+        template: z.string().max(4000).optional(),
+        summary_enabled: z.boolean().optional(),
+        summary_instruction: z.string().max(2000).optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const { renderBookingTemplate, buildTemplateVars, DEFAULT_TEMPLATE } =
+      await import("@/lib/agents/notify-booking.server");
+    const template = (data.template?.trim() || DEFAULT_TEMPLATE);
+    const summaryEnabled = data.summary_enabled !== false;
+    const sampleSummary = summaryEnabled
+      ? "Lead com interesse em implante após extrações há 3 anos; prefere consulta à tarde no Recreio."
+      : "";
+    const vars = buildTemplateVars(
+      {
+        agentId: "preview",
+        accountId: "preview",
+        event: "created",
+        patientName: "Maria Silva",
+        phone: "+5521981783821",
+        datetimeIso: new Date(Date.now() + 24 * 3600_000).toISOString(),
+        appointmentLabel: "Visita guiada",
+        agenda: "Festas",
+        interesse: "IMPLANTE",
+        observacoes: "Dor superior esquerda",
+        agenteNome: "Sarah",
+        empresa: "Costa Lima Odontologia",
+        customFields: { idade: "42", convidados: "80" },
+      },
+      sampleSummary,
+    );
+    return {
+      rendered: renderBookingTemplate(template, vars).trim(),
+      // Lista das variáveis suportadas (alimenta o dropdown "Inserir variável").
+      variables: [
+        { group: "Lead", items: ["nome", "telefone", "interesse", "observacoes"] },
+        {
+          group: "Agendamento",
+          items: ["evento", "data", "hora", "data_hora", "dia_semana", "tipo_consulta", "agenda"],
+        },
+        { group: "Contexto", items: ["resumo", "agente", "empresa"] },
+        { group: "Custom fields", items: ["cf.<chave>"] },
+      ],
+    };
   });
