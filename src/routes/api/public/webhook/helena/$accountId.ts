@@ -493,6 +493,43 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           }
         }
 
+        // ── Outras mídias (imagem / vídeo / documento / sticker / contato / loc) ──
+        // Sem visão computacional/OCR, o agente não consegue ler o conteúdo. Antes,
+        // estas mensagens chegavam com content="" e o LLM "alucinava" — repetia
+        // saudação, e o guard anti-duplicata caía no fallback hardcoded falando em
+        // "agendamento" (mesmo em agente que não agenda). Inserimos um placeholder
+        // que dá contexto ao LLM e o orienta a reagir educadamente.
+        if (!messageContent.trim() && !isAudioMessage) {
+          const type = messageType.toUpperCase();
+          const isImage =
+            type === "IMAGE" || type === "STICKER" || fileMime.startsWith("image/");
+          const isVideo = type === "VIDEO" || fileMime.startsWith("video/");
+          const isDoc =
+            type === "DOCUMENT" ||
+            type === "FILE" ||
+            (!!fileMime &&
+              !fileMime.startsWith("image/") &&
+              !fileMime.startsWith("video/") &&
+              !fileMime.startsWith("audio/"));
+          const isContact = type === "CONTACT";
+          const isLocation = type === "LOCATION";
+          const kindLabel = isImage
+            ? "uma imagem"
+            : isVideo
+              ? "um vídeo"
+              : isContact
+                ? "um contato"
+                : isLocation
+                  ? "uma localização"
+                  : isDoc
+                    ? "um documento"
+                    : "um anexo";
+          if (isImage || isVideo || isDoc || isContact || isLocation) {
+            messageContent = `[O lead enviou ${kindLabel} sem nenhum texto. Você não tem acesso ao conteúdo — agradeça brevemente e peça para descrever em texto o que ele gostaria de tratar, ou siga o fluxo natural da conversa.]`;
+            console.log(`[webhook] mídia ${type || fileMime} sem texto — placeholder injetado`);
+          }
+        }
+
         // `direction` é a fonte da verdade: TO_HUB = SAÍDA (mensagem que partiu
         // da clínica — bot, atendente OU alguém digitando direto no WhatsApp do
         // número), FROM_HUB = ENTRADA (mensagem do lead). Uma msg enviada direto
