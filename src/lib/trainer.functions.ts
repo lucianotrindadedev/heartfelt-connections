@@ -155,10 +155,15 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       model,
       qualifierModel:
         ((llm.data as Record<string, unknown> | null)?.qualifier_model as string | undefined) ??
+        (llm.data?.default_model as string | undefined) ??
         DEFAULT_QUALIFIER_MODEL,
-      qualifierFallbackModels: [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
+      qualifierFallbackModels:
+        (llm.data?.fallback_models as string[] | undefined) ??
+        [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
       toolModel: (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
-      toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
+      toolFallbackModels:
+        (llm.data?.fallback_models as string[] | undefined) ??
+        [...DEFAULT_TOOL_FALLBACK_MODELS],
       fallbackModels:
         (llm.data?.fallback_models as string[] | undefined) ??
         ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],

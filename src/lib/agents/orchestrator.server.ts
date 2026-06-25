@@ -516,13 +516,23 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         (agent.data.llm_model_override as string | null) ||
         (llm.data?.default_model as string | undefined) ||
         DEFAULT_LLM_MODEL,
+      // O qualifier é quem responde o lead nas fases RECEPTION/QUALIFICATION
+      // (ver routeForStage). Deve usar EXATAMENTE o modelo/fallback que a conta
+      // configurou (default_model + fallback_models), não um modelo fixo. A
+      // coluna opcional qualifier_model, se existir e estiver preenchida, ainda
+      // sobrescreve — mas o padrão é o modelo principal configurado.
       qualifierModel:
         ((llm.data as Record<string, unknown> | null)?.qualifier_model as string | undefined) ??
+        (llm.data?.default_model as string | undefined) ??
         DEFAULT_QUALIFIER_MODEL,
-      qualifierFallbackModels: [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
+      qualifierFallbackModels:
+        (llm.data?.fallback_models as string[] | undefined) ??
+        [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
       toolModel:
         (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
-      toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
+      toolFallbackModels:
+        (llm.data?.fallback_models as string[] | undefined) ??
+        [...DEFAULT_TOOL_FALLBACK_MODELS],
       fallbackModels:
         (llm.data?.fallback_models as string[] | undefined) ??
         ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],
