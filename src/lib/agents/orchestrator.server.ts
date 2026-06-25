@@ -832,9 +832,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         reply =
           "Vou te mostrar os horários disponíveis pra você escolher o melhor, ok? 😊";
         newStage = "SLOT_OFFER";
-      } else {
+      } else if (hasBookingIntegration) {
         reply =
           "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
+      } else {
+        // Agente sem integração de agendamento (turismo, vendas, etc.) — texto
+        // neutro que não menciona "agendamento" nem "horários".
+        reply = "Pode me contar um pouco mais sobre o que você está procurando?";
       }
     }
 
