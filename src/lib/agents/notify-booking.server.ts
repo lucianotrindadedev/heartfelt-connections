@@ -5,8 +5,10 @@
 // em agent_escalation. O toggle `notificar_agendamentos` liga/desliga essas
 // notificações independente da escalada humana.
 //
-// Dispara quando um agendamento é confirmado (created) — e, futuramente,
-// quando for cancelado/remarcado (cancelled/rescheduled).
+// Formato configurável pela UI admin (campos em agent_escalation):
+//   * notification_template          — Markdown WhatsApp com {{variáveis}}
+//   * notification_summary_enabled   — gera (ou não) o {{resumo}} via LLM
+//   * notification_summary_instruction — instrução para o LLM do resumo
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import {
@@ -19,6 +21,26 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 export type BookingNotificationEvent = "created" | "cancelled" | "rescheduled";
 
+/** Variáveis disponíveis em todo template de notificação. */
+export interface BookingTemplateVars {
+  nome: string;
+  telefone: string;
+  evento: string;
+  data: string;
+  hora: string;
+  data_hora: string;
+  dia_semana: string;
+  tipo_consulta: string;
+  agenda: string;
+  interesse: string;
+  observacoes: string;
+  resumo: string;
+  agente: string;
+  empresa: string;
+  /** Custom fields do lead — acessados via {{cf.<chave>}}. */
+  cf: Record<string, string>;
+}
+
 interface NotifyBookingParams {
   agentId: string;
   accountId: string;
@@ -29,8 +51,20 @@ interface NotifyBookingParams {
   datetimeIso: string;
   /** Rótulo do tipo de compromisso (settings.appointment_type_label). Ex: "Consulta", "Visita guiada". */
   appointmentLabel: string;
-  /** Resumo da conversa (pode vir pré-gerado por IA). */
-  summary: string;
+  /** Resumo já gerado (legado). Se omitido, o resumo é gerado AQUI (quando habilitado). */
+  summary?: string;
+  /** Contexto adicional disponibilizado ao template. */
+  agenda?: string;
+  interesse?: string;
+  observacoes?: string;
+  agenteNome?: string;
+  empresa?: string;
+  customFields?: Record<string, string>;
+  /** Histórico para gerar o resumo (quando habilitado). Se omitido, usa `summary` cru. */
+  history?: { role: string; content: string }[];
+  /** OpenRouter key + modelo para o resumo. Necessários quando history vem e summary não. */
+  orKey?: string;
+  summaryModel?: string;
 }
 
 const EVENT_VERB: Record<BookingNotificationEvent, string> = {
@@ -39,10 +73,26 @@ const EVENT_VERB: Record<BookingNotificationEvent, string> = {
   rescheduled: "REMARCADA",
 };
 
-function formatDateTimeBR(iso: string): { date: string; time: string } {
+const DEFAULT_TEMPLATE =
+  `*{{tipo_consulta}} {{evento}}*\n\n` +
+  `{{nome}} acabou de agendar para o dia {{data}} às {{hora}}.\n` +
+  `📱 Telefone: {{telefone}}\n\n` +
+  `📝 Resumo: {{resumo}}`;
+
+const DEFAULT_SUMMARY_INSTRUCTION =
+  "Resuma em 1-2 frases o contexto do lead/paciente e o que foi agendado. " +
+  "Não use saudações, primeira pessoa, telefone ou links. Máximo 60 palavras.";
+
+function formatDateTimeBR(iso: string): {
+  date: string;
+  time: string;
+  weekday: string;
+  combined: string;
+} {
+  const empty = { date: "(data)", time: "(hora)", weekday: "", combined: "(data) às (hora)" };
   try {
     const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return { date: "(data)", time: "(hora)" };
+    if (Number.isNaN(d.getTime())) return empty;
     const tz = "America/Sao_Paulo";
     const date = new Intl.DateTimeFormat("pt-BR", {
       timeZone: tz,
@@ -55,9 +105,18 @@ function formatDateTimeBR(iso: string): { date: string; time: string } {
       hour: "2-digit",
       minute: "2-digit",
     }).format(d);
-    return { date, time };
+    const weekday = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: tz,
+      weekday: "long",
+    }).format(d);
+    return {
+      date,
+      time,
+      weekday: weekday.charAt(0).toUpperCase() + weekday.slice(1),
+      combined: `${date} às ${time}`,
+    };
   } catch {
-    return { date: "(data)", time: "(hora)" };
+    return empty;
   }
 }
 
@@ -69,31 +128,57 @@ function formatPhoneDisplay(phone: string): string {
   return `+${digits}`;
 }
 
-function buildBookingMessage(p: NotifyBookingParams): string {
+/** Monta o dicionário de variáveis a partir dos parâmetros da notificação. */
+export function buildTemplateVars(p: NotifyBookingParams, summary: string): BookingTemplateVars {
   const label = (p.appointmentLabel || "Consulta").trim();
-  const title = `*${label.toUpperCase()} ${EVENT_VERB[p.event]}*`;
-  const { date, time } = formatDateTimeBR(p.datetimeIso);
-  const labelLower = label.toLowerCase();
+  const dt = formatDateTimeBR(p.datetimeIso);
+  return {
+    nome: p.patientName || "",
+    telefone: formatPhoneDisplay(p.phone),
+    evento: EVENT_VERB[p.event],
+    data: dt.date,
+    hora: dt.time,
+    data_hora: dt.combined,
+    dia_semana: dt.weekday,
+    tipo_consulta: label,
+    agenda: (p.agenda ?? "").trim(),
+    interesse: (p.interesse ?? "").trim(),
+    observacoes: (p.observacoes ?? "").trim(),
+    resumo: (summary ?? "").trim(),
+    agente: (p.agenteNome ?? "").trim(),
+    empresa: (p.empresa ?? "").trim(),
+    cf: p.customFields ?? {},
+  };
+}
 
-  let actionLine: string;
-  if (p.event === "created") {
-    actionLine = `${p.patientName} acabou de agendar ${labelLower} para o dia ${date} às ${time}.`;
-  } else if (p.event === "cancelled") {
-    actionLine = `${p.patientName} cancelou ${labelLower} que estava marcada para o dia ${date} às ${time}.`;
-  } else {
-    actionLine = `${p.patientName} remarcou ${labelLower} para o dia ${date} às ${time}.`;
-  }
+/**
+ * Substitui {{var}} e {{cf.<chave>}} no template. Variáveis desconhecidas viram
+ * string vazia (não causam erro). Mantém suporte a Markdown WhatsApp como está
+ * (não escapamos nada — o template é fornecido por superadmin, não por lead).
+ */
+export function renderBookingTemplate(template: string, vars: BookingTemplateVars): string {
+  return template.replace(/\{\{\s*([a-zA-Z_][a-zA-Z0-9_.]*)\s*\}\}/g, (_m, key: string) => {
+    if (key.startsWith("cf.")) {
+      const cfKey = key.slice(3);
+      return vars.cf[cfKey] ?? "";
+    }
+    const v = (vars as unknown as Record<string, unknown>)[key];
+    return typeof v === "string" ? v : "";
+  });
+}
 
-  const lines = [
-    title,
-    "",
-    actionLine,
-    `📱 Telefone: ${formatPhoneDisplay(p.phone)}`,
-  ];
-  if (p.summary?.trim()) {
-    lines.push("", `📝 Resumo: ${p.summary.trim()}`);
-  }
-  return lines.join("\n");
+/** Retorna true se o template realmente usa {{resumo}} em algum lugar. */
+function templateUsesSummary(template: string): boolean {
+  return /\{\{\s*resumo\s*\}\}/.test(template);
+}
+
+interface EscalationConfigRow {
+  grupo_alerta: string | null;
+  evolution_instance: string | null;
+  notificar_agendamentos: boolean | null;
+  notification_template: string | null;
+  notification_summary_enabled: boolean | null;
+  notification_summary_instruction: string | null;
 }
 
 /**
@@ -105,21 +190,52 @@ export async function notifyBooking(
 ): Promise<{ sent: boolean }> {
   const sb = getSelfhost();
 
-  const { data: cfg } = await sb
+  const { data: cfgRaw } = await sb
     .from("agent_escalation")
-    .select("grupo_alerta, evolution_instance, notificar_agendamentos")
+    .select(
+      "grupo_alerta, evolution_instance, notificar_agendamentos, " +
+        "notification_template, notification_summary_enabled, notification_summary_instruction",
+    )
     .eq("agent_id", params.agentId)
     .single();
+  const cfg = cfgRaw as EscalationConfigRow | null;
 
   if (!cfg?.notificar_agendamentos || !cfg.grupo_alerta || !cfg.evolution_instance) {
     return { sent: false };
   }
 
-  const text = buildBookingMessage(params);
+  const template = (cfg.notification_template?.trim() || DEFAULT_TEMPLATE);
+  const summaryEnabled = cfg.notification_summary_enabled !== false; // default true
+  const summaryInstruction =
+    cfg.notification_summary_instruction?.trim() || DEFAULT_SUMMARY_INSTRUCTION;
+
+  // Decide se precisa gerar resumo: só quando habilitado + template usa {{resumo}}
+  // + não veio resumo pronto. Economiza tokens em quem desliga ou não usa.
+  let summary = params.summary ?? "";
+  const needGenerate =
+    !summary && summaryEnabled && templateUsesSummary(template) && !!params.history?.length;
+  if (needGenerate && params.orKey && params.summaryModel) {
+    summary = await summarizeConversationForNotification(
+      params.orKey,
+      params.summaryModel,
+      params.history ?? [],
+      summaryInstruction,
+    );
+  }
+  // Fallback do resumo: usa observações do lead se nada veio.
+  if (!summary && summaryEnabled) summary = (params.observacoes ?? "").trim();
+
+  const vars = buildTemplateVars(params, summary);
+  const text = renderBookingTemplate(template, vars).trim();
+  if (!text) {
+    console.warn("[notify-booking] template renderizou vazio — nada enviado");
+    return { sent: false };
+  }
+
   try {
     const res = await evoSendText({
-      instance: cfg.evolution_instance as string,
-      number: cfg.grupo_alerta as string,
+      instance: cfg.evolution_instance,
+      number: cfg.grupo_alerta,
       text,
     });
     if (!res.ok) {
@@ -147,11 +263,15 @@ export async function notifyBooking(
 /**
  * Gera um resumo curto (1-2 frases) da conversa para a notificação, via LLM
  * barato. Best-effort: retorna "" em caso de falha (o caller usa fallback).
+ *
+ * O caller pode customizar o prompt do sistema via `customInstruction` (ex.:
+ * vindo de agent_escalation.notification_summary_instruction).
  */
 export async function summarizeConversationForNotification(
   orKey: string,
   model: string,
   history: { role: string; content: string }[],
+  customInstruction?: string,
 ): Promise<string> {
   const transcript = history
     .filter((m) => m.role === "user" || m.role === "assistant")
@@ -161,11 +281,16 @@ export async function summarizeConversationForNotification(
 
   if (!transcript.trim()) return "";
 
-  const system =
+  const baseDefault =
     "Você resume conversas de atendimento para uma notificação interna da equipe. " +
     "Produza UM resumo objetivo em português (1-2 frases, máx 60 palavras) com o " +
     "contexto do lead/paciente e o que foi agendado. Não use saudações, não use " +
     "primeira pessoa, não inclua telefone nem links. Responda apenas o resumo.";
+  const system = customInstruction?.trim()
+    ? `Você resume conversas de atendimento para uma notificação interna da equipe.\n\n` +
+      `INSTRUÇÕES DO USUÁRIO:\n${customInstruction.trim()}\n\n` +
+      `Responda APENAS o resumo, em português, sem saudações ou primeira pessoa.`
+    : baseDefault;
 
   try {
     const res = await fetch(OPENROUTER_URL, {
@@ -198,3 +323,6 @@ export async function summarizeConversationForNotification(
     return "";
   }
 }
+
+/** Exportado para a UI de pré-visualização e para o orchestrator. */
+export { DEFAULT_TEMPLATE, DEFAULT_SUMMARY_INSTRUCTION };
