@@ -503,33 +503,6 @@ export async function createClinicorpAppointment(
 
   console.log("[clinicorp] create appointment body:", JSON.stringify(body));
 
-  const res = await fetchClinicorp(
-    `${config.baseUrl}/rest/v1/appointment/create_appointment_by_api`,
-    {
-      method: "POST",
-      headers: authHeaders(config),
-      body: JSON.stringify(body),
-    },
-  );
-
-  const rawBody = await res.text();
-  if (!res.ok) {
-    const msg = `Clinicorp create appointment failed: ${res.status} — ${rawBody.slice(0, 300)}`;
-    console.error("[clinicorp]", msg);
-    throw new Error(msg);
-  }
-
-  // A resposta de create_appointment_by_api varia de formato entre versões da
-  // API. Logamos o corpo cru p/ diagnóstico e tentamos extrair o id em vários
-  // formatos conhecidos (top-level, appointment{}, Appointment{}, data{}).
-  console.log("[clinicorp] create appointment response:", rawBody.slice(0, 500));
-  let json: Record<string, unknown> = {};
-  try {
-    json = JSON.parse(rawBody) as Record<string, unknown>;
-  } catch {
-    json = {};
-  }
-
   const pickId = (o: unknown): string | number | undefined => {
     if (!o || typeof o !== "object") return undefined;
     const r = o as Record<string, unknown>;
@@ -544,23 +517,15 @@ export async function createClinicorpAppointment(
     return typeof cand === "string" ? cand : undefined;
   };
 
-  const apptObj =
-    (json.appointment as unknown) ??
-    (json.Appointment as unknown) ??
-    (json.data as unknown) ??
-    json;
-  let apptId: string | number = pickId(apptObj) ?? pickId(json) ?? "";
-  const apptDt = pickDt(apptObj) ?? pickDt(json) ?? params.datetime;
-
-  // Fallback: o POST passou (2xx) mas não achamos o id na resposta — o
-  // agendamento quase certamente foi criado. Re-consultamos a agenda do
-  // paciente e pegamos o id do agendamento que bate com o horário escolhido.
-  // Sem isso, o id voltaria vazio e o sistema bloquearia a confirmação como
-  // se tivesse falhado (apesar do evento existir na agenda).
-  if (!apptId) {
-    console.warn(
-      "[clinicorp] id ausente na resposta de create — re-consultando agenda do paciente",
-    );
+  // Re-consulta a agenda do paciente e localiza o agendamento que bate com o
+  // horário escolhido. Distingue três casos, o que é essencial para re-tentar
+  // sem duplicar:
+  //   { id }      → encontrado (usar este id, não criar de novo)
+  //   { absent }  → consulta OK e NÃO existe → seguro re-tentar o create
+  //   { unknown } → a consulta em si falhou → NÃO re-tentar (risco de duplicar)
+  const findCreatedAppointmentId = async (): Promise<
+    { id: string | number } | { absent: true } | { unknown: true }
+  > => {
     try {
       const target = extractSpTime(params.datetime);
       const list = await listClinicorpPatientAppointments(accountId, params.phone);
@@ -569,13 +534,86 @@ export async function createClinicorpAppointment(
         const t = extractSpTime(a.datetime);
         return t.localDate === target.localDate && t.localTime === target.localTime;
       });
-      if (match?.id) {
-        apptId = match.id;
-        console.log(`[clinicorp] id recuperado via lista: ${apptId}`);
-      }
+      if (match?.id) return { id: match.id };
+      return { absent: true };
     } catch (e) {
       console.error("[clinicorp] re-consulta de agenda falhou:", e);
+      return { unknown: true };
     }
+  };
+
+  // O create do Clinicorp às vezes responde 2xx SEM devolver o id (ou em formato
+  // não reconhecido). Antes, isso retornava id="" e o sistema tratava como
+  // sucesso — gerando confirmação falsa ao lead, troca de etiqueta e nenhuma
+  // notificação. Agora: tentamos extrair o id; se não vier, re-consultamos a
+  // agenda; e só re-tentamos o POST quando a re-consulta CONFIRMA ausência
+  // (nunca quando ela falha — aí poderíamos duplicar). Sem id confiável ao
+  // final, lançamos erro (o caller trata como falha e não confirma).
+  const MAX_ATTEMPTS = 2;
+  let apptId: string | number = "";
+  let apptDt: string = params.datetime;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const res = await fetchClinicorp(
+      `${config.baseUrl}/rest/v1/appointment/create_appointment_by_api`,
+      {
+        method: "POST",
+        headers: authHeaders(config),
+        body: JSON.stringify(body),
+      },
+    );
+    const rawBody = await res.text();
+    if (!res.ok) {
+      const msg = `Clinicorp create appointment failed: ${res.status} — ${rawBody.slice(0, 300)}`;
+      console.error(`[clinicorp] tentativa ${attempt}/${MAX_ATTEMPTS}:`, msg);
+      if (attempt < MAX_ATTEMPTS) continue;
+      throw new Error(msg);
+    }
+
+    console.log("[clinicorp] create appointment response:", rawBody.slice(0, 500));
+    let json: Record<string, unknown> = {};
+    try {
+      json = JSON.parse(rawBody) as Record<string, unknown>;
+    } catch {
+      json = {};
+    }
+    const apptObj =
+      (json.appointment as unknown) ??
+      (json.Appointment as unknown) ??
+      (json.data as unknown) ??
+      json;
+    apptId = pickId(apptObj) ?? pickId(json) ?? "";
+    apptDt = pickDt(apptObj) ?? pickDt(json) ?? params.datetime;
+    if (apptId) break;
+
+    // Sem id na resposta — confere na agenda antes de decidir re-tentar.
+    console.warn(
+      `[clinicorp] tentativa ${attempt}/${MAX_ATTEMPTS}: id ausente na resposta — re-consultando agenda`,
+    );
+    const found = await findCreatedAppointmentId();
+    if ("id" in found) {
+      apptId = found.id;
+      console.log(`[clinicorp] id recuperado via lista: ${apptId}`);
+      break;
+    }
+    if ("unknown" in found) {
+      // Não dá pra confirmar se existe — re-tentar poderia duplicar. Falha.
+      throw new Error(
+        "Clinicorp: agendamento não confirmado (resposta sem id e re-consulta da agenda falhou)",
+      );
+    }
+    // found.absent: o agendamento comprovadamente não existe → re-tenta o create.
+    if (attempt < MAX_ATTEMPTS) {
+      console.warn(
+        `[clinicorp] agendamento ausente na agenda — nova tentativa de create (${attempt + 1}/${MAX_ATTEMPTS})`,
+      );
+    }
+  }
+
+  if (!apptId) {
+    throw new Error(
+      `Clinicorp: agendamento não confirmado após ${MAX_ATTEMPTS} tentativas (sem id e ausente na agenda)`,
+    );
   }
 
   return {
