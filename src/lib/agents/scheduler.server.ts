@@ -446,6 +446,22 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
   };
 }
 
+/** Resumo do caso para o NotesPatient do Clinicorp (≤150 chars). Usa o que já
+ *  foi coletado na qualificação (queixa/motivo em `notes` + `interest`) — sem
+ *  custo nem latência de uma chamada de LLM extra no agendamento. */
+function buildClinicorpCaseNotes(ld: LeadData): string {
+  const segs: string[] = [];
+  const notes = (ld.notes ?? "").trim();
+  if (notes) segs.push(notes);
+  const interest = (ld.interest ?? "").trim();
+  if (interest && !notes.toLowerCase().includes(interest.toLowerCase())) {
+    segs.push(`Interesse: ${interest}`);
+  }
+  let s = segs.join(" — ").replace(/\s*\n+\s*/g, "; ").replace(/\s{2,}/g, " ").trim();
+  if (s.length > 150) s = s.slice(0, 149).trimEnd() + "…";
+  return s;
+}
+
 function formatSlot(s: ClinicorpSlot): {
   iso: string;
   end_iso: string;
@@ -802,6 +818,7 @@ async function execCriarAgendamento(
       datetime: ld.selected_slot_iso,
       endDatetime: chosenSlot?.end_iso,
       dentistPersonId: ld.dentist_person_id,
+      notes: buildClinicorpCaseNotes(ld),
     });
     await applyBookedTagSwap(ctx);
     await removeLeadFromSequences(ctx);

@@ -450,6 +450,7 @@ export async function createClinicorpAppointment(
     datetime: string;   // ISO 8601 — usado para extrair date, fromTime
     endDatetime?: string; // ISO 8601 — usado para toTime (opcional)
     dentistPersonId?: number; // sobrescreve o profissional da config
+    notes?: string; // resumo do caso → NotesPatient no Clinicorp (máx 150 chars)
   },
 ): Promise<AppointmentResult> {
   const config = await loadConfig(accountId);
@@ -499,6 +500,12 @@ export async function createClinicorpAppointment(
   };
   if (dentistPersonId) {
     body.Dentist_PersonId = dentistPersonId;
+  }
+  // Observações do agendamento (resumo do caso) → campo NotesPatient. Limite
+  // defensivo de 150 chars; vazio não é enviado.
+  const notes = (params.notes ?? "").trim();
+  if (notes) {
+    body.NotesPatient = notes.slice(0, 150);
   }
 
   console.log("[clinicorp] create appointment body:", JSON.stringify(body));
