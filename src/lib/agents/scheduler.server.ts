@@ -448,6 +448,7 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
 
 function formatSlot(s: ClinicorpSlot): {
   iso: string;
+  end_iso: string;
   date_label: string;
   time_label: string;
   dentist_person_id?: number;
@@ -461,6 +462,9 @@ function formatSlot(s: ClinicorpSlot): {
   }).format(d);
   return {
     iso: s.start,
+    // Fim REAL do slot conforme a grade da agenda (ex.: 14:30). Usado no
+    // create para não estourar a grade com a duração padrão (ex.: 40 min).
+    end_iso: s.end,
     date_label,
     time_label: s.fromTime,
     dentist_person_id: s.dentistPersonId,
@@ -787,10 +791,16 @@ async function execCriarAgendamento(
 
   // Default: Clinicorp
   try {
+    // Fim REAL do slot escolhido (da grade da agenda) — evita estourar a grade
+    // com a duração padrão. Ex.: agenda oferta 14:00–14:30, mas a duração
+    // configurada é 40min → sem isto o create pediria 14:00–14:40 e o Clinicorp
+    // recusaria como "ocupado".
+    const chosenSlot = ld.offered_slots?.find((s) => s.iso === ld.selected_slot_iso);
     const appt = await createClinicorpAppointment(ctx.accountId, {
       phone: bookingPhone,
       name: leadName,
       datetime: ld.selected_slot_iso,
+      endDatetime: chosenSlot?.end_iso,
       dentistPersonId: ld.dentist_person_id,
     });
     await applyBookedTagSwap(ctx);
@@ -1241,7 +1251,9 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
 
   const failed =
     toolResult.includes('"ok":false') || toolResult.includes('"ok": false');
-  if (failed && /INDISPON|indispon|conflit/i.test(toolResult)) {
+  // "ocupad(o)" é a redação do Clinicorp para slot tomado — tratar igual a
+  // indisponível/conflito (limpar o slot e re-listar).
+  if (failed && /INDISPON|indispon|conflit|ocupad/i.test(toolResult)) {
     console.warn(
       `[scheduler] slot indisponível conv=${ctx.conversationId} — atualizando horários`,
     );
@@ -1581,6 +1593,33 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         ) as Partial<LeadData>,
       );
     }
+  }
+
+  // ── Trava de confirmação falsa ────────────────────────────────────────────
+  // Se houve tentativa de agendar NESTE turn mas NÃO há appointment_id, a criação
+  // falhou (ex.: Clinicorp "ocupado"). O modelo às vezes diz "agendado com
+  // sucesso" mesmo assim — aqui sobrescrevemos deterministicamente: nunca
+  // confirmamos sem appointment_id; informamos indisponibilidade e re-ofertamos.
+  const bookingAttempted = toolsCalled.some((t) =>
+    ["criar_agendamento", "agendar_clinicorp", "agendar_google_calendar", "agendar_clinup"].includes(t),
+  );
+  if (bookingAttempted && !ctx.leadData.appointment_id && !doubleBookingBlocked) {
+    const slots = (ctx.leadData.offered_slots ?? []).slice(0, 2);
+    if (slots.length > 0) {
+      const opcoes = slots.map((s) => `${s.date_label} às ${s.time_label}`).join(" ou ");
+      reply = `Ihh, esse horário acabou de ficar indisponível 😕 Mas consigo te encaixar em ${opcoes}. Qual fica melhor pra você?`;
+    } else {
+      reply =
+        "Ihh, esse horário acabou de ficar indisponível 😕 Me dá só um instante que já te trago outras opções de horário, tá?";
+    }
+    // Nunca terminar em CONFIRMED sem appointment_id; volta a ofertar e força
+    // o lead a reescolher (o slot anterior pode estar tomado).
+    outStage = "SLOT_OFFER";
+    outPatch = { ...outPatch, appointment_id: undefined, selected_slot_iso: undefined };
+    mergedTelemetry.false_confirmation_blocked = true;
+    console.warn(
+      `[scheduler] confirmação falsa bloqueada conv=${ctx.conversationId} — booking sem appointment_id`,
+    );
   }
 
   return {

@@ -38,8 +38,10 @@ export interface LeadData {
   /** Label da agenda Google escolhida (multi-agenda). Definido ao listar/oferecer
    *  horários e reusado no booking/cancelamento para agir na agenda certa. */
   selected_agenda?: string;
-  /** Lista atual de horários oferecidos (para validar escolha do lead). */
-  offered_slots?: { iso: string; date_label: string; time_label: string; dentist_person_id?: number }[];
+  /** Lista atual de horários oferecidos (para validar escolha do lead).
+   *  end_iso = fim real do slot conforme a grade da agenda (Clinicorp), usado
+   *  no booking para não estourar a grade com a duração padrão. */
+  offered_slots?: { iso: string; end_iso?: string; date_label: string; time_label: string; dentist_person_id?: number }[];
   /** ID do agendamento criado (BOOKING → CONFIRMED). */
   appointment_id?: number | string;
   /** Confirmou compromisso na pergunta de "posso garantir ao Dr. ___?". */
