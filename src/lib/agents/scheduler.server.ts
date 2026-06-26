@@ -28,6 +28,7 @@ import {
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
 import { loadHelenaAccount, removeContactFromAllSequences } from "@/lib/helena.server";
+import { summarizeConversationForNotification } from "@/lib/agents/notify-booking.server";
 import {
   swapTagBySynonyms,
   NOT_SCHEDULED_SYNONYMS,
@@ -446,10 +447,9 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
   };
 }
 
-/** Resumo do caso para o NotesPatient do Clinicorp (≤150 chars). Usa o que já
- *  foi coletado na qualificação (queixa/motivo em `notes` + `interest`) — sem
- *  custo nem latência de uma chamada de LLM extra no agendamento. */
-function buildClinicorpCaseNotes(ld: LeadData): string {
+/** Fallback determinístico do resumo do caso (sem LLM): usa o que já foi
+ *  coletado na qualificação (queixa/motivo em `notes` + `interest`). */
+function buildClinicorpCaseNotesFallback(ld: LeadData): string {
   const segs: string[] = [];
   const notes = (ld.notes ?? "").trim();
   if (notes) segs.push(notes);
@@ -460,6 +460,26 @@ function buildClinicorpCaseNotes(ld: LeadData): string {
   let s = segs.join(" — ").replace(/\s*\n+\s*/g, "; ").replace(/\s{2,}/g, " ").trim();
   if (s.length > 150) s = s.slice(0, 149).trimEnd() + "…";
   return s;
+}
+
+/** Resumo do caso (≤150 chars) gerado por IA a partir da conversa, para o campo
+ *  Notes do Clinicorp. Best-effort: se a IA falhar/voltar vazia, cai no resumo
+ *  determinístico montado dos dados coletados. */
+async function buildClinicorpCaseNotes(ctx: AgentContext): Promise<string> {
+  const fallback = () => buildClinicorpCaseNotesFallback(ctx.leadData);
+  if (!ctx.orKey || !ctx.history?.length) return fallback();
+  try {
+    const summary = await summarizeConversationForNotification(
+      ctx.orKey,
+      ctx.ragGateModel,
+      ctx.history,
+      "Resuma o caso do paciente em UMA frase de no máximo 150 caracteres, para a equipe da clínica ler na agenda. Foque no motivo/queixa e no procedimento de interesse. Sem saudações, sem nome próprio, sem telefone, sem links.",
+    );
+    const s = (summary ?? "").trim();
+    return s ? s.slice(0, 150) : fallback();
+  } catch {
+    return fallback();
+  }
 }
 
 function formatSlot(s: ClinicorpSlot): {
@@ -818,7 +838,7 @@ async function execCriarAgendamento(
       datetime: ld.selected_slot_iso,
       endDatetime: chosenSlot?.end_iso,
       dentistPersonId: ld.dentist_person_id,
-      notes: buildClinicorpCaseNotes(ld),
+      notes: await buildClinicorpCaseNotes(ctx),
     });
     await applyBookedTagSwap(ctx);
     await removeLeadFromSequences(ctx);
