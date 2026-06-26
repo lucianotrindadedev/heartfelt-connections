@@ -168,9 +168,20 @@ export const transcribeAudio = createServerFn({ method: "POST" })
     if (!apiKey) {
       return { ok: false, text: "", error: "GROQ não configurada no servidor." };
     }
-    const m = data.audioBase64.match(/^data:([^;]+);base64,(.*)$/);
-    const mime = m?.[1] ?? "audio/webm";
-    const base64 = m?.[2] ?? data.audioBase64;
+    // Parse robusto do data URL. O MediaRecorder pode gerar mime com parâmetros
+    // (ex.: "audio/webm;codecs=opus"), então o cabeçalho fica
+    // "data:audio/webm;codecs=opus;base64,...". Pegamos tudo antes da PRIMEIRA
+    // vírgula como header e o resto como base64; o mime é a parte antes do ";".
+    let mime = "audio/webm";
+    let base64 = data.audioBase64;
+    if (data.audioBase64.startsWith("data:")) {
+      const comma = data.audioBase64.indexOf(",");
+      if (comma !== -1) {
+        const header = data.audioBase64.slice(5, comma); // ex.: audio/webm;codecs=opus;base64
+        mime = header.split(";")[0]?.trim() || "audio/webm";
+        base64 = data.audioBase64.slice(comma + 1);
+      }
+    }
     const bytes = new Uint8Array(Buffer.from(base64, "base64"));
     return transcribeAudioBytes(bytes, mime, apiKey, { language: data.language ?? "pt" });
   });
