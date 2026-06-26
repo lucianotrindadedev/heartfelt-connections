@@ -717,6 +717,14 @@ export async function cancelClinicorpAppointment(
 
 // ── Warm-up: agendamentos próximos ─────────────────────────────────────────
 
+/** Normaliza telefone BR para o formato de conversations.phone (DDD+número,
+ *  sem DDI). Ex.: "+5521994880302" → "21994880302". */
+function normalizeBrPhone(raw: string): string {
+  const digits = (raw || "").replace(/\D/g, "");
+  if (digits.length >= 12 && digits.startsWith("55")) return digits.slice(2);
+  return digits;
+}
+
 export async function listClinicorpUpcomingAppointments(
   accountId: string,
   from: string,
@@ -724,34 +732,44 @@ export async function listClinicorpUpcomingAppointments(
 ): Promise<{ id: number | string; start: string; patientName: string; phone: string; status: string }[]> {
   const config = await loadConfig(accountId);
 
+  // Contrato real da API: GET com `from`/`to` (YYYY-MM-DD). A resposta é um
+  // ARRAY direto de agendamentos — cada item traz date + fromTime (hora local
+  // BRT), PatientName, MobilePhone e id. (Os nomes antigos date_from/date_to e
+  // o envelope {appointments:[...]} nunca existiram → warm-up sempre vinha vazio.)
   const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
   url.searchParams.set("subscriber_id", config.subscriberId);
   url.searchParams.set("business_id", String(config.businessId));
-  if (config.codeLink) url.searchParams.set("code_link", config.codeLink);
-  if (config.profissionalIds.length === 1) {
-    url.searchParams.set("dentist_person_id", String(config.profissionalIds[0]));
-  }
-  url.searchParams.set("date_from", from.slice(0, 10));
-  url.searchParams.set("date_to", to.slice(0, 10));
+  url.searchParams.set("from", from.slice(0, 10));
+  url.searchParams.set("to", to.slice(0, 10));
 
   const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const body = await res.text();
+    console.error(`[clinicorp] list upcoming falhou: ${res.status} — ${body.slice(0, 200)}`);
+    return [];
+  }
 
-  const json = (await res.json()) as {
-    appointments?: {
-      id?: number | string;
-      start_datetime?: string;
-      patient_name?: string;
-      patient_phone?: string;
-      status?: string;
-    }[];
-  };
+  const json = (await res.json()) as unknown;
+  const rows = Array.isArray(json) ? (json as Record<string, unknown>[]) : [];
 
-  return (json.appointments ?? []).map((a) => ({
-    id: a.id ?? "",
-    start: a.start_datetime ?? "",
-    patientName: a.patient_name ?? "",
-    phone: a.patient_phone ?? "",
-    status: a.status ?? "",
-  }));
+  const out: { id: number | string; start: string; patientName: string; phone: string; status: string }[] = [];
+  for (const a of rows) {
+    if (a.Deleted) continue; // agendamento excluído
+    const dateRaw = String(a.date ?? ""); // "2026-06-26T03:00:00.000Z" (00:00 BRT do dia)
+    const fromTime = String(a.fromTime ?? ""); // "13:30" ou "9:30"
+    if (!dateRaw || !fromTime) continue;
+    const [hh, mm] = fromTime.split(":");
+    if (!hh || !mm) continue;
+    const localTime = `${hh.padStart(2, "0")}:${mm.padStart(2, "0")}`;
+    const start = `${dateRaw.slice(0, 10)}T${localTime}:00-03:00`;
+
+    out.push({
+      id: (a.id as number | string) ?? "",
+      start,
+      patientName: String(a.PatientName ?? a.Name ?? ""),
+      phone: normalizeBrPhone(String(a.MobilePhone ?? "")),
+      status: String(a.CategoryDescription ?? ""),
+    });
+  }
+  return out;
 }
