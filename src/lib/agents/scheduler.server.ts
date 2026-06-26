@@ -1182,7 +1182,15 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
 }> {
   if (ctx.leadData.appointment_id) return { patch: {}, toolsCalled: [] };
   if (!hasBookingIntegration(ctx)) return { patch: {}, toolsCalled: [] };
-  if (ctx.stage !== "BOOKING" && ctx.stage !== "NAME_COLLECT") {
+  // SLOT_OFFER incluído: quando o lead escolhe o horário e os dados obrigatórios
+  // já estão completos (ex.: nome coletado antes), agendamos NO MESMO turno —
+  // sem "aguarde um instante". O isReadyForBooking/preflight ainda barram se
+  // faltar algo. tryAutoSelectOfferedSlot já opera em SLOT_OFFER.
+  if (
+    ctx.stage !== "BOOKING" &&
+    ctx.stage !== "NAME_COLLECT" &&
+    ctx.stage !== "SLOT_OFFER"
+  ) {
     return { patch: {}, toolsCalled: [] };
   }
 
@@ -1535,7 +1543,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // geramos a confirmação no mesmo turn.
   if (
     !ctx.leadData.appointment_id &&
-    (ctx.stage === "NAME_COLLECT" || ctx.stage === "BOOKING")
+    (ctx.stage === "SLOT_OFFER" || ctx.stage === "NAME_COLLECT" || ctx.stage === "BOOKING")
   ) {
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, outPatch);
     const lateBooking = await tryDeterministicBooking(ctx);

@@ -70,7 +70,7 @@ export interface LeadData {
 const TRANSITIONS: Record<Stage, Stage[]> = {
   RECEPTION: ["QUALIFICATION", "ESCALATED"],
   QUALIFICATION: ["QUALIFICATION", "SLOT_OFFER", "ESCALATED"],
-  SLOT_OFFER: ["SLOT_OFFER", "NAME_COLLECT", "QUALIFICATION", "ESCALATED"],
+  SLOT_OFFER: ["SLOT_OFFER", "NAME_COLLECT", "QUALIFICATION", "ESCALATED", "CONFIRMED"], // CONFIRMED = agendou no mesmo turn
   NAME_COLLECT: ["NAME_COLLECT", "BOOKING", "SLOT_OFFER", "ESCALATED", "CONFIRMED"],
   BOOKING: ["BOOKING", "CONFIRMED", "SLOT_OFFER", "ESCALATED"], // retry ou volta ao slot
   CONFIRMED: ["CONFIRMED", "ESCALATED", "SLOT_OFFER"], // SLOT_OFFER = remarcação (cancela o antigo e reoferta)
@@ -91,7 +91,9 @@ export interface ResolveNextStageOptions {
 
 function coerceProposedStage(current: Stage, proposed: Stage, leadData: LeadData): Stage {
   if (current === "SLOT_OFFER") {
-    if (proposed === "BOOKING" || proposed === "CONFIRMED") {
+    // Agendou no MESMO turn (lead escolheu horário com os dados já completos):
+    // appointment_id presente → CONFIRMED é legítimo direto de SLOT_OFFER.
+    if ((proposed === "BOOKING" || proposed === "CONFIRMED") && !leadData.appointment_id) {
       console.warn(
         `[stage] ${current} → ${proposed} redirecionado para NAME_COLLECT (coleta antes do booking)`,
       );
