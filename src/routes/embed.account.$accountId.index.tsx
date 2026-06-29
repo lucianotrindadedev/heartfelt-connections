@@ -642,7 +642,7 @@ function EmbedHome() {
         {/* ── Automações ── */}
         <section>
           <SectionTitle>Automações</SectionTitle>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <ActionCard
               icon={<Bell className="h-6 w-6" />}
               title="Follow-up"
