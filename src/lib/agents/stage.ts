@@ -182,3 +182,24 @@ export function routeForStage(stage: Stage): AgentRoute {
       return "escalation";
   }
 }
+
+/** Estágios de agendamento (roteiam para o scheduler). */
+const BOOKING_STAGES: readonly Stage[] = [
+  "SLOT_OFFER",
+  "NAME_COLLECT",
+  "BOOKING",
+  "CONFIRMED",
+];
+
+/**
+ * Agente SEM integração de agenda (ex.: agente de vendas) nunca deve entrar em
+ * estágio de agendamento — o scheduler tem prompt de marcação de horário e,
+ * sem ferramentas de agenda, acaba "inventando" um fluxo de agendamento
+ * (ex.: pedir "manhã ou noite") em vez de fechar a venda. Aqui rebaixamos
+ * qualquer estágio de booking para QUALIFICATION, mantendo o qualifier (que
+ * roda o prompt do agente) no comando. ESCALATED é preservado.
+ */
+export function clampStageForBooking(stage: Stage, hasBookingIntegration: boolean): Stage {
+  if (hasBookingIntegration) return stage;
+  return BOOKING_STAGES.includes(stage) ? "QUALIFICATION" : stage;
+}

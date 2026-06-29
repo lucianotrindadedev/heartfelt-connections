@@ -75,6 +75,7 @@ import {
   isStage,
   resolveNextStage,
   routeForStage,
+  clampStageForBooking,
   type LeadData,
   type Stage,
 } from "./stage";
@@ -487,11 +488,19 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       channel,
       effectivePhone,
     });
-    const { effectiveStage, reason: effectiveReason } = inferEffectiveStage(
+    const { effectiveStage: effectiveStageRaw, reason: effectiveReason } = inferEffectiveStage(
       { stage, leadData, history, hasBookingIntegration },
       signals,
       isReady,
     );
+    // Agente sem agenda nunca opera em estágio de agendamento → mantém o
+    // qualifier (prompt do agente) no comando, em vez de cair no scheduler.
+    const effectiveStage = clampStageForBooking(effectiveStageRaw, hasBookingIntegration);
+    if (effectiveStage !== effectiveStageRaw) {
+      console.log(
+        `[orch] sem agenda — estágio rebaixado conv=${conversationId} ${effectiveStageRaw} → ${effectiveStage}`,
+      );
+    }
     if (effectiveStage !== stage) {
       console.log(
         `[orch] effectiveStage conv=${conversationId} ${stage} → ${effectiveStage} (${effectiveReason})`,
@@ -554,7 +563,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     };
 
     // 10. Roteamento por stage (usa effectiveStage para evitar qualifier preso quando lead já aceitou agendar)
-    const route = routeForStage(effectiveStage);
+    let route = routeForStage(effectiveStage);
+    // Segurança extra: agente sem agenda nunca usa o scheduler (prompt de
+    // agendamento). O clamp de effectiveStage acima já garante isso, mas
+    // mantemos o guard caso algum estágio futuro escape do clamp.
+    if (route === "scheduler" && !hasBookingIntegration) {
+      route = "qualifier";
+    }
     console.log(
       `[orch] conv=${conversationId} stage=${stage}${effectiveStage !== stage ? ` (effective=${effectiveStage})` : ""} route=${route}`,
     );
@@ -703,6 +718,18 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       console.log(
         `[orch] stage override conv=${conversationId} ${resolvedStage} → ${newStage} (${overrideOut.reason})`,
       );
+    }
+    // Agente sem agenda: o estágio persistido nunca pode ser de agendamento
+    // (senão a conversa fica "presa" no scheduler no próximo turn). Mantém em
+    // QUALIFICATION para o qualifier/prompt do agente conduzir a venda.
+    {
+      const clamped = clampStageForBooking(newStage, hasBookingIntegration);
+      if (clamped !== newStage) {
+        console.log(
+          `[orch] sem agenda — newStage rebaixado conv=${conversationId} ${newStage} → ${clamped}`,
+        );
+        newStage = clamped;
+      }
     }
 
     // Guard anti escalada-fantasma: ESCALATED sem escalation_reason e sem o
