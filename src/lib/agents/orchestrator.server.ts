@@ -664,6 +664,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
     }
 
+    // Retorno agendado ("me chama amanhã"): segura os follow-ups até a data.
+    // Como o orquestrador SÓ roda quando o lead manda mensagem, se este turn
+    // NÃO definiu um novo retomar_em, o lead re-engajou → cancela qualquer
+    // retorno agendado anterior e volta ao fluxo normal.
+    if (!patch.retomar_em && finalLeadData.retomar_em) {
+      finalLeadData = { ...finalLeadData };
+      delete finalLeadData.retomar_em;
+      delete finalLeadData.retorno_motivo;
+      console.log(`[orch] retorno agendado cancelado conv=${conversationId} — lead re-engajou`);
+    } else if (patch.retomar_em) {
+      console.log(
+        `[orch] retorno agendado conv=${conversationId} retomar_em=${finalLeadData.retomar_em} motivo=${finalLeadData.retorno_motivo ?? "-"}`,
+      );
+    }
+
     // Transição com→sem appointment_id = cancelamento efetivado neste turn.
     const appointmentJustCancelled =
       hadAppointmentBefore && !finalLeadData.appointment_id;

@@ -170,6 +170,8 @@ const ResultSchema = z.object({
       appointment_id: z.union([z.number(), z.string()]).nullish(),
       notes: z.string().nullish(),
       escalation_reason: z.string().nullish(),
+      retomar_em: z.string().nullish(),
+      retorno_motivo: z.string().nullish(),
       custom_fields: coercibleStringRecord.nullish(),
     })
     // .nullish(): alguns modelos devolvem lead_data_patch:null (em vez de omitir)
@@ -1177,7 +1179,12 @@ ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n`
     ld.selected_slot_iso
       ? `\n# HORÁRIO JÁ ESCOLHIDO PELO LEAD\nselected_slot_iso=${ld.selected_slot_iso}\nNÃO chame listar_horarios de novo. Confirme este horário ao lead e colete os campos pendentes.\n`
       : ""
-  }`;
+  }
+# RETORNO AGENDADO (NÃO confundir com agendar consulta)
+Se o lead disser que não pode falar agora e pedir contato em outra data ("me chama
+amanhã", "semana que vem"), preencha lead_data_patch.retomar_em com a data/hora ISO
+8601 (fuso -03:00) calculada a partir de "Agora (BRT)", e retorno_motivo com o pedido.
+Isso pausa os follow-ups até lá. NÃO use para marcar consulta (isso é o fluxo de slots).`;
 }
 
 function hasBookingIntegration(ctx: AgentContext): boolean {

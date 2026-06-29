@@ -31,6 +31,12 @@ export interface LeadData {
   interest?: string;
   /** Reason quando estado for ESCALATED. */
   escalation_reason?: string;
+  /** ISO 8601 (com fuso) em que o lead pediu para ser contatado. Enquanto for
+   *  futuro, SEGURA os follow-ups automáticos até essa data ("me chama amanhã").
+   *  Limpo quando o lead volta a responder (re-engajou). */
+  retomar_em?: string;
+  /** Contexto do retorno agendado (ex.: "pediu para chamar amanhã às 15h"). */
+  retorno_motivo?: string;
   /** ISO 8601 do slot escolhido pelo lead. */
   selected_slot_iso?: string;
   /** ID do profissional do slot escolhido — obrigatório pelo Clinicorp. */

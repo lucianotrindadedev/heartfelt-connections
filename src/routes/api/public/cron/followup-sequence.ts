@@ -84,8 +84,26 @@ function isAllowedNow(
 
 interface ConversationMeta {
   stage?: string;
-  lead_data?: { appointment_id?: number | string; booked_tag_applied?: boolean } | null;
+  lead_data?: {
+    appointment_id?: number | string;
+    booked_tag_applied?: boolean;
+    /** "me chama amanhã": segura o follow-up até esta data (ISO 8601). */
+    retomar_em?: string;
+  } | null;
   [k: string]: unknown;
+}
+
+/**
+ * Retorno agendado pelo lead: enquanto `retomar_em` (em meta.lead_data) for uma
+ * data FUTURA, nenhum follow-up dispara — o lead pediu para ser contatado só lá.
+ * Data inválida ou no passado → não segura (fluxo normal).
+ */
+function isHeldByCallback(meta: ConversationMeta | null, now: Date): boolean {
+  const raw = meta?.lead_data?.retomar_em;
+  if (!raw) return false;
+  const when = new Date(raw);
+  if (isNaN(when.getTime())) return false;
+  return now < when;
 }
 
 /**
@@ -208,6 +226,13 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
 
               // Lead já agendado/escalado → nunca enviar follow-up.
               if (shouldSkipFollowup(conv.meta as ConversationMeta | null)) continue;
+
+              // Retorno agendado pelo lead ("me chama amanhã"): segura toda a
+              // sequência até a data combinada. Quando a data chega, o follow-up
+              // volta a fluir normalmente.
+              if (isHeldByCallback(conv.meta as ConversationMeta | null, now)) {
+                continue;
+              }
 
               // Última mensagem da conversa
               const { data: lastMsg } = await sb

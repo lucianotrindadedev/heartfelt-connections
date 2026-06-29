@@ -73,6 +73,8 @@ const ResultSchema = z.object({
       interest: z.string().nullish(),
       notes: z.string().nullish(),
       escalation_reason: z.string().nullish(),
+      retomar_em: z.string().nullish(),
+      retorno_motivo: z.string().nullish(),
       custom_fields: coercibleStringRecord.nullish(),
     })
     // .nullish(): alguns modelos devolvem lead_data_patch:null em vez de omitir.
@@ -331,7 +333,8 @@ Responda APENAS em JSON válido:
     "name": "nome COMPLETO (nome + sobrenome) se já mencionado — nunca abrevie nem guarde só o primeiro nome",
     "notes": "queixa principal em 1 frase",
     "custom_fields": { "chave": "valor" },
-    "escalation_reason": "se next_stage=ESCALATED"
+    "escalation_reason": "se next_stage=ESCALATED",
+    "retomar_em": "ISO 8601 com fuso -03:00 — SÓ se o lead pediu para ser contatado em outra data/hora; senão omita"
   },
   "reasoning": "1 frase do raciocínio"
 }`;
@@ -427,7 +430,8 @@ Responda APENAS em JSON válido:
     "interest": "IMPLANTE | FACETAS | PROTESE | CLAREAMENTO | ORTODONTIA | OUTRO",
     "name": "nome COMPLETO (nome + sobrenome) se já mencionado — nunca abrevie nem guarde só o primeiro nome",
     "notes": "queixa principal em 1 frase",
-    "escalation_reason": "se next_stage=ESCALATED"
+    "escalation_reason": "se next_stage=ESCALATED",
+    "retomar_em": "ISO 8601 com fuso -03:00 — SÓ se o lead pediu para ser contatado em outra data/hora; senão omita"
   },
   "reasoning": "1 frase do raciocínio"
 }`;
@@ -485,6 +489,21 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
       ? `\n\n# TURMA — CÁLCULO OFICIAL DO SISTEMA\nA turma correta para a data de nascimento informada é **${turmaCalc}**. Ao falar com o lead, use EXATAMENTE "${turmaCalc}" — NÃO recalcule e NÃO diga outra turma. A etiqueta da turma já é aplicada automaticamente; você NÃO deve etiquetar.`
       : `\n\n# TURMA\nAinda não há data de nascimento válida. NÃO afirme nenhuma turma ao lead enquanto não tiver a data. Quando a data chegar, o sistema calcula e etiqueta a turma automaticamente.`;
 
+  // Retorno agendado pelo lead: instrução SEMPRE presente (vai no stateBlock,
+  // que é o único bloco entregue quando o prompt do proprietário domina).
+  const callbackBlock = `
+
+# RETORNO AGENDADO PELO LEAD (NÃO é agendamento de consulta)
+Se o lead disser que NÃO pode falar agora e pedir para ser contatado DEPOIS
+("me chama amanhã", "fala comigo semana que vem", "só consigo segunda à tarde"):
+- Responda educadamente confirmando que você retorna na data combinada.
+- Calcule a data/hora em ISO 8601 com fuso -03:00 a partir de "Agora (BRT)" acima
+  (ex.: "amanhã às 15h" → "${(() => { const d = new Date(Date.now() + 86400000); const p = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(d); return `${p}T15:00:00-03:00`; })()}"; "semana que vem" sem hora → escolha um horário comercial, ex.: 10:00).
+- Preencha lead_data_patch.retomar_em com essa data e retorno_motivo com o pedido
+  em 1 frase. Isso PAUSA os follow-ups automáticos até a data combinada.
+NÃO preencha retomar_em quando o lead quer MARCAR consulta (isso é o fluxo de
+horários/slots) nem quando ele só está respondendo normalmente.`;
+
   // Bloco de ESTADO + tags = DADOS, não comportamento. Sempre presente.
   const stateBlock = `# ESTADO ATUAL
 
@@ -537,7 +556,7 @@ ${JSON.stringify(
   },
   null,
   2,
-)}`;
+)}${callbackBlock}`;
 
   // Quando o prompt do proprietário domina, entregamos SÓ estado/dados. A
   // abertura, o ritmo de ciclos e o fechamento vêm do prompt dele — injetar
