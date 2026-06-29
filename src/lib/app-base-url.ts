@@ -45,6 +45,13 @@ export function helenaWebhookUrl(accountId: string, baseUrl?: string): string {
     : `/api/public/webhook/helena/${accountId}`;
 }
 
+export function helenaAutomationWebhookUrl(accountId: string, baseUrl?: string): string {
+  const base = baseUrl ?? getAppBaseUrl();
+  return base
+    ? `${base}/api/public/webhook/helena-automation/${accountId}`
+    : `/api/public/webhook/helena-automation/${accountId}`;
+}
+
 export function embedAccountUrl(accountId: string, baseUrl?: string): string {
   const base = baseUrl ?? getAppBaseUrl();
   return base ? `${base}/embed/account/${accountId}` : `/embed/account/${accountId}`;

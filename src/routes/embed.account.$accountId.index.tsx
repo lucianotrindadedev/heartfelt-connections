@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, Navigate } from "@tanstack/react-router";
-import { helenaWebhookUrl } from "@/lib/app-base-url";
+import { helenaWebhookUrl, helenaAutomationWebhookUrl } from "@/lib/app-base-url";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -41,6 +41,9 @@ import {
   Square,
   ImagePlus,
   X,
+  Tags,
+  Trash2,
+  Copy,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -91,6 +94,13 @@ import {
   saveFollowupConfig,
   resetAgent,
 } from "@/lib/integrations.functions";
+import {
+  listTagAutomations,
+  createTagAutomation,
+  updateTagAutomation,
+  deleteTagAutomation,
+  listTagAutomationOptions,
+} from "@/lib/tag-automations.functions";
 import { listTemplates } from "@/lib/templates.functions";
 import {
   GCAL_TEMPLATE_VARS,
@@ -164,7 +174,8 @@ type SheetKey =
   | "settings"
   | "followup"
   | "warmup"
-  | "escalation";
+  | "escalation"
+  | "automations";
 
 // =================================================================
 // Blocker: conta não cadastrada
@@ -489,6 +500,11 @@ function EmbedHome() {
     return <EscalationView agentId={agentId} onClose={() => setOpenSheet(null)} />;
   }
 
+  // Full-screen Automações de etiqueta view
+  if (openSheet === "automations") {
+    return <AutomationsView agentId={agentId} accountId={accountId} onClose={() => setOpenSheet(null)} />;
+  }
+
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 via-white to-slate-50/80">
       {/* ── Header ── */}
@@ -653,6 +669,15 @@ function EmbedHome() {
               onClick={() => setOpenSheet("escalation")}
               iconClass="bg-gradient-to-br from-pink-400 to-pink-600 text-white shadow-pink-500/30"
               blobClass="bg-pink-400"
+            />
+            <ActionCard
+              icon={<Tags className="h-6 w-6" />}
+              title="Automações de etiqueta"
+              subtitle="Etiqueta no contato → adiciona à sequência"
+              label="Configurar"
+              onClick={() => setOpenSheet("automations")}
+              iconClass="bg-gradient-to-br from-indigo-400 to-violet-600 text-white shadow-violet-500/30"
+              blobClass="bg-violet-400"
             />
           </div>
         </section>
@@ -8640,6 +8665,310 @@ function EscalationView({ agentId, onClose }: { agentId: string; onClose: () => 
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+// =================================================================
+// Full-screen: Automações de etiqueta (tag → sequência)
+// =================================================================
+
+interface TagRule {
+  id: string;
+  enabled: boolean;
+  trigger_tag: string;
+  action_type: "add_to_sequence" | "remove_from_sequence";
+  sequence_id: string | null;
+  sequence_name: string | null;
+}
+
+function AutomationsView({
+  agentId,
+  accountId,
+  onClose,
+}: {
+  agentId: string;
+  accountId: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const listFn = useServerFn(listTagAutomations);
+  const createFn = useServerFn(createTagAutomation);
+  const updateFn = useServerFn(updateTagAutomation);
+  const deleteFn = useServerFn(deleteTagAutomation);
+  const optionsFn = useServerFn(listTagAutomationOptions);
+
+  const rulesQuery = useQuery({
+    queryKey: ["tag-automations", agentId],
+    queryFn: () => listFn({ data: { agentId } }),
+  });
+  const optionsQuery = useQuery({
+    queryKey: ["tag-automation-options", accountId],
+    queryFn: () => optionsFn({ data: { accountId } }),
+  });
+
+  const rules = (rulesQuery.data?.rules ?? []) as TagRule[];
+  const tags = optionsQuery.data?.tags ?? [];
+  const sequences = optionsQuery.data?.sequences ?? [];
+  const optionsError = optionsQuery.data?.ok === false ? optionsQuery.data.error : null;
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["tag-automations", agentId] });
+
+  const create = useMutation({
+    mutationFn: () =>
+      createFn({
+        data: {
+          agentId,
+          enabled: true,
+          trigger_tag: tags[0]?.name ?? "",
+          action_type: "add_to_sequence",
+          sequence_id: null,
+          sequence_name: null,
+        },
+      }),
+    onSuccess: invalidate,
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao criar regra."),
+  });
+
+  const update = useMutation({
+    mutationFn: (vars: Partial<TagRule> & { id: string }) => updateFn({ data: vars }),
+    onSuccess: invalidate,
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar."),
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => deleteFn({ data: { id } }),
+    onSuccess: invalidate,
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao remover."),
+  });
+
+  const webhookUrl = helenaAutomationWebhookUrl(accountId);
+  const [copied, setCopied] = useState(false);
+  const copyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(webhookUrl);
+      setCopied(true);
+      toast.success("URL copiada.");
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error("Não foi possível copiar.");
+    }
+  };
+
+  const isLoading = rulesQuery.isLoading || optionsQuery.isLoading;
+
+  return (
+    <div className="flex min-h-screen flex-col bg-slate-50">
+      {/* Title bar */}
+      <div className="flex items-center gap-3 border-b border-slate-200 bg-white px-5 py-3">
+        <button onClick={onClose} className="flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary/80">
+          ← VOLTAR
+        </button>
+        <div className="mx-1 h-4 w-px bg-slate-200" />
+        <div className="flex items-center gap-2">
+          <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-violet-100">
+            <Tags className="h-3.5 w-3.5 text-violet-600" />
+          </span>
+          <span className="text-sm font-semibold text-foreground">Automações de etiqueta</span>
+        </div>
+        <div className="flex-1" />
+        <button
+          onClick={() => create.mutate()}
+          disabled={create.isPending}
+          className="flex items-center gap-1.5 rounded-full bg-primary px-4 py-1.5 text-xs font-semibold text-white shadow-sm shadow-primary/30 transition-opacity hover:opacity-90 disabled:opacity-60"
+        >
+          {create.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+          Nova regra
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        </div>
+      ) : (
+        <div className="mx-auto w-full max-w-2xl px-6 py-8 space-y-5">
+          {/* Info banner */}
+          <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
+            <p className="text-sm font-semibold text-violet-800">Etiqueta dispara uma sequência</p>
+            <p className="mt-1 text-xs text-violet-700">
+              Quando a etiqueta escolhida for adicionada ao contato no CRM Helena, o contato é
+              automaticamente adicionado (ou removido) da sequência selecionada. Cada regra roda
+              <strong> uma vez por contato</strong>.
+            </p>
+          </div>
+
+          {/* Webhook URL para registrar no CRM */}
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold text-foreground">Webhook das automações</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Registre esta URL no CRM Helena (Ajustes → Integrações → Webhooks) no evento de
+              <strong> alteração de contato / etiqueta</strong>. Sem isso as regras não disparam.
+            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <code className="flex-1 truncate rounded-lg bg-slate-100 px-3 py-2 text-[11px] text-slate-700">
+                {webhookUrl}
+              </code>
+              <button
+                onClick={copyUrl}
+                className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+                {copied ? "Copiado" : "Copiar"}
+              </button>
+            </div>
+          </div>
+
+          {optionsError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800">
+              {optionsError} Você ainda pode criar regras, mas as listas de etiquetas e sequências
+              podem aparecer vazias.
+            </div>
+          )}
+
+          {/* Lista de regras */}
+          {rules.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center">
+              <Tags className="mx-auto h-8 w-8 text-slate-300" />
+              <p className="mt-2 text-sm font-semibold text-foreground">Nenhuma automação ainda</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Clique em <strong>Nova regra</strong> para criar a primeira.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {rules.map((rule) => (
+                <TagRuleCard
+                  key={rule.id}
+                  rule={rule}
+                  tags={tags}
+                  sequences={sequences}
+                  onChange={(patch) => update.mutate({ id: rule.id, ...patch })}
+                  onDelete={() => remove.mutate(rule.id)}
+                  saving={update.isPending || remove.isPending}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TagRuleCard({
+  rule,
+  tags,
+  sequences,
+  onChange,
+  onDelete,
+  saving,
+}: {
+  rule: TagRule;
+  tags: { id: string; name: string }[];
+  sequences: { id: string; name: string }[];
+  onChange: (patch: Partial<TagRule>) => void;
+  onDelete: () => void;
+  saving: boolean;
+}) {
+  const selectCls =
+    "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-60";
+
+  return (
+    <div className={`rounded-2xl border border-slate-200 bg-white p-4 shadow-sm ${rule.enabled ? "" : "opacity-70"}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={rule.enabled}
+            onCheckedChange={(v) => onChange({ enabled: v })}
+            disabled={saving}
+          />
+          <span className="text-xs font-semibold text-foreground">
+            {rule.enabled ? "Ativa" : "Pausada"}
+          </span>
+        </div>
+        <button
+          onClick={onDelete}
+          disabled={saving}
+          className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-rose-500 hover:bg-rose-50 disabled:opacity-60"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+          Remover
+        </button>
+      </div>
+
+      <div className="mt-3 grid grid-cols-1 gap-3">
+        {/* Gatilho: etiqueta */}
+        <div>
+          <Label className="text-[11px] text-muted-foreground">Quando a etiqueta</Label>
+          {tags.length > 0 ? (
+            <select
+              className={selectCls}
+              value={rule.trigger_tag}
+              onChange={(e) => onChange({ trigger_tag: e.target.value })}
+              disabled={saving}
+            >
+              {!tags.some((t) => t.name === rule.trigger_tag) && (
+                <option value={rule.trigger_tag}>{rule.trigger_tag || "— selecione —"}</option>
+              )}
+              {tags.map((t) => (
+                <option key={t.id} value={t.name}>{t.name}</option>
+              ))}
+            </select>
+          ) : (
+            <Input
+              className="text-xs"
+              value={rule.trigger_tag}
+              placeholder="Nome exato da etiqueta"
+              onChange={(e) => onChange({ trigger_tag: e.target.value })}
+              disabled={saving}
+            />
+          )}
+        </div>
+
+        {/* Ação */}
+        <div>
+          <Label className="text-[11px] text-muted-foreground">Ação</Label>
+          <select
+            className={selectCls}
+            value={rule.action_type}
+            onChange={(e) => onChange({ action_type: e.target.value as TagRule["action_type"] })}
+            disabled={saving}
+          >
+            <option value="add_to_sequence">Adicionar à sequência</option>
+            <option value="remove_from_sequence">Remover da sequência</option>
+          </select>
+        </div>
+
+        {/* Sequência alvo */}
+        <div>
+          <Label className="text-[11px] text-muted-foreground">Sequência</Label>
+          {sequences.length > 0 ? (
+            <select
+              className={selectCls}
+              value={rule.sequence_id ?? ""}
+              onChange={(e) => {
+                const seq = sequences.find((s) => s.id === e.target.value);
+                onChange({ sequence_id: seq?.id ?? null, sequence_name: seq?.name ?? null });
+              }}
+              disabled={saving}
+            >
+              <option value="">— selecione —</option>
+              {sequences.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          ) : (
+            <Input
+              className="text-xs"
+              value={rule.sequence_id ?? ""}
+              placeholder="ID da sequência"
+              onChange={(e) => onChange({ sequence_id: e.target.value || null })}
+              disabled={saving}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }

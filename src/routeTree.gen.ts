@@ -40,6 +40,7 @@ import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/c
 import { Route as ApiPublicCronDrainConversationRouteImport } from './routes/api/public/cron/drain-conversation'
 import { Route as AuthenticatedAdminAccountAccountIdRouteImport } from './routes/_authenticated.admin.account.$accountId'
 import { Route as ApiPublicWebhookHelenaAccountIdRouteImport } from './routes/api/public/webhook/helena/$accountId'
+import { Route as ApiPublicWebhookHelenaAutomationAccountIdRouteImport } from './routes/api/public/webhook/helena-automation/$accountId'
 import { Route as ApiPublicWebhookAutomacoesFufFinanceiroRouteImport } from './routes/api/public/webhook/automacoes/fuf-financeiro'
 import { Route as ApiPublicWebhookAutomacoesFaltososRouteImport } from './routes/api/public/webhook/automacoes/faltosos'
 import { Route as ApiPublicAuthGoogleCallbackRouteImport } from './routes/api/public/auth/google/callback'
@@ -210,6 +211,12 @@ const ApiPublicWebhookHelenaAccountIdRoute =
     path: '/api/public/webhook/helena/$accountId',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicWebhookHelenaAutomationAccountIdRoute =
+  ApiPublicWebhookHelenaAutomationAccountIdRouteImport.update({
+    id: '/api/public/webhook/helena-automation/$accountId',
+    path: '/api/public/webhook/helena-automation/$accountId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicWebhookAutomacoesFufFinanceiroRoute =
   ApiPublicWebhookAutomacoesFufFinanceiroRouteImport.update({
     id: '/api/public/webhook/automacoes/fuf-financeiro',
@@ -262,6 +269,7 @@ export interface FileRoutesByFullPath {
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
   '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
+  '/api/public/webhook/helena-automation/$accountId': typeof ApiPublicWebhookHelenaAutomationAccountIdRoute
   '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRoutesByTo {
@@ -294,6 +302,7 @@ export interface FileRoutesByTo {
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
   '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
+  '/api/public/webhook/helena-automation/$accountId': typeof ApiPublicWebhookHelenaAutomationAccountIdRoute
   '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRoutesById {
@@ -331,6 +340,7 @@ export interface FileRoutesById {
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
   '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
+  '/api/public/webhook/helena-automation/$accountId': typeof ApiPublicWebhookHelenaAutomationAccountIdRoute
   '/api/public/webhook/helena/$accountId': typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 export interface FileRouteTypes {
@@ -368,6 +378,7 @@ export interface FileRouteTypes {
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
     | '/api/public/webhook/automacoes/fuf-financeiro'
+    | '/api/public/webhook/helena-automation/$accountId'
     | '/api/public/webhook/helena/$accountId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -400,6 +411,7 @@ export interface FileRouteTypes {
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
     | '/api/public/webhook/automacoes/fuf-financeiro'
+    | '/api/public/webhook/helena-automation/$accountId'
     | '/api/public/webhook/helena/$accountId'
   id:
     | '__root__'
@@ -436,6 +448,7 @@ export interface FileRouteTypes {
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
     | '/api/public/webhook/automacoes/fuf-financeiro'
+    | '/api/public/webhook/helena-automation/$accountId'
     | '/api/public/webhook/helena/$accountId'
   fileRoutesById: FileRoutesById
 }
@@ -461,6 +474,7 @@ export interface RootRouteChildren {
   ApiPublicAuthGoogleCallbackRoute: typeof ApiPublicAuthGoogleCallbackRoute
   ApiPublicWebhookAutomacoesFaltososRoute: typeof ApiPublicWebhookAutomacoesFaltososRoute
   ApiPublicWebhookAutomacoesFufFinanceiroRoute: typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
+  ApiPublicWebhookHelenaAutomationAccountIdRoute: typeof ApiPublicWebhookHelenaAutomationAccountIdRoute
   ApiPublicWebhookHelenaAccountIdRoute: typeof ApiPublicWebhookHelenaAccountIdRoute
 }
 
@@ -683,6 +697,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicWebhookHelenaAccountIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/webhook/helena-automation/$accountId': {
+      id: '/api/public/webhook/helena-automation/$accountId'
+      path: '/api/public/webhook/helena-automation/$accountId'
+      fullPath: '/api/public/webhook/helena-automation/$accountId'
+      preLoaderRoute: typeof ApiPublicWebhookHelenaAutomationAccountIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/webhook/automacoes/fuf-financeiro': {
       id: '/api/public/webhook/automacoes/fuf-financeiro'
       path: '/api/public/webhook/automacoes/fuf-financeiro'
@@ -794,6 +815,8 @@ const rootRouteChildren: RootRouteChildren = {
     ApiPublicWebhookAutomacoesFaltososRoute,
   ApiPublicWebhookAutomacoesFufFinanceiroRoute:
     ApiPublicWebhookAutomacoesFufFinanceiroRoute,
+  ApiPublicWebhookHelenaAutomationAccountIdRoute:
+    ApiPublicWebhookHelenaAutomationAccountIdRoute,
   ApiPublicWebhookHelenaAccountIdRoute: ApiPublicWebhookHelenaAccountIdRoute,
 }
 export const routeTree = rootRouteImport

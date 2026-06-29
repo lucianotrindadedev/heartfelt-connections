@@ -326,6 +326,114 @@ export async function listHelenaSequenceIds(account: HelenaAccount): Promise<str
 }
 
 /**
+ * Lista as sequências (cadências) do CRM Helena com id + nome.
+ * Endpoint: GET /chat/v1/sequence
+ * Usado nos dropdowns da UI de automações de etiqueta.
+ */
+export interface HelenaSequence {
+  id: string;
+  name: string;
+}
+
+export async function listHelenaSequences(account: HelenaAccount): Promise<HelenaSequence[]> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}/chat/v1/sequence`, {
+      headers: { Authorization: account.token, accept: "application/json" },
+    });
+    if (!res.ok) return [];
+    const json = (await res.json()) as unknown;
+    const arr: unknown[] = Array.isArray(json)
+      ? json
+      : ((json as { data?: unknown[]; items?: unknown[] })?.data ??
+         (json as { items?: unknown[] })?.items ??
+         []);
+    return arr
+      .map((s) => {
+        const r = (s as Record<string, unknown>) ?? {};
+        const id = String(r.id ?? r.Id ?? r._id ?? "").trim();
+        const name = String(r.name ?? r.Name ?? r.title ?? r.description ?? id).trim();
+        return { id, name };
+      })
+      .filter((s) => s.id);
+  } catch (e) {
+    console.warn("[helena] listHelenaSequences falhou:", e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
+/**
+ * Adiciona o contato a uma sequência (cadência) específica do CRM.
+ * Endpoint: POST /chat/v1/sequence/{id}/contact  body: { contactId | phoneNumber }
+ * (espelha o DELETE de removeContactFromAllSequences).
+ */
+export async function addContactToSequence(
+  account: HelenaAccount,
+  sequenceId: string,
+  who: { contactId?: string | null; phoneNumber?: string | null },
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const body: Record<string, unknown> = {};
+  if (who.contactId) body.contactId = who.contactId;
+  else if (who.phoneNumber) body.phoneNumber = formatPhoneE164(who.phoneNumber);
+  if (Object.keys(body).length === 0) {
+    return { ok: false, status: 400, body: "contactId ou phoneNumber obrigatório" };
+  }
+
+  const res = await fetch(`${base}/chat/v1/sequence/${sequenceId}/contact`, {
+    method: "POST",
+    headers: {
+      Authorization: account.token,
+      "Content-Type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    console.error(
+      `[helena] addContactToSequence falhou ${res.status} — seq=${sequenceId} body=${text.slice(0, 300)}`,
+    );
+  }
+  return { ok: res.ok, status: res.status, body: text };
+}
+
+/**
+ * Remove o contato de UMA sequência específica do CRM.
+ * Endpoint: DELETE /chat/v1/sequence/{id}/contact  body: { contactId | phoneNumber }
+ */
+export async function removeContactFromSequence(
+  account: HelenaAccount,
+  sequenceId: string,
+  who: { contactId?: string | null; phoneNumber?: string | null },
+): Promise<{ ok: boolean; status: number; body: string }> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const body: Record<string, unknown> = {};
+  if (who.contactId) body.contactId = who.contactId;
+  else if (who.phoneNumber) body.phoneNumber = formatPhoneE164(who.phoneNumber);
+  if (Object.keys(body).length === 0) {
+    return { ok: false, status: 400, body: "contactId ou phoneNumber obrigatório" };
+  }
+
+  const res = await fetch(`${base}/chat/v1/sequence/${sequenceId}/contact`, {
+    method: "DELETE",
+    headers: {
+      Authorization: account.token,
+      "Content-Type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    console.error(
+      `[helena] removeContactFromSequence falhou ${res.status} — seq=${sequenceId} body=${text.slice(0, 300)}`,
+    );
+  }
+  return { ok: res.ok, status: res.status, body: text };
+}
+
+/**
  * Remove o contato de TODAS as sequências (cadências) do CRM.
  * Endpoint: DELETE /chat/v1/sequence/{id}/contact  body: { contactId | phoneNumber }
  * Best-effort: varre as sequências e tenta remover de cada uma (no-op onde não
