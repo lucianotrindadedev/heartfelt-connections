@@ -992,6 +992,12 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
   cancelar_agendamento e confirme o cancelamento. NÃO peça novos horários.
 - Se o lead quiser MUDAR a data/horário (remarcar) → chame remarcar_agendamento,
   depois ofereça novos horários (listar_horarios) e use next_stage="SLOT_OFFER".
+- ⛔ MUDANÇA DE HORÁRIO NÃO É AUTOMÁTICA: criar_agendamento NÃO move um evento
+  existente (é bloqueado por já haver appointment_id). A ÚNICA forma de mudar a
+  data/hora é remarcar_agendamento. Portanto, se o lead pedir outro horário,
+  NUNCA diga "atualizei", "remarquei", "mudei", "ajustei" ou "já está alterado"
+  ANTES de chamar remarcar_agendamento e receber ok=true. Sem a tool, o horário
+  na agenda continua o ANTIGO e o lead aparece num horário que não existe.
 - Nunca diga que cancelou/remarcou sem a tool retornar ok=true.
 
 ${fieldsBlock}
@@ -1057,6 +1063,7 @@ ${phoneBlock ? `\n${phoneBlock}\n` : ""}
 5. Se o lead pedir explicitamente para falar com humano → next_stage="ESCALATED".
 6. **NUNCA diga "agendei", "marquei" ou "está confirmado" sem appointment_id em lead_data** (ok=true de criar_agendamento).
 7. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
+7b. **MUDAR data/hora de um agendamento existente SÓ via remarcar_agendamento.** criar_agendamento não move evento já criado. NUNCA diga "atualizei/remarquei/mudei/ajustei o agendamento" antes de remarcar_agendamento retornar ok=true — senão a agenda fica no horário antigo e o lead aparece num horário inexistente.
 8. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
 9. **NUNCA repita pergunta de campo que já consta em LEAD_DATA / "Já coletados".** Telefone do lead já está no sistema — não peça telefone em custom_fields.
 

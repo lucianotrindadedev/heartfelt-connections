@@ -762,6 +762,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Flags de telemetria do turn (vao para meta da mensagem + agent_runs).
     let duplicateReplyBlocked = false;
     let falseBookingClaimBlocked = false;
+    let falseRescheduleClaimBlocked = false;
     let stallReplyBlocked = false;
     let forcedSchedulingAdvance = userAcceptedSchedulingProposal;
 
@@ -794,6 +795,50 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           newStage = finalLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
         }
       }
+    }
+
+    // Guard anti-"remarcação falsa": JÁ existe appointment_id e o agente afirma
+    // que MUDOU/atualizou/remarcou o horário, mas NENHUMA tool de remarcação/
+    // cancelamento/criação rodou neste turn → a alteração NÃO aconteceu na
+    // agenda (o evento continua na data antiga). Mudar data/hora só funciona via
+    // remarcar_agendamento (a tool criar é bloqueada por idempotência quando já
+    // há appointment_id). Sem este guard, o agente "confirma" a mudança e o lead
+    // aparece num horário que não existe na agenda. Bloqueia a confirmação falsa
+    // e pede a reconfirmação, que aciona o remarcar_agendamento no próximo turn.
+    const rescheduleToolCalled = (result.tools_called ?? []).some((t) =>
+      [
+        "remarcar_agendamento",
+        "reagendar",
+        "reagendar_agendamento",
+        "cancelar_agendamento",
+        "cancelar_google_calendar",
+        "cancelar_clinicorp",
+        "criar_agendamento",
+        "agendar_google_calendar",
+        "agendar_clinicorp",
+        "agendar_clinup",
+      ].includes(t),
+    );
+    const claimsReschedule =
+      /\b(atualizei|atualizado|remarquei|remarcad[oa]|reagendei|reagendad[oa]|mudei|alterei|ajustei|troquei|transferi)\b/i.test(
+        reply,
+      ) && /\b(agenda|agendamento|hor[áa]rio|visita|consulta|reuni[ãa]o)\b/i.test(reply);
+    if (
+      !falseBookingClaimBlocked &&
+      hasBookingIntegration &&
+      !!finalLeadData.appointment_id &&
+      !appointmentJustCancelled &&
+      !rescheduleToolCalled &&
+      claimsReschedule
+    ) {
+      falseRescheduleClaimBlocked = true;
+      console.warn(
+        `[orch] reply afirma remarcação sem tool conv=${conversationId} — bloqueando alteração falsa`,
+      );
+      reply =
+        "Pra eu garantir a mudança na agenda certinho, me confirma só a nova data e horário que você prefere? Assim já remarco a sua visita. 😊";
+      // Mantém o agendamento atual (stage CONFIRMED); o próximo turn, com a
+      // reconfirmação do lead, dispara o remarcar_agendamento.
     }
 
     // Guard anti-"stall": o agente PROMETE agir ("vou finalizar seu cadastro",
@@ -933,6 +978,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // Telemetria: marcadores de intervencoes deterministicas.
         duplicate_reply_blocked: duplicateReplyBlocked || undefined,
         false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
+        false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
         stall_reply_blocked: stallReplyBlocked || undefined,
         forced_scheduling_advance: forcedSchedulingAdvance || undefined,
         preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,
