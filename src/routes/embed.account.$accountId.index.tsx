@@ -6165,7 +6165,6 @@ function IntegrationsTab({
   audioHabilitado,
   audioTranscrever,
   audioResponder,
-  configuredIntegrations,
   secretsLast4,
 }: {
   accountId: string;
@@ -6174,21 +6173,16 @@ function IntegrationsTab({
   audioHabilitado: boolean;
   audioTranscrever: boolean;
   audioResponder: boolean;
-  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
+  configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
   secretsLast4?: { openrouter: string | null; elevenlabs: string | null };
 }) {
-  const hasAny =
-    configuredIntegrations.clinicorp ||
-    configuredIntegrations.clinup ||
-    configuredIntegrations.google_calendar;
-
   const [showSecrets, setShowSecrets] = useState(false);
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-8 space-y-4">
       <div className="rounded-xl border border-primary/20 bg-primary/5 px-5 py-3.5">
         <p className="text-xs text-primary/80 leading-relaxed">
-          <strong className="text-primary">Dica:</strong> Configure aqui os canais e ferramentas que seu assistente usa. Apenas as integrações do seu template estão disponíveis.
+          <strong className="text-primary">Dica:</strong> Configure aqui os canais e ferramentas que seu assistente usa. Todas as integrações de agenda ficam disponíveis — ative e preencha as credenciais da que a sua clínica usa (não precisa aplicar template).
         </p>
       </div>
 
@@ -6240,26 +6234,17 @@ function IntegrationsTab({
           opcional para o usuário ajustar. Resposta em voz (TTS) ainda não
           implementada. */}
 
-      {/* Integrações de agendamento — condicionais ao template */}
-      {configuredIntegrations.clinicorp && (
-        <ClinicorpPanel accountId={accountId} />
-      )}
-      {configuredIntegrations.clinup && (
-        <ClinupPanel accountId={accountId} />
-      )}
-      {configuredIntegrations.google_calendar && (
-        <GoogleCalendarPanel accountId={accountId} agentSettings={agentSettings} />
-      )}
-
-      {/* Nenhuma integração configurada ainda */}
-      {!hasAny && (
-        <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-5 py-6 text-center">
-          <p className="text-sm font-medium text-slate-500">Nenhuma integração de agendamento configurada</p>
-          <p className="mt-1 text-xs text-slate-400">
-            Aplique um template com integração (Clinicorp, Clinup ou Google Agenda) para ativar as ferramentas de agendamento.
-          </p>
-        </div>
-      )}
+      {/* Integrações de agendamento — SEMPRE disponíveis. Cada painel tem seu
+          próprio toggle "Ativar"; ao salvar com o toggle ligado, a integração
+          passa a valer para o agente (independe de template). */}
+      <SectionTitle>Agenda</SectionTitle>
+      <p className="-mt-2 px-1 text-[11px] text-muted-foreground">
+        Ative apenas a agenda que a sua clínica usa. Lembre de ligar o toggle
+        <strong> "Ativar"</strong> dentro do painel antes de salvar.
+      </p>
+      <ClinicorpPanel accountId={accountId} />
+      <ClinupPanel accountId={accountId} />
+      <GoogleCalendarPanel accountId={accountId} agentSettings={agentSettings} />
     </div>
   );
 }
@@ -7337,7 +7322,11 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
       setBusinessId(data.business_id ? String(data.business_id) : "");
       setCodeLink(data.code_link ?? "");
       setSelectedProfIds(data.profissional_ids ?? []);
-      setAtivo(data.ativo ?? false);
+      // Config NOVA (sem token salvo) → toggle já começa LIGADO, para que
+      // "preencher + salvar" ative a integração sem passo extra (evita o caso
+      // "salvei mas não integrou" por esquecer de ligar o toggle). Config já
+      // existente respeita o ativo salvo.
+      setAtivo(data.token_configured ? (data.ativo ?? false) : true);
     }
   }, [data]);
 
