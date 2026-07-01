@@ -7355,12 +7355,17 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
           business_id: businessId ? Number(businessId) : undefined,
           code_link: codeLink || undefined,
           profissional_ids: selectedProfIds,
-          ativo,
+          // Ao inserir um token novo, ativa automaticamente (evita "salvei mas
+          // continua inativo" por esquecer de ligar o toggle). Sem token novo,
+          // respeita o toggle (permite desativar depois).
+          ativo: token ? true : ativo,
         },
       }),
     onSuccess: () => {
-      toast.success("Clinicorp salvo.");
+      const hadToken = !!token;
+      toast.success(hadToken ? "Clinicorp salvo e ativado." : "Clinicorp salvo.");
       setToken("");
+      if (hadToken) setAtivo(true);
       qc.invalidateQueries({ queryKey: ["clinicorp-config", accountId] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar."),

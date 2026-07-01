@@ -192,7 +192,7 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
     const sb = getSelfhost();
     const { accountId, api_token, code_link, profissional_ids, ...rest } = data;
 
-    const patch: Record<string, unknown> = { ...rest };
+    const patch: Record<string, unknown> = { ...rest, atualizado_em: new Date().toISOString() };
     if (code_link !== undefined) patch.agenda_id = code_link || null;
     // armazena como jsonb array ([] vira null — sem filtro de profissional)
     if (profissional_ids !== undefined) {
@@ -200,9 +200,13 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
     }
     if (api_token) patch.api_token_enc = await encryptValue(api_token);
 
-    await sb
+    // IMPORTANTE: checar o erro. Antes o upsert era "fire-and-forget" e uma
+    // falha (constraint, RLS, etc.) retornava ok:true silenciosamente — o painel
+    // mostrava "salvo" mas nada persistia ("continua inativo").
+    const { error } = await sb
       .from("clinicorp_config")
       .upsert({ account_id: accountId, ...patch }, { onConflict: "account_id" });
+    if (error) throw new Error(`Falha ao salvar Clinicorp: ${error.message}`);
 
     return { ok: true };
   });
@@ -279,9 +283,10 @@ export const saveClinupConfig = createServerFn({ method: "POST" })
       patch.api_token_enc = await encryptValue(api_token);
     }
 
-    await sb
+    const { error } = await sb
       .from("clinup_config")
       .upsert({ account_id: accountId, ...patch }, { onConflict: "account_id" });
+    if (error) throw new Error(`Falha ao salvar Clinup: ${error.message}`);
 
     return { ok: true };
   });
