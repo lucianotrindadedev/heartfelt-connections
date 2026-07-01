@@ -17,6 +17,8 @@ const stepInputSchema = z.object({
   mode: z.enum(["message", "contextual"]),
   message_text: z.string().max(2000).nullable().optional(),
   contextual_instruction: z.string().max(2000).nullable().optional(),
+  // Template oficial (HSM) usado quando o disparo cai FORA das 24h do WhatsApp.
+  helena_template_name: z.string().max(200).nullable().optional(),
   window_start_hour: z.number().int().min(0).max(23).nullable().optional(),
   window_end_hour: z.number().int().min(0).max(23).nullable().optional(),
   allowed_days: z.array(z.string()).nullable().optional(),

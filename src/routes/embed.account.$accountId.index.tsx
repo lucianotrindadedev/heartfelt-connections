@@ -487,7 +487,7 @@ function EmbedHome() {
 
   // Full-screen Follow-up view
   if (openSheet === "followup") {
-    return <FollowupView agentId={agentId} onClose={() => setOpenSheet(null)} />;
+    return <FollowupView agentId={agentId} accountId={accountId} onClose={() => setOpenSheet(null)} />;
   }
 
   // Full-screen Warm-up view
@@ -7728,24 +7728,32 @@ interface FollowupStep {
   mode: "message" | "contextual";
   message_text: string | null;
   contextual_instruction: string | null;
+  helena_template_name: string | null;
   window_start_hour: number | null;
   window_end_hour: number | null;
   allowed_days: string[] | null;
 }
 
-function FollowupView({ agentId, onClose }: { agentId: string; onClose: () => void }) {
+function FollowupView({ agentId, accountId, onClose }: { agentId: string; accountId: string; onClose: () => void }) {
   const qc = useQueryClient();
   const listFn = useServerFn(listFollowupSteps);
   const createFn = useServerFn(createFollowupStep);
   const updateFn = useServerFn(updateFollowupStep);
   const deleteFn = useServerFn(deleteFollowupStep);
+  const templatesFn = useServerFn(listAccountHelenaTemplates);
 
   const q = useQuery({
     queryKey: ["followup-steps", agentId],
     queryFn: () => listFn({ data: { agentId } }),
   });
 
+  const templatesQ = useQuery({
+    queryKey: ["helena-templates", accountId],
+    queryFn: () => templatesFn({ data: { accountId } }),
+  });
+
   const steps = (q.data?.steps ?? []) as FollowupStep[];
+  const templates = (templatesQ.data?.templates ?? []) as HelenaTemplateOption[];
 
   async function addStep() {
     const nextOrdem = steps.length > 0 ? Math.max(...steps.map((s) => s.ordem)) + 1 : 1;
@@ -7760,6 +7768,7 @@ function FollowupView({ agentId, onClose }: { agentId: string; onClose: () => vo
           mode: "message",
           message_text: "",
           contextual_instruction: null,
+          helena_template_name: null,
           window_start_hour: 8,
           window_end_hour: 20,
           allowed_days: ["seg", "ter", "qua", "qui", "sex"],
@@ -7836,6 +7845,8 @@ function FollowupView({ agentId, onClose }: { agentId: string; onClose: () => vo
             <FollowupStepCard
               key={step.id}
               step={step}
+              templates={templates}
+              templatesLoading={templatesQ.isLoading}
               onUpdate={(patch) => void updateStep(step, patch)}
               onRemove={() => void removeStep(step.id)}
             />
@@ -7866,10 +7877,14 @@ const DAY_OPTIONS = [
 
 function FollowupStepCard({
   step,
+  templates,
+  templatesLoading,
   onUpdate,
   onRemove,
 }: {
   step: FollowupStep;
+  templates: HelenaTemplateOption[];
+  templatesLoading: boolean;
   onUpdate: (patch: Partial<FollowupStep>) => void;
   onRemove: () => void;
 }) {
@@ -7879,6 +7894,8 @@ function FollowupStepCard({
   const [mode, setMode] = useState(step.mode);
   const [msgText, setMsgText] = useState(step.message_text ?? "");
   const [ctxInstr, setCtxInstr] = useState(step.contextual_instruction ?? "");
+  const [templateName, setTemplateName] = useState(step.helena_template_name ?? "");
+  const [templateManual, setTemplateManual] = useState(false);
   const [winStart, setWinStart] = useState(step.window_start_hour ?? 8);
   const [winEnd, setWinEnd] = useState(step.window_end_hour ?? 20);
   const [days, setDays] = useState<string[]>(step.allowed_days ?? []);
@@ -8014,6 +8031,52 @@ function FollowupStepCard({
           </p>
         </div>
       )}
+
+      {/* Template para disparo FORA das 24h (ex.: retorno agendado) */}
+      <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+        <div className="mb-1.5 flex items-center justify-between">
+          <Label className="text-xs font-semibold text-amber-800">
+            Template do CRM (fora das 24h)
+          </Label>
+          {templates.length > 0 && (
+            <button
+              onClick={() => setTemplateManual((m) => !m)}
+              className="text-[10px] font-medium text-primary hover:underline"
+            >
+              {templateManual ? "Escolher da lista" : "Digitar nome manualmente"}
+            </button>
+          )}
+        </div>
+        <p className="mb-2 text-[10px] text-amber-700">
+          Se o lead pediu "me chama amanhã" (ou o follow-up cai depois de 24h da última
+          mensagem dele), o WhatsApp só entrega <strong>template oficial</strong>. Escolha o
+          template de reengajamento aqui. Deixe vazio para não disparar fora das 24h.
+        </p>
+        {templatesLoading ? (
+          <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Carregando templates do CRM…
+          </div>
+        ) : templateManual || templates.length === 0 ? (
+          <input
+            type="text"
+            value={templateName}
+            onChange={(e) => setTemplateName(e.target.value)}
+            onBlur={() => commit({ helena_template_name: templateName.trim() || null })}
+            placeholder="Ex: reengajamento, retorno_agendado, ..."
+            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+        ) : (
+          <TemplatePicker
+            templates={templates}
+            selectedName={templateName}
+            onSelect={(name) => {
+              setTemplateName(name);
+              commit({ helena_template_name: name || null });
+            }}
+          />
+        )}
+      </div>
 
       {/* Janela horária + dias */}
       <div className="grid grid-cols-2 gap-4 mb-3">

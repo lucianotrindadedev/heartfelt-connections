@@ -18,7 +18,13 @@
 
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
-import { loadHelenaAccount, sendHelenaText } from "@/lib/helena.server";
+import {
+  loadHelenaAccount,
+  sendHelenaText,
+  loadHelenaSession,
+  findHelenaTemplateByName,
+  sendHelenaTemplate,
+} from "@/lib/helena.server";
 import { generateContextualFollowup } from "@/lib/agents/followup-context.server";
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import {
@@ -133,6 +139,7 @@ interface FollowupStep {
   mode: "message" | "contextual";
   message_text: string | null;
   contextual_instruction: string | null;
+  helena_template_name: string | null;
   window_start_hour: number | null;
   window_end_hour: number | null;
   allowed_days: string[] | null;
@@ -346,6 +353,90 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 }
 
               attempted++;
+
+              // ── Janela de 24h do WhatsApp ──────────────────────────────
+              // Texto livre só é entregue dentro de 24h da ÚLTIMA msg do lead.
+              // Fora disso (ex.: retorno agendado "me chama amanhã"), o WhatsApp
+              // só entrega TEMPLATE oficial. Então:
+              //   - dentro de 24h  → segue no fluxo de texto (message/contextual);
+              //   - fora de 24h    → envia o template do step (se configurado);
+              //                      sem template, pula (texto livre não entregaria).
+              const WINDOW_24H_MS = 24 * 60 * 60 * 1000;
+              const outsideWindow =
+                now.getTime() - cycleStartAt.getTime() > WINDOW_24H_MS;
+
+              if (outsideWindow) {
+                const templateName = (nextStep.helena_template_name ?? "").trim();
+                const sessionId = (conv.helena_session_id as string | null) ?? null;
+                if (!templateName || !sessionId) {
+                  // Sem template (ou sem sessão) não há como entregar fora das 24h.
+                  console.log(
+                    `[followup-seq] conv ${convId} fora das 24h e sem template — pulando (texto livre não entregaria)`,
+                  );
+                  continue;
+                }
+                try {
+                  const helena = await loadHelenaAccount(accountId);
+                  const session = await loadHelenaSession(helena, sessionId).catch(() => null);
+                  const channelId = session?.channelId ?? null;
+                  if (!channelId) {
+                    await sb.from("followup_step_runs").insert({
+                      step_id: nextStep.id, conversation_id: convId, agent_id: agentId,
+                      status: "failed", error: "no_channel_id_on_session",
+                    });
+                    continue;
+                  }
+                  const template = await findHelenaTemplateByName(helena, channelId, templateName);
+                  if (!template) {
+                    await sb.from("followup_step_runs").insert({
+                      step_id: nextStep.id, conversation_id: convId, agent_id: agentId,
+                      status: "failed", error: `template_not_found:${templateName}`,
+                    });
+                    continue;
+                  }
+                  const convMeta = conv.meta as { lead_data?: { name?: string } } | null;
+                  const leadName = (convMeta?.lead_data?.name ?? "").toString().trim();
+                  const sendRes = await sendHelenaTemplate(helena, {
+                    sessionId,
+                    templateId: template.id,
+                    parameters: leadName ? { nome: leadName } : {},
+                  });
+                  if (!sendRes.ok) {
+                    await sb.from("followup_step_runs").insert({
+                      step_id: nextStep.id, conversation_id: convId, agent_id: agentId,
+                      status: "failed",
+                      error: `Helena template ${sendRes.status}: ${sendRes.body.slice(0, 200)}`,
+                    });
+                    continue;
+                  }
+                  await sb.from("messages").insert({
+                    conversation_id: convId, role: "assistant",
+                    content: `[template] ${templateName}`,
+                    meta: {
+                      origem: "followup",
+                      followup_step_ordem: nextStep.ordem,
+                      followup_mode: "template",
+                      helena_template_name: templateName,
+                    },
+                  });
+                  await sb.from("followup_step_runs").insert({
+                    step_id: nextStep.id, conversation_id: convId, agent_id: agentId,
+                    message_sent: `[template] ${templateName}`, status: "sent",
+                  });
+                  console.log(
+                    `[followup-seq] conv ${convId} fora das 24h → template "${templateName}" enviado`,
+                  );
+                  processed++;
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  console.error(`[followup-seq] template falhou conv ${convId}: ${msg}`);
+                  await sb.from("followup_step_runs").insert({
+                    step_id: nextStep.id, conversation_id: convId, agent_id: agentId,
+                    status: "failed", error: msg.slice(0, 500),
+                  });
+                }
+                continue;
+              }
 
               // Resolve o texto: fixo ou contextual
               let messageText = "";
