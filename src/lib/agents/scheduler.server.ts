@@ -1108,6 +1108,9 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(now);
+  // Data de hoje em ISO (YYYY-MM-DD, fuso SP) — referência p/ o parâmetro
+  // data_alvo do listar_horarios e para o agente nunca ofertar no passado.
+  const todayIso = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(now);
 
   const ld = ctx.leadData;
   const offeredSlotsText = (ld.offered_slots ?? [])
@@ -1142,7 +1145,7 @@ ${ld.selected_agenda ? `- Agenda já escolhida nesta conversa: "${ld.selected_ag
 
   return `# ESTADO ATUAL
 
-- Agora (BRT): ${dateStr}
+- 📅 HOJE é ${dateStr} (São Paulo) — data de referência ISO: ${todayIso}. Localize-se SEMPRE por ela. NUNCA ofereça, confirme ou mencione horários no PASSADO. Só ofereça horários vindos de listar_horarios (que já começa a partir de hoje). Ao passar data_alvo, calcule "amanhã"/"sexta"/"dia 15" a partir de HOJE (${todayIso}).
 - Stage corrente: ${ctx.stage}
 - Telefone do lead: ${ctx.effectivePhone ?? "(sem telefone WhatsApp confirmado)"}
 - Canal: ${ctx.channel}

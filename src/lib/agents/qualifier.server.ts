@@ -507,7 +507,7 @@ horários/slots) nem quando ele só está respondendo normalmente.`;
   // Bloco de ESTADO + tags = DADOS, não comportamento. Sempre presente.
   const stateBlock = `# ESTADO ATUAL
 
-- Agora (BRT): ${dateStr}
+- 📅 HOJE é ${dateStr} (horário de São Paulo). Esta é a SUA referência de tempo: antes de falar de qualquer dia/data, localize-se por ela. NUNCA mencione ou ofereça datas no PASSADO. Ao interpretar "amanhã", "semana que vem", "sexta", "dia 15", "hoje à tarde", calcule SEMPRE a partir de HOJE.
 - Stage corrente: ${ctx.stage}
 - Ciclos de conversa já completos: ${cycleCount}
 - Canal: ${ctx.channel}
