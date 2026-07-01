@@ -154,6 +154,49 @@ function readLeadDataFromMeta(meta: ConversationMeta | null): LeadData {
   return ld as LeadData;
 }
 
+/**
+ * Remove horários JÁ PASSADOS de offered_slots e limpa selected_slot_iso quando
+ * ele aponta para o passado. Necessário porque offered_slots persiste em
+ * lead_data por toda a conversa: se o lead some por dias e volta, o agente
+ * reofertava os slots antigos (ex.: hoje 30/06 oferecendo 26/06) em vez de
+ * consultar a agenda de novo. Ao esvaziar os slots, o scheduler é forçado a
+ * chamar listar_horarios antes de ofertar.
+ */
+function pruneStalePastSlots(
+  leadData: LeadData,
+  now: Date,
+): { leadData: LeadData; changed: boolean } {
+  const nowMs = now.getTime();
+  const isFuture = (iso?: string): boolean => {
+    if (!iso) return false;
+    const t = new Date(iso).getTime();
+    return !isNaN(t) && t > nowMs;
+  };
+
+  let changed = false;
+  const next: LeadData = { ...leadData };
+
+  if (Array.isArray(next.offered_slots) && next.offered_slots.length > 0) {
+    const future = next.offered_slots.filter((s) => isFuture(s.iso));
+    if (future.length !== next.offered_slots.length) {
+      changed = true;
+      if (future.length > 0) next.offered_slots = future;
+      else delete next.offered_slots;
+    }
+  }
+
+  // selected_slot_iso no passado nunca deve virar agendamento — limpa para o
+  // agente reofertar. (Só quando ainda NÃO há appointment_id: um agendamento já
+  // criado é tratado pelo fluxo de cancelamento/remarcação, não aqui.)
+  if (!next.appointment_id && next.selected_slot_iso && !isFuture(next.selected_slot_iso)) {
+    delete next.selected_slot_iso;
+    delete next.dentist_person_id;
+    changed = true;
+  }
+
+  return { leadData: next, changed };
+}
+
 async function persistStageAndLeadData(
   conversationId: string,
   currentMeta: ConversationMeta | null,
@@ -371,6 +414,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const meta = (conv.data.meta as ConversationMeta | null) ?? null;
     const stage = readStageFromMeta(meta);
     let leadData = readLeadDataFromMeta(meta);
+    // Poda horários já passados (offered_slots/selected_slot_iso) ANTES de
+    // qualquer lógica de slot — evita reofertar horário no passado quando a
+    // conversa reativa depois de dias.
+    {
+      const pruned = pruneStalePastSlots(leadData, new Date());
+      if (pruned.changed) {
+        leadData = pruned.leadData;
+        console.log(`[orch] slots passados removidos conv=${conversationId}`);
+      }
+    }
     // Captura ANTES de qualquer mutação — usado para detectar transições de
     // agendamento (sem→com = agendou; com→sem = cancelou) e disparar a
     // notificação 1x só. slotIsoBefore guarda o horário antigo (para a msg de
