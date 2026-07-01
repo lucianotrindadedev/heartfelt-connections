@@ -981,6 +981,11 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
   pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em
   \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios. Só avance para
   NAME_COLLECT quando selected_slot_iso estiver preenchido.
+  ⚠️ Se o lead perguntar por OUTRO dia/data — inclusive relativo ("tem amanhã?",
+  "e sexta?", "semana que vem", "outro dia", "de manhã") — NÃO responda com
+  pergunta de confirmação nem repita os horários antigos: CHAME listar_horarios
+  com \`data_alvo\` desse dia (calcule "amanhã"/"sexta" a partir de HOJE) e
+  ofereça os horários reais daquele dia. Consultar a agenda é obrigatório aqui.
 - **NAME_COLLECT**: só se selected_slot_iso existir. Confirme o slot. NÃO
   chame listar_horarios. Colete os campos obrigatórios (UM por mensagem).${commitmentEnabled ? ` Ao final dos campos, pergunte: "${commitmentQ}"` : ""}
 - **BOOKING**: o sistema cria o agendamento. Se criar_agendamento ok=true,
@@ -1046,7 +1051,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
-- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Se o lead pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios — sem isso a busca não alcança datas distantes. Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
+- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Se o lead pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios — sem isso a busca não alcança datas distantes. **Se o lead perguntar por OUTRO dia/data, inclusive relativo ("tem amanhã?", "e sexta?", "semana que vem", "outro dia", "de manhã"), NÃO responda com pergunta de confirmação nem repita os horários antigos: chame listar_horarios com \`data_alvo\` daquele dia (calcule "amanhã"/"sexta" a partir de HOJE) e ofereça os horários reais. Consultar a agenda é obrigatório.** Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
 - **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou — peça desculpas e ofereça outro horário.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
