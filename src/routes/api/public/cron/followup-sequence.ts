@@ -215,9 +215,15 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
             .eq("id", agentId)
             .single();
           if (!agentRow.data?.ativo) continue;
+          const agentSettings = agentRow.data.settings as Record<string, string> | null;
+          // Modo teste: NÃO dispara follow-up (o dono ainda está testando e não
+          // quer que a automação alcance clientes reais).
+          if (agentSettings?.test_mode === "true") {
+            console.log(`[followup-seq] agente ${agentId} em modo teste — follow-ups suspensos`);
+            continue;
+          }
           const accountId = agentRow.data.account_id as string;
-          const blockedTagsRaw =
-            (agentRow.data.settings as Record<string, string> | null)?.blocked_tags ?? null;
+          const blockedTagsRaw = agentSettings?.blocked_tags ?? null;
 
           // Busca conversas desse agente cuja ÚLTIMA mensagem foi do lead
           const { data: convs } = await sb

@@ -101,9 +101,15 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
             skips.push({ reason: "agent_inactive", details: agentId });
             continue;
           }
+          const agentSettings = agentRow.data.settings as Record<string, string> | null;
+          // Modo teste: NÃO dispara warm-up (mesma razão do follow-up — não
+          // alcançar clientes reais enquanto o dono ainda está testando).
+          if (agentSettings?.test_mode === "true") {
+            skips.push({ reason: "test_mode", details: agentId });
+            continue;
+          }
           const accountId = agentRow.data.account_id as string;
-          const blockedTagsRaw =
-            (agentRow.data.settings as Record<string, string> | null)?.blocked_tags ?? null;
+          const blockedTagsRaw = agentSettings?.blocked_tags ?? null;
 
           // Helena account
           const helena = await loadHelenaAccount(accountId).catch(() => null);
