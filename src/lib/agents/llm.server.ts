@@ -486,7 +486,16 @@ export async function callLlmStructuredWithFallback<T>(
       // modelo devolve content vazio / JSON inválido (LlmError 200). Isso é
       // comum em modelos com reasoning (ex.: gemini-flash gastando o output em
       // "pensamento") — o modelo de fallback costuma salvar o turno.
-      const contentIssue = e instanceof LlmError && e.status === 200;
+      // Um ZodError (schema validation) tem a MESMA causa: o modelo devolveu um
+      // JSON que não bate com o schema (ex.: faltando "reply"). Antes ele era
+      // lançado direto SEM tentar fallback — o que derrubava o turno inteiro
+      // ("instabilidade técnica"). Agora também aciona o fallback.
+      const schemaIssue =
+        !!e &&
+        typeof e === "object" &&
+        ((e as { name?: string }).name === "ZodError" ||
+          Array.isArray((e as { issues?: unknown }).issues));
+      const contentIssue = (e instanceof LlmError && e.status === 200) || schemaIssue;
       if (!isFallbackWorthy(e) && !contentIssue) throw e;
       console.warn(
         `[llm-fallback-structured] model=${model} falhou (${e instanceof Error ? e.message : e}) — tentando próximo`,
