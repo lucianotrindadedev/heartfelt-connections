@@ -707,6 +707,64 @@ function resolveBookingPhone(ctx: AgentContext): string | null {
   );
 }
 
+const NAME_VALIDATION_SCHEMA = z.object({
+  eh_nome: z.boolean(),
+  motivo: z.string().nullish(),
+});
+
+/**
+ * Valida SEMANTICAMENTE, via LLM, se o texto é o NOME PRÓPRIO de uma pessoa
+ * real (adequado para cadastro na clínica) — em vez de regras fixas. Rejeita
+ * agradecimento ("obrigado", "Deus abençoe"), recusa ("não obrigado"),
+ * saudação, pergunta, preferência de horário ("quinta à tarde"), apelido
+ * genérico, emoji ou frase/texto aleatório. É a barreira final antes de criar
+ * o agendamento — nenhum evento é criado sem o nome ser confirmado como real.
+ *
+ * Fail-open: se o validador (infra LLM) falhar, NÃO bloqueia o agendamento
+ * (evita travar um lead legítimo por indisponibilidade momentânea do modelo).
+ */
+async function validatePatientNameLLM(
+  ctx: AgentContext,
+  name: string,
+): Promise<{ valid: boolean; reason: string }> {
+  const candidate = (name ?? "").trim();
+  if (!candidate) return { valid: false, reason: "vazio" };
+
+  try {
+    const { result } = await callLlmStructuredWithFallback<z.infer<typeof NAME_VALIDATION_SCHEMA>>(
+      ctx.orKey,
+      {
+        model: ctx.toolModel,
+        systemCached:
+          "Você verifica se um texto é o NOME PRÓPRIO de uma pessoa real, para cadastro de paciente numa clínica. Responda SEMPRE em JSON.",
+        systemDynamic: "",
+        messages: [
+          {
+            role: "user",
+            content:
+              `Texto recebido no campo "nome do paciente": "${candidate}"\n\n` +
+              `É um nome próprio de pessoa (idealmente nome + sobrenome)?\n` +
+              `Responda { "eh_nome": true|false, "motivo": "curto" }.\n` +
+              `eh_nome=false para: agradecimento ("obrigado", "Deus abençoe", "amém"), recusa ("não", "não obrigado"), saudação, pergunta, preferência de horário ("quinta à tarde", "amanhã"), apelido genérico/isolado, emoji, ou frase/texto que claramente não é nome.\n` +
+              `eh_nome=true para nomes reais de pessoa, mesmo com só o primeiro nome se parecer nome próprio.`,
+          },
+        ],
+        maxTokens: 120,
+        temperature: 0,
+        toolChoice: "none",
+      },
+      (raw) => NAME_VALIDATION_SCHEMA.parse(raw),
+      ctx.toolFallbackModels,
+    );
+    return { valid: !!result.eh_nome, reason: result.motivo ?? "" };
+  } catch (e) {
+    console.warn(
+      `[scheduler] validador de nome indisponível (fail-open) conv=${ctx.conversationId}: ${e instanceof Error ? e.message : e}`,
+    );
+    return { valid: true, reason: "validador_indisponivel" };
+  }
+}
+
 async function execCriarAgendamento(
   ctx: AgentContext,
   agendaLabel?: string,
@@ -763,6 +821,22 @@ async function execCriarAgendamento(
   const leadName = resolveBookingLeadName(ld);
   if (!leadName) {
     return { result: JSON.stringify({ ok: false, error: "name ausente" }) };
+  }
+  // BARREIRA FINAL: valida via LLM que o nome é de fato um nome de pessoa real
+  // (não agradecimento/recusa/apelido/frase). Nenhum evento é criado sem isso.
+  const nameVerdict = await validatePatientNameLLM(ctx, leadName);
+  if (!nameVerdict.valid) {
+    console.warn(
+      `[scheduler] nome rejeitado pelo validador conv=${ctx.conversationId} name="${leadName.slice(0, 60)}" motivo=${nameVerdict.reason}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error: "NOME_INVALIDO",
+        need_valid_name: true,
+        motivo: nameVerdict.reason,
+      }),
+    };
   }
   const bookingPhone = resolveBookingPhone(ctx);
   if (!bookingPhone) {
@@ -1407,11 +1481,16 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, autoBooking.patch);
     baseDynamic = buildDynamicSystemPrompt(ctx);
   }
+  // Nome rejeitado pelo validador (need_valid_name) — o turn NÃO deve agendar
+  // nem ofertar horário: deve pedir o NOME COMPLETO do paciente.
+  let invalidNameBlocked = !!autoBooking.toolResult?.includes('"need_valid_name":true');
   if (autoBooking.toolResult) {
     baseDynamic += `\n\n# RESULTADO criar_agendamento (automático)\n${autoBooking.toolResult}\n` +
       (ctx.leadData.appointment_id
         ? "Evento criado na agenda. Confirme ao lead e use next_stage=CONFIRMED."
-        : "Falha ao criar evento. NÃO confirme agendamento — peça desculpas e ofereça outro horário.");
+        : invalidNameBlocked
+          ? "O nome informado NÃO é um nome de pessoa válido. NÃO agende e NÃO ofereça horários. Peça gentilmente o NOME COMPLETO do paciente (nome e sobrenome) para finalizar. next_stage=NAME_COLLECT."
+          : "Falha ao criar evento. NÃO confirme agendamento — peça desculpas e ofereça outro horário.");
   }
 
   const dynamic = extras ? baseDynamic + "\n\n" + extras : baseDynamic;
@@ -1548,6 +1627,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       ) {
         doubleBookingBlocked = true;
       }
+      if (outcome.result.includes('"need_valid_name":true')) {
+        invalidNameBlocked = true;
+      }
       console.log(`[scheduler] tool ${tc.function.name} → ${outcome.result.slice(0, 200)}`);
 
       workingMessages.push({
@@ -1623,6 +1705,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       Object.assign(mergedTelemetry, lateBooking.telemetry ?? {}, {
         same_turn_late_booking: !!ctx.leadData.appointment_id,
       });
+      if (lateBooking.toolResult?.includes('"need_valid_name":true')) {
+        invalidNameBlocked = true;
+      }
     }
 
     if (ctx.leadData.appointment_id) {
@@ -1672,6 +1757,18 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     }
   }
 
+  // ── Nome inválido: pede o nome completo (nunca agenda com nome que não é nome) ──
+  // O validador (LLM) rejeitou o "nome" (ex.: "Não, obrigado.", "Obrigado Deus
+  // abençoe", apelido, frase). Substitui a resposta deterministicamente por um
+  // pedido do nome completo — não agenda e não oferta horário.
+  if (invalidNameBlocked && !ctx.leadData.appointment_id) {
+    reply =
+      "Só preciso confirmar o nome completo do paciente (nome e sobrenome) para finalizar o agendamento. Como devo registrar?";
+    outStage = "NAME_COLLECT";
+    outPatch = { ...outPatch, appointment_id: undefined };
+    mergedTelemetry.invalid_name_blocked = true;
+  }
+
   // ── Trava de confirmação falsa ────────────────────────────────────────────
   // Se houve tentativa de agendar NESTE turn mas NÃO há appointment_id, a criação
   // falhou (ex.: Clinicorp "ocupado"). O modelo às vezes diz "agendado com
@@ -1680,7 +1777,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const bookingAttempted = toolsCalled.some((t) =>
     ["criar_agendamento", "agendar_clinicorp", "agendar_google_calendar", "agendar_clinup"].includes(t),
   );
-  if (bookingAttempted && !ctx.leadData.appointment_id && !doubleBookingBlocked) {
+  if (bookingAttempted && !ctx.leadData.appointment_id && !doubleBookingBlocked && !invalidNameBlocked) {
     const slots = (ctx.leadData.offered_slots ?? []).slice(0, 2);
     if (slots.length > 0) {
       const opcoes = slots.map((s) => `${s.date_label} às ${s.time_label}`).join(" ou ");

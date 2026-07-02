@@ -621,6 +621,34 @@ export function looksLikeDecline(text: string): boolean {
   return false;
 }
 
+/**
+ * Agradecimento / bênção / encerramento ("obrigado", "muito obrigado msm",
+ * "valeu", "Deus abençoe", "amém"). NÃO é nome de pessoa — caso real: o lead
+ * mandou "Obrigado msm Deus abençoe" e o sistema gravou isso como o nome do
+ * paciente (bloqueando o nome real que veio na mensagem seguinte).
+ * Diferente da recusa: agradecimento NÃO impede o agendamento — só não pode
+ * virar nome, para o nome verdadeiro ser capturado.
+ */
+export function looksLikeGratitudeOrClosing(text: string): boolean {
+  const t = text
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim();
+  if (!t) return false;
+  // Começa com agradecimento.
+  if (/^(muito\s+)?(obrigad[oa]|obg|obgd|obgda|vlw|valeu|agradec|grat[oa]|amem)\b/.test(t)) {
+    return true;
+  }
+  // Contém bênção.
+  if (/\bdeus\s+(te\s+|lhe\s+|vos\s+)?(abencoe|abencoa|abencoou|proteja|ilumine|guarde)\b/.test(t)) {
+    return true;
+  }
+  if (/\bque\s+deus\b/.test(t)) return true;
+  return false;
+}
+
 function looksLikePersonName(text: string): boolean {
   const t = text.trim();
   if (!t || looksLikeBirthDate(t) || looksLikeSchedulingPreference(t)) return false;
@@ -629,6 +657,8 @@ function looksLikePersonName(text: string): boolean {
   if (looksLikeIntentMessage(t)) return false;
   // Rejeita recusas ("não, obrigado", "não quero") — nao sao nome de pessoa.
   if (looksLikeDecline(t)) return false;
+  // Rejeita agradecimento/bênção ("obrigado", "Deus abençoe") — nao sao nome.
+  if (looksLikeGratitudeOrClosing(t)) return false;
   // Nome de pessoa raramente passa de 6 palavras.
   const wordCount = t.split(/\s+/).filter(Boolean).length;
   if (wordCount > 6) return false;
@@ -1051,7 +1081,8 @@ export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadDat
     if (
       looksLikeSchedulingPreference(next.name) ||
       looksLikeIntentMessage(next.name) ||
-      looksLikeDecline(next.name)
+      looksLikeDecline(next.name) ||
+      looksLikeGratitudeOrClosing(next.name)
     ) {
       delete next.name;
     }
