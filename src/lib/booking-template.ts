@@ -596,12 +596,39 @@ export function looksLikeIntentMessage(text: string): boolean {
   return false;
 }
 
+/**
+ * Recusa educada / negativa ("não, obrigado", "agora não", "não quero", "desisti").
+ * NÃO deve virar nome nem resposta de campo de cadastro — caso real: o lead disse
+ * "Não, obrigado." e o sistema capturou como name e AGENDOU sozinho.
+ */
+export function looksLikeDecline(text: string): boolean {
+  const t = text
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[.!,;]+$/g, "")
+    .trim();
+  if (!t) return false;
+  if (
+    /^(nao|nao obrigad[oa]|nao,? obrigad[oa]|obrigad[oa]|agora nao|melhor nao|nao quero|nao vou querer|sem interesse|nao tenho interesse|nao tenho mais interesse|deixa pra la|deixa quieto|deixa pra depois|vou pensar|talvez depois|depois eu vejo|desisti|nao preciso|por enquanto nao|nao precisa)$/.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (/^nao[, ]+(obrigad|quero|vou|preciso|precisa|tenho interesse)/.test(t)) return true;
+  return false;
+}
+
 function looksLikePersonName(text: string): boolean {
   const t = text.trim();
   if (!t || looksLikeBirthDate(t) || looksLikeSchedulingPreference(t)) return false;
   if (/^\d+$/.test(t)) return false;
   // Rejeita mensagens de saudacao/intencao — elas nao sao nome de pessoa.
   if (looksLikeIntentMessage(t)) return false;
+  // Rejeita recusas ("não, obrigado", "não quero") — nao sao nome de pessoa.
+  if (looksLikeDecline(t)) return false;
   // Nome de pessoa raramente passa de 6 palavras.
   const wordCount = t.split(/\s+/).filter(Boolean).length;
   if (wordCount > 6) return false;
@@ -1021,7 +1048,11 @@ export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadDat
     next.custom_fields = cleaned;
   }
   if (typeof next.name === "string") {
-    if (looksLikeSchedulingPreference(next.name) || looksLikeIntentMessage(next.name)) {
+    if (
+      looksLikeSchedulingPreference(next.name) ||
+      looksLikeIntentMessage(next.name) ||
+      looksLikeDecline(next.name)
+    ) {
       delete next.name;
     }
   }

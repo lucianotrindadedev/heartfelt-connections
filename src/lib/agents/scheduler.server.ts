@@ -64,6 +64,7 @@ import {
   getMissingBookingFields,
   isCommitmentRequired,
   isReadyForBooking,
+  looksLikeDecline,
   mergeLeadDataPatch,
   preflightBookingFields,
   resolveBookingLeadName,
@@ -1250,6 +1251,15 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
     ctx.stage !== "NAME_COLLECT" &&
     ctx.stage !== "SLOT_OFFER"
   ) {
+    return { patch: {}, toolsCalled: [] };
+  }
+
+  // Recusa explícita ("não, obrigado", "não quero", "desisti") NUNCA deve
+  // auto-agendar, mesmo com os campos completos. Caso real: o lead disse "Não,
+  // obrigado." e o sistema agendou sozinho (e ainda gravou a frase como nome).
+  // Deixa o LLM responder à recusa no lugar.
+  const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
+  if (looksLikeDecline(lastUserMsg)) {
     return { patch: {}, toolsCalled: [] };
   }
 
