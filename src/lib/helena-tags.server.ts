@@ -65,6 +65,11 @@ const SYSTEM_TAG_KEYWORDS = [
   "Bot Off",
   "FALTOSOS",
   "FUF FINANCEIRO",
+  // Status do contato (NÃO é interesse — quem define é a clínica, não a IA):
+  "Paciente",
+  "Cliente",
+  "Funcionário",
+  "Funcionario",
 ];
 
 function normalize(s: string): string {
@@ -248,9 +253,17 @@ function isSystemTag(name: string): boolean {
  */
 export async function getInterestCandidateTagNames(
   account: HelenaAccount,
+  extraExclude: string[] = [],
 ): Promise<string[]> {
   const tags = await getTags(account);
-  return tags.map((t) => t.name).filter((name) => !isSystemTag(name));
+  // Além das tags de sistema, exclui as blocked_tags do agente — elas são
+  // STATUS/controle (ex.: "Paciente", "Lead Desqualificado") que o dono
+  // configura para pausar a IA; a auto-etiquetagem de INTERESSE nunca deve
+  // aplicá-las (o agente só decide interesse, não status).
+  const excluded = new Set(extraExclude.map(normalize).filter(Boolean));
+  return tags
+    .map((t) => t.name)
+    .filter((name) => !isSystemTag(name) && !excluded.has(normalize(name)));
 }
 
 /** Lista TODAS as tags do CRM — sem filtro. Para diagnóstico ou logs. */

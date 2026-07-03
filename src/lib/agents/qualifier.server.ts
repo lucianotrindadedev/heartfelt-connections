@@ -628,7 +628,11 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   let candidateTags: string[] = [];
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
-    candidateTags = await getInterestCandidateTagNames(helena);
+    // Exclui as blocked_tags do agente (status como "Paciente") das candidatas
+    // de INTERESSE — a IA só decide interesse, nunca status do contato.
+    const blockedRaw = (ctx.agentSettings as Record<string, string>).blocked_tags ?? "";
+    const blocked = blockedRaw.split(/[,;\n]/).map((t) => t.trim()).filter(Boolean);
+    candidateTags = await getInterestCandidateTagNames(helena, blocked);
   } catch (e) {
     console.warn("[qualifier] falha ao listar tags Helena:", e);
   }
