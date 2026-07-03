@@ -26,6 +26,7 @@ import {
   mergeLeadDataPatch,
   tagGateMissingField,
   turmaTagForLead,
+  turmaTagCandidates,
 } from "@/lib/booking-template";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
@@ -181,18 +182,23 @@ async function applyTurmaTagDeterministic(ctx: AgentContext): Promise<string | n
 
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
-    const res = await applyTagByApproxName(
+    // O CRM costuma cadastrar a turma CODIFICADA ("06 Y126", "03 NS26"...), não
+    // "YEAR 1"/"NURSERY". Tentamos os candidatos código→nome (turmaTagCandidates)
+    // e aplicamos o primeiro que existir no CRM.
+    const refYear = Number(ctx.agentSettings.turma_ano_letivo) || 2026;
+    const candidates = turmaTagCandidates(turma, refYear);
+    const res = await applyOneOfTags(
       helena,
       ctx.helenaContact.id,
-      turma,
+      candidates,
       "InsertIfNotExists",
       { currentTags: ctx.helenaContact.tagNames },
     );
     if (res.ok) {
-      console.log(`[qualifier] turma determinística aplicada: ${res.tag}`);
+      console.log(`[qualifier] turma determinística aplicada: ${res.tag} (calc="${turma}")`);
     } else {
       console.warn(
-        `[qualifier] turma '${turma}' não encontrada no CRM (${res.reason}) — crie a tag com esse nome`,
+        `[qualifier] turma '${turma}' não encontrada no CRM (tentados: ${candidates.join(", ")}) — crie a tag com um desses nomes`,
       );
     }
   } catch (e) {

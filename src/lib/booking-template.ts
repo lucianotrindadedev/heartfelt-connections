@@ -314,6 +314,35 @@ export function turmaTagForLead(
   return classifyMapleBearTurma(birth, refYear);
 }
 
+/**
+ * Nomes-candidatos para casar a turma calculada com a TAG do CRM.
+ * O classificador produz nomes legíveis ("YEAR 1", "NURSERY", "BEAR CARE"), mas
+ * o CRM costuma cadastrar a turma CODIFICADA (padrão franquia Maple Bear):
+ *   YEAR 1 → "Y126" (ex.: "06 Y126") · NURSERY → "NS26" (ex.: "03 NS26")
+ *   TODDLER → "TD26" · BEAR CARE → "BC26" · FBC → "FBC26" · JK/SK → "JK26"/"SK26"
+ * (o sufixo "26" = ano letivo de referência). Geramos o código PRIMEIRO (mais
+ * específico, casa sem ambiguidade via substring) e o nome legível como fallback.
+ * refYear default 2026 → sufixo "26".
+ */
+export function turmaTagCandidates(turma: string, refYear = 2026): string[] {
+  const yy = String(((refYear % 100) + 100) % 100).padStart(2, "0");
+  const t = turma.trim().toUpperCase();
+  const yearMatch = t.match(/^YEAR\s+(\d+)$/);
+  if (yearMatch) {
+    return [`Y${yearMatch[1]}${yy}`, turma];
+  }
+  const abbr: Record<string, string> = {
+    NURSERY: "NS",
+    TODDLER: "TD",
+    "BEAR CARE": "BC",
+    FBC: "FBC",
+    SK: "SK",
+    JK: "JK",
+  };
+  const a = abbr[t];
+  return a ? [`${a}${yy}`, turma] : [turma];
+}
+
 export function getBookingFieldsForChannel(
   settings: Record<string, string>,
   channelCtx?: BookingChannelContext,
