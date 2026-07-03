@@ -343,6 +343,34 @@ export function turmaTagCandidates(turma: string, refYear = 2026): string[] {
   return a ? [`${a}${yy}`, turma] : [turma];
 }
 
+/**
+ * TODAS as turmas do lead (suporta IRMÃOS): varre o campo de data de nascimento
+ * e quaisquer custom_fields com chave de nascimento (birth/nasc/dob), extrai
+ * TODAS as datas dd/mm/aaaa e classifica cada uma. Retorna as turmas únicas.
+ * Ex.: dois filhos (21/05/2018 e 01/09/2021) → ["YEAR 2", "NURSERY"].
+ * turmaTagForLead (singular) segue existindo para a turma principal.
+ */
+export function turmaTagsForLead(settings: Record<string, string>, ld: LeadData): string[] {
+  if (!agentUsesTurmaClassifier(settings)) return [];
+  const refYear = Number(settings.turma_ano_letivo) || 2026;
+  const cf = ld.custom_fields ?? {};
+  const blobs: string[] = [];
+  const dateField = getBookingFields(settings).find(isDateFieldKey);
+  if (dateField && typeof cf[dateField.key] === "string") blobs.push(cf[dateField.key]!);
+  for (const [k, v] of Object.entries(cf)) {
+    if (typeof v === "string" && /birth|nasc|dob/i.test(k)) blobs.push(v);
+  }
+  const turmas = new Set<string>();
+  for (const blob of blobs) {
+    const dates = blob.match(/\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/g) ?? [];
+    for (const d of dates) {
+      const t = classifyMapleBearTurma(d, refYear);
+      if (t) turmas.add(t);
+    }
+  }
+  return [...turmas];
+}
+
 export function getBookingFieldsForChannel(
   settings: Record<string, string>,
   channelCtx?: BookingChannelContext,

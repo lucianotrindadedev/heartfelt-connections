@@ -25,7 +25,7 @@ import {
   buildChannelPhonePromptBlock,
   mergeLeadDataPatch,
   tagGateMissingField,
-  turmaTagForLead,
+  turmaTagsForLead,
   turmaTagCandidates,
 } from "@/lib/booking-template";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
@@ -168,43 +168,51 @@ function tagGateMissing(ctx: AgentContext): string | null {
  * gravar em interest) ou null. Idempotente: só aplica se a turma mudou.
  */
 async function applyTurmaTagDeterministic(ctx: AgentContext): Promise<string | null> {
-  const turma = turmaTagForLead(ctx.agentSettings, ctx.leadData);
-  if (!turma) return null;
-  if (ctx.leadData.interest === turma) return null; // já aplicada neste lead
+  // TODAS as turmas (suporta irmãos: dois filhos → duas turmas).
+  const turmas = turmaTagsForLead(ctx.agentSettings, ctx.leadData);
+  if (turmas.length === 0) return null;
+  const joined = turmas.join(", ");
+  if (ctx.leadData.interest === joined) return null; // já aplicadas neste lead
 
   if (ctx.dryRun || ctx.disableTags) {
     console.log(
-      `[qualifier] turma determinística '${turma}' (pulada: ${ctx.disableTags ? "test_mode" : "dry_run"})`,
+      `[qualifier] turma(s) determinística(s) '${joined}' (pulada: ${ctx.disableTags ? "test_mode" : "dry_run"})`,
     );
-    return turma; // grava interest mesmo assim (sem tocar o CRM em teste)
+    return joined; // grava interest mesmo assim (sem tocar o CRM em teste)
   }
-  if (!ctx.helenaContact?.id) return turma;
+  if (!ctx.helenaContact?.id) return joined;
 
   try {
     const helena = await loadHelenaAccount(ctx.accountId);
-    // O CRM costuma cadastrar a turma CODIFICADA ("06 Y126", "03 NS26"...), não
-    // "YEAR 1"/"NURSERY". Tentamos os candidatos código→nome (turmaTagCandidates)
-    // e aplicamos o primeiro que existir no CRM.
     const refYear = Number(ctx.agentSettings.turma_ano_letivo) || 2026;
-    const candidates = turmaTagCandidates(turma, refYear);
-    const res = await applyOneOfTags(
-      helena,
-      ctx.helenaContact.id,
-      candidates,
-      "InsertIfNotExists",
-      { currentTags: ctx.helenaContact.tagNames },
-    );
-    if (res.ok) {
-      console.log(`[qualifier] turma determinística aplicada: ${res.tag} (calc="${turma}")`);
-    } else {
-      console.warn(
-        `[qualifier] turma '${turma}' não encontrada no CRM (tentados: ${candidates.join(", ")}) — crie a tag com um desses nomes`,
+    // O CRM costuma cadastrar a turma CODIFICADA ("06 Y126", "03 NS26"...), não
+    // "YEAR 1"/"NURSERY". Tentamos os candidatos código→nome por turma. Aplicamos
+    // UMA por vez, atualizando currentTags entre as aplicações — assim a segunda
+    // turma NÃO derruba a primeira (o setHelenaContactTags faz ReplaceAll com a
+    // união das tags atuais).
+    const currentTags = [...(ctx.helenaContact.tagNames ?? [])];
+    for (const turma of turmas) {
+      const candidates = turmaTagCandidates(turma, refYear);
+      const res = await applyOneOfTags(
+        helena,
+        ctx.helenaContact.id,
+        candidates,
+        "InsertIfNotExists",
+        { currentTags },
       );
+      if (res.ok && res.tag) {
+        currentTags.push(res.tag);
+        console.log(`[qualifier] turma aplicada: ${res.tag} (calc="${turma}")`);
+      } else {
+        console.warn(
+          `[qualifier] turma '${turma}' não encontrada no CRM (tentados: ${candidates.join(", ")}) — crie a tag com um desses nomes`,
+        );
+      }
     }
   } catch (e) {
-    console.warn("[qualifier] erro ao aplicar tag de turma:", e);
+    console.warn("[qualifier] erro ao aplicar tag(s) de turma:", e);
   }
-  return turma;
+  return joined;
 }
 
 async function execAplicarTag(
@@ -488,12 +496,15 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
   // prompt recebe a turma oficial para o LLM FALAR a mesma coisa que a tag —
   // sem recalcular (o LLM erra o corte 31/03 e contradizia a etiqueta).
   const turmaAuto = agentUsesTurmaClassifier(ctx.agentSettings);
-  const turmaCalc = turmaAuto ? turmaTagForLead(ctx.agentSettings, ctx.leadData) : null;
+  const turmasCalc = turmaAuto ? turmaTagsForLead(ctx.agentSettings, ctx.leadData) : [];
+  const multiChildBlock = turmaAuto
+    ? `\n\n# MAIS DE UMA CRIANÇA (irmãos)\nSe o responsável tiver MAIS de um filho, trate cada criança individualmente: colete o NOME e a DATA DE NASCIMENTO de CADA uma. Peça uma criança por vez (ex.: "Qual a data de nascimento do Miguel?" e, depois da resposta, "E a da Maria Alice?"). Se o lead responder CITANDO/respondendo uma mensagem específica, o contexto virá marcado como [Em resposta à mensagem: "..."] — use-o para saber a qual criança a data pertence. Registre TODAS as datas de nascimento (uma por criança) — o sistema calcula e etiqueta a turma de CADA criança automaticamente.`
+    : "";
   const turmaBlock = !turmaAuto
     ? ""
-    : turmaCalc
-      ? `\n\n# TURMA — CÁLCULO OFICIAL DO SISTEMA\nA turma correta para a data de nascimento informada é **${turmaCalc}**. Ao falar com o lead, use EXATAMENTE "${turmaCalc}" — NÃO recalcule e NÃO diga outra turma. A etiqueta da turma já é aplicada automaticamente; você NÃO deve etiquetar.`
-      : `\n\n# TURMA\nAinda não há data de nascimento válida. NÃO afirme nenhuma turma ao lead enquanto não tiver a data. Quando a data chegar, o sistema calcula e etiqueta a turma automaticamente.`;
+    : turmasCalc.length > 0
+      ? `\n\n# TURMA(S) — CÁLCULO OFICIAL DO SISTEMA\nTurma(s) correta(s) para a(s) data(s) informada(s): **${turmasCalc.join(", ")}**. Ao falar com o lead, use EXATAMENTE esse(s) nome(s) — NÃO recalcule e NÃO diga outra turma. A(s) etiqueta(s) já é(são) aplicada(s) automaticamente; você NÃO deve etiquetar.${multiChildBlock}`
+      : `\n\n# TURMA\nAinda não há data de nascimento válida. NÃO afirme nenhuma turma ao lead enquanto não tiver a data. Quando a data chegar, o sistema calcula e etiqueta a turma automaticamente.${multiChildBlock}`;
 
   // Retorno agendado pelo lead: instrução SEMPRE presente (vai no stateBlock,
   // que é o único bloco entregue quando o prompt do proprietário domina).

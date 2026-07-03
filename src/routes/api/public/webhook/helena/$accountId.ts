@@ -161,6 +161,54 @@ function normalizeHelenaPayload(raw: HelenaPayload): {
   };
 }
 
+/**
+ * Extrai o texto da mensagem CITADA (recurso "responder" do WhatsApp), quando a
+ * Helena o envia no payload. Testa os nomes de campo mais comuns (WhatsApp /
+ * Evolution / Helena). Sem isso, uma resposta citada ("01/09/21" respondendo a
+ * "e da Maria Alice?") chega solta e o agente perde o contexto.
+ */
+function extractQuotedText(content: unknown): string | null {
+  if (!content || typeof content !== "object") return null;
+  const c = content as Record<string, unknown>;
+  const asText = (v: unknown): string | null => {
+    if (typeof v === "string") return v.trim() || null;
+    if (v && typeof v === "object") {
+      const o = v as Record<string, unknown>;
+      const t = o.text ?? o.content ?? o.body ?? o.message ?? o.conteudo ?? o.texto;
+      if (typeof t === "string") return t.trim() || null;
+    }
+    return null;
+  };
+  const ctxInfo = c.contextInfo as Record<string, unknown> | undefined;
+  const details = c.details as Record<string, unknown> | undefined;
+  const candidates: unknown[] = [
+    c.quotedMessage, c.quoted, c.quotedText, c.quoted_message,
+    c.replyTo, c.inReplyTo, c.reply, c.replied, c.reference, c.referencedMessage,
+    ctxInfo?.quotedMessage, ctxInfo?.quoted,
+    details?.quotedMessage, details?.quoted, details?.replyTo,
+  ];
+  for (const v of candidates) {
+    const t = asText(v);
+    if (t) return t;
+  }
+  return null;
+}
+
+/** Log de diagnóstico: revela o nome do campo de citação se a Helena usar um
+ *  nome fora dos conhecidos (só quando há indício de citação no payload). */
+function logQuoteFieldsIfAny(content: unknown): void {
+  if (!content || typeof content !== "object") return;
+  const keys = Object.keys(content as Record<string, unknown>).filter((k) =>
+    /quot|context|reply|replied|referenc|cit/i.test(k),
+  );
+  if (keys.length > 0) {
+    const c = content as Record<string, unknown>;
+    console.log(
+      `[webhook] possível campo de citação: ${keys.join(",")} → ${JSON.stringify(keys.map((k) => c[k])).slice(0, 400)}`,
+    );
+  }
+}
+
 function timingSafeEqual(a: string, b: string) {
   if (a.length !== b.length) return false;
   let r = 0;
@@ -443,6 +491,16 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         const legacyPhone = (body.telefone ?? body.phone ?? "").toString().trim();
         let messageContent = (c.text ?? "").toString();
         const messageType = c.type ?? "TEXT";
+
+        // Citação/reply do WhatsApp: se o lead respondeu CITANDO uma mensagem,
+        // injeta esse contexto para o agente saber a QUEM/O QUÊ a resposta se
+        // refere (ex.: "01/09/21" respondendo a "e da Maria Alice?"). Se a Helena
+        // usar um nome de campo desconhecido, o log revela para ajuste.
+        logQuoteFieldsIfAny(c);
+        const quotedText = extractQuotedText(c);
+        if (quotedText && messageContent.trim()) {
+          messageContent = `[Em resposta à mensagem: "${quotedText.slice(0, 200)}"]\n${messageContent}`;
+        }
 
         // Eventos TRACK (rastreamento/status da Helena: entrega, "contato enviou
         // mensagem", saudação automática) NÃO são mensagens de chat — chegam com
