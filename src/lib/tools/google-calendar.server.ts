@@ -872,17 +872,49 @@ export async function createGoogleCalendarEvent(
     throw new Error(`Falha ao validar disponibilidade: ${conflictRes.status} ${errBody.slice(0, 200)}`);
   }
   const conflictJson = (await conflictRes.json()) as {
-    items?: { start?: { dateTime?: string }; end?: { dateTime?: string } }[];
+    items?: {
+      id?: string;
+      htmlLink?: string;
+      description?: string;
+      summary?: string;
+      start?: { dateTime?: string };
+      end?: { dateTime?: string };
+    }[];
   };
-  const hasConflict = (conflictJson.items ?? []).some((ev) => {
+  const overlapping = (conflictJson.items ?? []).filter((ev) => {
     if (!ev.start?.dateTime || !ev.end?.dateTime) return false;
     const evStart = new Date(ev.start.dateTime);
     const evEnd = new Date(ev.end.dateTime);
     return start < evEnd && end > evStart;
   });
-  if (hasConflict) {
+
+  // IDEMPOTÊNCIA / RECUPERAÇÃO DE GHOST: se um evento que sobrepõe é NOSSO
+  // (mesmo telefone da lead na descrição), NÃO é conflito — é um evento que já
+  // criamos (ex.: a criação teve sucesso no Google mas a resposta se perdeu, ou
+  // houve chamada dupla no mesmo turn). Em vez de dizer "indisponível" para o
+  // próprio agendamento da lead, reusamos esse evento (recupera o appointment_id).
+  const phoneDigits = (params.telefone ?? "").replace(/\D/g, "");
+  const ourEvent =
+    phoneDigits.length >= 8
+      ? overlapping.find((ev) =>
+          (ev.description ?? "").replace(/\D/g, "").includes(phoneDigits.slice(-8)),
+        )
+      : undefined;
+  if (ourEvent?.id) {
+    console.log(
+      `[gcal] evento do mesmo telefone já existe (idempotente) — reusando id=${ourEvent.id} start=${start.toISOString()}`,
+    );
+    return {
+      id: ourEvent.id,
+      htmlLink: ourEvent.htmlLink ?? "",
+      start: ourEvent.start?.dateTime ?? start.toISOString(),
+      end: ourEvent.end?.dateTime ?? end.toISOString(),
+    };
+  }
+
+  if (overlapping.length > 0) {
     console.warn(
-      `[gcal] conflito ao criar evento start=${start.toISOString()} calendar=${targetCalendarId} eventos=${conflictJson.items?.length ?? 0}`,
+      `[gcal] conflito ao criar evento start=${start.toISOString()} calendar=${targetCalendarId} eventos=${overlapping.length}`,
     );
     throw new Error("HORÁRIO INDISPONÍVEL");
   }
