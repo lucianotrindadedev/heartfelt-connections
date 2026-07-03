@@ -24,7 +24,6 @@ import {
   sendHelenaTemplate,
 } from "@/lib/helena.server";
 import { listAllUpcomingAppointments } from "@/lib/warmup/sources.server";
-import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 
 function validateCronSecret(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -109,7 +108,6 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
             continue;
           }
           const accountId = agentRow.data.account_id as string;
-          const blockedTagsRaw = agentSettings?.blocked_tags ?? null;
 
           // Helena account
           const helena = await loadHelenaAccount(accountId).catch(() => null);
@@ -130,9 +128,6 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
 
           // Cache de channelId por sessionId (evita refetch entre múltiplos steps)
           const channelCache = new Map<string, string>();
-          // Cache do bloqueio ("IA Desligada"/blocked_tags) por sessionId, p/ não
-          // refazer a consulta de contato no Helena a cada step do mesmo lead.
-          const blockCache = new Map<string, boolean>();
 
           for (const appt of appointments) {
             for (const step of agentSteps) {
@@ -205,25 +200,10 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
                 continue;
               }
 
-              // Respeita "IA Desligada"/blocked_tags: lead que pediu opt-out
-              // ("sair" / "não quero mais mensagens") ou foi escalado para humano
-              // NÃO recebe warm-up. A etiqueta é a fonte da verdade central — o
-              // mesmo bloqueio já é aplicado no webhook e no follow-up.
-              let leadBlocked = blockCache.get(sessionId);
-              if (leadBlocked === undefined) {
-                const block = await checkContactBlockedBySession({
-                  accountId,
-                  sessionId,
-                  blockedTagsRaw,
-                  helena,
-                });
-                leadBlocked = block.blocked;
-                blockCache.set(sessionId, leadBlocked);
-              }
-              if (leadBlocked) {
-                skips.push({ reason: "ia_desligada", details: appt.externalId });
-                continue;
-              }
+              // Warm-up IGNORA etiquetas de bloqueio (inclusive "IA Desligada"):
+              // é um LEMBRETE de consulta (template oficial) e deve sair mesmo
+              // com a IA pausada — o compromisso continua valendo. (Diferente do
+              // follow-up/webhook, que respeitam a etiqueta.)
 
               // Resolve channelId via sessão (com cache)
               let channelId = channelCache.get(sessionId) ?? null;
