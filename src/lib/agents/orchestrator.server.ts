@@ -1053,6 +1053,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           phone: effectivePhone ?? conversationPhone,
           sessionId,
           helenaContactId: helenaContact?.id,
+          helenaContactName: helenaContact?.name,
           reason: finalLeadData.escalation_reason,
           agentName: (agent.data.nome as string | undefined) ?? undefined,
           stage, // estágio em que estava antes do ESCALATED

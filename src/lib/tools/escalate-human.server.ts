@@ -40,6 +40,9 @@ export async function escalateToHuman(params: {
   phone: string;
   sessionId?: string;
   helenaContactId?: string;
+  /** Nome cadastrado no contato da Helena — fallback para o "Lead:" da
+   *  notificação quando o agente ainda não coletou o nome na conversa. */
+  helenaContactName?: string;
   /** Motivo bruto vindo do qualifier (lead_data.escalation_reason). */
   reason?: string;
   /** Nome amigável do agente (agents.nome). */
@@ -127,6 +130,7 @@ export async function escalateToHuman(params: {
         agentName: params.agentName,
         stage: params.stage,
         leadData: params.leadData,
+        helenaContactName: params.helenaContactName,
         history: params.history,
         enriched,
       });
@@ -215,6 +219,7 @@ function buildEscalationMessage(args: {
   agentName?: string;
   stage?: Stage;
   leadData?: LeadData;
+  helenaContactName?: string;
   history?: { role: "user" | "assistant"; content: string }[];
   enriched: EnrichedContext | null;
 }): string {
@@ -226,8 +231,9 @@ function buildEscalationMessage(args: {
   lines.push(args.agentName ? `${title}  •  _${args.agentName}_` : title);
   lines.push("");
 
-  // Bloco identificação
-  const leadName = args.leadData?.name?.trim();
+  // Bloco identificação. Se o agente não coletou o nome na conversa, cai para o
+  // nome cadastrado no contato da Helena antes de "(não identificado)".
+  const leadName = args.leadData?.name?.trim() || args.helenaContactName?.trim();
   lines.push(`👤 *Lead:* ${leadName || "(não identificado)"}`);
   lines.push(`📱 *Telefone:* ${formatPhoneDisplay(args.phone)}`);
 
