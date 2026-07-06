@@ -139,10 +139,15 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
   .handler(async ({ data }) => {
     const sb = getSelfhost();
 
+    // Templates (warm-up) são um recurso do WhatsApp Oficial — Instagram/Messenger
+    // NÃO têm templates. Se a conta tem múltiplos canais, pegar o channelId de uma
+    // sessão de Instagram fazia o CRM retornar 0 templates. Filtramos para SÓ
+    // conversas de WhatsApp, garantindo o channelId do canal certo.
     const { data: convs } = await sb
       .from("conversations")
-      .select("helena_session_id, agents!inner(account_id)")
+      .select("helena_session_id, channel, agents!inner(account_id)")
       .eq("agents.account_id", data.accountId)
+      .eq("channel", "whatsapp")
       .not("helena_session_id", "is", null)
       .limit(20);
 
@@ -170,7 +175,7 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
     if (!channelId) {
       return {
         ok: false as const,
-        error: `Nenhuma sessão do CRM com channelId encontrada (testei ${sessionsTried}). Garanta que pelo menos um lead já mandou msg pelo WhatsApp.`,
+        error: `Nenhum canal de WhatsApp com sessão encontrado (testei ${sessionsTried}). Templates são só do WhatsApp Oficial — garanta que pelo menos um lead já falou pelo WhatsApp.`,
         templates: [] as never[],
       };
     }
