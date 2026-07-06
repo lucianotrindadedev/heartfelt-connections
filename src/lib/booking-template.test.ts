@@ -13,9 +13,11 @@ import {
   buildTemplateVars,
   classifyMapleBearTurma,
   clearBookingFields,
+  formatCpf,
   getMissingBookingFields,
   isReadyForBooking,
   isSlotAcceptanceMessage,
+  isValidCpf,
   looksLikeBirthDate,
   looksLikeIntentMessage,
   looksLikeSchedulingPreference,
@@ -699,5 +701,78 @@ describe("buildTemplateVars + custom fields", () => {
     const vars = buildTemplateVars(ctx);
     // child_name e var padrao — continua resolvendo normalmente
     expect(vars["child_name"]).toBe("Helena");
+  });
+});
+
+// ── Validação de CPF ────────────────────────────────────────────────────────
+// Bug: ao pedir CPF, o lead respondeu "9h" (era resposta de horário) e o valor
+// virou CPF no cadastro. Agora CPF exige 11 dígitos + dígito verificador.
+
+const CPF_FIELDS: BookingFieldDef[] = [
+  { key: "name", label: "Nome", question: "Qual seu nome?", required: true, maps_to: "name" },
+  { key: "cpf", label: "CPF", question: "Qual o seu CPF?", required: true },
+];
+
+describe("isValidCpf", () => {
+  it("aceita CPF valido formatado e so digitos", () => {
+    expect(isValidCpf("414.087.718-96")).toBe(true);
+    expect(isValidCpf("41408771896")).toBe(true);
+    expect(isValidCpf("529.982.247-25")).toBe(true);
+  });
+
+  it("rejeita resposta que nao e CPF", () => {
+    expect(isValidCpf("9h")).toBe(false);
+    expect(isValidCpf("As 9h")).toBe(false);
+    expect(isValidCpf("")).toBe(false);
+    expect(isValidCpf(undefined)).toBe(false);
+  });
+
+  it("rejeita contagem de digitos errada", () => {
+    expect(isValidCpf("123456789")).toBe(false); // 9 digitos
+    expect(isValidCpf("4140877189")).toBe(false); // 10 digitos
+    expect(isValidCpf("414087718961")).toBe(false); // 12 digitos
+  });
+
+  it("rejeita sequencias repetidas e digito verificador invalido", () => {
+    expect(isValidCpf("111.111.111-11")).toBe(false);
+    expect(isValidCpf("00000000000")).toBe(false);
+    expect(isValidCpf("414.087.718-00")).toBe(false); // DV errado
+  });
+});
+
+describe("formatCpf", () => {
+  it("normaliza 11 digitos para 000.000.000-00", () => {
+    expect(formatCpf("41408771896")).toBe("414.087.718-96");
+    expect(formatCpf("414.087.718-96")).toBe("414.087.718-96");
+  });
+
+  it("nao força formato quando nao ha 11 digitos", () => {
+    expect(formatCpf("9h")).toBe("9h");
+  });
+});
+
+describe("CPF no pipeline de booking", () => {
+  it("getMissingBookingFields: CPF invalido conta como pendente", () => {
+    const invalido: LeadData = { name: "Laís", custom_fields: { cpf: "9h" } };
+    expect(getMissingBookingFields(CPF_FIELDS, invalido).map((f) => f.key)).toContain("cpf");
+
+    const valido: LeadData = { name: "Laís", custom_fields: { cpf: "414.087.718-96" } };
+    expect(getMissingBookingFields(CPF_FIELDS, valido)).toHaveLength(0);
+  });
+
+  it("sanitizeLeadDataPatch: descarta CPF invalido e normaliza o valido", () => {
+    expect(sanitizeLeadDataPatch({ custom_fields: { cpf: "9h" } }).custom_fields?.cpf).toBeUndefined();
+    expect(sanitizeLeadDataPatch({ custom_fields: { cpf: "41408771896" } }).custom_fields?.cpf).toBe(
+      "414.087.718-96",
+    );
+  });
+
+  it("preflightBookingFields: aponta issue invalid_cpf", () => {
+    const res = preflightBookingFields(CPF_FIELDS, {
+      name: "Laís",
+      custom_fields: { cpf: "9h" },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.issues.some((i) => i.key === "cpf" && i.reason === "invalid_cpf")).toBe(true);
   });
 });

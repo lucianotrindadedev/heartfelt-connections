@@ -725,10 +725,19 @@ export async function listGoogleCalendarSlots(
   }
 
   const evJson = (await evRes.json()) as {
-    items?: { start?: { dateTime?: string }; end?: { dateTime?: string } }[];
+    items?: {
+      status?: string;
+      transparency?: string;
+      start?: { dateTime?: string };
+      end?: { dateTime?: string };
+    }[];
   };
   const eventos = (evJson.items ?? [])
     .filter((e) => e.start?.dateTime && e.end?.dateTime)
+    // Eventos que NÃO bloqueiam a agenda não contam como ocupado:
+    //  - status "cancelled" (cancelado, mas ainda retornado pela API)
+    //  - transparency "transparent" (marcado como "Disponível/Livre" no Google)
+    .filter((e) => e.status !== "cancelled" && e.transparency !== "transparent")
     .map((e) => ({
       inicio: new Date(e.start!.dateTime!),
       fim: new Date(e.end!.dateTime!),
@@ -782,21 +791,16 @@ export async function listGoogleCalendarSlots(
     `[gcal] após eventos: ${janelasNoExpediente.length} → ${semConflito.length} sem conflito (${eventos.length} eventos no período${params.umaPorDia ? ", modo=uma_por_dia" : ""})`,
   );
 
-  // 5. Corta amostras. No modo "uma por dia" (festas), preserva a ordem
-  // cronológica (os próximos dias livres). Caso contrário, embaralha para
-  // variar os horários ofertados dentro do período.
-  let resultado = [...semConflito];
+  // 5. Sempre os horários MAIS PRÓXIMOS primeiro. `semConflito` já sai em ordem
+  // cronológica (as janelas são geradas do início do período para o fim); o sort
+  // deixa isso explícito e robusto. Antes havia um embaralhamento (Fisher-Yates)
+  // que devolvia N slots ALEATÓRIOS do período — o oposto de "os mais próximos".
+  // Recortar os N primeiros = as vagas mais cedo (hoje / próximos dias).
+  let resultado = [...semConflito].sort(
+    (a, b) => a.inicio.getTime() - b.inicio.getTime(),
+  );
   if (typeof params.amostras === "number" && params.amostras > 0) {
-    if (!params.umaPorDia) {
-      // Fisher-Yates
-      for (let i = resultado.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [resultado[i], resultado[j]] = [resultado[j], resultado[i]];
-      }
-    }
     resultado = resultado.slice(0, params.amostras);
-    // Ordena de volta cronologicamente
-    resultado.sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
   }
 
   // 6. Formata para output
@@ -877,12 +881,20 @@ export async function createGoogleCalendarEvent(
       htmlLink?: string;
       description?: string;
       summary?: string;
+      status?: string;
+      transparency?: string;
       start?: { dateTime?: string };
       end?: { dateTime?: string };
     }[];
   };
   const overlapping = (conflictJson.items ?? []).filter((ev) => {
     if (!ev.start?.dateTime || !ev.end?.dateTime) return false;
+    // Eventos que NÃO bloqueiam a agenda não são conflito (mesma regra do
+    // listador de horários — evita "ofertei o slot mas na hora disse ocupado"):
+    //  - status "cancelled" (cancelado, mas ainda retornado pela API)
+    //  - transparency "transparent" (marcado como "Disponível/Livre" no Google)
+    if (ev.status === "cancelled") return false;
+    if (ev.transparency === "transparent") return false;
     const evStart = new Date(ev.start.dateTime);
     const evEnd = new Date(ev.end.dateTime);
     return start < evEnd && end > evStart;
@@ -913,8 +925,22 @@ export async function createGoogleCalendarEvent(
   }
 
   if (overlapping.length > 0) {
+    // Log detalhado dos eventos em conflito — sem isso é impossível saber DEPOIS
+    // por que um slot recém-ofertado foi recusado (caso real: slot 11h ofertado,
+    // create disse "indisponível", humano confirmou depois que estava livre).
+    const detalhes = JSON.stringify(
+      overlapping.map((ev) => ({
+        id: ev.id,
+        summary: ev.summary,
+        start: ev.start?.dateTime,
+        end: ev.end?.dateTime,
+        status: ev.status,
+        transparency: ev.transparency,
+        temDigitosNaDescricao: /\d/.test(ev.description ?? ""),
+      })),
+    ).slice(0, 600);
     console.warn(
-      `[gcal] conflito ao criar evento start=${start.toISOString()} calendar=${targetCalendarId} eventos=${overlapping.length}`,
+      `[gcal] conflito ao criar evento start=${start.toISOString()} calendar=${targetCalendarId} eventos=${overlapping.length} detalhes=${detalhes}`,
     );
     throw new Error("HORÁRIO INDISPONÍVEL");
   }

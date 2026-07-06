@@ -222,7 +222,7 @@ const SCHEDULER_TOOLS: LlmTool[] = [
           dias_a_frente: {
             type: "integer",
             description:
-              "Tamanho da janela de busca em dias a partir do início (default 7). Use um valor maior se quiser oferecer mais alternativas.",
+              "Tamanho da janela de busca em dias a partir do início. Omita para o padrão (próximos 3 dias — a busca já oferece os horários MAIS PRÓXIMOS e amplia sozinha se não houver vaga). Só informe um valor se quiser forçar uma janela específica.",
           },
         },
         required: [],
@@ -533,6 +533,12 @@ function parseDataAlvoBrt(dataAlvo?: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+// Janela padrão do slot offer: prioriza SEMPRE os horários mais próximos —
+// hoje + os próximos 3 dias. Se não houver vaga nesse período, a busca amplia
+// automaticamente até SLOT_WIDE_WINDOW_DAYS para achar as próximas datas livres.
+const SLOT_NEAR_WINDOW_DAYS = 4; // hoje + 3 dias
+const SLOT_WIDE_WINDOW_DAYS = 60;
+
 async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
@@ -574,7 +580,9 @@ async function execListarHorarios(
   // a busca começa nela; senão começa agora.
   const anchor = parseDataAlvoBrt(dataAlvo);
   const today = anchor && anchor.getTime() > now.getTime() ? anchor : now;
-  const end = new Date(today.getTime() + (diasAFrente ?? 7) * 24 * 60 * 60 * 1000);
+  const end = new Date(
+    today.getTime() + (diasAFrente ?? SLOT_NEAR_WINDOW_DAYS) * 24 * 60 * 60 * 1000,
+  );
 
   // Google Calendar: usa lógica de janelas com expediente da clínica
   if (ctx.integrations.googleCalendar) {
@@ -598,23 +606,41 @@ async function execListarHorarios(
         : end;
     // Granularidade: passo configurado da agenda OU igual à duração (slots não
     // sobrepostos). Ex: festas de 240min com opções a cada 30min (12:00, 12:30...).
-    const slots = await listGoogleCalendarSlots(
-      ctx.accountId,
-      {
-        periodoInicio: today.toISOString(),
-        periodoFim: gcalEnd.toISOString(),
-        tamanhoJanelaMinutos: duracao,
-        granularidade: resolved.granularidadeMinutos ?? duracao,
-        amostras: 6,
-        businessHoursJson,
-        umaPorDia: resolved.umaPorDia,
-        umaPorDiaDias: resolved.diasUmaPorDia,
-        bufferMinutos: resolved.bufferMinutos,
-        bufferDias: resolved.bufferDias,
-      },
-      resolved.calendarId,
-    );
-    const formatted = slots.map(formatGCalSlot);
+    const fetchFormatted = async (periodoFimDate: Date) => {
+      const slots = await listGoogleCalendarSlots(
+        ctx.accountId,
+        {
+          periodoInicio: today.toISOString(),
+          periodoFim: periodoFimDate.toISOString(),
+          tamanhoJanelaMinutos: duracao,
+          granularidade: resolved.granularidadeMinutos ?? duracao,
+          amostras: 6,
+          businessHoursJson,
+          umaPorDia: resolved.umaPorDia,
+          umaPorDiaDias: resolved.diasUmaPorDia,
+          bufferMinutos: resolved.bufferMinutos,
+          bufferDias: resolved.bufferDias,
+        },
+        resolved.calendarId,
+      );
+      return slots.map(formatGCalSlot);
+    };
+
+    let formatted = await fetchFormatted(gcalEnd);
+    // Sem vaga na janela próxima (hoje + 3 dias)? Amplia a busca automaticamente
+    // para achar as PRÓXIMAS datas livres — sem depender de o lead pedir uma
+    // data específica. Não se aplica ao modo "uma por dia" (festas, que já usa
+    // janela ampla) nem quando o lead pediu uma data (anchor) ou um período
+    // explícito (diasAFrente).
+    if (formatted.length === 0 && !anchor && !resolved.umaPorDia && diasAFrente == null) {
+      const wideEnd = new Date(
+        today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+      );
+      console.log(
+        `[scheduler] listar_horarios conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando busca p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+      );
+      formatted = await fetchFormatted(wideEnd);
+    }
     // Persiste a agenda escolhida para o booking/cancelamento usarem a mesma.
     const agendaPatch: Partial<LeadData> = resolved.agendaLabel
       ? { selected_agenda: resolved.agendaLabel }
@@ -652,7 +678,7 @@ async function execListarHorarios(
         slots: [],
         debug: {
           duracao_consulta_min: duracao,
-          dias_consultados: diasAFrente ?? 7,
+          dias_consultados: diasAFrente ?? SLOT_WIDE_WINDOW_DAYS,
           tem_horario_funcionamento: hasBusinessHours,
           dias_ativos: diasAtivos,
           ...dataAlvoDebug,
@@ -693,8 +719,17 @@ async function execListarHorarios(
   const fmt = (d: Date) =>
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
 
-  const slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(end));
-  // Limita a 6 (2 por dia em até 3 dias) para não confundir o lead.
+  let slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(end));
+  // Sem vaga na janela próxima (hoje + 3 dias)? Amplia automaticamente para achar
+  // as próximas datas livres — mesma lógica do Google Calendar.
+  if (slots.length === 0 && !anchor && diasAFrente == null) {
+    const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    console.log(
+      `[scheduler] listar_horarios (clinicorp) conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+    );
+    slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(wideEnd));
+  }
+  // Limita a 6 (as mais próximas) para não confundir o lead.
   const limited = slots.slice(0, 6).map(formatSlot);
   return {
     result: JSON.stringify({ count: limited.length, slots: limited }),
@@ -1365,7 +1400,9 @@ async function ensureOfferedSlots(ctx: AgentContext): Promise<{
   }
 
   console.log(`[scheduler] auto listar_horarios conv=${ctx.conversationId} (offered_slots vazio)`);
-  const outcome = await execListarHorarios(ctx, 14);
+  // Sem dias_a_frente → usa a janela padrão (hoje + 3 dias, com ampliação
+  // automática) para ofertar sempre os horários mais próximos.
+  const outcome = await execListarHorarios(ctx);
   return {
     patch: outcome.patch ?? {},
     toolResult: outcome.result,
@@ -1477,7 +1514,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
     extraPatch = { ...extraPatch };
     delete extraPatch.selected_slot_iso;
     // Re-lista a MESMA agenda (multi-agenda) — selected_agenda persiste no conflito.
-    const refresh = await execListarHorarios(ctx, 14, ctx.leadData.selected_agenda);
+    const refresh = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
     toolsCalled.push("listar_horarios");
     extraPatch = mergeLeadDataPatch(extraPatch as LeadData, refresh.patch ?? {});
     toolResult += `\n\n# HORÁRIOS ATUALIZADOS (listar_horarios)\n${refresh.result}`;

@@ -423,6 +423,9 @@ export function getMissingBookingFields(
     if (!f.required) return false;
     const v = getFieldValue(f.key, f.maps_to, ld);
     if (!v) return true;
+    // CPF preenchido com valor que não é um CPF válido (ex.: "9h") conta como
+    // MISSING — o agente re-pergunta em vez de agendar com CPF inválido.
+    if (isCpfField(f) && !isValidCpf(v)) return true;
     // Campos de nome preenchidos com mensagem de saudacao/intencao
     // contam como MISSING — forca o agente a perguntar de novo em vez
     // de criar um agendamento com lixo no titulo/descricao.
@@ -465,7 +468,8 @@ export interface PreflightIssue {
     | "intent_message_in_name"
     | "too_many_words_in_name"
     | "scheduling_text_in_name"
-    | "not_a_date";
+    | "not_a_date"
+    | "invalid_cpf";
 }
 
 export interface PreflightResult {
@@ -508,6 +512,13 @@ export function preflightBookingFields(
     if (!f.required) continue;
     const v = getFieldValue(f.key, f.maps_to, ld);
     if (!v) continue;
+
+    // CPF tem prioridade: valor precisa ser um CPF válido (formato + dígito
+    // verificador). Barreira final antes de criar o agendamento.
+    if (isCpfField(f)) {
+      if (!isValidCpf(v)) issues.push({ key: f.key, value: v, reason: "invalid_cpf" });
+      continue;
+    }
 
     // Date fields tem prioridade sobre name fields. Ex: "child_birth_date"
     // contem "child" mas e claramente uma data.
@@ -625,6 +636,58 @@ export function looksLikeBirthDate(text: string): boolean {
   if (/^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/.test(t)) return true;
   if (/^\d{1,2}\s+de\s+[a-zà-ú]+(\s+de\s+\d{2,4})?$/i.test(t)) return true;
   return false;
+}
+
+// ── Validação de CPF ────────────────────────────────────────────────────────
+//
+// CPF sempre tem 11 dígitos. O lead pode informar formatado (000.000.000-00,
+// com separadores . e -) OU só os 11 dígitos (00000000000). Além do formato,
+// validamos os dígitos verificadores — assim uma resposta como "9h", uma
+// sequência repetida (111.111.111-11) ou um número digitado errado NÃO é aceita
+// como CPF: o campo segue pendente e o agente re-pergunta. Caso real: ao pedir
+// CPF, o lead respondeu "9h" (era resposta de horário) e virou CPF no cadastro.
+
+/** Só os dígitos de um texto (remove ".", "-", espaços, etc.). */
+export function normalizeCpfDigits(raw: string | null | undefined): string {
+  return (raw ?? "").replace(/\D/g, "");
+}
+
+/** CPF válido: 11 dígitos, não todos iguais e com dígitos verificadores corretos. */
+export function isValidCpf(raw: string | null | undefined): boolean {
+  const d = normalizeCpfDigits(raw);
+  if (d.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(d)) return false; // 000..., 111..., ..., 999...
+  const dv = (base: string, startWeight: number): number => {
+    let sum = 0;
+    for (let i = 0; i < base.length; i++) sum += Number(base[i]) * (startWeight - i);
+    const r = (sum * 10) % 11;
+    return r === 10 ? 0 : r;
+  };
+  if (dv(d.slice(0, 9), 10) !== Number(d[9])) return false;
+  if (dv(d.slice(0, 10), 11) !== Number(d[10])) return false;
+  return true;
+}
+
+/** Formata um CPF (11 dígitos) no padrão 000.000.000-00. Se não tiver 11
+ *  dígitos, devolve o texto original aparado (nunca força um formato inválido). */
+export function formatCpf(raw: string): string {
+  const d = normalizeCpfDigits(raw);
+  if (d.length !== 11) return raw.trim();
+  return `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}`;
+}
+
+/** Chave de custom_field que representa um CPF (cpf, cpf_responsavel, ...). */
+function isCpfKey(key: string): boolean {
+  return /cpf/i.test(key);
+}
+
+/** Campo de booking que coleta CPF (detectado por chave, label ou pergunta). */
+export function isCpfField(field: BookingFieldDef): boolean {
+  return (
+    isCpfKey(field.key) ||
+    /\bcpf\b/i.test(field.label ?? "") ||
+    /\bcpf\b/i.test(field.question ?? "")
+  );
 }
 
 /**
@@ -1126,6 +1189,12 @@ export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadDat
     const cleaned: Record<string, string> = {};
     for (const [k, v] of Object.entries(next.custom_fields)) {
       if (typeof v !== "string") continue;
+      // CPF: só aceita valor que seja um CPF válido e normaliza p/ 000.000.000-00.
+      // Um valor não-CPF (ex.: "9h") é descartado — o agente re-pergunta.
+      if (isCpfKey(k)) {
+        if (isValidCpf(v)) cleaned[k] = formatCpf(v);
+        continue;
+      }
       if (looksLikeSchedulingPreference(v)) continue;
       if (k.includes("birth") && !looksLikeBirthDate(v) && looksLikePersonName(v)) continue;
       if (k.includes("guardian") && looksLikeBirthDate(v)) continue;
@@ -1366,12 +1435,24 @@ function captureBookingAnswer(
   const lastUser = stripAffirmativePrefix(rawAnswer.trim());
   if (!lastUser || lastUser.length > MAX_AUTO_CAPTURE_LEN) return {};
   if (looksLikeQuestion(lastUser)) return {};
-  if (isSlotAcceptanceMessage(lastUser)) return {};
-  if (looksLikeSchedulingPreference(lastUser)) return {};
-  if (looksLikePhoneNumber(lastUser)) return {};
 
   const missing = getMissingBookingFields(fields, leadData);
   if (missing.length === 0) return {};
+
+  // CPF: se o assistente perguntou por um campo de CPF, só captura um CPF válido
+  // (11 dígitos + dígito verificador). Fica ANTES dos guards de telefone/horário
+  // porque um CPF de 11 dígitos passaria por looksLikePhoneNumber. Resposta que
+  // não é CPF (ex.: "9h") não é capturada — o campo segue pendente.
+  const cpfQuestionField = matchFieldFromAssistantQuestion(assistantText, missing);
+  if (cpfQuestionField && isCpfField(cpfQuestionField)) {
+    return isValidCpf(lastUser)
+      ? { custom_fields: { [cpfQuestionField.key]: formatCpf(lastUser) } }
+      : {};
+  }
+
+  if (isSlotAcceptanceMessage(lastUser)) return {};
+  if (looksLikeSchedulingPreference(lastUser)) return {};
+  if (looksLikePhoneNumber(lastUser)) return {};
 
   // Datas de nascimento sao auto-classificadas independente da pergunta —
   // o formato dd/mm/yyyy e inequivoco.
