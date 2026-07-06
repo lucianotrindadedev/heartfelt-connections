@@ -1084,7 +1084,17 @@ function pickSlotByPreference(
 
   let pool = slots;
   const mentioned = slots.filter((s) => slotMentionedInText(s, assistantText));
-  if (mentioned.length > 0) pool = mentioned;
+  const hasMentioned = mentioned.length > 0;
+  if (hasMentioned) pool = mentioned;
+
+  // Preferência de TURNO pura ("manhã"/"tarde", sem data) dita ANTES de o agente
+  // ofertar horários específicos NÃO é escolha de slot — é só um filtro. Não
+  // auto-seleciona (deixa o agente LISTAR os horários reais e o lead escolher).
+  // Evita o bug: lead pede "dia 7", agenda só tem 13/07, lead diz "tarde" e o
+  // sistema travava 13/07 13:00 achando que era a escolha.
+  if (!targetDate && !hasMentioned && (wantMorning || wantAfternoon || wantEvening)) {
+    return null;
+  }
 
   let filtered = pool;
   if (targetDate) {

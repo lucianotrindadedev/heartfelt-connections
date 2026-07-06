@@ -666,11 +666,24 @@ async function execListarHorarios(
       };
     }
 
+    // Data pedida (data_alvo) sem vaga, mas há vaga em datas POSTERIORES:
+    // avisa explicitamente para o agente NÃO afirmar a data pedida (o modelo
+    // tende a ecoar "dia 7" mesmo quando os slots são de 13/07).
+    const anchorKey = anchor
+      ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
+      : null;
+    const requestedDateUnavailable =
+      !!anchorKey && !formatted.some((s) => (s.iso ?? "").slice(0, 10) === anchorKey);
     return {
       result: JSON.stringify({
         count: formatted.length,
         slots: formatted,
         ...(resolved.agendaLabel ? { agenda: resolved.agendaLabel } : {}),
+        ...(requestedDateUnavailable
+          ? {
+              aviso_data: `SEM VAGA em ${anchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${anchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${anchorKey}).`,
+            }
+          : {}),
       }),
       patch: { offered_slots: formatted, ...agendaPatch },
     };
