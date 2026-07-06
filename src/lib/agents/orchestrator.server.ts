@@ -718,6 +718,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       const reoffer = !!finalLeadData.reoffer_after_cancel;
       finalLeadData = { ...finalLeadData };
       delete finalLeadData.appointment_id;
+      delete finalLeadData.booked_slot_iso;
       delete finalLeadData.booked_tag_applied;
       delete finalLeadData.commitment_confirmed;
       if (reoffer) {

@@ -792,24 +792,65 @@ async function execCriarAgendamento(
   // com o evento que ele mesmo criou e devolve "HORÁRIO INDISPONÍVEL" —
   // o lead ve o evento na agenda mas recebe mensagem de erro.
   if (ld.appointment_id) {
-    console.warn(
-      `[scheduler:telemetry] ${JSON.stringify({
-        event: "double_booking_blocked",
-        conv: ctx.conversationId,
-        account: ctx.accountId,
-        agent: ctx.agentId,
-        appointment_id: ld.appointment_id,
-        model: ctx.model,
-      })}`,
+    // REMARCAÇÃO vs DUPLICATA: se o horário pedido AGORA é DIFERENTE do que já
+    // está agendado (booked_slot_iso), é uma REMARCAÇÃO → cancela o antigo e
+    // segue para criar o novo. Só é duplicata (idempotência) quando o horário
+    // é o MESMO. Sem isso, o lead remarcava e a trava dizia "já agendado",
+    // deixando o novo horário SEM ser criado no CRM.
+    const bookedSlot = (ld.booked_slot_iso ?? "").trim();
+    const requestedSlot = (ld.selected_slot_iso ?? "").trim();
+    const isReschedule = !!bookedSlot && !!requestedSlot && bookedSlot !== requestedSlot;
+
+    if (!isReschedule) {
+      console.warn(
+        `[scheduler:telemetry] ${JSON.stringify({
+          event: "double_booking_blocked",
+          conv: ctx.conversationId,
+          account: ctx.accountId,
+          agent: ctx.agentId,
+          appointment_id: ld.appointment_id,
+          model: ctx.model,
+        })}`,
+      );
+      return {
+        result: JSON.stringify({
+          ok: true,
+          appointment_id: ld.appointment_id,
+          already_booked: true,
+          note: "Agendamento ja existe (mesmo horário) — nao foi recriado. Apenas confirme ao lead.",
+        }),
+      };
+    }
+
+    // Remarcação: cancela o agendamento anterior antes de criar o novo.
+    console.log(
+      `[scheduler] REMARCAÇÃO conv=${ctx.conversationId}: cancela ${ld.appointment_id} (${bookedSlot}) → cria novo (${requestedSlot})`,
     );
-    return {
-      result: JSON.stringify({
-        ok: true,
-        appointment_id: ld.appointment_id,
-        already_booked: true,
-        note: "Agendamento ja existe — nao foi recriado. Apenas confirme ao lead.",
-      }),
-    };
+    if (!ctx.dryRun) {
+      try {
+        if (ctx.integrations.googleCalendar) {
+          const resolved = resolveGcalAgenda(ctx, ld.selected_agenda);
+          await cancelGoogleCalendarEvent(
+            ctx.accountId,
+            String(ld.appointment_id),
+            resolved.calendarId,
+          );
+        } else {
+          await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
+        }
+        await applyUnbookedTagSwap(ctx);
+      } catch (e) {
+        console.error(
+          `[scheduler] cancelamento do anterior falhou na remarcação conv=${ctx.conversationId}: ${e instanceof Error ? e.message : e}`,
+        );
+        // Não bloqueia a criação do novo — melhor um duplicado do que o lead
+        // sem o novo horário. Fica logado para limpeza.
+      }
+    }
+    // Limpa o appointment_id antigo para o create abaixo prosseguir (o patch de
+    // sucesso grava o NOVO id + booked_slot_iso).
+    ld.appointment_id = undefined;
+    ctx.leadData = { ...ctx.leadData, appointment_id: undefined };
   }
 
   const bookingFields = getBookingFieldsForChannel(ctx.agentSettings, {
@@ -905,6 +946,7 @@ async function execCriarAgendamento(
           appointment_id: ev.id,
           name: leadName,
           booked_tag_applied: true,
+          booked_slot_iso: ld.selected_slot_iso,
           ...(resolved.agendaLabel ? { selected_agenda: resolved.agendaLabel } : {}),
         },
       };
@@ -934,7 +976,12 @@ async function execCriarAgendamento(
     await removeLeadFromSequences(ctx);
     return {
       result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
-      patch: { appointment_id: appt.id, name: leadName, booked_tag_applied: true },
+      patch: {
+        appointment_id: appt.id,
+        name: leadName,
+        booked_tag_applied: true,
+        booked_slot_iso: ld.selected_slot_iso,
+      },
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

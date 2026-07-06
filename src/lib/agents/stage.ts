@@ -50,6 +50,10 @@ export interface LeadData {
   offered_slots?: { iso: string; end_iso?: string; date_label: string; time_label: string; dentist_person_id?: number }[];
   /** ID do agendamento criado (BOOKING → CONFIRMED). */
   appointment_id?: number | string;
+  /** ISO do horário EFETIVAMENTE agendado (gravado na criação). Usado para
+   *  distinguir remarcação (novo horário ≠ agendado) de duplicata (mesmo
+   *  horário) na trava de idempotência. */
+  booked_slot_iso?: string;
   /** Confirmou compromisso na pergunta de "posso garantir ao Dr. ___?". */
   commitment_confirmed?: boolean;
   /** ID do paciente no Clinicorp (cache para evitar lookup repetido). */
