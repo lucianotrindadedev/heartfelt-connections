@@ -14,6 +14,9 @@ export interface UpcomingAppointment {
   patientPhone: string;
   patientName: string;
   status?: string;
+  /** Profissional do agendamento (Clinicorp dentist_person_id) — usado para
+   *  filtrar o warm-up por profissional selecionado. */
+  professionalId?: number;
 }
 
 /**
@@ -53,6 +56,7 @@ export async function listAllUpcomingAppointments(
           patientPhone: a.phone,
           patientName: a.patientName,
           status: a.status,
+          professionalId: a.dentistPersonId,
         });
       }
     } catch (e) {

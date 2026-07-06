@@ -17,6 +17,46 @@ import {
   listHelenaTemplates,
 } from "@/lib/helena.server";
 
+// ── Seleção de profissional do warm-up (Clinicorp) ───────────────────────
+// Guardada em agents.settings.warmup_prof_ids ("111,222"). Vazio = todos.
+
+export const getWarmupProfessionals = createServerFn({ method: "GET" })
+  .inputValidator((d) => z.object({ agentId: z.string().uuid() }).parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { data: row } = await sb
+      .from("agents")
+      .select("settings")
+      .eq("id", data.agentId)
+      .single();
+    const s = (row?.settings as Record<string, string> | null) ?? {};
+    const raw = (s.warmup_prof_ids ?? "").trim();
+    const professional_ids = raw
+      ? raw.split(",").map((x) => Number(x.trim())).filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    return { professional_ids };
+  });
+
+export const saveWarmupProfessionals = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    z
+      .object({ agentId: z.string().uuid(), professional_ids: z.array(z.number().int()).max(200) })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { data: row } = await sb
+      .from("agents")
+      .select("settings")
+      .eq("id", data.agentId)
+      .single();
+    const s = { ...((row?.settings as Record<string, string> | null) ?? {}) };
+    s.warmup_prof_ids = data.professional_ids.join(",");
+    const { error } = await sb.from("agents").update({ settings: s }).eq("id", data.agentId);
+    if (error) throw new Error(`Falha ao salvar profissionais do warm-up: ${error.message}`);
+    return { ok: true };
+  });
+
 const stepInputSchema = z.object({
   ordem: z.number().int().min(1).max(20),
   enabled: z.boolean().default(true),

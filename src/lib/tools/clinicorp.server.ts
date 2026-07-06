@@ -736,7 +736,16 @@ export async function listClinicorpUpcomingAppointments(
   accountId: string,
   from: string,
   to: string,
-): Promise<{ id: number | string; start: string; patientName: string; phone: string; status: string }[]> {
+): Promise<
+  {
+    id: number | string;
+    start: string;
+    patientName: string;
+    phone: string;
+    status: string;
+    dentistPersonId?: number;
+  }[]
+> {
   const config = await loadConfig(accountId);
 
   // Contrato real da API: GET com `from`/`to` (YYYY-MM-DD). A resposta é um
@@ -759,7 +768,14 @@ export async function listClinicorpUpcomingAppointments(
   const json = (await res.json()) as unknown;
   const rows = Array.isArray(json) ? (json as Record<string, unknown>[]) : [];
 
-  const out: { id: number | string; start: string; patientName: string; phone: string; status: string }[] = [];
+  const out: {
+    id: number | string;
+    start: string;
+    patientName: string;
+    phone: string;
+    status: string;
+    dentistPersonId?: number;
+  }[] = [];
   for (const a of rows) {
     if (a.Deleted) continue; // agendamento excluído
     const dateRaw = String(a.date ?? ""); // "2026-06-26T03:00:00.000Z" (00:00 BRT do dia)
@@ -770,12 +786,18 @@ export async function listClinicorpUpcomingAppointments(
     const localTime = `${hh.padStart(2, "0")}:${mm.padStart(2, "0")}`;
     const start = `${dateRaw.slice(0, 10)}T${localTime}:00-03:00`;
 
+    // Profissional do agendamento (para filtrar warm-up por profissional).
+    const dpidRaw =
+      a.Dentist_PersonId ?? a.dentist_person_id ?? a.DentistPersonId ?? a.dentistPersonId;
+    const dpid = Number(dpidRaw);
+
     out.push({
       id: (a.id as number | string) ?? "",
       start,
       patientName: String(a.PatientName ?? a.Name ?? ""),
       phone: normalizeBrPhone(String(a.MobilePhone ?? "")),
       status: String(a.CategoryDescription ?? ""),
+      dentistPersonId: Number.isFinite(dpid) && dpid > 0 ? dpid : undefined,
     });
   }
   return out;

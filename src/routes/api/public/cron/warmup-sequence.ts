@@ -126,6 +126,33 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
           }
           if (appointments.length === 0) continue;
 
+          // Filtro de PROFISSIONAL (Clinicorp): se o dono selecionou profissionais
+          // específicos para o warm-up (settings.warmup_prof_ids = "111,222"), só
+          // envia para agendamentos DESSES profissionais. Vazio/ausente = todos.
+          const warmupProfRaw = (agentSettings?.warmup_prof_ids ?? "").trim();
+          const warmupProfIds = warmupProfRaw
+            ? new Set(
+                warmupProfRaw
+                  .split(",")
+                  .map((s) => Number(s.trim()))
+                  .filter((n) => Number.isFinite(n) && n > 0),
+              )
+            : null;
+          if (warmupProfIds && warmupProfIds.size > 0) {
+            const before = appointments.length;
+            appointments = appointments.filter(
+              (a) =>
+                a.source !== "clinicorp" ||
+                (a.professionalId != null && warmupProfIds.has(a.professionalId)),
+            );
+            if (appointments.length !== before) {
+              console.log(
+                `[warmup-seq] filtro de profissional agent=${agentId}: ${before} → ${appointments.length} (profs=${[...warmupProfIds].join(",")})`,
+              );
+            }
+            if (appointments.length === 0) continue;
+          }
+
           // Cache de channelId por sessionId (evita refetch entre múltiplos steps)
           const channelCache = new Map<string, string>();
 

@@ -147,6 +147,8 @@ import {
   updateWarmupStep,
   deleteWarmupStep,
   listAccountHelenaTemplates,
+  getWarmupProfessionals,
+  saveWarmupProfessionals,
 } from "@/lib/warmup-steps.functions";
 import {
   uploadAgentMedia,
@@ -8189,6 +8191,41 @@ function WarmupView({
   const templates = (templatesQ.data?.templates ?? []) as HelenaTemplateOption[];
   const templatesError = templatesQ.data?.ok === false ? templatesQ.data.error : null;
 
+  // ── Seleção de profissional (Clinicorp): envia warm-up só para os agendamentos
+  //    dos profissionais marcados. Nenhum marcado = todos. ──
+  const listProfsFn = useServerFn(listClinicorpProfessionalsFn);
+  const getProfsSelFn = useServerFn(getWarmupProfessionals);
+  const saveProfsSelFn = useServerFn(saveWarmupProfessionals);
+  const profsQ = useQuery({
+    queryKey: ["clinicorp-professionals", accountId],
+    queryFn: () => listProfsFn({ data: { accountId } }),
+  });
+  const profSelQ = useQuery({
+    queryKey: ["warmup-professionals", agentId],
+    queryFn: () => getProfsSelFn({ data: { agentId } }),
+  });
+  const professionals = (profsQ.data?.ok ? profsQ.data.professionals : []) as {
+    id: number;
+    name: string;
+  }[];
+  const profsError = profsQ.data && profsQ.data.ok === false ? profsQ.data.error : null;
+  const [selectedProfs, setSelectedProfs] = useState<number[]>([]);
+  useEffect(() => {
+    if (profSelQ.data?.professional_ids) setSelectedProfs(profSelQ.data.professional_ids);
+  }, [profSelQ.data]);
+  const saveProfs = useMutation({
+    mutationFn: (ids: number[]) => saveProfsSelFn({ data: { agentId, professional_ids: ids } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["warmup-professionals", agentId] }),
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar profissionais."),
+  });
+  function toggleProf(id: number) {
+    setSelectedProfs((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      saveProfs.mutate(next);
+      return next;
+    });
+  }
+
   async function addStep() {
     const nextOrdem = steps.length > 0 ? Math.max(...steps.map((s) => s.ordem)) + 1 : 1;
     const defaultsByOrdem: Record<number, { value: number; unit: "minutes" | "hours" | "days" }> = {
@@ -8268,6 +8305,52 @@ function WarmupView({
               <code className="rounded bg-rose-100 px-1">{"{{data}}"}</code>,{" "}
               <code className="rounded bg-rose-100 px-1">{"{{hora}}"}</code> no momento do envio.
             </p>
+          </div>
+
+          {/* Seletor de PROFISSIONAL (Clinicorp) — no topo */}
+          <div className="rounded-xl border border-slate-200 bg-white p-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-foreground">Enviar warm-up para quais profissionais?</p>
+              <span className="text-[10px] font-medium text-muted-foreground">
+                {selectedProfs.length === 0 ? "Todos" : `${selectedProfs.length} selecionado(s)`}
+              </span>
+            </div>
+            <p className="mt-1 mb-2 text-[11px] text-muted-foreground">
+              Só os agendamentos dos profissionais marcados recebem o lembrete. Nenhum marcado = <strong>todos</strong> (Clinicorp).
+            </p>
+            {profsQ.isLoading ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" /> Carregando profissionais do Clinicorp…
+              </div>
+            ) : profsError ? (
+              <p className="text-[11px] text-amber-700">{profsError}</p>
+            ) : professionals.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">
+                Nenhum profissional retornado pelo Clinicorp (verifique a integração).
+              </p>
+            ) : (
+              <div className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+                {professionals.map((p) => {
+                  const checked = selectedProfs.includes(p.id);
+                  return (
+                    <label
+                      key={p.id}
+                      className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-slate-50"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleProf(p.id)}
+                        disabled={saveProfs.isPending}
+                        className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                      />
+                      <span className="text-sm">{p.name}</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground">#{p.id}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {templatesError && (
