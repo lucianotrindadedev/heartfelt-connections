@@ -1148,12 +1148,49 @@ export function looksLikeSchedulingPreference(text: string): boolean {
   return false;
 }
 
+/**
+ * O lead está NEGANDO disponibilidade ("não posso", "não dá", "não vou
+ * conseguir", "amanhã não dá", "impossível") — a mensagem NÃO é escolha de
+ * horário, mesmo que cite um dia. Caso real (11 98945-0106): "não vou conseguir
+ * ir amanhã".
+ */
+export function mentionsUnavailability(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    /\bn[ãa]o\s+(posso|poderei|consigo|vou\s+conseguir|vou\s+poder|vou|d[áa]\s+pra|d[áa]|da|rola|tenho\s+como)/.test(
+      t,
+    ) ||
+    /amanh[ãa]\s+n[ãa]o\b/.test(t) ||
+    /\bimposs[íi]vel\b/.test(t)
+  );
+}
+
+/**
+ * A data relativa está sendo AFIRMADA como fato / explicação, não pedida como
+ * horário ("08/07 será amanhã", "amanhã é feriado", "seria amanhã"). Nesse caso
+ * não é escolha de slot. Caso real (11 98945-0106): "08/07 será amanhã" (=
+ * "o dia 8 é amanhã, por isso não dá") auto-selecionava 08/07 09:00 e reagendava
+ * justamente o dia recusado. Cuidado: "pode ser amanhã" (pedido real) NÃO casa —
+ * "ser " não é "será".
+ */
+export function relativeDateIsExplanatory(text: string): boolean {
+  const t = text.toLowerCase();
+  // "<algo> será/seria/foi/era amanhã" — data afirmada como fato.
+  if (/(ser[áa]|seria|foi|era)\s+(hoje|amanh[ãa]|depois\s+de\s+amanh[ãa])/.test(t)) return true;
+  // "amanhã é feriado", "amanhã será", "amanhã vai ser" — data como sujeito.
+  if (/\b(hoje|amanh[ãa])\s+(é|ser[áa]|seria|vai\s+ser|foi|era)/.test(t)) return true;
+  return false;
+}
+
 function pickSlotByPreference(
   slots: OfferedSlot[],
   text: string,
   assistantText: string,
 ): Partial<LeadData> | null {
   const t = text.toLowerCase();
+
+  // Negação/explicação de data NÃO é escolha de horário — não auto-selecionar.
+  if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
 
   // Data relativa ("amanhã", "hoje", "depois de amanhã"). O \b em relativo
   // evita o bug clássico: "amanhã" contém "manhã".

@@ -16,6 +16,9 @@ import {
   clearRejectedBookingName,
   formatCpf,
   getMissingBookingFields,
+  mentionsUnavailability,
+  relativeDateIsExplanatory,
+  tryAutoSelectOfferedSlot,
   isReadyForBooking,
   isSlotAcceptanceMessage,
   isValidCpf,
@@ -166,6 +169,63 @@ describe("clearRejectedBookingName", () => {
   it("no-op quando nao ha nome preenchido", () => {
     expect(clearRejectedBookingName({})).toEqual({});
     expect(clearRejectedBookingName({ custom_fields: {} })).toEqual({});
+  });
+});
+
+// ── Auto-seleção de slot: negação/explicação de data NÃO é escolha ────────
+// Regressão do caso (11) 98945-0106: "08/07 será amanhã" (explicação de que
+// não dá) auto-selecionava 08/07 09:00 e reagendava o dia recusado.
+
+describe("mentionsUnavailability", () => {
+  it("detecta negação de disponibilidade", () => {
+    expect(mentionsUnavailability("eu não vou conseguir ir amanhã")).toBe(true);
+    expect(mentionsUnavailability("não posso amanhã")).toBe(true);
+    expect(mentionsUnavailability("amanhã não dá")).toBe(true);
+    expect(mentionsUnavailability("não consigo nesse dia")).toBe(true);
+    expect(mentionsUnavailability("tá impossível essa semana")).toBe(true);
+  });
+  it("NÃO bloqueia pedidos reais", () => {
+    expect(mentionsUnavailability("pode ser amanhã")).toBe(false);
+    expect(mentionsUnavailability("quero amanhã de manhã")).toBe(false);
+    expect(mentionsUnavailability("prefiro dia 15")).toBe(false);
+  });
+});
+
+describe("relativeDateIsExplanatory", () => {
+  it("detecta data relativa afirmada como fato (não é pedido)", () => {
+    expect(relativeDateIsExplanatory("08/07 será amanhã")).toBe(true);
+    expect(relativeDateIsExplanatory("amanhã é feriado")).toBe(true);
+    expect(relativeDateIsExplanatory("mas amanhã seria muito corrido")).toBe(true);
+  });
+  it("NÃO bloqueia pedidos reais com data relativa", () => {
+    expect(relativeDateIsExplanatory("pode ser amanhã")).toBe(false);
+    expect(relativeDateIsExplanatory("quero amanhã de manhã")).toBe(false);
+    expect(relativeDateIsExplanatory("prefiro amanhã à tarde")).toBe(false);
+  });
+});
+
+describe("tryAutoSelectOfferedSlot — negação/explicação não seleciona", () => {
+  const slots08 = [
+    { iso: "2026-07-08T09:00:00-03:00", date_label: "quarta-feira, 08/07", time_label: "09:00" },
+    { iso: "2026-07-08T14:00:00-03:00", date_label: "quarta-feira, 08/07", time_label: "14:00" },
+  ];
+
+  it("'08/07 será amanhã' NÃO auto-seleciona 08/07 09:00 (caso 11 98945-0106)", () => {
+    const patch = tryAutoSelectOfferedSlot(
+      "SLOT_OFFER",
+      { offered_slots: slots08 },
+      [{ role: "user", content: "08/07 será amanhã" }],
+    );
+    expect(patch).toEqual({});
+  });
+
+  it("'não vou conseguir ir amanhã' NÃO auto-seleciona", () => {
+    const patch = tryAutoSelectOfferedSlot(
+      "SLOT_OFFER",
+      { offered_slots: slots08 },
+      [{ role: "user", content: "eu não vou conseguir ir amanhã" }],
+    );
+    expect(patch).toEqual({});
   });
 });
 
