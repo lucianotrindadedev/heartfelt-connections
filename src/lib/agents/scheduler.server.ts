@@ -54,6 +54,17 @@ import { normalizeBrazilPhone } from "@/lib/conversation-channel.server";
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
+  classifyBookingError,
+  parseBookingFailure,
+  pruneOfferedSlot,
+  buildConflictReply,
+  TECH_RETRY_REPLY,
+  TECH_ESCALATE_REPLY,
+  TECH_ESCALATION_REASON,
+  MAX_BOOKING_TECH_RETRIES,
+  type BookingFailureKind,
+} from "./booking-failure";
+import {
   buildBookingFieldsPromptBlock,
   clearBookingFields,
   defaultCommitmentQuestion,
@@ -987,8 +998,11 @@ async function execCriarAgendamento(
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[scheduler] criar_agendamento GCal falhou: ${msg}`);
-      return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300) }) };
+      const kind = classifyBookingError(msg);
+      console.error(
+        `[scheduler] criar_agendamento GCal falhou conv=${ctx.conversationId} kind=${kind}: ${msg}`,
+      );
+      return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300), error_kind: kind }) };
     }
   }
 
@@ -1020,7 +1034,11 @@ async function execCriarAgendamento(
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300) }) };
+    const kind = classifyBookingError(msg);
+    console.error(
+      `[scheduler] criar_agendamento Clinicorp falhou conv=${ctx.conversationId} kind=${kind}: ${msg}`,
+    );
+    return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300), error_kind: kind }) };
   }
 }
 
@@ -1228,7 +1246,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 - **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Se o lead pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios — sem isso a busca não alcança datas distantes. **Se o lead perguntar por OUTRO dia/data, inclusive relativo ("tem amanhã?", "e sexta?", "semana que vem", "outro dia", "de manhã"), NÃO responda com pergunta de confirmação nem repita os horários antigos: chame listar_horarios com \`data_alvo\` daquele dia (calcule "amanhã"/"sexta" a partir de HOJE) e ofereça os horários reais. Consultar a agenda é obrigatório. ⛔ UMA pergunta de esclarecimento no MÁXIMO: assim que o lead indicar QUALQUER preferência (período "manhã"/"tarde" OU um dia), PARE de perguntar e chame listar_horarios IMEDIATAMENTE — nunca faça uma segunda pergunta tipo "amanhã de manhã ou outro dia?", traga os horários reais.** Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
 - **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
-- **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou — peça desculpas e ofereça outro horário.
+- **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou. Só diga que o horário "ficou indisponível" quando error_kind="conflict" (horário ocupado) — e ofereça OUTRO horário, nunca o mesmo. Se error_kind="technical", NÃO minta sobre indisponibilidade: peça desculpas por um problema técnico e diga que vai tentar registrar de novo.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
 
 ${fieldsBlock}
@@ -1502,16 +1520,21 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   let toolResult = outcome.result;
   const toolsCalled: string[] = ["criar_agendamento"];
 
-  const failed =
-    toolResult.includes('"ok":false') || toolResult.includes('"ok": false');
-  // "ocupad(o)" é a redação do Clinicorp para slot tomado — tratar igual a
-  // indisponível/conflito (limpar o slot e re-listar).
-  if (failed && /INDISPON|indispon|conflit|ocupad/i.test(toolResult)) {
+  // Só re-lista horários quando o slot está REALMENTE ocupado (conflito). Falha
+  // técnica (ex.: create do Clinicorp retornou erro, mas o horário segue livre)
+  // NÃO é indisponibilidade — não mexemos nos horários aqui; a trava final trata
+  // com mensagem honesta + retry/escala. Antes, um regex só de "indisponível"
+  // deixava a falha técnica passar como se fosse conflito silencioso.
+  const failure = parseBookingFailure(toolResult);
+  if (failure?.kind === "conflict") {
     console.warn(
       `[scheduler] slot indisponível conv=${ctx.conversationId} — atualizando horários`,
     );
+    // Poda o slot que falhou de offered_slots (nunca re-ofertá-lo) e limpa a escolha.
+    const failedIso = ctx.leadData.selected_slot_iso;
+    ctx.leadData.offered_slots = pruneOfferedSlot(ctx.leadData.offered_slots, failedIso);
     delete ctx.leadData.selected_slot_iso;
-    extraPatch = { ...extraPatch };
+    extraPatch = { ...extraPatch, offered_slots: ctx.leadData.offered_slots };
     delete extraPatch.selected_slot_iso;
     // Re-lista a MESMA agenda (multi-agenda) — selected_agenda persiste no conflito.
     const refresh = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
@@ -1586,13 +1609,24 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Nome rejeitado pelo validador (need_valid_name) — o turn NÃO deve agendar
   // nem ofertar horário: deve pedir o NOME COMPLETO do paciente.
   let invalidNameBlocked = !!autoBooking.toolResult?.includes('"need_valid_name":true');
+  // Classificação da última falha de booking do turn (conflito x técnica). Guia a
+  // trava final: conflito → reoferta OUTROS horários; técnica → mensagem honesta
+  // + retry/escala (nunca "indisponível" com o slot ainda livre).
+  let bookingFailureKind: BookingFailureKind | null =
+    parseBookingFailure(autoBooking.toolResult)?.kind ?? null;
+  // Guarda o resultado cru da última falha de booking p/ persistir o erro no meta
+  // da mensagem (diagnóstico). Sem isto, a causa do "indisponível" ficava só no
+  // log do servidor e invisível no banco.
+  let lastBookingFailureResult: string | undefined = bookingFailureKind
+    ? autoBooking.toolResult
+    : undefined;
   if (autoBooking.toolResult) {
     baseDynamic += `\n\n# RESULTADO criar_agendamento (automático)\n${autoBooking.toolResult}\n` +
       (ctx.leadData.appointment_id
         ? "Evento criado na agenda. Confirme ao lead e use next_stage=CONFIRMED."
         : invalidNameBlocked
           ? "O nome informado NÃO é um nome de pessoa válido. NÃO agende e NÃO ofereça horários. Peça gentilmente o NOME COMPLETO do paciente (nome e sobrenome) para finalizar. next_stage=NAME_COLLECT."
-          : "Falha ao criar evento. NÃO confirme agendamento — peça desculpas e ofereça outro horário.");
+          : 'Falha ao registrar o agendamento. NÃO confirme. Se o resultado indicar error_kind="conflict" (horário ocupado), peça desculpas e ofereça OUTRO horário (nunca o que falhou). Se error_kind="technical" (falha ao registrar, horário segue livre), NÃO diga que ficou indisponível: peça desculpas por um problema técnico momentâneo e diga que já vai tentar registrar de novo.');
   }
 
   const dynamic = extras ? baseDynamic + "\n\n" + extras : baseDynamic;
@@ -1720,14 +1754,20 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, outcome.patch);
         ctx.leadData = mergeLeadDataPatch(ctx.leadData, outcome.patch);
       }
-      if (
-        (tc.function.name === "criar_agendamento" ||
-          tc.function.name === "agendar_clinicorp" ||
-          tc.function.name === "agendar_google_calendar" ||
-          tc.function.name === "agendar_clinup") &&
-        outcome.result.includes('"already_booked":true')
-      ) {
+      const isBookingTool =
+        tc.function.name === "criar_agendamento" ||
+        tc.function.name === "agendar_clinicorp" ||
+        tc.function.name === "agendar_google_calendar" ||
+        tc.function.name === "agendar_clinup";
+      if (isBookingTool && outcome.result.includes('"already_booked":true')) {
         doubleBookingBlocked = true;
+      }
+      if (isBookingTool) {
+        const f = parseBookingFailure(outcome.result);
+        if (f) {
+          bookingFailureKind = f.kind;
+          lastBookingFailureResult = outcome.result;
+        }
       }
       if (outcome.result.includes('"need_valid_name":true')) {
         invalidNameBlocked = true;
@@ -1810,6 +1850,11 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       if (lateBooking.toolResult?.includes('"need_valid_name":true')) {
         invalidNameBlocked = true;
       }
+      const lf = parseBookingFailure(lateBooking.toolResult);
+      if (lf) {
+        bookingFailureKind = lf.kind;
+        lastBookingFailureResult = lateBooking.toolResult;
+      }
     }
 
     if (ctx.leadData.appointment_id) {
@@ -1873,29 +1918,88 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
 
   // ── Trava de confirmação falsa ────────────────────────────────────────────
   // Se houve tentativa de agendar NESTE turn mas NÃO há appointment_id, a criação
-  // falhou (ex.: Clinicorp "ocupado"). O modelo às vezes diz "agendado com
-  // sucesso" mesmo assim — aqui sobrescrevemos deterministicamente: nunca
-  // confirmamos sem appointment_id; informamos indisponibilidade e re-ofertamos.
+  // falhou. O modelo às vezes diz "agendado com sucesso" mesmo assim — aqui
+  // sobrescrevemos deterministicamente. NUNCA confirmamos sem appointment_id.
+  //
+  // Distinção crítica (bug do caso 07/07): antes esta trava dizia SEMPRE "esse
+  // horário acabou de ficar indisponível" e re-ofertava os offered_slots em cache
+  // — que ainda continham o slot que ACABOU de falhar. Se a falha foi TÉCNICA (o
+  // horário seguia livre, como validado na agenda), isso era mentira + auto-
+  // contradição (re-ofertar as mesmas 10:00). Agora:
+  //   conflict  → slot realmente ocupado: poda o slot ruim e reoferta OUTROS.
+  //   technical → falha ao registrar: não mente; tenta de novo e, se persistir,
+  //               escala para um humano concluir (sem loop de "já tento").
   const bookingAttempted = toolsCalled.some((t) =>
     ["criar_agendamento", "agendar_clinicorp", "agendar_google_calendar", "agendar_clinup"].includes(t),
   );
   if (bookingAttempted && !ctx.leadData.appointment_id && !doubleBookingBlocked && !invalidNameBlocked) {
-    const slots = (ctx.leadData.offered_slots ?? []).slice(0, 2);
-    if (slots.length > 0) {
-      const opcoes = slots.map((s) => `${s.date_label} às ${s.time_label}`).join(" ou ");
-      reply = `Ihh, esse horário acabou de ficar indisponível 😕 Mas consigo te encaixar em ${opcoes}. Qual fica melhor pra você?`;
-    } else {
-      reply =
-        "Ihh, esse horário acabou de ficar indisponível 😕 Me dá só um instante que já te trago outras opções de horário, tá?";
-    }
-    // Nunca terminar em CONFIRMED sem appointment_id; volta a ofertar e força
-    // o lead a reescolher (o slot anterior pode estar tomado).
-    outStage = "SLOT_OFFER";
-    outPatch = { ...outPatch, appointment_id: undefined, selected_slot_iso: undefined };
+    const kind: BookingFailureKind = bookingFailureKind ?? "conflict";
+    const failedIso = ctx.leadData.selected_slot_iso;
     mergedTelemetry.false_confirmation_blocked = true;
-    console.warn(
-      `[scheduler] confirmação falsa bloqueada conv=${ctx.conversationId} — booking sem appointment_id`,
-    );
+    mergedTelemetry.booking_failure_kind = kind;
+    // Persiste o erro da tool no meta da mensagem (diagnóstico no banco).
+    if (lastBookingFailureResult) {
+      const em = lastBookingFailureResult.match(/"error"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (em) mergedTelemetry.booking_error = em[1].slice(0, 300);
+    }
+    if (failedIso) mergedTelemetry.booking_failed_slot = failedIso;
+
+    if (kind === "technical") {
+      const techFailures = (ctx.leadData.booking_tech_failures ?? 0) + 1;
+      if (techFailures >= MAX_BOOKING_TECH_RETRIES) {
+        // Persistiu → escala para um humano finalizar (o slot segue reservável).
+        reply = TECH_ESCALATE_REPLY;
+        outStage = "ESCALATED";
+        outPatch = {
+          ...outPatch,
+          appointment_id: undefined,
+          escalation_reason: TECH_ESCALATION_REASON,
+        };
+        mergedTelemetry.booking_escalated_technical = true;
+        console.error(
+          `[scheduler] booking falhou (técnico x${techFailures}) conv=${ctx.conversationId} slot=${failedIso} — escalando p/ humano`,
+        );
+      } else {
+        // Mantém o slot escolhido e os horários ofertados → retry no próximo turn.
+        reply = TECH_RETRY_REPLY;
+        outStage = "NAME_COLLECT";
+        outPatch = {
+          ...outPatch,
+          appointment_id: undefined,
+          booking_tech_failures: techFailures,
+        };
+        mergedTelemetry.booking_technical_retry = techFailures;
+        console.warn(
+          `[scheduler] booking falhou (técnico x${techFailures}) conv=${ctx.conversationId} slot=${failedIso} — retry no próximo turn`,
+        );
+      }
+    } else {
+      // CONFLITO real: poda o slot que falhou (nunca re-ofertá-lo) e oferece
+      // OUTROS; se não sobrar nenhum, re-lista a agenda para trazer horários reais.
+      let remaining = pruneOfferedSlot(ctx.leadData.offered_slots, failedIso);
+      if (remaining.length === 0) {
+        delete ctx.leadData.selected_slot_iso;
+        ctx.leadData.offered_slots = [];
+        const refresh = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
+        if (refresh.patch) {
+          ctx.leadData = mergeLeadDataPatch(ctx.leadData, refresh.patch);
+          outPatch = mergeLeadDataPatch(outPatch as LeadData, refresh.patch);
+        }
+        toolsCalled.push("listar_horarios");
+        remaining = pruneOfferedSlot(ctx.leadData.offered_slots, failedIso);
+      }
+      reply = buildConflictReply(remaining);
+      outStage = "SLOT_OFFER";
+      outPatch = {
+        ...outPatch,
+        appointment_id: undefined,
+        selected_slot_iso: undefined,
+        offered_slots: remaining,
+      };
+      console.warn(
+        `[scheduler] confirmação falsa bloqueada (conflito) conv=${ctx.conversationId} slot=${failedIso}`,
+      );
+    }
   }
 
   return {

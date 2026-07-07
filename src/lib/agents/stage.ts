@@ -74,6 +74,10 @@ export interface LeadData {
   reoffer_after_cancel?: boolean;
   /** Lead já enviado ao Leads360 (POST /leads) — evita reenviar a cada turn. */
   leads360_lead_sent?: boolean;
+  /** Falhas TÉCNICAS consecutivas de criar_agendamento (não conflito de horário).
+   *  Não zera em conflito; após MAX_BOOKING_TECH_RETRIES escala para humano em vez
+   *  de repetir "já tento de novo" indefinidamente. */
+  booking_tech_failures?: number;
 }
 
 /** Transições válidas entre stages. `*` = qualquer origem. */
