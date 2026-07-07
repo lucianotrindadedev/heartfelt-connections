@@ -79,6 +79,7 @@ import {
   mergeLeadDataPatch,
   preflightBookingFields,
   resolveBookingLeadName,
+  clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
@@ -1912,8 +1913,18 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     reply =
       "Só preciso confirmar o nome completo do paciente (nome e sobrenome) para finalizar o agendamento. Como devo registrar?";
     outStage = "NAME_COLLECT";
-    outPatch = { ...outPatch, appointment_id: undefined };
+    // LIMPA o nome REJEITADO — senão ele persiste no lead_data e o nome real
+    // nunca é recapturado (getMissingBookingFields o vê preenchido), travando o
+    // NAME_COLLECT em loop. Caso real (21 97486-6018): name preso em "Tudo bem"
+    // e a lead repetiu o nome dezenas de vezes sem efeito.
+    const clearName = clearRejectedBookingName(ctx.leadData);
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, clearName);
+    outPatch = mergeLeadDataPatch(outPatch as LeadData, {
+      ...clearName,
+      appointment_id: undefined,
+    });
     mergedTelemetry.invalid_name_blocked = true;
+    if (Object.keys(clearName).length > 0) mergedTelemetry.rejected_name_cleared = true;
   }
 
   // ── Trava de confirmação falsa ────────────────────────────────────────────

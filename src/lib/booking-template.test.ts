@@ -13,6 +13,7 @@ import {
   buildTemplateVars,
   classifyMapleBearTurma,
   clearBookingFields,
+  clearRejectedBookingName,
   formatCpf,
   getMissingBookingFields,
   isReadyForBooking,
@@ -127,6 +128,45 @@ describe("looksLikeIntentMessage", () => {
     expect(looksLikeIntentMessage("25/07/2019")).toBe(false);
     expect(looksLikeIntentMessage("11:20")).toBe(false);
   });
+
+  it("detecta saudacao/ack curto 'tudo bem' (nao e nome) — regressao 21 97486-6018", () => {
+    expect(looksLikeIntentMessage("Tudo bem")).toBe(true);
+    expect(looksLikeIntentMessage("tudo bom")).toBe(true);
+    expect(looksLikeIntentMessage("Tudo certo")).toBe(true);
+    // nome real continua nao sendo intent
+    expect(looksLikeIntentMessage("Ana Lucia Valentim do Nascimento")).toBe(false);
+  });
+});
+
+// ── clearRejectedBookingName (destrava NAME_COLLECT em loop) ──────────────
+
+describe("clearRejectedBookingName", () => {
+  it("limpa o campo name quando preenchido (caso 'Tudo bem' preso)", () => {
+    expect(clearRejectedBookingName({ name: "Tudo bem" })).toEqual({ name: undefined });
+  });
+
+  it("limpa guardians quando o nome veio de guardians", () => {
+    const out = clearRejectedBookingName({ custom_fields: { guardians: "Obrigado" } });
+    expect(out.custom_fields?.guardians).toBe("");
+  });
+
+  it("limpa child_name quando o nome veio de child_name", () => {
+    const out = clearRejectedBookingName({ custom_fields: { child_name: "manhã" } });
+    expect(out.custom_fields?.child_name).toBe("");
+  });
+
+  it("prioriza name > guardians > child_name (igual a resolveBookingLeadName)", () => {
+    const out = clearRejectedBookingName({
+      name: "Tudo bem",
+      custom_fields: { guardians: "X", child_name: "Y" },
+    });
+    expect(out).toEqual({ name: undefined });
+  });
+
+  it("no-op quando nao ha nome preenchido", () => {
+    expect(clearRejectedBookingName({})).toEqual({});
+    expect(clearRejectedBookingName({ custom_fields: {} })).toEqual({});
+  });
 });
 
 // ── sanitizeLeadDataPatch (defesa em profundidade) ────────────────────────
@@ -212,6 +252,19 @@ describe("getMissingBookingFields", () => {
       },
     };
     expect(getMissingBookingFields(SCHOOL_FIELDS, ld)).toEqual([]);
+  });
+
+  it("trata name='Tudo bem' como MISSING (regressao 21 97486-6018)", () => {
+    const NAME_FIELD: BookingFieldDef[] = [
+      { key: "name", label: "Nome", question: "Qual seu nome?", required: true, maps_to: "name" },
+    ];
+    expect(getMissingBookingFields(NAME_FIELD, { name: "Tudo bem" }).map((f) => f.key)).toEqual([
+      "name",
+    ]);
+    // nome real preenchido → nao falta nada
+    expect(
+      getMissingBookingFields(NAME_FIELD, { name: "Ana Lucia Valentim do Nascimento" }),
+    ).toEqual([]);
   });
 });
 

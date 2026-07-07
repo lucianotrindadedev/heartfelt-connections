@@ -707,11 +707,21 @@ export function looksLikeIntentMessage(text: string): boolean {
 
   const tl = t.toLowerCase();
   const intentWords =
-    /\b(ol[aá]|oi|bom dia|boa tarde|boa noite|gostaria|gostari[ae]|quero|queria|preciso|posso|pode|poderia|tenho|estou|interesse|interessad[oa]|informa[cç][oõ]es?|saber|sobre|d[uú]vida|escola|consulta|atendiment|servi[cç]o|aula|curso|mensalidad|valor|pre[cç]o|hor[aá]rio|disponibilidade|matr[ií]cul|filh[oa]|crian[cç]a|esposa|marido|m[ãa]e|pai|melhor falar|gente|al[ôo])\b/i;
+    /\b(ol[aá]|oi|bom dia|boa tarde|boa noite|tudo bem|tudo bom|tudo certo|gostaria|gostari[ae]|quero|queria|preciso|posso|pode|poderia|tenho|estou|interesse|interessad[oa]|informa[cç][oõ]es?|saber|sobre|d[uú]vida|escola|consulta|atendiment|servi[cç]o|aula|curso|mensalidad|valor|pre[cç]o|hor[aá]rio|disponibilidade|matr[ií]cul|filh[oa]|crian[cç]a|esposa|marido|m[ãa]e|pai|melhor falar|gente|al[ôo])\b/i;
   if (intentWords.test(tl)) return true;
 
-  const wordCount = t.split(/\s+/).filter(Boolean).length;
-  if (wordCount >= 5) return true;
+  // Mensagens longas costumam ser intent — MAS um nome completo brasileiro tem
+  // com frequência 4–6 palavras (ex.: "Ana Lucia Valentim do Nascimento"). Se
+  // TODAS as palavras são alfabéticas (partículas "do/da/de" inclusas) e não há
+  // nenhuma palavra de intenção (já checadas acima), é quase certamente um nome —
+  // não classificar como intent, senão o nome real é rejeitado na captura e no
+  // getMissingBookingFields (caso real 21 97486-6018: a lead repetia o nome e
+  // ele nunca era registrado).
+  const tokens = t.split(/\s+/).filter(Boolean);
+  const wordCount = tokens.length;
+  const looksLikeNameSequence =
+    wordCount <= 6 && tokens.every((w) => /^[\p{L}][\p{L}'.-]*$/u.test(w));
+  if (wordCount >= 5 && !looksLikeNameSequence) return true;
 
   return false;
 }
@@ -1019,6 +1029,23 @@ export function resolveBookingLeadName(leadData: LeadData): string | undefined {
     if (first) return first;
   }
   return leadData.custom_fields?.child_name?.trim() || undefined;
+}
+
+/**
+ * Limpa do lead_data o campo de nome que o validador (LLM) REJEITOU, para o nome
+ * real ser recapturado. Sem isto, um nome inválido persistido trava o
+ * NAME_COLLECT em loop: getMissingBookingFields (regex) acha o campo preenchido e
+ * nunca recoleta, enquanto validatePatientNameLLM rejeita a cada agendamento.
+ * Caso real (21 97486-6018): name ficou preso em "Tudo bem" — que o regex
+ * looksLikeIntentMessage não pega, mas o LLM rejeita — e a lead repetiu o nome
+ * dezenas de vezes sem efeito. Segue a mesma prioridade de resolveBookingLeadName.
+ */
+export function clearRejectedBookingName(leadData: LeadData): Partial<LeadData> {
+  if (leadData.name?.trim()) return { name: undefined };
+  const cf = leadData.custom_fields ?? {};
+  if (cf.guardians?.trim()) return { custom_fields: { ...cf, guardians: "" } };
+  if (cf.child_name?.trim()) return { custom_fields: { ...cf, child_name: "" } };
+  return {};
 }
 
 export function isCommitmentRequired(settings: Record<string, string>): boolean {
