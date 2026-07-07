@@ -236,6 +236,12 @@ const SCHEDULER_TOOLS: LlmTool[] = [
             description:
               "Tamanho da janela de busca em dias a partir do início. Omita para o padrão (próximos 3 dias — a busca já oferece os horários MAIS PRÓXIMOS e amplia sozinha se não houver vaga). Só informe um valor se quiser forçar uma janela específica.",
           },
+          periodo: {
+            type: "string",
+            enum: ["manha", "tarde", "noite"],
+            description:
+              "Turno do dia pedido pelo lead: 'manha' (antes do meio-dia), 'tarde' (12:00–18:00) ou 'noite' (a partir das 18:00). SEMPRE informe quando o lead disser um período (ex: 'de tarde', 'pela manhã', 'à noite'). Sem isso, a busca traz só os horários mais cedo e pode responder que a tarde não tem vaga mesmo quando tem.",
+          },
         },
         required: [],
       },
@@ -551,11 +557,32 @@ function parseDataAlvoBrt(dataAlvo?: string): Date | null {
 const SLOT_NEAR_WINDOW_DAYS = 4; // hoje + 3 dias
 const SLOT_WIDE_WINDOW_DAYS = 60;
 
+/** Faixa de horas (hora local BRT) de um turno pedido pelo lead. Fronteiras
+ *  alinhadas ao pickSlotByPreference: manhã <12, tarde 12–18, noite ≥18. */
+function periodoParaHoras(periodo?: string): { min: number; max: number } | null {
+  const p = (periodo ?? "")
+    .toLowerCase()
+    .trim()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, ""); // remove acentos (manhã → manha)
+  switch (p) {
+    case "manha":
+      return { min: 0, max: 12 };
+    case "tarde":
+      return { min: 12, max: 18 };
+    case "noite":
+      return { min: 18, max: 24 };
+    default:
+      return null;
+  }
+}
+
 async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
   agendaLabel?: string,
   dataAlvo?: string,
+  periodo?: string,
 ): Promise<ToolOutcome> {
   const selected = ctx.leadData.selected_slot_iso;
   if (selected) {
@@ -628,6 +655,10 @@ async function execListarHorarios(
           granularidade: resolved.granularidadeMinutos ?? duracao,
           amostras: 6,
           businessHoursJson,
+          // Turno pedido (manhã/tarde/noite): filtra ANTES do corte de 6 para a
+          // tarde não cair fora quando a manhã tem vagas. Festas ("uma por dia")
+          // não têm turno — não aplica.
+          periodoHoras: resolved.umaPorDia ? undefined : periodoParaHoras(periodo) ?? undefined,
           umaPorDia: resolved.umaPorDia,
           umaPorDiaDias: resolved.diasUmaPorDia,
           bufferMinutos: resolved.bufferMinutos,
@@ -741,10 +772,33 @@ async function execListarHorarios(
     );
     slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(wideEnd));
   }
+  // Filtro de TURNO (manhã/tarde/noite) ANTES do corte de 6. Sem isso, o
+  // slice(0,6) pegava só os horários mais cedo (manhã) e, quando o lead pedia
+  // "tarde", a resposta era "não temos à tarde" mesmo com a tarde livre — os
+  // slots da tarde caíam fora das 6 primeiras posições cronológicas.
+  const bounds = periodoParaHoras(periodo);
+  let periodoAviso: string | undefined;
+  if (bounds) {
+    const noPeriodo = slots.filter((s) => {
+      const h = Number(s.fromTime.slice(0, 2));
+      return Number.isFinite(h) && h >= bounds.min && h < bounds.max;
+    });
+    if (noPeriodo.length > 0) {
+      slots = noPeriodo;
+    } else if (slots.length > 0) {
+      // Turno pedido sem vaga, mas há horários em outro turno: não esconde os
+      // reais — avisa o LLM para ser honesto ("à tarde não tenho, mas tenho...").
+      periodoAviso = `Sem vaga no turno pedido (${periodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
+    }
+  }
   // Limita a 6 (as mais próximas) para não confundir o lead.
   const limited = slots.slice(0, 6).map(formatSlot);
   return {
-    result: JSON.stringify({ count: limited.length, slots: limited }),
+    result: JSON.stringify({
+      count: limited.length,
+      slots: limited,
+      ...(periodoAviso ? { aviso_periodo: periodoAviso } : {}),
+    }),
     patch: { offered_slots: limited },
   };
 }
@@ -1180,6 +1234,9 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
   e CHAME listar_horarios IMEDIATAMENTE para ofertar 2 horários REAIS. NUNCA faça
   uma segunda pergunta do tipo "amanhã de manhã ou outro dia de manhã?" — a essa
   altura o lead espera VER horários, não responder outra pergunta.
+  ⚠️ Se o lead disser um TURNO ("de manhã", "à tarde", "de noite"), passe
+  \`periodo\` ("manha"/"tarde"/"noite") em listar_horarios — sem isso a busca traz
+  só os horários mais cedo e pode dizer que a tarde não tem vaga mesmo tendo.
 - **NAME_COLLECT**: só se selected_slot_iso existir. Confirme o slot. NÃO
   chame listar_horarios. Colete os campos obrigatórios (UM por mensagem).${commitmentEnabled ? ` Ao final dos campos, pergunte: "${commitmentQ}"` : ""}
 - **BOOKING**: o sistema cria o agendamento. Se criar_agendamento ok=true,
@@ -1245,7 +1302,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 # ESTÁGIOS QUE VOCÊ OPERA
 
-- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Se o lead pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios — sem isso a busca não alcança datas distantes. **Se o lead perguntar por OUTRO dia/data, inclusive relativo ("tem amanhã?", "e sexta?", "semana que vem", "outro dia", "de manhã"), NÃO responda com pergunta de confirmação nem repita os horários antigos: chame listar_horarios com \`data_alvo\` daquele dia (calcule "amanhã"/"sexta" a partir de HOJE) e ofereça os horários reais. Consultar a agenda é obrigatório. ⛔ UMA pergunta de esclarecimento no MÁXIMO: assim que o lead indicar QUALQUER preferência (período "manhã"/"tarde" OU um dia), PARE de perguntar e chame listar_horarios IMEDIATAMENTE — nunca faça uma segunda pergunta tipo "amanhã de manhã ou outro dia?", traga os horários reais.** Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
+- **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Se o lead pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios — sem isso a busca não alcança datas distantes. **Se o lead perguntar por OUTRO dia/data, inclusive relativo ("tem amanhã?", "e sexta?", "semana que vem", "outro dia", "de manhã"), NÃO responda com pergunta de confirmação nem repita os horários antigos: chame listar_horarios com \`data_alvo\` daquele dia (calcule "amanhã"/"sexta" a partir de HOJE) e ofereça os horários reais. Consultar a agenda é obrigatório. ⛔ UMA pergunta de esclarecimento no MÁXIMO: assim que o lead indicar QUALQUER preferência (período "manhã"/"tarde" OU um dia), PARE de perguntar e chame listar_horarios IMEDIATAMENTE — nunca faça uma segunda pergunta tipo "amanhã de manhã ou outro dia?", traga os horários reais. Se o lead disser um TURNO ("de manhã", "à tarde", "de noite"), passe \`periodo\` ("manha"/"tarde"/"noite") — sem isso a busca traz só os horários mais cedo e pode dizer que a tarde não tem vaga mesmo tendo.** Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
 - **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou. Só diga que o horário "ficou indisponível" quando error_kind="conflict" (horário ocupado) — e ofereça OUTRO horário, nunca o mesmo. Se error_kind="technical", NÃO minta sobre indisponibilidade: peça desculpas por um problema técnico e diga que vai tentar registrar de novo.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
@@ -1708,6 +1765,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
               args.dias_a_frente as number | undefined,
               typeof args.agenda === "string" ? args.agenda : undefined,
               typeof args.data_alvo === "string" ? args.data_alvo : undefined,
+              typeof args.periodo === "string" ? args.periodo : undefined,
             );
             break;
           case "criar_agendamento":

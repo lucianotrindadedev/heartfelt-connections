@@ -3,11 +3,12 @@
 // criação / atualização / cancelamento de eventos.
 //
 // O fluxo de "janelas disponíveis" segue a mesma lógica do workflow n8n:
-//   1. Gera janelas candidatas (período / granularidade / tamanho).
+//   1. Gera janelas candidatas (período / granularidade / tamanho); se um turno
+//      (manhã/tarde/noite) foi pedido, filtra os candidatos por faixa horária.
 //   2. Filtra pelo expediente da clínica (business_hours_json por dia da semana).
 //   3. Consulta eventos do período no Google Calendar.
 //   4. Remove janelas que conflitam com eventos existentes.
-//   5. Embaralha + corta `amostras` para diversidade.
+//   5. Ordena por horário (mais próximos primeiro) e corta os `amostras` primeiros.
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue, encryptValue } from "@/lib/crypto.server";
@@ -589,6 +590,10 @@ interface ListSlotsParams {
   bufferMinutos?: number;
   /** Dias da semana onde a folga vale. Vazio/ausente = todos os dias. */
   bufferDias?: string[];
+  /** Turno pedido pelo lead (hora local BRT): filtra os candidatos por faixa
+   *  horária ANTES do corte `amostras`, para que "tarde" não seja descartada
+   *  quando a manhã já tem vagas. Ex: { min: 12, max: 18 } = 12:00–17:59. */
+  periodoHoras?: { min: number; max: number };
 }
 
 // Granularidades válidas (passo da grade de horários).
@@ -654,6 +659,13 @@ export async function listGoogleCalendarSlots(
     const start = new Date(inicioSnapped.getTime() + i * gran * 60_000);
     const end = new Date(start.getTime() + tamanho * 60_000);
     if (end.getTime() > fim.getTime()) break;
+    // Turno pedido (manhã/tarde/noite): descarta candidatos fora da faixa ANTES
+    // do corte `amostras`. Sem isso, "tarde" era descartada quando a manhã tinha
+    // ≥ amostras vagas (o slice pegava só os mais cedo).
+    if (params.periodoHoras) {
+      const h = minutosNoDia(start) / 60;
+      if (h < params.periodoHoras.min || h >= params.periodoHoras.max) continue;
+    }
     candidates.push({ inicio: start, fim: end });
   }
 
