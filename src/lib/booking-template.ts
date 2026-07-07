@@ -641,30 +641,26 @@ export function looksLikeBirthDate(text: string): boolean {
 // ── Validação de CPF ────────────────────────────────────────────────────────
 //
 // CPF sempre tem 11 dígitos. O lead pode informar formatado (000.000.000-00,
-// com separadores . e -) OU só os 11 dígitos (00000000000). Além do formato,
-// validamos os dígitos verificadores — assim uma resposta como "9h", uma
-// sequência repetida (111.111.111-11) ou um número digitado errado NÃO é aceita
-// como CPF: o campo segue pendente e o agente re-pergunta. Caso real: ao pedir
-// CPF, o lead respondeu "9h" (era resposta de horário) e virou CPF no cadastro.
+// com separadores . e -) OU só os 11 dígitos (00000000000). Validamos apenas
+// a contagem de dígitos e sequências repetidas — NÃO o dígito verificador
+// oficial do CPF: leads de teste digitam CPFs "genéricos" (ex: 123.456.789-00)
+// que falham o checksum mas são intencionais, e o preflight (linha ~516)
+// bloqueava o agendamento nesse caso com uma mensagem confusa de "horário
+// indisponível" em vez de pedir o CPF de novo. Mantemos os 11 dígitos como
+// filtro porque isso ainda barra respostas óbvias que não são CPF, como "9h"
+// (era resposta de horário e virou CPF no cadastro em um caso real).
 
 /** Só os dígitos de um texto (remove ".", "-", espaços, etc.). */
 export function normalizeCpfDigits(raw: string | null | undefined): string {
   return (raw ?? "").replace(/\D/g, "");
 }
 
-/** CPF válido: 11 dígitos, não todos iguais e com dígitos verificadores corretos. */
+/** CPF "válido" para fins de captura: 11 dígitos e não todos iguais.
+ *  Não verifica o dígito verificador oficial (ver comentário acima). */
 export function isValidCpf(raw: string | null | undefined): boolean {
   const d = normalizeCpfDigits(raw);
   if (d.length !== 11) return false;
   if (/^(\d)\1{10}$/.test(d)) return false; // 000..., 111..., ..., 999...
-  const dv = (base: string, startWeight: number): number => {
-    let sum = 0;
-    for (let i = 0; i < base.length; i++) sum += Number(base[i]) * (startWeight - i);
-    const r = (sum * 10) % 11;
-    return r === 10 ? 0 : r;
-  };
-  if (dv(d.slice(0, 9), 10) !== Number(d[9])) return false;
-  if (dv(d.slice(0, 10), 11) !== Number(d[10])) return false;
   return true;
 }
 
@@ -1467,7 +1463,7 @@ function captureBookingAnswer(
   if (missing.length === 0) return {};
 
   // CPF: se o assistente perguntou por um campo de CPF, só captura um CPF válido
-  // (11 dígitos + dígito verificador). Fica ANTES dos guards de telefone/horário
+  // (11 dígitos, não todos iguais). Fica ANTES dos guards de telefone/horário
   // porque um CPF de 11 dígitos passaria por looksLikePhoneNumber. Resposta que
   // não é CPF (ex.: "9h") não é capturada — o campo segue pendente.
   const cpfQuestionField = matchFieldFromAssistantQuestion(assistantText, missing);

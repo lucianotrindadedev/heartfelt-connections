@@ -759,7 +759,9 @@ describe("buildTemplateVars + custom fields", () => {
 
 // ── Validação de CPF ────────────────────────────────────────────────────────
 // Bug: ao pedir CPF, o lead respondeu "9h" (era resposta de horário) e o valor
-// virou CPF no cadastro. Agora CPF exige 11 dígitos + dígito verificador.
+// virou CPF no cadastro. CPF exige 11 dígitos e não todos iguais — NÃO valida
+// o dígito verificador oficial (leads de teste usam CPFs "genéricos" que
+// falham o checksum mas são intencionais; ver comentário em isValidCpf).
 
 const CPF_FIELDS: BookingFieldDef[] = [
   { key: "name", label: "Nome", question: "Qual seu nome?", required: true, maps_to: "name" },
@@ -786,10 +788,14 @@ describe("isValidCpf", () => {
     expect(isValidCpf("414087718961")).toBe(false); // 12 digitos
   });
 
-  it("rejeita sequencias repetidas e digito verificador invalido", () => {
+  it("rejeita sequencias repetidas", () => {
     expect(isValidCpf("111.111.111-11")).toBe(false);
     expect(isValidCpf("00000000000")).toBe(false);
-    expect(isValidCpf("414.087.718-00")).toBe(false); // DV errado
+  });
+
+  it("aceita 11 digitos mesmo com digito verificador oficial invalido", () => {
+    expect(isValidCpf("414.087.718-00")).toBe(true); // DV errado, mas 11 digitos e nao repetido
+    expect(isValidCpf("12345678900")).toBe(true); // CPF "generico" de teste
   });
 });
 
