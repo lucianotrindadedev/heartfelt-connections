@@ -53,6 +53,7 @@ import {
 import { normalizeBrazilPhone } from "@/lib/conversation-channel.server";
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
+import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import {
   classifyBookingError,
   parseBookingFailure,
@@ -1184,16 +1185,34 @@ async function execCancelarAgendamento(
     `[scheduler] agendamento cancelado conv=${ctx.conversationId} appt=${ld.appointment_id} reoffer=${!!opts?.reoffer}`,
   );
 
+  if (!opts?.reoffer) {
+    return {
+      result: JSON.stringify({
+        ok: true,
+        cancelled: true,
+        reoffer: false,
+        note: "Agendamento cancelado com sucesso. Confirme ao lead.",
+      }),
+      patch: clearPatch,
+    };
+  }
+
+  // REMARCAÇÃO: já traz os NOVOS horários no MESMO turn. O lead não pode ficar
+  // esperando "vou buscar e já volto" — caso real (21 97558-2703): cancelou o
+  // horário antigo e nunca trouxe/remarcou os novos. Listamos aqui e devolvemos
+  // os slots no resultado da tool para o agente ofertar de imediato.
+  ctx.leadData = mergeLeadDataPatch(ctx.leadData, clearPatch);
+  const listing = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
+  const reofferPatch = mergeLeadDataPatch(clearPatch as LeadData, listing.patch ?? {});
   return {
-    result: JSON.stringify({
-      ok: true,
-      cancelled: true,
-      reoffer: !!opts?.reoffer,
-      note: opts?.reoffer
-        ? "Agendamento anterior cancelado. Agora ofereça novos horários ao lead (next_stage=SLOT_OFFER)."
-        : "Agendamento cancelado com sucesso. Confirme ao lead.",
-    }),
-    patch: clearPatch,
+    result:
+      JSON.stringify({
+        ok: true,
+        cancelled: true,
+        reoffer: true,
+        note: "Agendamento anterior cancelado. OFEREÇA JÁ os horários abaixo ao lead nesta MESMA resposta (next_stage=SLOT_OFFER). NÃO diga que vai buscar/verificar depois — os horários já estão aqui.",
+      }) + `\n\n# NOVOS HORÁRIOS DISPONÍVEIS (listar_horarios)\n${listing.result}`,
+    patch: reofferPatch,
   };
 }
 
@@ -1872,10 +1891,14 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   totalTokensOut += finalResponse.tokensOut;
   totalCostUsd += finalResponse.costUsd;
 
-  // Merge final do patch: o que o LLM declarou + o que veio de tools.
+  // Merge final do patch: o que o LLM declarou + o que veio de tools. O patch do
+  // LLM é limpo de campos controlados pelo sistema (appointment_id etc.) — só
+  // tools podem setá-los (impede agendamento/remarcação FORJADOS pelo modelo).
   const mergedPatch = mergeLeadDataPatch(
     accumulatedPatch as LeadData,
-    stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>) as Partial<LeadData>,
+    stripNullishFields(
+      stripLlmForbiddenFields((result.lead_data_patch ?? {}) as Record<string, unknown>),
+    ) as Partial<LeadData>,
   );
 
   // Fallback: se LLM omitiu next_stage, mantem o stage atual.
@@ -1957,7 +1980,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       outPatch = mergeLeadDataPatch(
         outPatch as LeadData,
         stripNullishFields(
-          (cRes.lead_data_patch ?? {}) as Record<string, unknown>,
+          stripLlmForbiddenFields((cRes.lead_data_patch ?? {}) as Record<string, unknown>),
         ) as Partial<LeadData>,
       );
     }
