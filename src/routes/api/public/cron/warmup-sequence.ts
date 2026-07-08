@@ -40,6 +40,63 @@ function delayToMs(value: number, unit: string): number {
   }
 }
 
+// Celular BR pode estar salvo com ou sem o "9" extra depois do DDD (o
+// Clinicorp às vezes guarda sem; o WhatsApp sempre manda com). Gera as
+// variantes pra não perder o match por causa disso.
+function phoneVariants(phone: string): string[] {
+  const out = new Set([phone]);
+  if (phone.length === 11 && phone[2] === "9") out.add(phone.slice(0, 2) + phone.slice(3));
+  else if (phone.length === 10) out.add(phone.slice(0, 2) + "9" + phone.slice(2));
+  return [...out];
+}
+
+interface ConvMatch {
+  helena_session_id: string | null;
+  meta: unknown;
+}
+
+/**
+ * Resolve a conversa/sessão Helena de um agendamento. Dois caminhos, nessa
+ * ordem:
+ *   1. Por appointment_id em lead_data — funciona mesmo quando o agendamento
+ *      no provider (ex.: Clinicorp) não tem telefone preenchido (é o caso de
+ *      todo agendamento CRIADO PELA PRÓPRIA IA: o create não devolve/grava o
+ *      telefone no registro do agendamento, só no cadastro do paciente — a
+ *      listagem então vinha sem MobilePhone e o warm-up nunca encontrava
+ *      sessão nem tentava de novo).
+ *   2. Por telefone (com variantes do "9"), pra agendamentos feitos fora do
+ *      bot (ex.: direto na recepção/Clinicorp), que não têm lead_data.
+ */
+async function resolveWarmupConversation(
+  sb: ReturnType<typeof getSelfhost>,
+  agentId: string,
+  appt: { externalId: string; patientPhone: string },
+): Promise<ConvMatch | null> {
+  const byAppt = await sb
+    .from("conversations")
+    .select("helena_session_id, meta")
+    .eq("agent_id", agentId)
+    .eq("meta->lead_data->>appointment_id", appt.externalId)
+    .not("helena_session_id", "is", null)
+    .limit(1)
+    .maybeSingle();
+  if (byAppt.data?.helena_session_id) return byAppt.data as ConvMatch;
+
+  if (appt.patientPhone) {
+    const { data } = await sb
+      .from("conversations")
+      .select("helena_session_id, meta")
+      .eq("agent_id", agentId)
+      .in("phone", phoneVariants(appt.patientPhone))
+      .not("helena_session_id", "is", null)
+      .limit(1)
+      .maybeSingle();
+    if (data?.helena_session_id) return data as ConvMatch;
+  }
+
+  return null;
+}
+
 interface WarmupStep {
   id: string;
   agent_id: string;
@@ -193,17 +250,14 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
                 .limit(1);
               if (dedupe.data && dedupe.data.length > 0) continue;
 
-              // Resolve sessionId: olha conversa do agente por phone
-              const { data: conv } = await sb
-                .from("conversations")
-                .select("helena_session_id, meta")
-                .eq("agent_id", agentId)
-                .eq("phone", appt.patientPhone)
-                .not("helena_session_id", "is", null)
-                .limit(1)
-                .maybeSingle();
+              // Resolve sessionId: por appointment_id (lead_data) primeiro,
+              // com fallback por telefone (ver resolveWarmupConversation).
+              const conv = await resolveWarmupConversation(sb, agentId, {
+                externalId: appt.externalId,
+                patientPhone: appt.patientPhone,
+              });
 
-              const sessionId = conv?.helena_session_id as string | undefined;
+              const sessionId = conv?.helena_session_id ?? undefined;
 
               // Nome para o lembrete = RESPONSÁVEL que agendou (não a criança).
               // Vem do lead_data da conversa (name = quem falou com o bot; ou

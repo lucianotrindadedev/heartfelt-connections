@@ -46,7 +46,11 @@ export async function listAllUpcomingAppointments(
         toDate.toISOString().slice(0, 10),
       );
       for (const a of items) {
-        if (!a.phone || !a.start) continue;
+        // Telefone pode vir vazio: agendamentos CRIADOS PELA IA não têm
+        // MobilePhone no registro do agendamento no Clinicorp (só no cadastro
+        // do paciente). Não descarta — o warm-up casa a sessão por
+        // appointment_id (lead_data) quando o telefone estiver ausente.
+        if (!a.start) continue;
         const startDate = new Date(a.start);
         if (Number.isNaN(startDate.getTime())) continue;
         out.push({
