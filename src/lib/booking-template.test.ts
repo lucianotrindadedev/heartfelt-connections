@@ -71,6 +71,8 @@ describe("looksLikeBirthDate", () => {
     ["25-07-2019", true],
     ["25.07.2019", true],
     ["25 de julho de 2019", true],
+    ["2025-06-20", true], // ISO — regressao caso real 08/07 (Maple Bear Osasco)
+    ["2025-03-20", true],
     ["Helena", false],
     ["sim", false],
     ["manhã", false],
@@ -667,6 +669,13 @@ describe("classifyMapleBearTurma (ref 2026)", () => {
   it("aceita formato textual e com hifen", () => {
     expect(classifyMapleBearTurma("25 de julho de 2019", 2026)).toBe("YEAR 1");
     expect(classifyMapleBearTurma("25-07-2019", 2026)).toBe("YEAR 1");
+  });
+
+  it("aceita ISO (AAAA-MM-DD) com o mesmo resultado do formato BR — regressao caso real 08/07 (Maple Bear Osasco)", () => {
+    expect(classifyMapleBearTurma("2019-07-25", 2026)).toBe("YEAR 1");
+    expect(classifyMapleBearTurma("2025-03-20", 2026)).toBe(
+      classifyMapleBearTurma("20/03/2025", 2026),
+    );
   });
 
   it("data invalida → null", () => {

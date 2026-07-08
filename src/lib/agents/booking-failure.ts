@@ -50,6 +50,22 @@ export function parseBookingFailure(
   return { kind: classifyBookingError(result) };
 }
 
+/**
+ * true quando `result` é uma falha de VALIDAÇÃO (campo obrigatório faltando,
+ * nome inválido, slot/telefone ausente) — não é conflito de horário nem
+ * falha técnica de create. Caso real (08/07, Maple Bear Osasco, lead Ana
+ * Carolina): a trava de confirmação falsa não distinguia isso de uma falha
+ * REAL e sobrescrevia a resposta do LLM com "esse horário acabou de ficar
+ * indisponível" — mentira dupla, já que nem chegou a tentar o horário (o
+ * agendamento nunca foi tentado de verdade; faltava um campo válido) e a
+ * causa real (data de nascimento) nunca era comunicada ao lead, que ficava
+ * em loop até precisar de um humano.
+ */
+export function isValidationOnlyFailure(result: string | undefined | null): boolean {
+  if (!result) return false;
+  return /"ok"\s*:\s*false/.test(result) && VALIDATION_MARKERS.test(result);
+}
+
 export interface OfferedSlotLike {
   iso: string;
   date_label: string;

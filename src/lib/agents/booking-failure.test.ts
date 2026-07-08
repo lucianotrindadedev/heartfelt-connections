@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   classifyBookingError,
   parseBookingFailure,
+  isValidationOnlyFailure,
   pruneOfferedSlot,
   buildConflictReply,
   type OfferedSlotLike,
@@ -78,6 +79,34 @@ describe("parseBookingFailure", () => {
         '{"ok":false,"error":"Clinicorp create appointment failed: 400 — horario ausente","error_kind":"technical"}',
       ),
     ).toEqual({ kind: "technical" });
+  });
+});
+
+describe("isValidationOnlyFailure", () => {
+  it("true para falhas de validação (caso real 08/07, Maple Bear Osasco — campo obrigatório pendente)", () => {
+    expect(
+      isValidationOnlyFailure(
+        '{"ok":false,"error":"Campos obrigatórios pendentes: child_birth_date","missing":[{"key":"child_birth_date"}]}',
+      ),
+    ).toBe(true);
+    expect(isValidationOnlyFailure('{"ok":false,"error":"NOME_INVALIDO","need_valid_name":true}')).toBe(
+      true,
+    );
+    expect(isValidationOnlyFailure('{"ok":false,"error":"telefone ausente"}')).toBe(true);
+  });
+
+  it("false quando é falha real de create (conflito/técnica) ou sucesso", () => {
+    expect(isValidationOnlyFailure('{"ok":false,"error":"HORÁRIO INDISPONÍVEL"}')).toBe(false);
+    expect(
+      isValidationOnlyFailure('{"ok":false,"error":"Clinicorp create appointment failed: 500"}'),
+    ).toBe(false);
+    expect(isValidationOnlyFailure('{"ok":true,"appointment_id":"123"}')).toBe(false);
+  });
+
+  it("false para undefined/vazio", () => {
+    expect(isValidationOnlyFailure(undefined)).toBe(false);
+    expect(isValidationOnlyFailure(null)).toBe(false);
+    expect(isValidationOnlyFailure("")).toBe(false);
   });
 });
 

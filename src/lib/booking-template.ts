@@ -234,8 +234,18 @@ export function parseBirthDateParts(
   const t = raw.trim().toLowerCase();
 
   let day: number, month: number, year: number;
-  const numeric = t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/);
-  if (numeric) {
+  // ISO (AAAA-MM-DD) — o LLM às vezes salva a data nesse formato (sem
+  // instrução explícita de formato no prompt) mesmo o lead tendo respondido
+  // em DD/MM/AAAA. Sem este ramo, a data ISO nunca batia com o regex
+  // DD/MM/AAAA abaixo (ano na frente tem 4 dígitos, não 1-2) e caía como
+  // "não é data" — apagada pelo preflight e o agendamento travava em loop.
+  const iso = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  const numeric = !iso ? t.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/) : null;
+  if (iso) {
+    year = Number(iso[1]);
+    month = Number(iso[2]);
+    day = Number(iso[3]);
+  } else if (numeric) {
     day = Number(numeric[1]);
     month = Number(numeric[2]);
     year = Number(numeric[3]);
@@ -362,7 +372,9 @@ export function turmaTagsForLead(settings: Record<string, string>, ld: LeadData)
   }
   const turmas = new Set<string>();
   for (const blob of blobs) {
-    const dates = blob.match(/\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/g) ?? [];
+    // ISO primeiro (não pode competir com o regex DD/MM/AAAA na mesma
+    // string — ver parseBirthDateParts sobre por que isso é necessário).
+    const dates = blob.match(/\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/g) ?? [];
     for (const d of dates) {
       const t = classifyMapleBearTurma(d, refYear);
       if (t) turmas.add(t);
@@ -633,6 +645,7 @@ function formatSlotParts(iso: string | undefined): { date: string; time: string 
 export function looksLikeBirthDate(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(t)) return true; // ISO — ver parseBirthDateParts
   if (/^\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}$/.test(t)) return true;
   if (/^\d{1,2}\s+de\s+[a-zà-ú]+(\s+de\s+\d{2,4})?$/i.test(t)) return true;
   return false;

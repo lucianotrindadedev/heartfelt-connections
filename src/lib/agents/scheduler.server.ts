@@ -57,6 +57,7 @@ import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import {
   classifyBookingError,
   parseBookingFailure,
+  isValidationOnlyFailure,
   pruneOfferedSlot,
   buildConflictReply,
   TECH_RETRY_REPLY,
@@ -1691,6 +1692,11 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // + retry/escala (nunca "indisponível" com o slot ainda livre).
   let bookingFailureKind: BookingFailureKind | null =
     parseBookingFailure(autoBooking.toolResult)?.kind ?? null;
+  // true quando a ÚLTIMA tentativa falhou por VALIDAÇÃO (campo obrigatório
+  // faltando/inválido) — não é conflito nem falha técnica de create. A trava
+  // final não deve mentir "horário indisponível" nesse caso (ver
+  // isValidationOnlyFailure).
+  let bookingValidationOnly = isValidationOnlyFailure(autoBooking.toolResult);
   // Guarda o resultado cru da última falha de booking p/ persistir o erro no meta
   // da mensagem (diagnóstico). Sem isto, a causa do "indisponível" ficava só no
   // log do servidor e invisível no banco.
@@ -1841,6 +1847,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         doubleBookingBlocked = true;
       }
       if (isBookingTool) {
+        bookingValidationOnly = isValidationOnlyFailure(outcome.result);
         const f = parseBookingFailure(outcome.result);
         if (f) {
           bookingFailureKind = f.kind;
@@ -1932,6 +1939,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       if (lateBooking.toolResult?.includes('"need_valid_name":true')) {
         invalidNameBlocked = true;
       }
+      bookingValidationOnly = isValidationOnlyFailure(lateBooking.toolResult);
       const lf = parseBookingFailure(lateBooking.toolResult);
       if (lf) {
         bookingFailureKind = lf.kind;
@@ -2025,6 +2033,35 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     ["criar_agendamento", "agendar_clinicorp", "agendar_google_calendar", "agendar_clinup"].includes(t),
   );
   if (bookingAttempted && !ctx.leadData.appointment_id && !doubleBookingBlocked && !invalidNameBlocked) {
+    // Falha de VALIDAÇÃO (campo obrigatório faltando/inválido, ex.:
+    // child_birth_date rejeitado pelo preflight): não é conflito de horário
+    // nem falha técnica de create — o horário nem chegou a ser tentado de
+    // verdade. Caso real (08/07, Maple Bear Osasco, lead Ana Carolina): a
+    // trava sobrescrevia SEMPRE com "esse horário acabou de ficar
+    // indisponível", escondendo a causa real (data inválida) e reofertando
+    // horários sem sentido — loop até precisar de humano. Aqui deixamos a
+    // resposta do LLM (que já viu o motivo real no resultado da tool e foi
+    // instruído a pedir o dado) em pé; só garante que ele não confirmou sem
+    // appointment_id.
+    if (bookingValidationOnly && !bookingFailureKind) {
+      mergedTelemetry.booking_validation_only_blocked = true;
+      if (outStage === "CONFIRMED") {
+        outStage = "NAME_COLLECT";
+        outPatch = { ...outPatch, appointment_id: undefined };
+      }
+      return {
+        reply,
+        next_stage: outStage,
+        lead_data_patch: outPatch,
+        reasoning: result.reasoning,
+        tools_called: toolsCalled,
+        tokens_in: totalTokensIn,
+        tokens_out: totalTokensOut,
+        cost_usd: totalCostUsd,
+        telemetry: Object.keys(mergedTelemetry).length > 0 ? mergedTelemetry : undefined,
+      };
+    }
+
     const kind: BookingFailureKind = bookingFailureKind ?? "conflict";
     const failedIso = ctx.leadData.selected_slot_iso;
     mergedTelemetry.false_confirmation_blocked = true;
