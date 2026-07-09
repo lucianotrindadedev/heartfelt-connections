@@ -207,7 +207,15 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
         let processed = 0;
         let attempted = 0;
 
-        for (const [agentId, agentSteps] of stepsByAgent) {
+        // Teto de envios por tick: represa grande (backlog de conversas que
+        // ficaram sem avaliação por muito tempo, ex.: bug do .limit(500) sem
+        // order() — ver fix anterior) não pode virar rajada de mensagens no
+        // mesmo minuto. Isso já causou 429 (rate limit) da Helena em produção.
+        // O que sobrar fica pro próximo tick (5 em 5 min) — o backlog esvazia
+        // aos poucos em vez de tudo de uma vez.
+        const MAX_SENDS_PER_TICK = 20;
+
+        agentLoop: for (const [agentId, agentSteps] of stepsByAgent) {
           // Verifica se agente está ativo
           const agentRow = await sb
             .from("agents")
@@ -346,6 +354,16 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 )
               ) {
                 continue;
+              }
+
+              // Teto de envios do tick atingido: para tudo agora (mesmo entre
+              // agentes) — esta conversa e as demais seguem elegíveis e
+              // tentam de novo no próximo tick.
+              if (attempted >= MAX_SENDS_PER_TICK) {
+                console.log(
+                  `[followup-seq] limite de ${MAX_SENDS_PER_TICK} envios/tick atingido — resto fica pro próximo tick`,
+                );
+                break agentLoop;
               }
 
               // Lock por conversa: o cron roda a cada minuto e a geração
