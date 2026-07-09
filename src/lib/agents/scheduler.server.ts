@@ -1285,7 +1285,7 @@ ${phoneBlock ? `\n${phoneBlock}\n` : ""}
 3. **NUNCA diga "agendei", "marquei" ou "confirmado" sem appointment_id** em lead_data (ok=true de criar_agendamento).
 4. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED".
 5. NUNCA repita pergunta de campo que já consta em LEAD_DATA.
-6. Se o lead pedir explicitamente humano → next_stage="ESCALATED".
+6. Escale para humano (next_stage="ESCALATED" + lead_data_patch.escalation_reason) quando o lead pedir explicitamente OU quando ele demonstrar frustração real / risco de desistir (reclamar do atendimento, dizer que foi induzido/enrolado, ameaçar não vir, dizer que vai procurar outro lugar). NUNCA diga "vou chamar alguém da equipe", "vou te transferir" ou algo parecido sem usar next_stage="ESCALATED" no MESMO turno — dizer isso sem escalar deixa o lead esperando um atendimento que nunca chega.
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
 
@@ -1336,7 +1336,7 @@ ${phoneBlock ? `\n${phoneBlock}\n` : ""}
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores das tools.
 3. UMA pergunta por vez. Mensagens curtas. Use \\n\\n no reply para separar bolhas no WhatsApp.
 4. NUNCA use "dentista" ou "consulta odontológica" se o contexto for escola/educação — use "${appointmentLabel}" e linguagem do prompt do proprietário.
-5. Se o lead pedir explicitamente para falar com humano → next_stage="ESCALATED".
+5. Escale para humano (next_stage="ESCALATED" + lead_data_patch.escalation_reason) quando o lead pedir explicitamente OU quando ele demonstrar frustração real / risco de desistir (reclamar do atendimento, dizer que foi induzido/enrolado, ameaçar não vir, dizer que vai procurar outro lugar). NUNCA diga "vou chamar alguém da equipe", "vou te transferir" ou algo parecido sem usar next_stage="ESCALATED" no MESMO turno — dizer isso sem escalar deixa o lead esperando um atendimento que nunca chega.
 6. **NUNCA diga "agendei", "marquei" ou "está confirmado" sem appointment_id em lead_data** (ok=true de criar_agendamento).
 7. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
 7b. **MUDAR data/hora de um agendamento existente SÓ via remarcar_agendamento.** criar_agendamento não move evento já criado. NUNCA diga "atualizei/remarquei/mudei/ajustei o agendamento" antes de remarcar_agendamento retornar ok=true — senão a agenda fica no horário antigo e o lead aparece num horário inexistente.
@@ -2129,6 +2129,45 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         `[scheduler] confirmação falsa bloqueada (conflito) conv=${ctx.conversationId} slot=${failedIso}`,
       );
     }
+  }
+
+  // ── Trava de remarcação "fantasma" ────────────────────────────────────────
+  // O guard acima só cobre criar_agendamento (família criar/agendar_*) tentado
+  // E falho. Mas o LLM pode propor next_stage=CONFIRMED "fechando" uma NOVA
+  // data/hora (selected_slot_iso ≠ booked_slot_iso) sem ter chamado
+  // remarcar_agendamento NEM criar_agendamento neste turn — a agenda real
+  // (Clinicorp/GCal) continua no horário ANTIGO e o lead acredita ter um
+  // horário que não existe. Caso real (Clínica Bomfim, 09/07): o agente disse
+  // "Fechado, reservado para quarta-feira 15/07 às 15h30!" com tools_called=[]
+  // — o Clinicorp manteve o agendamento de hoje 15h, nunca cancelado/remarcado.
+  const rescheduleAttempted = toolsCalled.some((t) =>
+    ["remarcar_agendamento", "reagendar", "reagendar_agendamento"].includes(t),
+  );
+  const claimedSlot = (ctx.leadData.selected_slot_iso ?? "").trim();
+  const bookedSlot = (ctx.leadData.booked_slot_iso ?? "").trim();
+  const phantomReschedule =
+    outStage === "CONFIRMED" &&
+    !!ctx.leadData.appointment_id &&
+    !!bookedSlot &&
+    !!claimedSlot &&
+    claimedSlot !== bookedSlot &&
+    !bookingAttempted &&
+    !rescheduleAttempted;
+  if (phantomReschedule) {
+    console.warn(
+      `[scheduler] remarcação fantasma bloqueada conv=${ctx.conversationId} — agendado=${bookedSlot} confirmado_no_texto=${claimedSlot}`,
+    );
+    mergedTelemetry.phantom_reschedule_blocked = true;
+    reply =
+      "Pra eu garantir essa mudança certinho na agenda, me confirma de novo a nova data e horário que você prefere? Assim já registro a remarcação. 😊";
+    outStage = "SLOT_OFFER";
+    // "" (não undefined/booked_slot_iso): precisa ser um valor não-nulo pra
+    // sobreviver ao stripNullishFields no merge do orquestrador (que descarta
+    // null/undefined como "sem mudança") e realmente LIMPAR o campo — "" é
+    // falsy, então nenhum override de stage-signals.ts (que testa apenas
+    // truthiness de selected_slot_iso) volta a empurrar o stage pra CONFIRMED.
+    // Resetar para booked_slot_iso (valor "verdadeiro") reabria esse caminho.
+    outPatch = { ...outPatch, selected_slot_iso: "" };
   }
 
   return {

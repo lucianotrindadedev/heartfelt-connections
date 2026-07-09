@@ -23,6 +23,7 @@ import {
   isSlotAcceptanceMessage,
   isValidCpf,
   looksLikeBirthDate,
+  looksLikeDecline,
   looksLikeIntentMessage,
   looksLikeSchedulingPreference,
   preflightBookingFields,
@@ -397,8 +398,29 @@ describe("isSlotAcceptanceMessage", () => {
     ["Olá gostaria de mais informações sobre a escola", false],
     ["Helena Silva", false],
     ["25/07/2019", false],
+    // Caso real (Clínica Bomfim, 09/07): recusa/indisponibilidade com um HH:MM
+    // dentro NÃO é aceite, mesmo batendo o regex de horário solto.
+    ["Nenhum dos 2", false],
+    ["Só largo as 18:00", false],
+    ["não posso às 15:00", false],
   ])("isSlotAcceptanceMessage(%j) → %s", (input, expected) => {
     expect(isSlotAcceptanceMessage(input)).toBe(expected);
+  });
+});
+
+describe("looksLikeDecline", () => {
+  it.each([
+    ["Não, obrigado.", true],
+    ["Nenhum dos 2", true],
+    ["nenhuma das duas", true],
+    ["nenhum", true],
+    ["nem um nem outro", true],
+    ["não quero", true],
+    ["sim", false],
+    ["Helena Silva", false],
+    ["15:00", false],
+  ])("looksLikeDecline(%j) → %s", (input, expected) => {
+    expect(looksLikeDecline(input)).toBe(expected);
   });
 });
 

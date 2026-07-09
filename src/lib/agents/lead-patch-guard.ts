@@ -10,6 +10,18 @@
 // "confirmou" com appointment_id="remarcado_09_07" — um ID falso. Com o ID
 // falso os guards de confirmação falsa (que exigem !appointment_id) não disparam
 // e o lead fica sem agendamento real na agenda.
+//
+// selected_slot_iso/dentist_person_id entraram nessa lista pelo mesmo motivo:
+// esses campos disparam o booking DETERMINÍSTICO (tryDeterministicBooking) —
+// inclusive no MESMO turn em que o LLM os declarou (ver "late booking" em
+// scheduler.server.ts). Se o LLM escreve selected_slot_iso sozinho (ex.:
+// confunde um horário OFERECIDO com um horário ESCOLHIDO pelo lead), o sistema
+// cria um agendamento REAL sem o lead ter confirmado nada. Caso real (Clínica
+// Bomfim, 09/07): o agente ofereceu "hoje 11:30 ou 15:00", o lead recusou os
+// dois, e mesmo assim o Clinicorp criou o agendamento de hoje 15:00. A partir
+// de agora só a heurística determinística (tryAutoSelectOfferedSlot, que lê o
+// texto real do lead contra offered_slots) ou o resultado de uma tool podem
+// setar esses campos.
 
 /** Campos que o LLM NUNCA pode setar via lead_data_patch. */
 export const LLM_FORBIDDEN_LEAD_FIELDS = [
@@ -20,6 +32,8 @@ export const LLM_FORBIDDEN_LEAD_FIELDS = [
   "reoffer_after_cancel",
   "initial_tag_applied",
   "leads360_lead_sent",
+  "selected_slot_iso",
+  "dentist_person_id",
 ] as const;
 
 /** Remove do patch do LLM os campos controlados pelo sistema. */

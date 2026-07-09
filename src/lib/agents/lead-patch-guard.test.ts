@@ -10,14 +10,21 @@ describe("stripLlmForbiddenFields", () => {
     });
     expect(out).toEqual({
       name: "Neymar Jr",
-      selected_slot_iso: "2026-07-09T09:00:00-03:00",
     });
+  });
+
+  it("remove selected_slot_iso/dentist_person_id forjados pelo LLM (caso Clínica Bomfim 09/07)", () => {
+    const out = stripLlmForbiddenFields({
+      name: "Julio Cesar Lima",
+      selected_slot_iso: "2026-07-09T15:00:00-03:00",
+      dentist_person_id: 4906629197725697,
+    });
+    expect(out).toEqual({ name: "Julio Cesar Lima" });
   });
 
   it("remove todos os campos controlados pelo sistema", () => {
     const patch: Record<string, unknown> = {
       name: "Ana",
-      selected_slot_iso: "x",
       custom_fields: { cpf: "123" },
     };
     for (const k of LLM_FORBIDDEN_LEAD_FIELDS) patch[k] = "forjado";
@@ -25,12 +32,11 @@ describe("stripLlmForbiddenFields", () => {
     for (const k of LLM_FORBIDDEN_LEAD_FIELDS) expect(k in out).toBe(false);
     // campos legítimos do LLM permanecem
     expect(out.name).toBe("Ana");
-    expect(out.selected_slot_iso).toBe("x");
     expect(out.custom_fields).toEqual({ cpf: "123" });
   });
 
   it("não altera patch sem campos proibidos", () => {
-    const patch = { name: "Ana", selected_slot_iso: "x", dentist_person_id: 5 };
+    const patch = { name: "Ana", interest: "IMPLANTE", notes: "quer avaliação" };
     expect(stripLlmForbiddenFields(patch)).toEqual(patch);
   });
 

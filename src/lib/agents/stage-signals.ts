@@ -190,6 +190,23 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
   let result = proposedNextStage;
   let reason: string | undefined;
 
+  // Reagendamento pendente: já existe appointment_id, mas o horário que o lead
+  // selecionou agora (selected_slot_iso) ainda é DIFERENTE do que está de fato
+  // reservado (booked_slot_iso) — a mudança ainda não foi executada por
+  // remarcar_agendamento. Nenhum override abaixo deve AVANÇAR o stage nessa
+  // condição: avançar (mesmo que só até NAME_COLLECT, não direto pra CONFIRMED)
+  // faria o fluxo "esquecer" que existe uma remarcação pendente, mesmo que um
+  // guard downstream (scheduler) já tenha evitado a confirmação falsa nesse
+  // mesmo turn — reabrindo a mesma classe de bug por outra porta. Caso real
+  // (Clínica Bomfim, 09/07): o guard do scheduler barrou "Fechado! Reservado
+  // para 15/07" sem tool chamada, mas os overrides abaixo empurrariam o stage
+  // adiante mesmo assim, porque só olhavam "existe appointment_id"/"existe
+  // selected_slot_iso", nunca se o horário bate com o real.
+  const hasPendingReschedule =
+    !!leadData.selected_slot_iso &&
+    !!leadData.booked_slot_iso &&
+    leadData.selected_slot_iso !== leadData.booked_slot_iso;
+
   if (
     signals.userAcceptedSchedulingProposal &&
     hasBookingIntegration &&
@@ -218,7 +235,8 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
   if (
     originalStage === "SLOT_OFFER" &&
     leadData.selected_slot_iso &&
-    result === "SLOT_OFFER"
+    result === "SLOT_OFFER" &&
+    !hasPendingReschedule
   ) {
     result = "NAME_COLLECT";
     reason = reason ?? "slot_selected_advance_to_name_collect";
@@ -226,6 +244,7 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
 
   if (
     leadData.appointment_id &&
+    !hasPendingReschedule &&
     (result === "NAME_COLLECT" || result === "BOOKING")
   ) {
     result = "CONFIRMED";

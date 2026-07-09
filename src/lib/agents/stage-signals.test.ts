@@ -321,6 +321,43 @@ describe("applyDeterministicStageOverrides", () => {
     expect(res.reason).toBe("appointment_created_advance_to_confirmed");
   });
 
+  it("NAO forca CONFIRMED quando ha remarcacao pendente (selected_slot_iso != booked_slot_iso) — caso Clinica Bomfim 09/07", () => {
+    // O guard do scheduler bloqueou uma "confirmacao fantasma" (LLM disse
+    // "reservado pra 15/07" sem chamar remarcar_agendamento) e devolveu
+    // proposedNextStage=SLOT_OFFER. Sem esta trava, este override empurraria
+    // o stage de volta pra CONFIRMED so por appointment_id existir, ignorando
+    // que a agenda real ainda esta no horario ANTIGO (booked_slot_iso).
+    const res = applyDeterministicStageOverrides({
+      proposedNextStage: "SLOT_OFFER",
+      originalStage: "SLOT_OFFER",
+      effectiveStage: "SLOT_OFFER",
+      leadData: {
+        appointment_id: "abc123",
+        booked_slot_iso: "2026-07-09T15:00:00-03:00", // horario REAL na agenda (hoje)
+        selected_slot_iso: "2026-07-15T15:30:00-03:00", // horario que o LLM alegou (quarta 15/07)
+      },
+      hasBookingIntegration: true,
+      signals: detectSignals(baseCtx()),
+    });
+    expect(res.stage).toBe("SLOT_OFFER");
+  });
+
+  it("forca CONFIRMED normalmente quando selected_slot_iso bate com booked_slot_iso", () => {
+    const res = applyDeterministicStageOverrides({
+      proposedNextStage: "BOOKING",
+      originalStage: "BOOKING",
+      effectiveStage: "BOOKING",
+      leadData: {
+        appointment_id: "abc123",
+        booked_slot_iso: "2026-07-09T15:00:00-03:00",
+        selected_slot_iso: "2026-07-09T15:00:00-03:00",
+      },
+      hasBookingIntegration: true,
+      signals: detectSignals(baseCtx()),
+    });
+    expect(res.stage).toBe("CONFIRMED");
+  });
+
   it("volta NAME_COLLECT → SLOT_OFFER se o LLM tentou avancar sem slot", () => {
     const res = applyDeterministicStageOverrides({
       proposedNextStage: "NAME_COLLECT",

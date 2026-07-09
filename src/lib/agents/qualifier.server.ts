@@ -835,9 +835,24 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   totalTokensOut += finalResponse.tokensOut;
   totalCostUsd += finalResponse.costUsd;
 
+  // Com turma_auto, "interest" é EXCLUSIVO do classificador determinístico
+  // (applyTurmaTagDeterministic, já mesclado em accumulatedPatch acima) —
+  // nunca do texto livre do LLM. Sem este filtro, o LLM sobrescreve o valor
+  // canônico ("YEAR 2") com a própria paráfrase ("2 ano do fundamental") a
+  // cada turno: a tag real no CRM continua certa (é aplicada direto na API),
+  // mas lead_data.interest fica errado — contaminando os templates de
+  // notificação/{{interest}} e o sync de "interesse mudou" do Leads360, além
+  // de fazer o guard de idempotência (interest === turma calculada) falhar e
+  // reaplicar a tag toda hora. Caso real (Maple Bear Osasco, 09/07).
+  const llmPatch = stripNullishFields(
+    (result.lead_data_patch ?? {}) as Record<string, unknown>,
+  );
+  if (agentUsesTurmaClassifier(ctx.agentSettings)) {
+    delete llmPatch.interest;
+  }
   const mergedPatch = {
     ...accumulatedPatch,
-    ...stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>),
+    ...llmPatch,
   } as Partial<LeadData>;
 
   // Fallback: se LLM nao retornou next_stage, mantem o stage atual da conversa.

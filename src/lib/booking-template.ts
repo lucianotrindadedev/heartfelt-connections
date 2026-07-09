@@ -736,9 +736,12 @@ export function looksLikeIntentMessage(text: string): boolean {
 }
 
 /**
- * Recusa educada / negativa ("não, obrigado", "agora não", "não quero", "desisti").
- * NÃO deve virar nome nem resposta de campo de cadastro — caso real: o lead disse
- * "Não, obrigado." e o sistema capturou como name e AGENDOU sozinho.
+ * Recusa educada / negativa ("não, obrigado", "agora não", "não quero", "desisti",
+ * "nenhum dos dois"). NÃO deve virar nome nem resposta de campo de cadastro, e
+ * NUNCA deve auto-selecionar/auto-agendar um horário ofertado — casos reais:
+ * (1) o lead disse "Não, obrigado." e o sistema capturou como name e AGENDOU
+ * sozinho; (2) Clínica Bomfim 09/07: o lead recusou os dois horários ofertados
+ * ("Nenhum dos 2") e o sistema agendou um deles mesmo assim.
  */
 export function looksLikeDecline(text: string): boolean {
   const t = text
@@ -757,6 +760,10 @@ export function looksLikeDecline(text: string): boolean {
     return true;
   }
   if (/^nao[, ]+(obrigad|quero|vou|preciso|precisa|tenho interesse)/.test(t)) return true;
+  // "Nenhum"/"nenhuma" (dos dois, das opções, desses horários...) recusa TODAS
+  // as opções ofertadas — não é escolha de nenhum slot.
+  if (/^nenhum[ao]?(\s+(dos?|das?)\s+\S+(\s+\S+)?)?$/.test(t)) return true;
+  if (/^nem\s+um\s+nem\s+outro$/.test(t)) return true;
   return false;
 }
 
@@ -1363,6 +1370,13 @@ function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
 
 export function isSlotAcceptanceMessage(text: string): boolean {
   const t = text.trim().toLowerCase();
+  // Recusa ("nenhum dos 2") ou indisponibilidade ("só largo às 18:00") NUNCA é
+  // aceite de horário, mesmo contendo um padrão HH:MM — sem este guard o
+  // fallback de horário solto (normalizeTimeLabel, no fim da função) lia
+  // qualquer hora mencionada como se fosse a escolha do lead. Caso real
+  // (Clínica Bomfim 09/07): o lead recusou os dois horários ofertados e disse
+  // "Só largo as 18:00" — o sistema entendeu como aceite e agendou.
+  if (looksLikeDecline(text) || mentionsUnavailability(t)) return false;
   if (
     /^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado)(?:\s+(?:as?|às|o|a|no|na|em)\s+\d{1,2}:\d{2})?[!.?\s]*$/i.test(
       t,
@@ -1386,7 +1400,13 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   ) {
     return true;
   }
-  return !!normalizeTimeLabel(t);
+  // Fallback final: a mensagem é SÓ um horário (ex.: "18:20", "às 18:20"), sem
+  // texto adicional. Texto extra ao redor do horário (ex.: "Só largo às
+  // 18:00" — uma RESTRIÇÃO, não uma escolha) não deve cair aqui. Caso real
+  // (Clínica Bomfim, 09/07): "Só largo as 18:00" tinha "18:00" mas era recusa
+  // dos horários ofertados, não aceite — o fallback antigo lia qualquer HH:MM
+  // solto na frase como escolha.
+  return /^(?:[aà]s?\s+)?\d{1,2}[:h]\d{2}\s*(?:h(?:oras)?)?[.!?]?$/i.test(t);
 }
 
 /**

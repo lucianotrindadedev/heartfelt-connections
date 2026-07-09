@@ -820,11 +820,19 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let stallReplyBlocked = false;
     let forcedSchedulingAdvance = userAcceptedSchedulingProposal;
 
+    // Lista de palavras que indicam "confirmei um agendamento". "reservado"/
+    // "marcado" entraram depois de um caso real (Clínica Bomfim, 09/07): o
+    // agente disse "Reservado para quarta-feira, 15/07" e nenhuma palavra da
+    // lista antiga (agendei/agendado/marquei/confirmado) batia — a confirmação
+    // falsa passou direto por este guard. Ancoradas com "pra/para" pra não
+    // pegar usos genéricos de "reservado"/"marcado" fora de contexto de agenda.
     if (
       hasBookingIntegration &&
       !finalLeadData.appointment_id &&
       !appointmentJustCancelled &&
-      /\b(agendei|agendado|marquei|confirmad[oa]|visita guiada para)\b/i.test(reply)
+      /\b(agendei|agendado|marquei|confirmad[oa]|visita guiada para|reservei|reservad[oa]\s+(?:pra|para)|marcad[oa]\s+(?:pra|para))\b/i.test(
+        reply,
+      )
     ) {
       falseBookingClaimBlocked = true;
       console.warn(
@@ -873,8 +881,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         "agendar_clinup",
       ].includes(t),
     );
+    // "reservei/reservado" entraram depois do mesmo caso real (Clínica Bomfim,
+    // 09/07) — a confirmação falsa de uma NOVA data ("Reservado para 15/07")
+    // também não batia em nenhuma palavra desta lista. Fica seguro incluir
+    // termos mais genéricos aqui porque já exige co-ocorrência com uma palavra
+    // de agenda no segundo regex.
     const claimsReschedule =
-      /\b(atualizei|atualizado|remarquei|remarcad[oa]|reagendei|reagendad[oa]|mudei|alterei|ajustei|troquei|transferi)\b/i.test(
+      /\b(atualizei|atualizado|remarquei|remarcad[oa]|reagendei|reagendad[oa]|mudei|alterei|ajustei|troquei|transferi|reservei|reservad[oa])\b/i.test(
         reply,
       ) && /\b(agenda|agendamento|hor[áa]rio|visita|consulta|reuni[ãa]o)\b/i.test(reply);
     if (
@@ -993,6 +1006,48 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
+    // Guard anti-"escalação fantasma": a resposta PROMETE transferir pro humano
+    // ("vou chamar uma pessoa da nossa equipe", "vou te transferir"...) mas o
+    // stage não virou ESCALATED — nem a tag "IA Desligada" nem o alerta do
+    // grupo disparam, e o bot continua "vivo" contradizendo a própria
+    // promessa. Caso real (Maple Bear Osasco, 09/07): a lead reclamou de não
+    // conseguir condições pelo WhatsApp e ameaçou não visitar; o agente
+    // respondeu "vou chamar uma pessoa da nossa equipe" mas propôs continuar
+    // em SLOT_OFFER. Só não ficou em silêncio total porque um humano notou a
+    // conversa por fora e pausou a IA manualmente — se ninguém tivesse visto,
+    // o lead ficaria esperando um handoff que nunca aconteceria. Usa o reply
+    // ORIGINAL do LLM (antes dos guards acima) porque é o texto que carrega o
+    // sinal — os guards de booking/stall podem tê-lo substituído por algo sem
+    // esse sinal, mas a decisão de escalar continua válida.
+    const claimsHumanHandoff =
+      /\b(vou (chamar|acionar|pedir para) (uma pessoa|algu[ée]m|um[a]? (atendente|colega|especialista))|vou te (transferir|passar|encaminhar) (para|pra) (um[a]? )?(atendente|pessoa|equipe|time|especialista)|algu[ée]m (da (nossa )?equipe|do (nosso )?time) (vai|ir[áa]) (te )?(atender|continuar|assumir|falar)|uma pessoa (da (nossa )?equipe|do (nosso )?time) (vai|ir[áa])|transferindo (seu|o) atendimento|encaminhando (seu|o) atendimento|vou (te )?transferir (seu|o|este) atendimento)\b/i.test(
+        result.reply,
+      );
+    let ghostEscalationForced = false;
+    if (claimsHumanHandoff && newStage !== "ESCALATED") {
+      ghostEscalationForced = true;
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "ghost_escalation_forced",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          route,
+          stage_from: stage,
+          stage_proposed: newStage,
+          model: route === "qualifier" ? ctx.qualifierModel : ctx.model,
+          reply_preview: result.reply.slice(0, 160),
+        })}`,
+      );
+      finalLeadData = {
+        ...finalLeadData,
+        escalation_reason:
+          finalLeadData.escalation_reason?.trim() ||
+          "O agente prometeu transferir para atendimento humano na própria resposta, mas não escalou — forçado automaticamente.",
+      };
+      newStage = "ESCALATED";
+    }
+
     // Leads360: decide o que sincronizar neste turn. O envio HTTP é best-effort
     // e roda DEPOIS do persist; aqui só marcamos o flag de dedup do lead para
     // ser persistido (evita reenviar /leads a cada turn).
@@ -1012,37 +1067,53 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // 12. Persiste e entrega
     await persistStageAndLeadData(conversationId, meta, newStage, finalLeadData, route);
 
-    await deliverReply(
-      accountId,
-      agentId,
-      conversationId,
-      reply,
-      {
-        model: route === "qualifier" ? ctx.qualifierModel : ctx.model,
-        reply_model_kind: route === "qualifier" ? "qualifier" : "reply",
-        latency_ms: latencyMs,
-        tokens_in: result.tokens_in ?? null,
-        tokens_out: result.tokens_out ?? null,
-        cost_usd_estimate: result.cost_usd ?? null,
-        stage_from: stage,
-        stage_effective: effectiveStage,
-        stage_to: newStage,
-        agent: route,
-        tools_called: result.tools_called,
-        // Telemetria: marcadores de intervencoes deterministicas.
-        duplicate_reply_blocked: duplicateReplyBlocked || undefined,
-        false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
-        false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
-        stall_reply_blocked: stallReplyBlocked || undefined,
-        forced_scheduling_advance: forcedSchedulingAdvance || undefined,
-        preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,
-        preflight_dirty_fields: (result.telemetry?.dirty_fields as string[]) || undefined,
-        double_booking_blocked:
-          (result.telemetry?.double_booking_blocked as boolean) || undefined,
-      },
-      sessionId,
-      effectivePhone ?? conversationPhone,
-    );
+    // Falha de entrega (Helena fora do ar nas duas tentativas) NÃO pode abortar
+    // os passos seguintes: o stage/lead_data (inclusive um appointment_id
+    // recém-criado) JÁ foi persistido na linha acima. Sem este try/catch, uma
+    // exceção aqui pulava escalação/notifyBooking/Leads360 — e como
+    // `justBooked` compara com o estado JÁ persistido, um reprocessamento
+    // posterior da conversa nunca mais veria a transição sem→com appointment_id
+    // e a notificação pra equipe (WhatsApp/Leads360) ficava perdida PARA SEMPRE,
+    // mesmo que o lead recebesse a resposta depois num retry.
+    try {
+      await deliverReply(
+        accountId,
+        agentId,
+        conversationId,
+        reply,
+        {
+          model: route === "qualifier" ? ctx.qualifierModel : ctx.model,
+          reply_model_kind: route === "qualifier" ? "qualifier" : "reply",
+          latency_ms: latencyMs,
+          tokens_in: result.tokens_in ?? null,
+          tokens_out: result.tokens_out ?? null,
+          cost_usd_estimate: result.cost_usd ?? null,
+          stage_from: stage,
+          stage_effective: effectiveStage,
+          stage_to: newStage,
+          agent: route,
+          tools_called: result.tools_called,
+          // Telemetria: marcadores de intervencoes deterministicas.
+          duplicate_reply_blocked: duplicateReplyBlocked || undefined,
+          false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
+          false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
+          stall_reply_blocked: stallReplyBlocked || undefined,
+          ghost_escalation_forced: ghostEscalationForced || undefined,
+          forced_scheduling_advance: forcedSchedulingAdvance || undefined,
+          preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,
+          preflight_dirty_fields: (result.telemetry?.dirty_fields as string[]) || undefined,
+          double_booking_blocked:
+            (result.telemetry?.double_booking_blocked as boolean) || undefined,
+        },
+        sessionId,
+        effectivePhone ?? conversationPhone,
+      );
+    } catch (e) {
+      console.error(
+        `[orch] deliverReply falhou conv=${conversationId} — lead pode não ter recebido a resposta, mas escalação/notificações/Leads360 seguem normalmente:`,
+        e,
+      );
+    }
 
     // 13. Se transitou para ESCALATED, dispara escalação humana
     if (newStage === "ESCALATED" && stage !== "ESCALATED") {
