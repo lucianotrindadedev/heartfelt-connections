@@ -207,15 +207,19 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
         let processed = 0;
         let attempted = 0;
 
-        // Teto de envios por tick: represa grande (backlog de conversas que
-        // ficaram sem avaliação por muito tempo, ex.: bug do .limit(500) sem
-        // order() — ver fix anterior) não pode virar rajada de mensagens no
-        // mesmo minuto. Isso já causou 429 (rate limit) da Helena em produção.
-        // O que sobrar fica pro próximo tick (5 em 5 min) — o backlog esvazia
-        // aos poucos em vez de tudo de uma vez.
-        const MAX_SENDS_PER_TICK = 20;
+        // Teto de envios por tick — POR AGENTE, não global. Vários agentes
+        // compartilham a MESMA instância Helena (ex.: Costa Lima Odontologia
+        // e Maple Bear Osasco, ambos em api.crmmentoriae7.com.br), mas um
+        // teto único compartilhado entre todos deixava o primeiro agente da
+        // lista (ordenados por agent_id) esgotar sozinho o orçamento do tick
+        // inteiro — MB Osasco simplesmente nunca era alcançado enquanto Costa
+        // Lima Odontologia tivesse backlog. Por agente, cada um tem sua cota
+        // garantida a cada tick e nenhum morre de fome; o teto ainda evita
+        // que UM agente com represa grande dispare tudo de uma vez (causa
+        // real de 429/rate-limit já visto em produção).
+        const MAX_SENDS_PER_TICK_PER_AGENT = 10;
 
-        agentLoop: for (const [agentId, agentSteps] of stepsByAgent) {
+        for (const [agentId, agentSteps] of stepsByAgent) {
           // Verifica se agente está ativo
           const agentRow = await sb
             .from("agents")
@@ -265,6 +269,8 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
             if (page.length < CONV_PAGE_SIZE) break;
           }
           if (!convs.length) continue;
+
+          let agentSent = 0; // envios deste agente neste tick — reseta por agente
 
           for (const conv of convs) {
             try {
@@ -356,14 +362,15 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 continue;
               }
 
-              // Teto de envios do tick atingido: para tudo agora (mesmo entre
-              // agentes) — esta conversa e as demais seguem elegíveis e
-              // tentam de novo no próximo tick.
-              if (attempted >= MAX_SENDS_PER_TICK) {
+              // Teto deste agente atingido neste tick: passa pro PRÓXIMO
+              // agente (não para o tick inteiro — outros agentes não podem
+              // pagar pelo backlog deste). Esta conversa e as demais deste
+              // agente seguem elegíveis e tentam de novo no próximo tick.
+              if (agentSent >= MAX_SENDS_PER_TICK_PER_AGENT) {
                 console.log(
-                  `[followup-seq] limite de ${MAX_SENDS_PER_TICK} envios/tick atingido — resto fica pro próximo tick`,
+                  `[followup-seq] agente ${agentId}: limite de ${MAX_SENDS_PER_TICK_PER_AGENT} envios/tick atingido — resto fica pro próximo tick`,
                 );
-                break agentLoop;
+                break;
               }
 
               // Lock por conversa: o cron roda a cada minuto e a geração
@@ -402,6 +409,7 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 }
 
               attempted++;
+              agentSent++;
 
               // ── Janela de 24h do WhatsApp ──────────────────────────────
               // Texto livre só é entregue dentro de 24h da ÚLTIMA msg do lead.
