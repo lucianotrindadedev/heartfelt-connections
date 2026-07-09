@@ -225,13 +225,38 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
           const accountId = agentRow.data.account_id as string;
           const blockedTagsRaw = agentSettings?.blocked_tags ?? null;
 
-          // Busca conversas desse agente cuja ÚLTIMA mensagem foi do lead
-          const { data: convs } = await sb
-            .from("conversations")
-            .select("id, phone, helena_session_id, channel, meta")
-            .eq("agent_id", agentId)
-            .limit(500);
-          if (!convs?.length) continue;
+          // Busca TODAS as conversas do agente, paginando (não confiar em
+          // .limit() sozinho). Caso real (MB Osasco, 732 conversas): um
+          // .limit(500) sem order() devolvia as 500 mais ANTIGAS — toda
+          // conversa criada depois disso (as mais recentes, justamente as
+          // que mais precisam de follow-up) nunca era sequer avaliada.
+          const convs: {
+            id: string;
+            phone: string | null;
+            helena_session_id: string | null;
+            channel: string | null;
+            meta: unknown;
+          }[] = [];
+          const CONV_PAGE_SIZE = 1000;
+          for (let from = 0; ; from += CONV_PAGE_SIZE) {
+            const { data: page, error: convErr } = await sb
+              .from("conversations")
+              .select("id, phone, helena_session_id, channel, meta")
+              .eq("agent_id", agentId)
+              .order("criado_em", { ascending: true })
+              .range(from, from + CONV_PAGE_SIZE - 1);
+            if (convErr) {
+              console.error(
+                `[followup-seq] erro paginando conversas do agente ${agentId}:`,
+                convErr.message,
+              );
+              break;
+            }
+            if (!page || page.length === 0) break;
+            convs.push(...page);
+            if (page.length < CONV_PAGE_SIZE) break;
+          }
+          if (!convs.length) continue;
 
           for (const conv of convs) {
             try {
