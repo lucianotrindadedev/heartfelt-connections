@@ -915,9 +915,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // fica enrolando). Diferente da confirmação FALSA (tratada acima), aqui o
     // agente nem afirma ter agendado. Substitui o filler pelo próximo passo
     // concreto: pedir o campo que falta, a confirmação de compromisso, ou o slot.
+    //
+    // Inclui SLOT_OFFER (caso real 09/07, Costa Lima Recreio): lead pediu outra
+    // semana, o agente respondeu "vou verificar a agenda" sem chamar
+    // listar_horarios — e sem este estágio no gate, o guard nem chegava a rodar
+    // (o comentário acima já dizia "SLOT_OFFER→BOOKING" mas o código só cobria
+    // NAME_COLLECT/BOOKING).
     const inBookingStage =
+      stage === "SLOT_OFFER" ||
       stage === "NAME_COLLECT" ||
       stage === "BOOKING" ||
+      effectiveStage === "SLOT_OFFER" ||
       effectiveStage === "NAME_COLLECT" ||
       effectiveStage === "BOOKING";
     if (

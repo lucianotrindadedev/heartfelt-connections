@@ -266,8 +266,13 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
 // aqui o agente nem afirma que concluiu, só enrola. Bug real observado no
 // SLOT_OFFER→BOOKING (lead escolhe o horário e o agente fica "vou criar seu
 // cadastro rapidinho" sem nunca agendar).
+//
+// verificar/checar/consultar (caso real 09/07, Costa Lima Recreio): lead pede
+// outra semana ("só semana que vem"), o agente responde "vou verificar a
+// agenda" SEM chamar listar_horarios nesse turn — e a conversa morre esperando
+// os novos horários que nunca chegam (nada re-aciona o agente depois).
 const STALL_REPLY_REGEX =
-  /(s[óo]\s+um\s+(instante|minut(?:o|inho)|moment(?:o|inho)|segund(?:o|inho))|um\s+(instante|moment(?:o|inho)|minutinho)|aguard[ae]\b|aguardar\b|j[áa]\s+(?:te\s+)?(retorno|volto|confirmo|aviso|respondo|envio|finalizo)|vou\s+(finalizar|criar|fazer|registrar|organizar|gerar|preparar|montar|cadastrar)\b|estou\s+(finalizando|criando|organizando|registrando|preparando|gerando|cadastrando)|t[ôo]\s+(finalizando|criando|organizando|registrando|cadastrando)|deixa?\s+eu\s+(finalizar|criar|organizar|registrar|cadastrar)|pe[çc]o\s+que\s+aguarde|me\s+d[êe]\s+um\s+(instante|momento|minutinho)|rapidinho\s+(aqui|aí|pra))/i;
+  /(s[óo]\s+um\s+(instante|minut(?:o|inho)|moment(?:o|inho)|segund(?:o|inho))|um\s+(instante|moment(?:o|inho)|minutinho)|aguard[ae]\b|aguardar\b|j[áa]\s+(?:te\s+)?(retorno|volto|confirmo|aviso|respondo|envio|finalizo|verifico|checo|consulto)|vou\s+(finalizar|criar|fazer|registrar|organizar|gerar|preparar|montar|cadastrar|verificar|checar|consultar)\b|estou\s+(finalizando|criando|organizando|registrando|preparando|gerando|cadastrando|verificando|checando|consultando)|t[ôo]\s+(finalizando|criando|organizando|registrando|cadastrando|verificando|checando|consultando)|deixa?\s+eu\s+(finalizar|criar|organizar|registrar|cadastrar|verificar|checar|consultar)|pe[çc]o\s+que\s+aguarde|me\s+d[êe]\s+um\s+(instante|momento|minutinho)|rapidinho\s+(aqui|aí|pra))/i;
 
 /**
  * True quando o `reply` do agente é só "enrolação" (promessa de agir / pedido

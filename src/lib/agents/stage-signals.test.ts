@@ -398,6 +398,12 @@ describe("looksLikeStallReply", () => {
     "Estou registrando seus dados, aguarde um instante.",
     "Já te retorno com a confirmação.",
     "Vou cadastrar você no sistema rapidinho.",
+    // Caso real 09/07 (Costa Lima Recreio): lead pediu outra semana, o agente
+    // prometeu "vou verificar" sem chamar listar_horarios — conversa morreu.
+    "Sem problemas! Vou verificar a agenda para a próxima semana. 😊",
+    "Já verifico os horários da semana que vem pra você.",
+    "Estou checando a agenda, um momento.",
+    "Vou consultar a agenda e já te aviso.",
   ];
   for (const r of stalls) {
     it(`detecta stall: ${JSON.stringify(r.slice(0, 40))}`, () => {
