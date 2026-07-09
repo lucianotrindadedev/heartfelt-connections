@@ -696,11 +696,20 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         // ── Comandos de pausar/reativar a IA (configuráveis por agente) ──
         // Adiciona ou remove a tag "IA Desligada" no contato Helena.
+        //
+        // Também aceita quando é a ATENDENTE digitando o comando direto no
+        // WhatsApp da clínica (isHuman) — não só o lead (isInbound). Caso real
+        // (09/07, Dental Clinic Corcovado): pause_command="Olá!" configurado
+        // pra atendente assumir o atendimento, mas só isInbound era checado —
+        // a mensagem da atendente (TO_HUB, origem="humano") nunca disparava a
+        // tag. Seguro: isHuman só chega aqui depois de passar pelo filtro
+        // anti-eco (isOwnRecentOutboundEcho, linha ~656), então não reabre o
+        // bug de eco — só reconhece o atendente humano de verdade.
         const isPauseCmd =
-          isInbound &&
+          (isInbound || isHuman) &&
           messageMatchesAgentCommand(messageContent, pauseCommandRaw, ["/pausar"]);
         const isResumeCmd =
-          isInbound &&
+          (isInbound || isHuman) &&
           messageMatchesAgentCommand(messageContent, resumeCommandRaw, ["/ativar"]);
 
         if (isPauseCmd || isResumeCmd) {
