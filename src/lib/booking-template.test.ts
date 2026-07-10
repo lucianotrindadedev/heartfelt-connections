@@ -230,6 +230,38 @@ describe("tryAutoSelectOfferedSlot — negação/explicação não seleciona", (
     );
     expect(patch).toEqual({});
   });
+
+  // Caso real (MF Beauty BSB, 10/07): listar_horarios foi chamado 3x no mesmo
+  // turn e o offered_slots FINAL persistido não tinha mais o "10:00" que o
+  // agente acabou de oferecer ao lead (resultado de uma chamada anterior, já
+  // stale) — só "13:30" sobreviveu. O lead respondeu "10:00" (horário que
+  // literalmente NÃO existe em offered_slots) e o fallback mentionedInAssistant
+  // (que ignora o horário pedido e casa qualquer slot atual mencionado na
+  // última msg do assistente) "confirmava" 13:30 — o lead nunca pediu esse
+  // horário e foi agendado nele mesmo assim.
+  it("horário explícito que NÃO bate com offered_slots não deve cair no fallback mentionedInAssistant", () => {
+    const staleOfferSlots = [
+      { iso: "2026-07-11T12:00:00-03:00", date_label: "sábado, 11/07", time_label: "12:00" },
+      { iso: "2026-07-11T12:30:00-03:00", date_label: "sábado, 11/07", time_label: "12:30" },
+      { iso: "2026-07-11T13:00:00-03:00", date_label: "sábado, 11/07", time_label: "13:00" },
+      { iso: "2026-07-11T13:30:00-03:00", date_label: "sábado, 11/07", time_label: "13:30" },
+      { iso: "2026-07-11T14:00:00-03:00", date_label: "sábado, 11/07", time_label: "14:00" },
+      { iso: "2026-07-11T14:30:00-03:00", date_label: "sábado, 11/07", time_label: "14:30" },
+    ];
+    const patch = tryAutoSelectOfferedSlot(
+      "SLOT_OFFER",
+      { offered_slots: staleOfferSlots },
+      [
+        {
+          role: "assistant",
+          content:
+            "Consegui dois horários para sua avaliação gratuita: amanhã, sábado (11/07), às 10:00 ou às 13:30. Qual fica melhor para você?",
+        },
+        { role: "user", content: "10:00" },
+      ],
+    );
+    expect(patch).toEqual({});
+  });
 });
 
 // ── sanitizeLeadDataPatch (defesa em profundidade) ────────────────────────

@@ -1459,6 +1459,17 @@ export function tryAutoSelectOfferedSlot(
         return patchFromSlot(narrowed[0]!);
       }
     }
+    // O lead digitou um horário EXPLÍCITO (ex.: "10:00") que não bate com
+    // NENHUM slot em offered_slots (ou continua ambíguo entre vários). NÃO cai
+    // nos fallbacks abaixo — mentionedInAssistant, em particular, ignora o
+    // horário pedido e casa QUALQUER slot atual que a última mensagem do
+    // assistente tenha mencionado, podendo "confirmar" um horário TOTALMENTE
+    // DIFERENTE do que o lead pediu. Caso real (MF Beauty BSB): listar_horarios
+    // foi chamado 3x no mesmo turn, offered_slots final não tinha mais o
+    // "10:00" que o agente tinha acabado de oferecer (resultado de uma chamada
+    // anterior, já stale) — só "13:30" sobreviveu — e o lead respondendo
+    // "10:00" acabou agendado às 13:30 sem nunca ter pedido esse horário.
+    return {};
   }
 
   if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(lastUser.toLowerCase()) && slots[0]) {
@@ -1471,15 +1482,6 @@ export function tryAutoSelectOfferedSlot(
   const mentionedInAssistant = slots.filter((s) => slotMentionedInText(s, assistantText));
   if (mentionedInAssistant.length === 1) {
     return patchFromSlot(mentionedInAssistant[0]!);
-  }
-
-  if (mentionedByUser.length > 1 && userTime) {
-    const byDayAndTime = mentionedByUser.filter(
-      (s) => normalizeTimeLabel(s.time_label) === userTime,
-    );
-    if (byDayAndTime.length === 1) {
-      return patchFromSlot(byDayAndTime[0]!);
-    }
   }
 
   if (slots.length === 1) {
