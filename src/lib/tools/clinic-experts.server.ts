@@ -109,11 +109,13 @@ export async function listClinicExpertsProfessionals(
   const config = await loadConfig(accountId);
 
   const url = new URL(`${config.baseUrl}/professionals`);
-  url.searchParams.set("active", "true");
   url.searchParams.set("per_page", "100");
 
   const res = await fetchCe(url.toString(), { headers: authHeaders(config) });
-  if (!res.ok) throw new Error(`Clinic Experts professionals failed: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Clinic Experts professionals failed: ${res.status} — ${err.slice(0, 300)}`);
+  }
 
   const json = (await res.json()) as unknown;
   return extractDataArray(json)
@@ -141,7 +143,10 @@ export async function listClinicExpertsProcedures(
   url.searchParams.set("per_page", "100");
 
   const res = await fetchCe(url.toString(), { headers: authHeaders(config) });
-  if (!res.ok) throw new Error(`Clinic Experts procedures failed: ${res.status}`);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Clinic Experts procedures failed: ${res.status} — ${err.slice(0, 300)}`);
+  }
 
   const json = (await res.json()) as unknown;
   return extractDataArray(json)
@@ -321,10 +326,19 @@ async function fetchPatientByPhone(
 ): Promise<ClinicExpertsPatient | null> {
   const url = new URL(`${config.baseUrl}/patients`);
   url.searchParams.set("phone", phoneValue);
-  url.searchParams.set("active", "true");
 
   const res = await fetchCe(url.toString(), { headers: authHeaders(config) });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // Não lança (o caller tenta várias variantes de telefone e trata "não
+    // encontrado" como sinal pra criar o paciente) — mas loga o corpo real do
+    // erro, senão uma falha de validação vira silenciosamente "não encontrado"
+    // e mascara bugs (caso real: /professionals 422 por causa de active=true).
+    const err = await res.text();
+    console.warn(
+      `[clinic-experts] busca de paciente falhou (${res.status}): ${err.slice(0, 200)}`,
+    );
+    return null;
+  }
 
   const json = (await res.json()) as unknown;
   const rows = extractDataArray(json);
