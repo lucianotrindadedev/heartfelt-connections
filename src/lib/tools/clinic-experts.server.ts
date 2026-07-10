@@ -238,9 +238,16 @@ async function fetchAvailableHoursForDay(
   }
 
   const json = (await res.json()) as unknown;
-  const times: string[] = Array.isArray(json)
-    ? (json as unknown[]).map((t) => String(t)).filter((t) => /^\d{1,2}:\d{2}$/.test(t))
-    : [];
+  // A API responde num envelope {data:[...]} (não array puro) — sem isso o
+  // Array.isArray(json) falhava sempre e nenhum horário nunca era parseado.
+  const rawTimes: unknown[] = Array.isArray(json)
+    ? json
+    : Array.isArray((json as Record<string, unknown> | null)?.data)
+      ? ((json as Record<string, unknown>).data as unknown[])
+      : [];
+  const times: string[] = rawTimes
+    .map((t) => String(t))
+    .filter((t) => /^\d{1,2}:\d{2}$/.test(t));
 
   const disponibilidade = parseDisponibilidadeFromSettings(prof.businessHoursJson);
   const dayKey = diaSemanaChave(new Date(`${date}T12:00:00-03:00`));
@@ -376,6 +383,17 @@ export async function findClinicExpertsPatient(
   return null;
 }
 
+/** A API só aceita telefone em E.164 (+55...) — o resto do sistema trafega o
+ *  telefone em dígitos puros sem DDI (ex: "32991607088"), o que a API rejeita
+ *  com 422 "telefone não é válido" na criação de paciente (confirmado via
+ *  teste real). GET /patients?phone= já aceita qualquer formato (busca
+ *  fuzzy), só o POST exige E.164. */
+function toE164Br(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return phone;
+  return digits.startsWith("55") ? `+${digits}` : `+55${digits}`;
+}
+
 async function createClinicExpertsPatient(
   config: ClinicExpertsConfig,
   params: { name: string; phone: string },
@@ -383,7 +401,7 @@ async function createClinicExpertsPatient(
   const res = await fetchCe(`${config.baseUrl}/patients`, {
     method: "POST",
     headers: authHeaders(config),
-    body: JSON.stringify({ name: params.name, phone: params.phone }),
+    body: JSON.stringify({ name: params.name, phone: toE164Br(params.phone) }),
   });
   if (!res.ok) {
     const err = await res.text();
