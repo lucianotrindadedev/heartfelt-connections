@@ -27,6 +27,13 @@ import {
   diaSemanaChave,
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
+import {
+  listClinicExpertsSlots,
+  createClinicExpertsAppointment,
+  cancelClinicExpertsAppointment,
+  findClinicExpertsPatient,
+  type ClinicExpertsSlot,
+} from "@/lib/tools/clinic-experts.server";
 import { loadHelenaAccount, removeContactFromAllSequences } from "@/lib/helena.server";
 import { summarizeConversationForNotification } from "@/lib/agents/notify-booking.server";
 import {
@@ -205,7 +212,7 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "buscar_paciente",
       description:
-        "Procura paciente no Clinicorp pelo telefone do lead (já fixo no contexto). " +
+        "Procura paciente no Clinicorp/Clinic Experts pelo telefone do lead (já fixo no contexto). " +
         "Use UMA vez no início de NAME_COLLECT para evitar duplicar cadastro. " +
         "Retorna {patient_id, name} se encontrado, ou {found: false}.",
       parameters: {
@@ -220,11 +227,11 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "listar_horarios",
       description:
-        "Lista horários disponíveis na agenda (Clinicorp OU Google Calendar, conforme integração ativa da conta). " +
+        "Lista horários disponíveis na agenda (Clinicorp, Clinic Experts OU Google Calendar, conforme integração ativa da conta). " +
         "Use quando precisar oferecer slots ao lead (stage SLOT_OFFER). " +
         "Retorna no máximo 6 horários alinhados à duração configurada. " +
         "IMPORTANTE: se o lead pedir uma DATA específica (ex: '25 de julho', '20/07', 'dia 3'), passe-a em `data_alvo` (formato YYYY-MM-DD) para a busca começar nessa data — caso contrário a busca olha só os próximos dias e NÃO vai alcançar datas distantes. " +
-        "Aliases reconhecidos (caso o prompt mencione): listar_horarios_clinicorp, listar_horarios_google_calendar, listar_horarios_clinup.",
+        "Aliases reconhecidos (caso o prompt mencione): listar_horarios_clinicorp, listar_horarios_google_calendar, listar_horarios_clinup, listar_horarios_clinic_experts.",
       parameters: {
         type: "object",
         properties: {
@@ -254,7 +261,7 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "criar_agendamento",
       description:
-        "Cria o agendamento na agenda integrada (Google Calendar, Clinicorp ou Clinup). " +
+        "Cria o agendamento na agenda integrada (Google Calendar, Clinicorp, Clinup ou Clinic Experts). " +
         "Use APENAS quando todos os campos obrigatórios estiverem preenchidos e lead_data.selected_slot_iso existir. " +
         "NUNCA confirme agendamento ao lead sem chamar esta tool e receber ok=true com appointment_id. " +
         "Retorna {ok, appointment_id} ou {ok:false, error}.",
@@ -271,7 +278,7 @@ const SCHEDULER_TOOLS: LlmTool[] = [
       name: "cancelar_agendamento",
       description:
         "Cancela o agendamento ATIVO do lead (que já tem appointment_id) e remove o evento da agenda " +
-        "(Clinicorp/Google Calendar). Use quando o lead pedir explicitamente para CANCELAR e NÃO quiser " +
+        "(Clinicorp/Google Calendar/Clinic Experts). Use quando o lead pedir explicitamente para CANCELAR e NÃO quiser " +
         "remarcar. Depois, confirme o cancelamento ao lead. Retorna {ok, cancelled} ou {ok:false, error}.",
       parameters: { type: "object", properties: {}, required: [] },
     },
@@ -455,6 +462,26 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
     }
   }
 
+  // Clinic Experts
+  if (ctx.integrations.clinicExperts) {
+    try {
+      const patient = await findClinicExpertsPatient(ctx.accountId, ctx.effectivePhone);
+      if (!patient?.uuid) {
+        return { result: JSON.stringify({ found: false }) };
+      }
+      return {
+        result: JSON.stringify({ found: true, patient_id: patient.uuid, name: patient.name }),
+        patch: {
+          patient_uuid: patient.uuid,
+          ...(ctx.leadData.name ? {} : { name: patient.name }),
+        },
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { result: JSON.stringify({ found: false, error: msg.slice(0, 200) }) };
+    }
+  }
+
   // Default: Clinicorp
   const patient = await findClinicorpPatient(ctx.accountId, ctx.effectivePhone);
   if (!patient?.id) {
@@ -539,6 +566,29 @@ function formatGCalSlot(s: GCalSlot): {
     iso: s.inicio,
     date_label: s.date_label,
     time_label: s.time_label,
+  };
+}
+
+function formatCeSlot(s: ClinicExpertsSlot): {
+  iso: string;
+  end_iso: string;
+  date_label: string;
+  time_label: string;
+  professional_uuid: string;
+} {
+  const d = new Date(s.start);
+  const date_label = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+  }).format(d);
+  return {
+    iso: s.start,
+    end_iso: s.end,
+    date_label,
+    time_label: s.fromTime,
+    professional_uuid: s.professionalUuid,
   };
 }
 
@@ -760,6 +810,51 @@ async function execListarHorarios(
     };
   }
 
+  // Clinic Experts — o expediente por profissional já é aplicado dentro de
+  // listClinicExpertsSlots (pula dias sem bloco ativo, filtra horas fora da
+  // janela configurada); aqui só cuidamos da janela de busca (auto-ampliação)
+  // e do filtro de turno, igual ao Clinicorp abaixo.
+  if (ctx.integrations.clinicExperts) {
+    const fmtCe = (d: Date) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
+
+    let ceSlots = await listClinicExpertsSlots(ctx.accountId, fmtCe(today), fmtCe(end));
+    if (ceSlots.length === 0 && !anchor && diasAFrente == null) {
+      const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+      console.log(
+        `[scheduler] listar_horarios (clinic experts) conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+      );
+      ceSlots = await listClinicExpertsSlots(ctx.accountId, fmtCe(today), fmtCe(wideEnd));
+    }
+    const ceBounds = periodoParaHoras(periodo);
+    let cePeriodoAviso: string | undefined;
+    if (ceBounds) {
+      const noPeriodo = ceSlots.filter((s) => {
+        const h = Number(s.fromTime.slice(0, 2));
+        return Number.isFinite(h) && h >= ceBounds.min && h < ceBounds.max;
+      });
+      if (noPeriodo.length > 0) {
+        ceSlots = noPeriodo;
+      } else if (ceSlots.length > 0) {
+        cePeriodoAviso = `Sem vaga no turno pedido (${periodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
+      }
+    }
+    const ceLimited = ceSlots.slice(0, 6).map(formatCeSlot);
+    if (ceLimited.length === 0) {
+      console.warn(
+        `[scheduler] listar_horarios (clinic experts) retornou 0 slots conv=${ctx.conversationId} — verifique profissionais/expediente configurados`,
+      );
+    }
+    return {
+      result: JSON.stringify({
+        count: ceLimited.length,
+        slots: ceLimited,
+        ...(cePeriodoAviso ? { aviso_periodo: cePeriodoAviso } : {}),
+      }),
+      patch: { offered_slots: ceLimited },
+    };
+  }
+
   // Default: Clinicorp
   const fmt = (d: Date) =>
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
@@ -938,6 +1033,8 @@ async function execCriarAgendamento(
             String(ld.appointment_id),
             resolved.calendarId,
           );
+        } else if (ctx.integrations.clinicExperts) {
+          await cancelClinicExpertsAppointment(ctx.accountId, String(ld.appointment_id));
         } else {
           await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
         }
@@ -1063,6 +1160,39 @@ async function execCriarAgendamento(
     }
   }
 
+  // Clinic Experts
+  if (ctx.integrations.clinicExperts) {
+    try {
+      const chosenSlot = ld.offered_slots?.find((s) => s.iso === ld.selected_slot_iso);
+      const appt = await createClinicExpertsAppointment(ctx.accountId, {
+        phone: bookingPhone,
+        name: leadName,
+        datetime: ld.selected_slot_iso,
+        endDatetime: chosenSlot?.end_iso,
+        professionalUuid: ld.professional_uuid ?? chosenSlot?.professional_uuid,
+        notes: await buildClinicorpCaseNotes(ctx),
+      });
+      await applyBookedTagSwap(ctx);
+      await removeLeadFromSequences(ctx);
+      return {
+        result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
+        patch: {
+          appointment_id: appt.id,
+          name: leadName,
+          booked_tag_applied: true,
+          booked_slot_iso: ld.selected_slot_iso,
+        },
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const kind = classifyBookingError(msg);
+      console.error(
+        `[scheduler] criar_agendamento Clinic Experts falhou conv=${ctx.conversationId} kind=${kind}: ${msg}`,
+      );
+      return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300), error_kind: kind }) };
+    }
+  }
+
   // Default: Clinicorp
   try {
     // Fim REAL do slot escolhido (da grade da agenda) — evita estourar a grade
@@ -1123,7 +1253,7 @@ async function applyUnbookedTagSwap(ctx: AgentContext): Promise<void> {
 }
 
 /**
- * Cancela o agendamento ativo do lead (Clinicorp ou Google Calendar) e limpa
+ * Cancela o agendamento ativo do lead (Clinicorp, Google Calendar ou Clinic Experts) e limpa
  * o appointment_id. Com `reoffer=true` (remarcação), também limpa o slot e os
  * horários oferecidos para reiniciar a oferta. Determinístico — não precisa de
  * outro turn de LLM para efetivar o cancelamento.
@@ -1152,6 +1282,7 @@ async function execCancelarAgendamento(
     clearPatch.selected_slot_iso = undefined;
     clearPatch.offered_slots = undefined;
     clearPatch.dentist_person_id = undefined;
+    clearPatch.professional_uuid = undefined;
     clearPatch.reoffer_after_cancel = true;
   }
 
@@ -1172,6 +1303,8 @@ async function execCancelarAgendamento(
         String(ld.appointment_id),
         resolved.calendarId,
       );
+    } else if (ctx.integrations.clinicExperts) {
+      await cancelClinicExpertsAppointment(ctx.accountId, String(ld.appointment_id));
     } else {
       await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
     }
@@ -1474,7 +1607,12 @@ Isso pausa os follow-ups até lá. NÃO use para marcar consulta (isso é o flux
 }
 
 function hasBookingIntegration(ctx: AgentContext): boolean {
-  return ctx.integrations.googleCalendar || ctx.integrations.clinicorp || ctx.integrations.clinup;
+  return (
+    ctx.integrations.googleCalendar ||
+    ctx.integrations.clinicorp ||
+    ctx.integrations.clinup ||
+    ctx.integrations.clinicExperts
+  );
 }
 
 async function ensureOfferedSlots(ctx: AgentContext): Promise<{
@@ -1778,6 +1916,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "buscar_paciente":
           case "buscar_paciente_clinicorp":
           case "buscar_paciente_clinup":
+          case "buscar_paciente_clinic_experts":
             outcome = await execBuscarPaciente(ctx);
             break;
           case "listar_horarios":
@@ -1785,6 +1924,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "listar_horarios_google_calendar":
           case "listar_horarios_clinup":
           case "clinup_buscar_horarios":
+          case "listar_horarios_clinic_experts":
             outcome = await execListarHorarios(
               ctx,
               args.dias_a_frente as number | undefined,
@@ -1797,6 +1937,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "agendar_clinicorp":
           case "agendar_google_calendar":
           case "agendar_clinup":
+          case "agendar_clinic_experts":
             outcome = await execCriarAgendamento(
               ctx,
               typeof args.agenda === "string" ? args.agenda : undefined,
@@ -1805,6 +1946,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "cancelar_agendamento":
           case "cancelar_clinicorp":
           case "cancelar_google_calendar":
+          case "cancelar_clinic_experts":
             outcome = await execCancelarAgendamento(ctx);
             break;
           case "remarcar_agendamento":
@@ -1842,7 +1984,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         tc.function.name === "criar_agendamento" ||
         tc.function.name === "agendar_clinicorp" ||
         tc.function.name === "agendar_google_calendar" ||
-        tc.function.name === "agendar_clinup";
+        tc.function.name === "agendar_clinup" ||
+        tc.function.name === "agendar_clinic_experts";
       if (isBookingTool && outcome.result.includes('"already_booked":true')) {
         doubleBookingBlocked = true;
       }
@@ -2030,7 +2173,13 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   //   technical → falha ao registrar: não mente; tenta de novo e, se persistir,
   //               escala para um humano concluir (sem loop de "já tento").
   const bookingAttempted = toolsCalled.some((t) =>
-    ["criar_agendamento", "agendar_clinicorp", "agendar_google_calendar", "agendar_clinup"].includes(t),
+    [
+      "criar_agendamento",
+      "agendar_clinicorp",
+      "agendar_google_calendar",
+      "agendar_clinup",
+      "agendar_clinic_experts",
+    ].includes(t),
   );
   if (bookingAttempted && !ctx.leadData.appointment_id && !doubleBookingBlocked && !invalidNameBlocked) {
     // Falha de VALIDAÇÃO (campo obrigatório faltando/inválido, ex.:

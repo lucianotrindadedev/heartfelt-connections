@@ -157,7 +157,7 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
     const sb = getSelfhost();
     const { data: cfg } = await sb
       .from("clinicorp_config")
-      .select("subscriber_id, business_id, agenda_id, dentist_person_id, ativo, api_token_enc")
+      .select("subscriber_id, business_id, agenda_id, dentist_person_id, category_id, category_description, category_color, ativo, api_token_enc")
       .eq("account_id", data.accountId)
       .single();
 
@@ -171,6 +171,9 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
       profissional_ids: Array.isArray(cfg?.dentist_person_id)
         ? (cfg.dentist_person_id as unknown[]).map(Number)
         : [],
+      category_id: (cfg?.category_id as string | null) ?? "",
+      category_description: (cfg?.category_description as string | null) ?? "",
+      category_color: (cfg?.category_color as string | null) ?? "",
       token_configured: !!cfg?.api_token_enc,
     };
   });
@@ -184,13 +187,25 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
         business_id: z.number().int().optional(),
         code_link: z.string().optional(),
         profissional_ids: z.array(z.number().int()).optional(), // dentist_person_id (jsonb)
+        category_id: z.string().optional(),
+        category_description: z.string().optional(),
+        category_color: z.string().optional(),
         ativo: z.boolean().optional(),
       })
       .parse(d)
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { accountId, api_token, code_link, profissional_ids, ...rest } = data;
+    const {
+      accountId,
+      api_token,
+      code_link,
+      profissional_ids,
+      category_id,
+      category_description,
+      category_color,
+      ...rest
+    } = data;
 
     const patch: Record<string, unknown> = { ...rest, atualizado_em: new Date().toISOString() };
     if (code_link !== undefined) patch.agenda_id = code_link || null;
@@ -198,6 +213,10 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
     if (profissional_ids !== undefined) {
       patch.dentist_person_id = profissional_ids.length > 0 ? profissional_ids : null;
     }
+    // Categoria de agendamento (seleção única). String vazia = sem categoria (null).
+    if (category_id !== undefined) patch.category_id = category_id || null;
+    if (category_description !== undefined) patch.category_description = category_description || null;
+    if (category_color !== undefined) patch.category_color = category_color || null;
     if (api_token) patch.api_token_enc = await encryptValue(api_token);
 
     // IMPORTANTE: checar o erro. Antes o upsert era "fire-and-forget" e uma
@@ -234,6 +253,129 @@ export const listClinicorpProfessionalsFn = createServerFn({ method: "GET" })
       return { ok: true, professionals: list };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e), professionals: [] };
+    }
+  });
+
+export const listClinicorpCategoriesFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const { listClinicorpCategories } = await import("@/lib/tools/clinicorp.server");
+    try {
+      const list = await listClinicorpCategories(data.accountId);
+      return { ok: true, categories: list };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), categories: [] };
+    }
+  });
+
+// ============================================================
+// CLINIC EXPERTS
+// ============================================================
+//
+// A API do Clinic Experts (GET /professionals) não expõe o expediente de cada
+// profissional — por isso a config guarda isso nós mesmos, um item por
+// profissional selecionado, no mesmo espírito do array `agendas` do Google
+// Calendar (ver getGoogleAgendasFn/saveGoogleAgendasFn acima).
+
+const clinicExpertsProfessionalSchema = z.object({
+  uuid: z.string().min(1),
+  name: z.string().min(1).max(200),
+  duracao_minutos: z.number().int().positive().max(1440).optional(),
+  business_hours_json: z.string().max(4000).optional(),
+});
+
+export const getClinicExpertsConfig = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { data: cfg } = await sb
+      .from("clinic_experts_config")
+      .select("procedure_id, procedure_name, duracao_consulta, professionals, ativo, api_token_enc")
+      .eq("account_id", data.accountId)
+      .single();
+
+    return {
+      ativo: cfg?.ativo ?? false,
+      procedure_id: (cfg?.procedure_id as number | null) ?? null,
+      procedure_name: (cfg?.procedure_name as string | null) ?? "",
+      duracao_consulta: (cfg?.duracao_consulta as number | null) ?? 40,
+      professionals: Array.isArray(cfg?.professionals)
+        ? (cfg.professionals as Record<string, unknown>[]).map((p) => ({
+            uuid: String(p.uuid ?? ""),
+            name: String(p.name ?? ""),
+            duracao_minutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+            business_hours_json:
+              typeof p.business_hours_json === "string" ? p.business_hours_json : "",
+          }))
+        : [],
+      token_configured: !!cfg?.api_token_enc,
+    };
+  });
+
+export const saveClinicExpertsConfig = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput
+      .extend({
+        api_token: z.string().optional(),
+        procedure_id: z.number().int().optional(),
+        procedure_name: z.string().optional(),
+        duracao_consulta: z.number().int().positive().max(1440).optional(),
+        professionals: z.array(clinicExpertsProfessionalSchema).optional(),
+        ativo: z.boolean().optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { accountId, api_token, procedure_id, procedure_name, professionals, ...rest } = data;
+
+    const patch: Record<string, unknown> = { ...rest, atualizado_em: new Date().toISOString() };
+    if (procedure_id !== undefined) patch.procedure_id = procedure_id || null;
+    if (procedure_name !== undefined) patch.procedure_name = procedure_name || null;
+    if (professionals !== undefined) patch.professionals = professionals;
+    if (api_token) patch.api_token_enc = await encryptValue(api_token);
+
+    const { error } = await sb
+      .from("clinic_experts_config")
+      .upsert({ account_id: accountId, ...patch }, { onConflict: "account_id" });
+    if (error) throw new Error(`Falha ao salvar Clinic Experts: ${error.message}`);
+
+    return { ok: true };
+  });
+
+export const testClinicExpertsConnection = createServerFn({ method: "POST" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const { listClinicExpertsProfessionals } = await import("@/lib/tools/clinic-experts.server");
+    try {
+      await listClinicExpertsProfessionals(data.accountId);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+export const listClinicExpertsProfessionalsFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const { listClinicExpertsProfessionals } = await import("@/lib/tools/clinic-experts.server");
+    try {
+      const list = await listClinicExpertsProfessionals(data.accountId);
+      return { ok: true, professionals: list };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), professionals: [] };
+    }
+  });
+
+export const listClinicExpertsProceduresFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const { listClinicExpertsProcedures } = await import("@/lib/tools/clinic-experts.server");
+    try {
+      const list = await listClinicExpertsProcedures(data.accountId);
+      return { ok: true, procedures: list };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), procedures: [] };
     }
   });
 

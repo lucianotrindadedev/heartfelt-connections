@@ -146,11 +146,11 @@ function mesmaDataNoFuso(inicio: Date, fim: Date): boolean {
   return fmt(inicio) === fmt(fim);
 }
 
-interface DisponibilidadeBloco {
+export interface DisponibilidadeBloco {
   inicio: string; // "09:00"
   fim: string;    // "19:00"
 }
-type Disponibilidade = Record<string, DisponibilidadeBloco[]>;
+export type Disponibilidade = Record<string, DisponibilidadeBloco[]>;
 
 /** Mapeia chave abreviada da UI ('seg', 'ter'...) para chave longa ('segunda', 'terca'...). */
 const SHORT_DAY_MAP: Record<string, string> = {
@@ -170,7 +170,7 @@ export function activeWeekdayKeys(businessHoursJson: string | undefined | null):
 }
 
 /** Lê business_hours_json do agente e devolve no formato {segunda: [...], terca: [...], ...}. */
-function parseDisponibilidadeFromSettings(
+export function parseDisponibilidadeFromSettings(
   raw: string | undefined | null,
 ): Disponibilidade {
   if (!raw) return {};

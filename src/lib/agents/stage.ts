@@ -41,13 +41,17 @@ export interface LeadData {
   selected_slot_iso?: string;
   /** ID do profissional do slot escolhido — obrigatório pelo Clinicorp. */
   dentist_person_id?: number;
+  /** UUID do profissional do slot escolhido — obrigatório pelo Clinic Experts.
+   *  Campo próprio (não reusa dentist_person_id, que é number e só do Clinicorp,
+   *  para evitar qualquer Number() acidental num uuid). */
+  professional_uuid?: string;
   /** Label da agenda Google escolhida (multi-agenda). Definido ao listar/oferecer
    *  horários e reusado no booking/cancelamento para agir na agenda certa. */
   selected_agenda?: string;
   /** Lista atual de horários oferecidos (para validar escolha do lead).
    *  end_iso = fim real do slot conforme a grade da agenda (Clinicorp), usado
    *  no booking para não estourar a grade com a duração padrão. */
-  offered_slots?: { iso: string; end_iso?: string; date_label: string; time_label: string; dentist_person_id?: number }[];
+  offered_slots?: { iso: string; end_iso?: string; date_label: string; time_label: string; dentist_person_id?: number; professional_uuid?: string }[];
   /** ID do agendamento criado (BOOKING → CONFIRMED). */
   appointment_id?: number | string;
   /** ISO do horário EFETIVAMENTE agendado (gravado na criação). Usado para
@@ -58,6 +62,9 @@ export interface LeadData {
   commitment_confirmed?: boolean;
   /** ID do paciente no Clinicorp (cache para evitar lookup repetido). */
   patient_id?: number;
+  /** uuid do paciente no Clinic Experts (cache para evitar lookup repetido —
+   *  campo próprio porque patient_id acima é number/Clinicorp). */
+  patient_uuid?: string;
   /** Notas livres do agente (ex.: queixa principal, objeções, observações clínicas). */
   notes?: string;
   /** Campos extras configurados por template (escola: child_name, birth_date, etc.). */

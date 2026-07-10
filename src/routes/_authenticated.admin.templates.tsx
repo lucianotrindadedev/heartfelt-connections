@@ -28,12 +28,14 @@ const INTEGRATION_OPTIONS = [
   { value: "clinicorp", label: "Clinicorp" },
   { value: "google_calendar", label: "Google Calendar" },
   { value: "clinup", label: "Clinup" },
+  { value: "clinic_experts", label: "Clinic Experts" },
 ] as const;
 
 const INTEGRATION_COLORS: Record<string, string> = {
   clinicorp: "bg-teal-100 text-teal-700",
   google_calendar: "bg-blue-100 text-blue-700",
   clinup: "bg-violet-100 text-violet-700",
+  clinic_experts: "bg-amber-100 text-amber-700",
 };
 
 type TemplateRow = {
@@ -105,7 +107,12 @@ function AdminTemplates() {
         descricao: form.descricao,
         cover_url: form.cover_url ?? "",
         system_prompt: form.system_prompt,
-        integration_type: (form.integration_type ?? "") as "" | "clinicorp" | "google_calendar" | "clinup",
+        integration_type: (form.integration_type ?? "") as
+          | ""
+          | "clinicorp"
+          | "google_calendar"
+          | "clinup"
+          | "clinic_experts",
         categoria: form.categoria,
         ordem: form.ordem,
         ativo: form.ativo,

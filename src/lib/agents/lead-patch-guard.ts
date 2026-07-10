@@ -34,6 +34,7 @@ export const LLM_FORBIDDEN_LEAD_FIELDS = [
   "leads360_lead_sent",
   "selected_slot_iso",
   "dentist_person_id",
+  "professional_uuid",
 ] as const;
 
 /** Remove do patch do LLM os campos controlados pelo sistema. */

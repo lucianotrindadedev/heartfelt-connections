@@ -9,6 +9,8 @@ interface ClinicorpConfig {
   codeLink: string | null;        // agenda_id: Code Link da agenda online
   profissionalIds: number[];      // dentist_person_id[]: profissionais selecionados ([] = todos)
   duracaoConsulta: number;        // minutos (default 40)
+  categoryDescription: string | null; // CategoryDescription enviado no create (categoria escolhida)
+  categoryColor: string | null;       // CategoryColor enviado no create (ex.: "#FF5733")
   baseUrl: string;
 }
 
@@ -26,7 +28,7 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
   const sb = getSelfhost();
   const { data, error } = await sb
     .from("clinicorp_config")
-    .select("api_token_enc, subscriber_id, business_id, agenda_id, dentist_person_id, duracao_consulta, ativo")
+    .select("api_token_enc, subscriber_id, business_id, agenda_id, dentist_person_id, duracao_consulta, category_description, category_color, ativo")
     .eq("account_id", accountId)
     .single();
 
@@ -52,6 +54,8 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
       : null,
     profissionalIds,
     duracaoConsulta: (data.duracao_consulta as number | null) ?? 40,
+    categoryDescription: (data.category_description as string | null)?.trim() || null,
+    categoryColor: (data.category_color as string | null)?.trim() || null,
     baseUrl: DEFAULT_BASE,
   };
 }
@@ -101,6 +105,51 @@ export async function listClinicorpProfessionals(
       name: String(d.Name ?? d.name ?? ""),
     }))
     .filter((d) => d.id);
+}
+
+// ── Categorias de Agendamento ───────────────────────────────────────────────
+
+export interface ClinicorpCategory {
+  id: string;          // id da categoria (aceita number ou string)
+  description: string; // Description → CategoryDescription no create
+  color: string;       // Color → CategoryColor no create (ex.: "#FF5733")
+}
+
+/**
+ * Lista as Categorias de Agendamento (GET /appointment/list_categories →
+ * [{ id, Description, Color }]). Usadas para o proprietário escolher a categoria
+ * que colore os agendamentos criados pela IA na agenda do Clinicorp.
+ */
+export async function listClinicorpCategories(
+  accountId: string,
+): Promise<ClinicorpCategory[]> {
+  const config = await loadConfig(accountId);
+
+  const url = new URL(`${config.baseUrl}/rest/v1/appointment/list_categories`);
+  if (config.subscriberId) url.searchParams.set("subscriber_id", config.subscriberId);
+
+  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
+  if (!res.ok) throw new Error(`Clinicorp categories failed: ${res.status}`);
+
+  const json = (await res.json()) as unknown;
+
+  // API pode retornar array direto, ou { categories: [] } / { data: [] }.
+  let list: Record<string, unknown>[] = [];
+  if (Array.isArray(json)) {
+    list = json as Record<string, unknown>[];
+  } else if (json && typeof json === "object") {
+    const obj = json as Record<string, unknown>;
+    const arr = obj.categories ?? obj.Categories ?? obj.data ?? [];
+    if (Array.isArray(arr)) list = arr as Record<string, unknown>[];
+  }
+
+  return list
+    .map((c) => ({
+      id: String(c.id ?? c.Id ?? c.ID ?? ""),
+      description: String(c.Description ?? c.description ?? ""),
+      color: String(c.Color ?? c.color ?? c.CategoryColor ?? ""),
+    }))
+    .filter((c) => c.description);
 }
 
 // ── Horários disponíveis ───────────────────────────────────────────────────
@@ -500,6 +549,15 @@ export async function createClinicorpAppointment(
   };
   if (dentistPersonId) {
     body.Dentist_PersonId = dentistPersonId;
+  }
+  // Categoria de Agendamento (cor + descrição) escolhida na config — o
+  // agendamento aparece com a cor certa na agenda do Clinicorp. Só envia se
+  // configurada; sem categoria, o create segue sem esses campos.
+  if (config.categoryColor) {
+    body.CategoryColor = config.categoryColor;
+  }
+  if (config.categoryDescription) {
+    body.CategoryDescription = config.categoryDescription;
   }
   // Observações do agendamento (resumo do caso) → campo Notes. Limite
   // defensivo de 150 chars; vazio não é enviado.

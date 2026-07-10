@@ -85,9 +85,15 @@ import {
   saveClinicorpConfig,
   testClinicorpConnection,
   listClinicorpProfessionalsFn,
+  listClinicorpCategoriesFn,
   getClinupConfig,
   saveClinupConfig,
   testClinupConnection,
+  getClinicExpertsConfig,
+  saveClinicExpertsConfig,
+  testClinicExpertsConnection,
+  listClinicExpertsProfessionalsFn,
+  listClinicExpertsProceduresFn,
   getAgentEscalation,
   saveAgentEscalation,
   getFollowupConfig,
@@ -4594,18 +4600,21 @@ type TemplateStep =
   | "detail"
   | "integration-clinicorp"
   | "integration-gcal"
-  | "integration-clinup";
+  | "integration-clinup"
+  | "integration-clinic-experts";
 
 const INTEGRATION_LABELS: Record<string, string> = {
   clinicorp: "Clinicorp",
   google_calendar: "Google Calendar",
   clinup: "Clinup",
+  clinic_experts: "Clinic Experts",
 };
 
 const INTEGRATION_COLORS: Record<string, string> = {
   clinicorp: "bg-teal-100 text-teal-700",
   google_calendar: "bg-blue-100 text-blue-700",
   clinup: "bg-violet-100 text-violet-700",
+  clinic_experts: "bg-amber-100 text-amber-700",
 };
 
 function TemplatesModal({
@@ -4624,8 +4633,13 @@ function TemplatesModal({
   const saveClinFn = useServerFn(saveClinicorpConfig);
   const testClinFn = useServerFn(testClinicorpConnection);
   const listClinProfsFn = useServerFn(listClinicorpProfessionalsFn);
+  const listClinCatsFn = useServerFn(listClinicorpCategoriesFn);
   const saveClinupFn = useServerFn(saveClinupConfig);
   const testClinupFn = useServerFn(testClinupConnection);
+  const saveCeFn = useServerFn(saveClinicExpertsConfig);
+  const testCeFn = useServerFn(testClinicExpertsConnection);
+  const listCeProfsFn = useServerFn(listClinicExpertsProfessionalsFn);
+  const listCeProcsFn = useServerFn(listClinicExpertsProceduresFn);
   const getAuthUrlFn = useServerFn(getGoogleAuthUrl);
   const updateAgentFn = useServerFn(updateAgent);
 
@@ -4678,6 +4692,8 @@ function TemplatesModal({
       setStep("integration-gcal");
     } else if (t.integration_type === "clinup") {
       setStep("integration-clinup");
+    } else if (t.integration_type === "clinic_experts") {
+      setStep("integration-clinic-experts");
     } else {
       setStep("detail");
     }
@@ -4748,6 +4764,8 @@ function TemplatesModal({
       setStep("integration-gcal");
     } else if (selected.integration_type === "clinup") {
       setStep("integration-clinup");
+    } else if (selected.integration_type === "clinic_experts") {
+      setStep("integration-clinic-experts");
     } else {
       onApply(prompt);
     }
@@ -5042,6 +5060,7 @@ function TemplatesModal({
             saveFn={saveClinFn}
             testFn={testClinFn}
             listProfsFn={listClinProfsFn}
+            listCatsFn={listClinCatsFn}
             onSuccess={() => { void (async () => { handleApply(); })(); }}
             onSkip={handleApply}
           />
@@ -5068,6 +5087,19 @@ function TemplatesModal({
             onSkip={handleApply}
           />
         )}
+
+        {/* ── STEP: CLINIC EXPERTS SETUP ── */}
+        {step === "integration-clinic-experts" && selected && (
+          <TemplateClinicExpertsSetup
+            accountId={accountId}
+            saveFn={saveCeFn}
+            testFn={testCeFn}
+            listProfsFn={listCeProfsFn}
+            listProcsFn={listCeProcsFn}
+            onSuccess={handleApply}
+            onSkip={handleApply}
+          />
+        )}
       </div>
     </div>
   );
@@ -5080,6 +5112,7 @@ function TemplateClinicorpSetup({
   saveFn,
   testFn,
   listProfsFn,
+  listCatsFn,
   onSuccess,
   onSkip,
 }: {
@@ -5087,6 +5120,7 @@ function TemplateClinicorpSetup({
   saveFn: ReturnType<typeof useServerFn<typeof saveClinicorpConfig>>;
   testFn: ReturnType<typeof useServerFn<typeof testClinicorpConnection>>;
   listProfsFn: ReturnType<typeof useServerFn<typeof listClinicorpProfessionalsFn>>;
+  listCatsFn: ReturnType<typeof useServerFn<typeof listClinicorpCategoriesFn>>;
   onSuccess: () => void;
   onSkip: () => void;
 }) {
@@ -5097,6 +5131,11 @@ function TemplateClinicorpSetup({
   const [selectedProfIds, setSelectedProfIds] = useState<number[]>([]);
   const [professionals, setProfessionals] = useState<{ id: number; name: string }[]>([]);
   const [loadingProfs, setLoadingProfs] = useState(false);
+  const [categoryId, setCategoryId] = useState("");
+  const [categoryDescription, setCategoryDescription] = useState("");
+  const [categoryColor, setCategoryColor] = useState("");
+  const [categories, setCategories] = useState<{ id: string; description: string; color: string }[]>([]);
+  const [loadingCats, setLoadingCats] = useState(false);
   const [tokenSaved, setTokenSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
@@ -5107,6 +5146,13 @@ function TemplateClinicorpSetup({
     );
   }
 
+  function selectCategory(id: string) {
+    const cat = categories.find((c) => c.id === id);
+    setCategoryId(id);
+    setCategoryDescription(cat?.description ?? "");
+    setCategoryColor(cat?.color ?? "");
+  }
+
   async function doLoadProfs() {
     setLoadingProfs(true);
     setProfessionals([]);
@@ -5114,6 +5160,15 @@ function TemplateClinicorpSetup({
     if (r.ok) setProfessionals(r.professionals);
     else toast.error(r.error ?? "Erro ao carregar profissionais.");
     setLoadingProfs(false);
+  }
+
+  async function doLoadCats() {
+    setLoadingCats(true);
+    setCategories([]);
+    const r = await listCatsFn({ data: { accountId } });
+    if (r.ok) setCategories(r.categories);
+    else toast.error(r.error ?? "Erro ao carregar categorias.");
+    setLoadingCats(false);
   }
 
   async function handleSave() {
@@ -5127,6 +5182,9 @@ function TemplateClinicorpSetup({
           business_id: businessId ? Number(businessId) : undefined,
           code_link: codeLink || undefined,
           profissional_ids: selectedProfIds,
+          category_id: categoryId,
+          category_description: categoryDescription,
+          category_color: categoryColor,
           ativo: true,
         },
       });
@@ -5252,6 +5310,60 @@ function TemplateClinicorpSetup({
             {selectedProfIds.length} profissional{selectedProfIds.length > 1 ? "is" : ""} selecionado{selectedProfIds.length > 1 ? "s" : ""}.
             Deixe todos desmarcados para usar qualquer profissional disponível.
           </p>
+        )}
+      </div>
+
+      {/* Categoria de agendamento — seleção única (define a cor na agenda) */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <Label className="text-xs font-semibold">
+            Categoria do agendamento{" "}
+            <span className="font-normal text-muted-foreground">(opcional — define a cor na agenda)</span>
+          </Label>
+          {token && (
+            <button
+              type="button"
+              onClick={doLoadCats}
+              disabled={loadingCats}
+              className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+            >
+              {loadingCats ? "Carregando..." : "↻ Carregar categorias"}
+            </button>
+          )}
+        </div>
+
+        {!token && categories.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">
+            Preencha o token acima para carregar as categorias.
+          </p>
+        ) : loadingCats ? (
+          <p className="text-[10px] text-muted-foreground">Carregando categorias...</p>
+        ) : categories.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">
+            Clique em ↻ Carregar categorias após preencher o token.
+          </p>
+        ) : (
+          <div className="flex items-center gap-2">
+            {categoryColor && (
+              <span
+                className="inline-block h-4 w-4 shrink-0 rounded border border-slate-300"
+                style={{ backgroundColor: categoryColor }}
+                title={categoryColor}
+              />
+            )}
+            <select
+              value={categoryId}
+              onChange={(e) => selectCategory(e.target.value)}
+              className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+            >
+              <option value="">Nenhuma (sem categoria/cor)</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.description}
+                </option>
+              ))}
+            </select>
+          </div>
         )}
       </div>
 
@@ -5510,6 +5622,174 @@ function TemplateClinupSetup({
       {testResult && <p className="text-xs">{testResult}</p>}
       <div className="flex gap-2">
         <Button onClick={handleSave} disabled={saving} className="flex-1 bg-violet-600 hover:bg-violet-700">
+          {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Salvar e aplicar template
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleTest}>Testar</Button>
+      </div>
+      <button onClick={onSkip} className="w-full text-center text-xs text-muted-foreground hover:text-foreground">
+        Pular configuração e aplicar mesmo assim
+      </button>
+    </div>
+  );
+}
+
+function TemplateClinicExpertsSetup({
+  accountId,
+  saveFn,
+  testFn,
+  listProfsFn,
+  listProcsFn,
+  onSuccess,
+  onSkip,
+}: {
+  accountId: string;
+  saveFn: ReturnType<typeof useServerFn<typeof saveClinicExpertsConfig>>;
+  testFn: ReturnType<typeof useServerFn<typeof testClinicExpertsConnection>>;
+  listProfsFn: ReturnType<typeof useServerFn<typeof listClinicExpertsProfessionalsFn>>;
+  listProcsFn: ReturnType<typeof useServerFn<typeof listClinicExpertsProceduresFn>>;
+  onSuccess: () => void;
+  onSkip: () => void;
+}) {
+  const [token, setToken] = useState("");
+  const [duracao, setDuracao] = useState("40");
+  const [procedureId, setProcedureId] = useState("");
+  const [procedures, setProcedures] = useState<{ id: number; name: string }[]>([]);
+  const [loadingProcs, setLoadingProcs] = useState(false);
+  const [selectedProfUuids, setSelectedProfUuids] = useState<string[]>([]);
+  const [availableProfs, setAvailableProfs] = useState<{ uuid: string; name: string }[]>([]);
+  const [loadingProfs, setLoadingProfs] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  function toggleProf(uuid: string) {
+    setSelectedProfUuids((prev) =>
+      prev.includes(uuid) ? prev.filter((x) => x !== uuid) : [...prev, uuid],
+    );
+  }
+
+  async function doLoadProfs() {
+    setLoadingProfs(true);
+    setAvailableProfs([]);
+    const r = await listProfsFn({ data: { accountId } });
+    if (r.ok) setAvailableProfs(r.professionals);
+    else toast.error(r.error ?? "Erro ao carregar profissionais.");
+    setLoadingProfs(false);
+  }
+
+  async function doLoadProcs() {
+    setLoadingProcs(true);
+    setProcedures([]);
+    const r = await listProcsFn({ data: { accountId } });
+    if (r.ok) setProcedures(r.procedures);
+    else toast.error(r.error ?? "Erro ao carregar procedimentos.");
+    setLoadingProcs(false);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await saveFn({
+        data: {
+          accountId,
+          ...(token ? { api_token: token } : {}),
+          duracao_consulta: Number(duracao) || 40,
+          procedure_id: procedureId ? Number(procedureId) : undefined,
+          procedure_name: procedures.find((p) => String(p.id) === procedureId)?.name ?? undefined,
+          professionals: selectedProfUuids.map((uuid) => ({
+            uuid,
+            name: availableProfs.find((p) => p.uuid === uuid)?.name ?? "",
+          })),
+          ativo: true,
+        },
+      });
+      toast.success("Clinic Experts configurado! Ajuste o expediente de cada profissional em Integrações.");
+      onSuccess();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    setTestResult(null);
+    const r = await testFn({ data: { accountId } });
+    setTestResult(r.ok ? "✅ Conexão OK" : `❌ ${r.error}`);
+  }
+
+  return (
+    <div className="p-6 space-y-4">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+        <p className="text-sm font-semibold text-amber-800">Este template requer o Clinic Experts</p>
+        <p className="mt-1 text-xs text-amber-700">
+          Preencha o token, o procedimento padrão e os profissionais. Depois de
+          aplicar, ajuste o expediente de cada profissional no painel de
+          Integrações (a API do Clinic Experts não informa isso sozinha).
+        </p>
+      </div>
+
+      <div>
+        <Label className="text-xs">Token API (Bearer)</Label>
+        <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="mt-1" />
+      </div>
+      <div>
+        <Label className="text-xs">Duração padrão (min)</Label>
+        <Input type="number" value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1 w-32" />
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label className="text-xs">Procedimento padrão</Label>
+          <button type="button" onClick={doLoadProcs} disabled={loadingProcs} className="text-[10px] text-blue-600 hover:underline disabled:opacity-50">
+            {loadingProcs ? "Carregando..." : "↻ Carregar"}
+          </button>
+        </div>
+        {procedures.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">Clique em "Carregar" (precisa do token salvo antes, se ainda não salvou clique em Testar primeiro).</p>
+        ) : (
+          <select
+            value={procedureId}
+            onChange={(e) => setProcedureId(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="">Selecione um procedimento</option>
+            {procedures.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label className="text-xs">Profissionais</Label>
+          <button type="button" onClick={doLoadProfs} disabled={loadingProfs} className="text-[10px] text-blue-600 hover:underline disabled:opacity-50">
+            {loadingProfs ? "Carregando..." : "↻ Carregar"}
+          </button>
+        </div>
+        {availableProfs.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">Clique em "Carregar" pra listar os profissionais do Clinic Experts.</p>
+        ) : (
+          <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-40 overflow-y-auto">
+            {availableProfs.map((p) => (
+              <label key={p.uuid} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={selectedProfUuids.includes(p.uuid)}
+                  onChange={() => toggleProf(p.uuid)}
+                  className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                />
+                <span className="text-sm">{p.name}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {testResult && <p className="text-xs">{testResult}</p>}
+      <div className="flex gap-2">
+        <Button onClick={handleSave} disabled={saving} className="flex-1 bg-amber-600 hover:bg-amber-700">
           {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Salvar e aplicar template
         </Button>
@@ -6245,6 +6525,7 @@ function IntegrationsTab({
         <strong> "Ativar"</strong> dentro do painel antes de salvar.
       </p>
       <ClinicorpPanel accountId={accountId} />
+      <ClinicExpertsPanel accountId={accountId} />
       <ClinupPanel accountId={accountId} />
       <GoogleCalendarPanel accountId={accountId} agentSettings={agentSettings} />
     </div>
@@ -7301,6 +7582,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   const saveCfg = useServerFn(saveClinicorpConfig);
   const testConn = useServerFn(testClinicorpConnection);
   const listProfs = useServerFn(listClinicorpProfessionalsFn);
+  const listCats = useServerFn(listClinicorpCategoriesFn);
 
   const { data } = useQuery({
     queryKey: ["clinicorp-config", accountId],
@@ -7313,6 +7595,11 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   const [businessId, setBusinessId] = useState("");
   const [codeLink, setCodeLink] = useState("");
   const [selectedProfIds, setSelectedProfIds] = useState<number[]>([]);
+  const [categoryId, setCategoryId] = useState("");
+  const [categoryDescription, setCategoryDescription] = useState("");
+  const [categoryColor, setCategoryColor] = useState("");
+  const [categories, setCategories] = useState<{ id: string; description: string; color: string }[]>([]);
+  const [loadingCats, setLoadingCats] = useState(false);
   const [ativo, setAtivo] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [professionals, setProfessionals] = useState<{ id: number; name: string }[]>([]);
@@ -7324,6 +7611,9 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
       setBusinessId(data.business_id ? String(data.business_id) : "");
       setCodeLink(data.code_link ?? "");
       setSelectedProfIds(data.profissional_ids ?? []);
+      setCategoryId(data.category_id ?? "");
+      setCategoryDescription(data.category_description ?? "");
+      setCategoryColor(data.category_color ?? "");
       // Config NOVA (sem token salvo) → toggle já começa LIGADO, para que
       // "preencher + salvar" ative a integração sem passo extra (evita o caso
       // "salvei mas não integrou" por esquecer de ligar o toggle). Config já
@@ -7341,10 +7631,28 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
       .finally(() => setLoadingProfs(false));
   }, [data?.token_configured, accountId]);
 
+  // Carrega categorias de agendamento automaticamente quando o token já está salvo
+  useEffect(() => {
+    if (!data?.token_configured) return;
+    setLoadingCats(true);
+    listCats({ data: { accountId } })
+      .then((r) => { if (r.ok) setCategories(r.categories); })
+      .finally(() => setLoadingCats(false));
+  }, [data?.token_configured, accountId]);
+
   function toggleProf(id: number) {
     setSelectedProfIds((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
+  }
+
+  // Categoria é seleção ÚNICA — ao escolher, guarda id + descrição + cor (a cor
+  // e a descrição vão para o create do Clinicorp: CategoryColor / CategoryDescription).
+  function selectCategory(id: string) {
+    const cat = categories.find((c) => c.id === id);
+    setCategoryId(id);
+    setCategoryDescription(cat?.description ?? "");
+    setCategoryColor(cat?.color ?? "");
   }
 
   const save = useMutation({
@@ -7357,6 +7665,9 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
           business_id: businessId ? Number(businessId) : undefined,
           code_link: codeLink || undefined,
           profissional_ids: selectedProfIds,
+          category_id: categoryId,
+          category_description: categoryDescription,
+          category_color: categoryColor,
           // Ao inserir um token novo, ativa automaticamente (evita "salvei mas
           // continua inativo" por esquecer de ligar o toggle). Sem token novo,
           // respeita o toggle (permite desativar depois).
@@ -7386,6 +7697,15 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
     if (r.ok) setProfessionals(r.professionals);
     else toast.error(r.error ?? "Erro ao carregar profissionais.");
     setLoadingProfs(false);
+  }
+
+  async function doLoadCats() {
+    setLoadingCats(true);
+    setCategories([]);
+    const r = await listCats({ data: { accountId } });
+    if (r.ok) setCategories(r.categories);
+    else toast.error(r.error ?? "Erro ao carregar categorias.");
+    setLoadingCats(false);
   }
 
   return (
@@ -7508,6 +7828,420 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
                 {selectedProfIds.length} profissional{selectedProfIds.length > 1 ? "is" : ""} selecionado{selectedProfIds.length > 1 ? "s" : ""}.
                 Deixe todos desmarcados para usar qualquer profissional disponível.
               </p>
+            )}
+          </div>
+
+          {/* Categoria de agendamento — seleção única (define a cor na agenda) */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <Label className="text-xs font-semibold">
+                Categoria do agendamento{" "}
+                <span className="font-normal text-muted-foreground">(opcional — define a cor na agenda)</span>
+              </Label>
+              {data?.token_configured && (
+                <button
+                  type="button"
+                  onClick={doLoadCats}
+                  disabled={loadingCats}
+                  className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+                >
+                  {loadingCats ? "Carregando..." : "↻ Recarregar"}
+                </button>
+              )}
+            </div>
+
+            {!data?.token_configured ? (
+              <p className="text-[10px] text-muted-foreground">
+                Salve o token primeiro para carregar as categorias.
+              </p>
+            ) : loadingCats ? (
+              <p className="text-[10px] text-muted-foreground">Carregando categorias...</p>
+            ) : categories.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground">
+                Nenhuma categoria encontrada. Clique em ↻ Recarregar.
+              </p>
+            ) : (
+              <div className="flex items-center gap-2">
+                {categoryColor && (
+                  <span
+                    className="inline-block h-4 w-4 shrink-0 rounded border border-slate-300"
+                    style={{ backgroundColor: categoryColor }}
+                    title={categoryColor}
+                  />
+                )}
+                <select
+                  value={categoryId}
+                  onChange={(e) => selectCategory(e.target.value)}
+                  className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                >
+                  <option value="">Nenhuma (sem categoria/cor)</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.description}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {categoryId && categoryDescription && (
+              <p className="text-[10px] text-muted-foreground mt-1">
+                Novos agendamentos usarão a categoria "{categoryDescription}"{categoryColor ? ` (${categoryColor})` : ""}.
+              </p>
+            )}
+          </div>
+
+          {testResult && <p className="text-xs">{testResult}</p>}
+          <div className="flex gap-2">
+            <Button onClick={() => save.mutate()} disabled={save.isPending} className="flex-1">
+              {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Salvar
+            </Button>
+            <Button variant="outline" onClick={doTest}>Testar</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Clinic Experts Panel ──────────────────────────────────────────────
+
+interface CeProfessionalState {
+  name: string;
+  duracaoMinutos: string; // string p/ vincular ao <Input type="number">; "" = usa a duração padrão da conta
+  businessHoursJson: string;
+}
+
+function ClinicExpertsPanel({ accountId }: { accountId: string }) {
+  const qc = useQueryClient();
+  const getCfg = useServerFn(getClinicExpertsConfig);
+  const saveCfg = useServerFn(saveClinicExpertsConfig);
+  const testConn = useServerFn(testClinicExpertsConnection);
+  const listProfs = useServerFn(listClinicExpertsProfessionalsFn);
+  const listProcs = useServerFn(listClinicExpertsProceduresFn);
+
+  const { data } = useQuery({
+    queryKey: ["clinic-experts-config", accountId],
+    queryFn: () => getCfg({ data: { accountId } }),
+  });
+
+  const [expanded, setExpanded] = useState(false);
+  const [token, setToken] = useState("");
+  const [duracaoConsulta, setDuracaoConsulta] = useState("40");
+  const [procedureId, setProcedureId] = useState("");
+  const [procedureName, setProcedureName] = useState("");
+  const [procedures, setProcedures] = useState<{ id: number; name: string }[]>([]);
+  const [loadingProcs, setLoadingProcs] = useState(false);
+  const [ativo, setAtivo] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
+  const [availableProfs, setAvailableProfs] = useState<{ uuid: string; name: string }[]>([]);
+  const [loadingProfs, setLoadingProfs] = useState(false);
+  // Profissionais SELECIONADOS, com o expediente próprio de cada um — a API do
+  // Clinic Experts não expõe isso, então guardamos nós mesmos (mesmo formato
+  // JSON do BusinessHoursEditor usado nas agendas Google).
+  const [selectedProfs, setSelectedProfs] = useState<Record<string, CeProfessionalState>>({});
+
+  useEffect(() => {
+    if (!data) return;
+    setDuracaoConsulta(String(data.duracao_consulta ?? 40));
+    setProcedureId(data.procedure_id != null ? String(data.procedure_id) : "");
+    setProcedureName(data.procedure_name ?? "");
+    setSelectedProfs(
+      Object.fromEntries(
+        (data.professionals ?? []).map((p) => [
+          p.uuid,
+          {
+            name: p.name,
+            duracaoMinutos: p.duracao_minutos != null ? String(p.duracao_minutos) : "",
+            businessHoursJson: p.business_hours_json ?? "",
+          },
+        ]),
+      ),
+    );
+    setAtivo(data.token_configured ? (data.ativo ?? false) : true);
+  }, [data]);
+
+  useEffect(() => {
+    if (!data?.token_configured) return;
+    setLoadingProfs(true);
+    listProfs({ data: { accountId } })
+      .then((r) => { if (r.ok) setAvailableProfs(r.professionals); })
+      .finally(() => setLoadingProfs(false));
+  }, [data?.token_configured, accountId]);
+
+  useEffect(() => {
+    if (!data?.token_configured) return;
+    setLoadingProcs(true);
+    listProcs({ data: { accountId } })
+      .then((r) => { if (r.ok) setProcedures(r.procedures); })
+      .finally(() => setLoadingProcs(false));
+  }, [data?.token_configured, accountId]);
+
+  function toggleProf(p: { uuid: string; name: string }) {
+    setSelectedProfs((prev) => {
+      const next = { ...prev };
+      if (next[p.uuid]) {
+        delete next[p.uuid];
+      } else {
+        next[p.uuid] = { name: p.name, duracaoMinutos: "", businessHoursJson: "" };
+      }
+      return next;
+    });
+  }
+
+  function updateProfHours(uuid: string, _human: string, json: string) {
+    setSelectedProfs((prev) => ({
+      ...prev,
+      [uuid]: { ...prev[uuid], businessHoursJson: json },
+    }));
+  }
+
+  function updateProfDuracao(uuid: string, value: string) {
+    setSelectedProfs((prev) => ({
+      ...prev,
+      [uuid]: { ...prev[uuid], duracaoMinutos: value },
+    }));
+  }
+
+  async function doLoadProfs() {
+    setLoadingProfs(true);
+    setAvailableProfs([]);
+    const r = await listProfs({ data: { accountId } });
+    if (r.ok) setAvailableProfs(r.professionals);
+    else toast.error(r.error ?? "Erro ao carregar profissionais.");
+    setLoadingProfs(false);
+  }
+
+  async function doLoadProcs() {
+    setLoadingProcs(true);
+    setProcedures([]);
+    const r = await listProcs({ data: { accountId } });
+    if (r.ok) setProcedures(r.procedures);
+    else toast.error(r.error ?? "Erro ao carregar procedimentos.");
+    setLoadingProcs(false);
+  }
+
+  const save = useMutation({
+    mutationFn: () =>
+      saveCfg({
+        data: {
+          accountId,
+          ...(token ? { api_token: token } : {}),
+          duracao_consulta: Number(duracaoConsulta) || 40,
+          procedure_id: procedureId ? Number(procedureId) : undefined,
+          procedure_name: procedureName || undefined,
+          professionals: Object.entries(selectedProfs).map(([uuid, p]) => ({
+            uuid,
+            name: p.name,
+            ...(p.duracaoMinutos ? { duracao_minutos: Number(p.duracaoMinutos) } : {}),
+            ...(p.businessHoursJson ? { business_hours_json: p.businessHoursJson } : {}),
+          })),
+          // Ao inserir um token novo, ativa automaticamente (evita "salvei mas
+          // continua inativo" por esquecer de ligar o toggle).
+          ativo: token ? true : ativo,
+        },
+      }),
+    onSuccess: () => {
+      const hadToken = !!token;
+      toast.success(hadToken ? "Clinic Experts salvo e ativado." : "Clinic Experts salvo.");
+      setToken("");
+      if (hadToken) setAtivo(true);
+      qc.invalidateQueries({ queryKey: ["clinic-experts-config", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar."),
+  });
+
+  async function doTest() {
+    setTestResult(null);
+    const r = await testConn({ data: { accountId } });
+    setTestResult(r.ok ? "✅ Conexão OK" : `❌ ${r.error}`);
+  }
+
+  const selectedUuids = Object.keys(selectedProfs);
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+      <button onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-3 p-5 text-left">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-600 text-white shadow-sm shadow-amber-500/30">
+          <Stethoscope className="h-5 w-5" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold">Clinic Experts</p>
+          <p className="text-xs text-muted-foreground">Consultar e agendar no Clinic Experts</p>
+        </div>
+        <span className={`mr-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${data?.ativo ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${data?.ativo ? "bg-emerald-500" : "bg-zinc-400"}`} />
+          {data?.ativo ? "Ativo" : "Inativo"}
+        </span>
+        <svg className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      {expanded && (
+        <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
+          <ToggleRow label="Ativar integração Clinic Experts" value={ativo} onChange={setAtivo} />
+
+          {/* Token */}
+          <div>
+            <Label className="text-xs font-semibold">Token API (Bearer)</Label>
+            {data?.token_configured && !token && (
+              <p className="text-xs text-muted-foreground mb-1">Token configurado ✓</p>
+            )}
+            <Input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="cole o token Bearer aqui"
+              className="mt-1"
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Gerado na página de Integrações do painel do Clinic Experts.
+            </p>
+          </div>
+
+          {/* Duração padrão */}
+          <div>
+            <Label className="text-xs font-semibold">
+              Duração padrão (min){" "}
+              <span className="font-normal text-muted-foreground">(usada quando o profissional não tem duração própria)</span>
+            </Label>
+            <Input
+              type="number"
+              min={5}
+              max={480}
+              value={duracaoConsulta}
+              onChange={(e) => setDuracaoConsulta(e.target.value)}
+              className="mt-1 w-32"
+            />
+          </div>
+
+          {/* Procedimento padrão */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <Label className="text-xs font-semibold">
+                Procedimento padrão{" "}
+                <span className="font-normal text-muted-foreground">(usado na busca de horários e no agendamento)</span>
+              </Label>
+              {data?.token_configured && (
+                <button
+                  type="button"
+                  onClick={doLoadProcs}
+                  disabled={loadingProcs}
+                  className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+                >
+                  {loadingProcs ? "Carregando..." : "↻ Recarregar"}
+                </button>
+              )}
+            </div>
+            {!data?.token_configured ? (
+              <p className="text-[10px] text-muted-foreground">
+                Salve o token primeiro para carregar os procedimentos.
+              </p>
+            ) : loadingProcs ? (
+              <p className="text-[10px] text-muted-foreground">Carregando procedimentos...</p>
+            ) : procedures.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground">
+                Nenhum procedimento encontrado. Clique em ↻ Recarregar.
+              </p>
+            ) : (
+              <select
+                value={procedureId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setProcedureId(id);
+                  setProcedureName(procedures.find((p) => String(p.id) === id)?.name ?? "");
+                }}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+              >
+                <option value="">Selecione um procedimento</option>
+                {procedures.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Profissionais + expediente de cada um */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <Label className="text-xs font-semibold">
+                Profissionais{" "}
+                <span className="font-normal text-muted-foreground">(marque quem o agente pode agendar)</span>
+              </Label>
+              {data?.token_configured && (
+                <button
+                  type="button"
+                  onClick={doLoadProfs}
+                  disabled={loadingProfs}
+                  className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+                >
+                  {loadingProfs ? "Carregando..." : "↻ Recarregar"}
+                </button>
+              )}
+            </div>
+
+            {!data?.token_configured ? (
+              <p className="text-[10px] text-muted-foreground">
+                Salve o token primeiro para carregar os profissionais.
+              </p>
+            ) : loadingProfs ? (
+              <p className="text-[10px] text-muted-foreground">Carregando profissionais...</p>
+            ) : availableProfs.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground">
+                Nenhum profissional encontrado. Clique em ↻ Recarregar.
+              </p>
+            ) : (
+              <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-48 overflow-y-auto">
+                {availableProfs.map((p) => {
+                  const checked = !!selectedProfs[p.uuid];
+                  return (
+                    <label
+                      key={p.uuid}
+                      className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-slate-50 transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleProf(p)}
+                        className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                      />
+                      <span className="text-sm">{p.name}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* A API do Clinic Experts não expõe o expediente do profissional —
+                por isso pedimos aqui, um editor por profissional selecionado. */}
+            {selectedUuids.length > 0 && (
+              <div className="mt-3 space-y-3">
+                {selectedUuids.map((uuid) => {
+                  const prof = selectedProfs[uuid];
+                  return (
+                    <div key={uuid} className="rounded-xl border border-slate-200 p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold text-slate-700">{prof.name}</p>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-muted-foreground">Duração (min)</span>
+                          <Input
+                            type="number"
+                            min={5}
+                            max={480}
+                            value={prof.duracaoMinutos}
+                            onChange={(e) => updateProfDuracao(uuid, e.target.value)}
+                            placeholder={duracaoConsulta}
+                            className="h-7 w-20 text-xs"
+                          />
+                        </div>
+                      </div>
+                      <BusinessHoursEditor
+                        jsonValue={prof.businessHoursJson}
+                        onChange={(human, json) => updateProfHours(uuid, human, json)}
+                        syncOnMount={false}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
 

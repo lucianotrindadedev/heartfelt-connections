@@ -113,7 +113,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
     if (!orKey) throw new Error("Falha ao descriptografar chave OpenRouter.");
 
     // 2. Carrega agente + LLM config + integrações
-    const [agent, llm, clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
+    const [agent, llm, clinicorpCfg, clinupCfg, gcalCfg, clinicExpertsCfg, escCfg] = await Promise.all([
       sb
         .from("agents")
         .select("id, system_prompt, settings, llm_model_override")
@@ -127,6 +127,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       sb.from("clinup_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      sb.from("clinic_experts_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       sb.from("agent_escalation").select("ativo").eq("agent_id", data.agentId).maybeSingle(),
     ]);
     if (agent.error || !agent.data) throw new Error("Agente não encontrado.");
@@ -176,9 +177,11 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         clinicorp: !!clinicorpCfg.data?.ativo,
         clinup: !!clinupCfg.data?.ativo,
         googleCalendar: !!gcalCfg.data?.ativo,
+        clinicExperts: !!clinicExpertsCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
       },
       googleAgendas: [],
+      clinicExpertsProfessionals: [],
       history: data.history.map((m) => ({ role: m.role, content: m.content })),
       dryRun: true, // NÃO tocar Helena/Calendar/Clinicorp
     };

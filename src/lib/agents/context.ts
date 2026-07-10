@@ -56,6 +56,7 @@ export interface AgentContext {
     clinicorp: boolean;
     clinup: boolean;
     googleCalendar: boolean;
+    clinicExperts: boolean;
     escalation: boolean;
   };
 
@@ -75,6 +76,18 @@ export interface AgentContext {
     bufferDias?: string[];
     tituloTemplate?: string;
     descricaoTemplate?: string;
+  }[];
+
+  /** Profissionais configurados no Clinic Experts (a API não expõe expediente
+   *  próprio — quem sabe os dias/horas de cada um é a nossa config). Usado
+   *  internamente pelo tool file para listar horários; o LLM NUNCA escolhe
+   *  profissional diretamente (igual ao Clinicorp — o slot escolhido já carrega
+   *  o professional_uuid certo). */
+  clinicExpertsProfessionals: {
+    uuid: string;
+    name: string;
+    duracaoMinutos?: number;
+    businessHoursJson?: string;
   }[];
 
   /** Histórico de mensagens já filtrado (sem fallbacks determinísticos). */

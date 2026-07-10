@@ -98,7 +98,7 @@ export const replayConversation = createServerFn({ method: "POST" })
     const accountId = agent.data.account_id as string;
     const agentId = agent.data.id as string;
 
-    const [llm, secrets, clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
+    const [llm, secrets, clinicorpCfg, clinupCfg, gcalCfg, clinicExpertsCfg, escCfg] = await Promise.all([
       sb
         .from("account_llm_config")
         .select(
@@ -114,6 +114,7 @@ export const replayConversation = createServerFn({ method: "POST" })
       sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
       sb.from("clinup_config").select("ativo").eq("account_id", accountId).maybeSingle(),
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
+      sb.from("clinic_experts_config").select("ativo").eq("account_id", accountId).maybeSingle(),
       sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
     ]);
     if (!secrets.data?.openrouter_api_key_enc) {
@@ -190,9 +191,11 @@ export const replayConversation = createServerFn({ method: "POST" })
         clinicorp: !!clinicorpCfg.data?.ativo,
         clinup: !!clinupCfg.data?.ativo,
         googleCalendar: !!gcalCfg.data?.ativo,
+        clinicExperts: !!clinicExpertsCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
       },
       googleAgendas: [],
+      clinicExpertsProfessionals: [],
       history,
       dryRun: true,
     });

@@ -8,9 +8,9 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 // Types
 // ---------------------------------------------------------------------------
 
-export type IntegrationType = "clinicorp" | "google_calendar" | "clinup" | null;
+export type IntegrationType = "clinicorp" | "google_calendar" | "clinup" | "clinic_experts" | null;
 
-const INTEGRATION_TYPES = ["clinicorp", "google_calendar", "clinup", ""] as const;
+const INTEGRATION_TYPES = ["clinicorp", "google_calendar", "clinup", "clinic_experts", ""] as const;
 
 export const variableSchema = z.object({
   key: z.string().min(1).max(100),

@@ -473,18 +473,41 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     // Integracoes precisam ser carregadas para os signals (hasBookingIntegration).
-    const [clinicorpCfg, clinupCfg, gcalCfg, escCfg] = await Promise.all([
+    const [clinicorpCfg, clinupCfg, gcalCfg, clinicExpertsCfg, escCfg] = await Promise.all([
       sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
       sb.from("clinup_config").select("ativo").eq("account_id", accountId).maybeSingle(),
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
+      sb.from("clinic_experts_config").select("ativo, professionals").eq("account_id", accountId).maybeSingle(),
       sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
     ]);
     const hasBookingIntegration =
-      !!clinicorpCfg.data?.ativo || !!clinupCfg.data?.ativo || !!gcalCfg.data?.ativo;
+      !!clinicorpCfg.data?.ativo ||
+      !!clinupCfg.data?.ativo ||
+      !!gcalCfg.data?.ativo ||
+      !!clinicExpertsCfg.data?.ativo;
 
     // Agendas Google (multi-agenda). Só consulta quando o GCal está ativo.
     // Vazio = agenda única (comportamento atual). 2+ = agente escolhe via prompt.
     const googleAgendas = gcalCfg.data?.ativo ? await listAccountAgendas(accountId) : [];
+
+    // Profissionais do Clinic Experts (a API não expõe expediente próprio — a
+    // config já guarda uuid/name/duracao/business_hours_json de cada um).
+    const clinicExpertsProfessionals = clinicExpertsCfg.data?.ativo
+      ? (
+          (Array.isArray(clinicExpertsCfg.data.professionals)
+            ? (clinicExpertsCfg.data.professionals as Record<string, unknown>[])
+            : []
+          )
+            .map((p) => ({
+              uuid: String(p.uuid ?? ""),
+              name: String(p.name ?? ""),
+              duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+              businessHoursJson:
+                typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
+            }))
+            .filter((p) => p.uuid)
+        )
+      : [];
 
     // Sinais deterministicos extraidos do historico + lead_data.
     const signals = detectSignals({
@@ -607,9 +630,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         clinicorp: !!clinicorpCfg.data?.ativo,
         clinup: !!clinupCfg.data?.ativo,
         googleCalendar: !!gcalCfg.data?.ativo,
+        clinicExperts: !!clinicExpertsCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
       },
       googleAgendas,
+      clinicExpertsProfessionals,
       // Modo teste: não escreve tags no CRM (tools seguem vivas).
       disableTags: agentSettings.test_mode === "true",
       history,

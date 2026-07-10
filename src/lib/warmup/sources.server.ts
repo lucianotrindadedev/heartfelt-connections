@@ -1,14 +1,15 @@
 // Adapter unificado: lista agendamentos próximos de TODOS os providers
-// de agenda ativos na conta. Hoje implementado: Clinicorp. Google Calendar
-// e Clinup ficam como stubs prontos para serem ligados quando os adapters
-// individuais expõem listUpcomingEvents.
+// de agenda ativos na conta. Implementado: Clinicorp, Google Calendar e
+// Clinic Experts. Clinup fica como stub pronto pra ser ligado quando o
+// adapter expõe listUpcomingEvents (ver clinup.server.ts).
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { listClinicorpUpcomingAppointments } from "@/lib/tools/clinicorp.server";
 import { listUpcomingGoogleCalendarEvents } from "@/lib/tools/google-calendar.server";
+import { listClinicExpertsUpcomingAppointments } from "@/lib/tools/clinic-experts.server";
 
 export interface UpcomingAppointment {
-  source: "clinicorp" | "google_calendar" | "clinup";
+  source: "clinicorp" | "google_calendar" | "clinup" | "clinic_experts";
   externalId: string;
   start: Date;         // horário da consulta (ISO em UTC ou com offset)
   patientPhone: string;
@@ -89,6 +90,38 @@ export async function listAllUpcomingAppointments(
       }
     } catch (e) {
       console.error("[warmup-sources] google calendar falhou:", e);
+    }
+  }
+
+  // ─── Clinic Experts ─────────────────────────────────────────
+  const { data: clinicExperts } = await sb
+    .from("clinic_experts_config")
+    .select("account_id, ativo")
+    .eq("account_id", accountId)
+    .eq("ativo", true)
+    .maybeSingle();
+  if (clinicExperts) {
+    try {
+      const items = await listClinicExpertsUpcomingAppointments(
+        accountId,
+        fromDate.toISOString().slice(0, 10),
+        toDate.toISOString().slice(0, 10),
+      );
+      for (const a of items) {
+        if (!a.phone) continue; // sem telefone não dá pra casar a conversa/sessão
+        const startDate = new Date(a.start);
+        if (Number.isNaN(startDate.getTime())) continue;
+        out.push({
+          source: "clinic_experts",
+          externalId: String(a.id),
+          start: startDate,
+          patientPhone: a.phone,
+          patientName: a.patientName,
+          status: a.status,
+        });
+      }
+    } catch (e) {
+      console.error("[warmup-sources] clinic experts falhou:", e);
     }
   }
 
