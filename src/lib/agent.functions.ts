@@ -134,7 +134,7 @@ export const getAgent = createServerFn({ method: "GET" })
     const helenaAccountId =
       (currentAccountRow.data?.helena_account_id as string | null) ?? data.accountId;
 
-    const [agent, llm, voice, audio, wa, fu, wu, secrets, clinicorp, clinup, gcal, siblings] = await Promise.all([
+    const [agent, llm, voice, audio, wa, fu, wu, secrets, clinicorp, clinup, gcal, clinicExperts, siblings] = await Promise.all([
       sb.from("agents").select("*").eq("id", agentId).single(),
       sb.from("account_llm_config").select("*").eq("account_id", data.accountId).single(),
       sb.from("account_voice_config").select("*").eq("account_id", data.accountId).single(),
@@ -150,6 +150,7 @@ export const getAgent = createServerFn({ method: "GET" })
       sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       sb.from("clinup_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", data.accountId).maybeSingle(),
+      sb.from("clinic_experts_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
       // Outras contas Sarai sob o mesmo Helena CRM ID — para mostrar seletor no embed
       sb
         .from("accounts")
@@ -172,6 +173,7 @@ export const getAgent = createServerFn({ method: "GET" })
         clinicorp: !!clinicorp.data,
         clinup: !!clinup.data,
         google_calendar: !!gcal.data,
+        clinic_experts: !!clinicExperts.data,
       },
       /** Outras contas Sarai sob o mesmo Helena CRM ID (incluindo a atual). */
       siblings: (siblings.data ?? []) as { id: string; nome: string }[],

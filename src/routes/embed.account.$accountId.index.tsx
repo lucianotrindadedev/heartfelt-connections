@@ -461,7 +461,7 @@ function EmbedHome() {
         initialPrompt={(agent.system_prompt as string | null) ?? ""}
         initialNome={(agent.nome as string) ?? ""}
         agentSettings={(agent.settings as Record<string, string> | null) ?? {}}
-        configuredIntegrations={data.configured_integrations ?? { clinicorp: false, clinup: false, google_calendar: false }}
+        configuredIntegrations={data.configured_integrations ?? { clinicorp: false, clinup: false, google_calendar: false, clinic_experts: false }}
         onClose={() => setOpenSheet(null)}
       />
     );
@@ -483,7 +483,7 @@ function EmbedHome() {
         audioHabilitado={!!(data.audio?.habilitado)}
         audioTranscrever={!!(data.audio?.transcrever_in)}
         audioResponder={!!(data.audio?.responder_out)}
-        configuredIntegrations={data.configured_integrations ?? { clinicorp: false, clinup: false, google_calendar: false }}
+        configuredIntegrations={data.configured_integrations ?? { clinicorp: false, clinup: false, google_calendar: false, clinic_experts: false }}
         secretsLast4={{
           openrouter: (data.secrets?.openrouter_last4 as string | null) ?? null,
           elevenlabs: (data.secrets?.elevenlabs_last4 as string | null) ?? null,
@@ -1040,7 +1040,7 @@ function TrainingView({
   initialPrompt: string;
   initialNome: string;
   agentSettings: Record<string, string>;
-  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
+  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean; clinic_experts: boolean };
   onClose: () => void;
 }) {
   const qc = useQueryClient();
@@ -4128,6 +4128,15 @@ const PROMPT_TOOLS: { group: string; tools: { name: string; desc: string }[] }[]
     ],
   },
   {
+    group: "Clinic Experts — Agendamento",
+    tools: [
+      { name: "buscar_paciente_clinic_experts",  desc: "Verifica se o lead já é paciente cadastrado" },
+      { name: "listar_horarios_clinic_experts",  desc: "Lista horários livres (por profissional configurado)" },
+      { name: "agendar_clinic_experts",          desc: "Cria a consulta com os dados coletados" },
+      { name: "cancelar_clinic_experts",         desc: "Cancela um agendamento existente" },
+    ],
+  },
+  {
     group: "Qualificação",
     tools: [
       { name: "aplicar_tag_interesse", desc: "Aplica tag de qualificação no contato (CRM)" },
@@ -4179,7 +4188,7 @@ function PromptEditor({
   onSave: () => void;
   onAiMagic?: () => void;
   onHistory?: () => void;
-  configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
+  configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean; clinic_experts: boolean };
 }) {
   const [showColorPicker, setShowColorPicker] = useState<"text" | "highlight" | null>(null);
   const [showToolsPicker, setShowToolsPicker] = useState(false);
@@ -4205,6 +4214,7 @@ function PromptEditor({
       if (g.group.startsWith("Clinicorp")) return !!ci?.clinicorp;
       if (g.group.startsWith("Clinup"))    return !!ci?.clinup;
       if (g.group.startsWith("Google"))    return !!ci?.google_calendar;
+      if (g.group.startsWith("Clinic Experts")) return !!ci?.clinic_experts;
       return true; // Qualificação, Escalada, CRM — sempre
     });
   }, [configuredIntegrations]);
@@ -4213,7 +4223,7 @@ function PromptEditor({
   // Aplica APENAS se nao estiverem ja envolvidos em ` ` ou ```.
   // Tools conhecidas (snake_case usadas no scheduler/qualifier).
   const TOOL_NAMES_RE =
-    /(?<![`\w])(listar_horarios(?:_clinicorp|_google_calendar|_clinup)?|agendar_(?:clinicorp|google_calendar|clinup)|criar_agendamento|buscar_paciente(?:_clinicorp|_clinup)?|buscar_agendamentos_google_calendar|atualizar_agendamento_google_calendar|cancelar_agendamento_google_calendar|escalar_humano|enviar_midia|aplicar_tag_interesse|listar_tags|clinup_buscar_horarios)(?!`)/g;
+    /(?<![`\w])(listar_horarios(?:_clinicorp|_google_calendar|_clinup|_clinic_experts)?|agendar_(?:clinicorp|google_calendar|clinup|clinic_experts)|criar_agendamento|buscar_paciente(?:_clinicorp|_clinup|_clinic_experts)?|cancelar_(?:agendamento|clinicorp|clinup|clinic_experts|google_calendar)|remarcar_agendamento|buscar_agendamentos_google_calendar|atualizar_agendamento_google_calendar|escalar_humano|enviar_midia|aplicar_tag_interesse|listar_tags|clinup_buscar_horarios)(?!`)/g;
   const highlightedInitialContent = useMemo(
     () => initialContent.replace(TOOL_NAMES_RE, "`$1`"),
     [initialContent],
@@ -5849,7 +5859,7 @@ function AgentSettingsView({
   audioHabilitado: boolean;
   audioTranscrever: boolean;
   audioResponder: boolean;
-  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
+  configuredIntegrations: { clinicorp: boolean; clinup: boolean; google_calendar: boolean; clinic_experts: boolean };
   secretsLast4: { openrouter: string | null; elevenlabs: string | null };
   onClose: () => void;
 }) {
@@ -6455,7 +6465,7 @@ function IntegrationsTab({
   audioHabilitado: boolean;
   audioTranscrever: boolean;
   audioResponder: boolean;
-  configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean };
+  configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean; clinic_experts: boolean };
   secretsLast4?: { openrouter: string | null; elevenlabs: string | null };
 }) {
   const [showSecrets, setShowSecrets] = useState(false);
