@@ -1879,6 +1879,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // execCriarAgendamento retorna already_booked:true e a flag vai para
   // messages.meta para diagnostico.
   let doubleBookingBlocked = false;
+  // tool_call_id de cada chamada listar_horarios* deste turn, na ordem em que
+  // rodaram — usado para neutralizar resultados ANTIGOS antes da resposta
+  // final (ver comentário logo após o loop de tools).
+  const listarHorariosToolCallIds: string[] = [];
 
   // Loop de tools: GPT-4.1 mini (toolModel) — Gemini costuma falhar em function calling.
   // Resposta final ao lead continua em ctx.model (Gemini Flash Lite).
@@ -1940,6 +1944,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "listar_horarios_clinup":
           case "clinup_buscar_horarios":
           case "listar_horarios_clinic_experts":
+            listarHorariosToolCallIds.push(tc.id);
             outcome = await execListarHorarios(
               ctx,
               args.dias_a_frente as number | undefined,
@@ -2022,6 +2027,30 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         tool_call_id: tc.id,
         content: outcome.result,
       });
+    }
+  }
+
+  // Quando o modelo do tool loop chama listar_horarios MAIS DE UMA VEZ no
+  // mesmo turn (comum ao refinar por período/data), cada chamada SOBRESCREVE
+  // offered_slots em lead_data — só a ÚLTIMA sobrevive no patch acumulado.
+  // Só que a resposta final é gerada olhando TODO o histórico de tool calls
+  // deste turn, incluindo os resultados ANTIGOS (já stale) — o modelo pode
+  // narrar um horário que só existia numa chamada anterior e não está mais em
+  // offered_slots. Caso real (MF Beauty BSB, Clinic Experts): 3 chamadas no
+  // mesmo turn, a oferta ao lead citou um horário da 1ª/2ª chamada que sumiu
+  // na 3ª — o lead aceitou esse horário "fantasma" e o sistema não achou
+  // correspondência real (ou, antes do fix em tryAutoSelectOfferedSlot,
+  // chegou a confirmar outro horário por engano). Neutraliza o CONTEÚDO dos
+  // resultados antigos (mantém a tool call visível no histórico, só troca o
+  // JSON por um aviso) — assim a resposta final só pode se basear na busca
+  // mais recente, que é a que realmente está em offered_slots.
+  if (listarHorariosToolCallIds.length > 1) {
+    const staleIds = new Set(listarHorariosToolCallIds.slice(0, -1));
+    for (const msg of workingMessages) {
+      if (msg.role === "tool" && msg.tool_call_id && staleIds.has(msg.tool_call_id)) {
+        msg.content =
+          '{"note":"Resultado substituído por uma busca mais recente neste mesmo turn — NÃO use estes horários, use apenas os da ÚLTIMA chamada de listar_horarios."}';
+      }
     }
   }
 
