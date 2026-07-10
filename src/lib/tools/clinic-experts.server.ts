@@ -268,7 +268,12 @@ export async function listClinicExpertsSlots(
   to: string,
 ): Promise<ClinicExpertsSlot[]> {
   const config = await loadConfig(accountId);
-  if (config.professionals.length === 0) return [];
+  if (config.professionals.length === 0) {
+    console.warn(
+      `[clinic-experts] listClinicExpertsSlots conta=${accountId}: nenhum profissional configurado (clinic_experts_config.professionals está vazio)`,
+    );
+    return [];
+  }
   const dates = enumerateDates(from, to);
   if (!dates.length) return [];
 
@@ -284,7 +289,15 @@ export async function listClinicExpertsSlots(
         const dayKey = diaSemanaChave(new Date(`${date}T12:00:00-03:00`));
         if (!disponibilidade[dayKey]?.length) continue;
       }
-      tasks.push(fetchAvailableHoursForDay(config, prof, date).catch(() => []));
+      tasks.push(
+        fetchAvailableHoursForDay(config, prof, date).catch((e) => {
+          console.error(
+            `[clinic-experts] available-hours falhou conta=${accountId} prof=${prof.uuid} data=${date}:`,
+            e instanceof Error ? e.message : String(e),
+          );
+          return [];
+        }),
+      );
     }
   }
 

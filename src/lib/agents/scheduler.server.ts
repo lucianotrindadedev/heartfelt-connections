@@ -841,9 +841,24 @@ async function execListarHorarios(
     }
     const ceLimited = ceSlots.slice(0, 6).map(formatCeSlot);
     if (ceLimited.length === 0) {
+      const noProfessionals = ctx.clinicExpertsProfessionals.length === 0;
+      const causa = noProfessionals
+        ? "Nenhum profissional está configurado no Clinic Experts desta conta (painel de Integrações → Clinic Experts). Não é possível buscar horários até um profissional com expediente ser cadastrado — não prometa horário ao lead; ofereça escalar para um humano."
+        : "Nenhum horário livre encontrado no período consultado para os profissionais/expediente configurados. Tente um período maior ou verifique se o expediente cadastrado está correto.";
       console.warn(
-        `[scheduler] listar_horarios (clinic experts) retornou 0 slots conv=${ctx.conversationId} — verifique profissionais/expediente configurados`,
+        `[scheduler] listar_horarios (clinic experts) retornou 0 slots conv=${ctx.conversationId} — ${noProfessionals ? "0 profissionais configurados" : "verifique profissionais/expediente configurados"}`,
       );
+      return {
+        result: JSON.stringify({
+          count: 0,
+          slots: [],
+          debug: {
+            profissionais_configurados: ctx.clinicExpertsProfessionals.length,
+            possivel_causa: causa,
+          },
+        }),
+        patch: { offered_slots: [] },
+      };
     }
     return {
       result: JSON.stringify({
