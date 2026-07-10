@@ -311,9 +311,17 @@ export async function listClinicExpertsSlots(
   const perCall = await Promise.all(tasks);
   let merged = perCall.flat();
 
+  // Dedup SÓ por data+hora (sem o profissional na chave): o lead nunca escolhe
+  // profissional (é implementação interna, igual Clinicorp) — quando dois
+  // profissionais têm o MESMO horário livre, oferecer os dois como entradas
+  // "iguais" (mesmo time_label, professional_uuid diferente) quebra
+  // tryAutoSelectOfferedSlot: o lead responde só "09:30" e a heurística encontra
+  // 2 candidatos ambíguos e nunca preenche selected_slot_iso — a conversa fica
+  // presa em loop (BOOKING nunca dispara). Mantém o 1º profissional livre
+  // naquele horário.
   const seen = new Set<string>();
   merged = merged.filter((s) => {
-    const key = `${s.localDate}|${s.fromTime}|${s.professionalUuid}`;
+    const key = `${s.localDate}|${s.fromTime}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
