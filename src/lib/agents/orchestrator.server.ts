@@ -1015,9 +1015,23 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
+    // Se o LEAD TAMBÉM repetiu a própria mensagem anterior (ex.: dois cliques
+    // no mesmo anúncio do Instagram geram a mesma saudação duas vezes), uma
+    // resposta repetida do agente é uma reação LEGÍTIMA ao input duplicado —
+    // não é o LLM alucinando. Caso real (Maple Bear Osasco, 10/07): o lead
+    // mandou "Olá! Tenho interesse..." duas vezes (dois cliques no anúncio);
+    // a 1ª vez o agente pediu o nome corretamente, e como a 2ª pergunta era
+    // idêntica, o agente ia responder a MESMA coisa de novo (correto) — mas o
+    // guard achou que era um loop e forçou "vou te mostrar os horários",
+    // pulando reto pra SLOT_OFFER sem o lead sequer ter dado o nome.
+    const priorUserMsgs = history.filter((m) => m.role === "user");
+    const previousUserMsg = priorUserMsgs[priorUserMsgs.length - 2]?.content ?? "";
+    const userAlsoRepeated =
+      !!lastUserMsg && !!previousUserMsg && isReplyTooSimilar(lastUserMsg, previousUserMsg);
+
     // Guarda anti-loop: se o reply é praticamente idêntico à última msg do assistente,
     // o LLM está alucinando ao repetir conteúdo. Substitui por um avanço de proposta.
-    if (lastAssistantMsg && isReplyTooSimilar(reply, lastAssistantMsg)) {
+    if (lastAssistantMsg && !userAlsoRepeated && isReplyTooSimilar(reply, lastAssistantMsg)) {
       duplicateReplyBlocked = true;
       // Log estruturado (JSON em uma linha) — facil de filtrar em Coolify/Datadog
       // para mapear quais modelos alucinam mais e em quais stages.
