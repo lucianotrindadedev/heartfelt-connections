@@ -748,7 +748,7 @@ export function looksLikeDecline(text: string): boolean {
     .trim()
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[.!,;]+$/g, "")
     .trim();
   if (!t) return false;
@@ -780,7 +780,7 @@ export function looksLikeGratitudeOrClosing(text: string): boolean {
     .trim()
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .trim();
   if (!t) return false;
   // Começa com agradecimento.
@@ -1126,9 +1126,31 @@ function dateInBrt(d: Date): string {
   }).format(d); // en-CA → "YYYY-MM-DD"
 }
 
+const WEEKDAY_STEMS = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
+
+/** Próxima ocorrência (hoje incluído) do dia da semana pedido, em BRT. */
+function nextWeekdayDateBrt(weekdayStem: string, nowMs: number): string {
+  const DAY = 86_400_000;
+  for (let i = 0; i <= 7; i++) {
+    const d = new Date(nowMs + i * DAY);
+    const diaPt = new Intl.DateTimeFormat("pt-BR", {
+      weekday: "long",
+      timeZone: "America/Sao_Paulo",
+    }).format(d);
+    const stem = diaPt
+      .replace("-feira", "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+    if (stem === weekdayStem) return dateInBrt(d);
+  }
+  return dateInBrt(new Date(nowMs));
+}
+
 /**
  * Resolve datas RELATIVAS faladas pelo lead ("hoje", "amanhã", "depois de
- * amanhã") para a data alvo (YYYY-MM-DD em BRT). Retorna null se não houver.
+ * amanhã", ou um dia da semana explícito como "terça"/"quarta-feira") para a
+ * data alvo (YYYY-MM-DD em BRT). Retorna null se não houver.
  * IMPORTANTE: "amanhã" contém "manhã" — por isso o match de turno usa \b.
  */
 function relativeTargetDateBrt(t: string): string | null {
@@ -1139,6 +1161,22 @@ function relativeTargetDateBrt(t: string): string | null {
   if (/depois\s+de\s+amanh[aã]/.test(t)) return dateInBrt(new Date(now + 2 * DAY));
   if (/\bamanh[aã]/.test(t)) return dateInBrt(new Date(now + DAY));
   if (/\bhoje\b/.test(t)) return dateInBrt(new Date(now));
+
+  // Dia da semana citado explicitamente. Sem isto, quando o lead pede um dia
+  // DIFERENTE do que foi ofertado (ex.: ofertou segunda, lead pede "terça
+  // feira... às 15:00"), targetDate ficava null e o filtro adiante só olhava
+  // o TURNO (tarde) dentro dos slots JÁ ofertados — escolhia silenciosamente
+  // um horário de SEGUNDA (dia errado) como se fosse o pedido do lead. Casos
+  // reais (Clínica Bomfim, 10/07, leads Michele e Sandro): ambos pediram um
+  // dia da semana diferente do ofertado e foram agendados no dia ERRADO sem
+  // nunca terem confirmado isso.
+  const normalized = t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const weekdayMatch = normalized.match(
+    /\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/,
+  );
+  if (weekdayMatch && WEEKDAY_STEMS.includes(weekdayMatch[1]!)) {
+    return nextWeekdayDateBrt(weekdayMatch[1]!, now);
+  }
   return null;
 }
 

@@ -231,6 +231,58 @@ describe("tryAutoSelectOfferedSlot — negação/explicação não seleciona", (
     expect(patch).toEqual({});
   });
 
+  // Caso real (Clínica Bomfim, 10/07, leads Michele e Sandro): o agente
+  // ofertou horários numa data (ex.: segunda) e o lead pediu um DIA DA SEMANA
+  // diferente + turno (ex.: "terça-feira... à tarde"). relativeTargetDateBrt
+  // não reconhecia nomes de dia da semana — só "amanhã"/"hoje" — então
+  // targetDate ficava null e o filtro de turno escolhia silenciosamente um
+  // slot do dia ERRADO (o único disponível em offered_slots) como se fosse o
+  // pedido do lead. Os dois foram agendados no dia que recusaram, sem nunca
+  // terem confirmado isso.
+  it("lead pede um dia da semana diferente do ofertado + turno → não cai num slot do dia errado", () => {
+    function weekdayNameBrt(d: Date): string {
+      return new Intl.DateTimeFormat("pt-BR", {
+        weekday: "long",
+        timeZone: "America/Sao_Paulo",
+      })
+        .format(d)
+        .replace("-feira", "");
+    }
+    const now = Date.now();
+    const DAY = 86_400_000;
+    const tomorrow = new Date(now + DAY);
+    const offeredWeekday = weekdayNameBrt(tomorrow);
+    const isoDate = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(
+      tomorrow,
+    );
+    const offeredSlots = [
+      { iso: `${isoDate}T13:00:00-03:00`, date_label: `${offeredWeekday}, 00/00`, time_label: "13:00" },
+      { iso: `${isoDate}T14:30:00-03:00`, date_label: `${offeredWeekday}, 00/00`, time_label: "14:30" },
+    ];
+    let otherWeekdayName = "";
+    for (let i = 2; i <= 8; i++) {
+      const candidate = weekdayNameBrt(new Date(now + i * DAY));
+      if (candidate !== offeredWeekday) {
+        otherWeekdayName = candidate;
+        break;
+      }
+    }
+    expect(otherWeekdayName).not.toBe("");
+
+    const patch = tryAutoSelectOfferedSlot(
+      "SLOT_OFFER",
+      { offered_slots: offeredSlots },
+      [
+        {
+          role: "assistant",
+          content: `Tenho dois horários excelentes ${offeredWeekday}: às 13h00 ou às 14h30.`,
+        },
+        { role: "user", content: `Deixa para ${otherWeekdayName}-feira à tarde` },
+      ],
+    );
+    expect(patch).toEqual({});
+  });
+
   // Caso real (MF Beauty BSB, 10/07): listar_horarios foi chamado 3x no mesmo
   // turn e o offered_slots FINAL persistido não tinha mais o "10:00" que o
   // agente acabou de oferecer ao lead (resultado de uma chamada anterior, já
