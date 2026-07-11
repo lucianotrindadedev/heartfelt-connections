@@ -880,6 +880,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           "Desculpe, tive um problema ao registrar sua visita na agenda agora. Pode me confirmar o horário que você prefere? Vou tentar registrar de novo.";
         if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
           newStage = finalLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
+        } else if (route === "qualifier" && hasBookingIntegration) {
+          // O qualifier NÃO tem tool de agenda — qualquer "vou verificar/
+          // organizar/liberar horário" dele é sempre uma promessa vazia (só o
+          // scheduler chama listar_horarios de verdade). Sem este branch, o
+          // guard só trocava o TEXTO da resposta e o lead ficava PRESO no
+          // qualifier repetindo a mesma desculpa pra sempre — caso real (MF
+          // Beauty BSB, lead Vera Lúcia): a mesma "tive um problema ao
+          // registrar" se repetiu por 3 dias porque newStage nunca saía de
+          // RECEPTION/QUALIFICATION. Força o handoff pro scheduler agora.
+          newStage = "SLOT_OFFER";
         }
       }
     }
