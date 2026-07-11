@@ -962,7 +962,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       stage === "BOOKING" ||
       effectiveStage === "SLOT_OFFER" ||
       effectiveStage === "NAME_COLLECT" ||
-      effectiveStage === "BOOKING";
+      effectiveStage === "BOOKING" ||
+      // Qualifier travado em RECEPTION/QUALIFICATION "enrolando" (vou
+      // verificar/encaminhar a agenda, só um minutinho) NUNCA vai cumprir a
+      // promessa — ele não tem NENHUMA tool de agenda, só o scheduler tem.
+      // Sem isto, o gate original (só estágios do scheduler) deixava o
+      // qualifier repetir a mesma desculpa indefinidamente. Caso real (MF
+      // Beauty BSB, 11/07): lead confirmou "quarta-feira às 14h" duas vezes
+      // e o qualifier respondeu "Vou encaminhar você agora mesmo... Só um
+      // minutinho!" sem nunca sair de RECEPTION.
+      (route === "qualifier" && hasBookingIntegration);
     if (
       !falseBookingClaimBlocked &&
       hasBookingIntegration &&
