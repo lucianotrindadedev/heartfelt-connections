@@ -18,6 +18,7 @@ import {
   getMissingBookingFields,
   mentionsUnavailability,
   relativeDateIsExplanatory,
+  requestedDateFromText,
   tryAutoSelectOfferedSlot,
   isReadyForBooking,
   isSlotAcceptanceMessage,
@@ -313,6 +314,43 @@ describe("tryAutoSelectOfferedSlot — negação/explicação não seleciona", (
       ],
     );
     expect(patch).toEqual({});
+  });
+});
+
+// ── requestedDateFromText (âncora de data pro listar_horarios) ─────────────
+
+describe("requestedDateFromText", () => {
+  function weekdayStemBrt(iso: string): string {
+    return new Intl.DateTimeFormat("pt-BR", { weekday: "long", timeZone: "America/Sao_Paulo" })
+      .format(new Date(`${iso}T12:00:00-03:00`))
+      .replace("-feira", "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+  }
+
+  it("reconhece dia da semana explícito (quinta-feira → próxima quinta)", () => {
+    const d = requestedDateFromText("Sim. Teria para quinta-feira?");
+    expect(d).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(weekdayStemBrt(d!)).toBe("quinta");
+  });
+
+  it("reconhece dia da semana sem 'feira' (terça)", () => {
+    const d = requestedDateFromText("pode ser terça de manhã");
+    expect(weekdayStemBrt(d!)).toBe("terca");
+  });
+
+  it("mensagem só com horário ('11h') não resolve data", () => {
+    expect(requestedDateFromText("11h")).toBeNull();
+    expect(requestedDateFromText("Manhã, por volta das 11h")).toBeNull();
+  });
+
+  it("negação de dia não vira pedido ('quinta não dá pra mim')", () => {
+    expect(requestedDateFromText("quinta não dá pra mim")).toBeNull();
+  });
+
+  it("mensagem sem dia nenhum → null", () => {
+    expect(requestedDateFromText("Sônia Mara Flauzino da Silva")).toBeNull();
+    expect(requestedDateFromText("")).toBeNull();
   });
 });
 

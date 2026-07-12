@@ -1240,6 +1240,21 @@ export function relativeDateIsExplanatory(text: string): boolean {
   return false;
 }
 
+/**
+ * Data (YYYY-MM-DD BRT) que o lead PEDIU numa mensagem, se houver: dia da
+ * semana ("quinta", "quinta-feira"), relativo ("amanhã", "hoje") ou nada.
+ * Ignora negação ("quinta não dá") e afirmação-fato ("amanhã é feriado").
+ * Usada pelo scheduler para ancorar a busca de horários no dia certo quando o
+ * LLM esquece de passar data_alvo — sem isso a busca começa em "hoje" e oferta
+ * um dia DIFERENTE do pedido.
+ */
+export function requestedDateFromText(text: string): string | null {
+  const t = (text ?? "").trim().toLowerCase();
+  if (!t) return null;
+  if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
+  return relativeTargetDateBrt(t);
+}
+
 function pickSlotByPreference(
   slots: OfferedSlot[],
   text: string,

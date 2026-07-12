@@ -90,6 +90,7 @@ import {
   resolveBookingLeadName,
   clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
+  requestedDateFromText,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
 
@@ -603,6 +604,28 @@ function parseDataAlvoBrt(dataAlvo?: string): Date | null {
   return isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Última data explicitamente pedida pelo lead nas mensagens recentes — dia da
+ * semana ("quinta") ou relativa ("amanhã"). Varre da mais recente pra trás e
+ * devolve a PRIMEIRA encontrada (auto-corrige se o lead mudou de dia depois).
+ * Usado como fallback do `data_alvo` quando o LLM esquece de passá-lo ao chamar
+ * listar_horarios — sem isso a busca começa em "hoje" e oferta um dia DIFERENTE
+ * do pedido. Caso real (MF Beauty BSB, Sônia (61) 98679-1009): lead pediu
+ * quinta 16/07, o LLM chamou listar_horarios sem data_alvo, veio segunda 13/07,
+ * e o "11h" da lead casou o slot de segunda — agendou no dia ERRADO (e num
+ * profissional que nem atende quinta).
+ */
+function requestedDateFromHistory(
+  history: { role: "user" | "assistant"; content: string }[],
+): string | null {
+  const userMsgs = history.filter((m) => m.role === "user");
+  for (let i = userMsgs.length - 1; i >= 0; i--) {
+    const d = requestedDateFromText(userMsgs[i]!.content);
+    if (d) return d;
+  }
+  return null;
+}
+
 // Janela padrão do slot offer: prioriza SEMPRE os horários mais próximos —
 // hoje + os próximos 3 dias. Se não houver vaga nesse período, a busca amplia
 // automaticamente até SLOT_WIDE_WINDOW_DAYS para achar as próximas datas livres.
@@ -668,8 +691,23 @@ async function execListarHorarios(
 
   const now = new Date();
   // Ancoragem na data pedida pelo lead (data_alvo). Se for uma data futura,
-  // a busca começa nela; senão começa agora.
-  const anchor = parseDataAlvoBrt(dataAlvo);
+  // a busca começa nela; senão começa agora. Quando o LLM não passa data_alvo
+  // mas o lead pediu um dia específico numa mensagem recente ("quinta"), usa
+  // esse dia como âncora — senão a busca começa em "hoje" e oferta um dia
+  // DIFERENTE do pedido (ver requestedDateFromHistory).
+  // Só ancora pelo histórico em chamada "simples" (LLM não passou data_alvo NEM
+  // dias_a_frente). Com dias_a_frente explícito o LLM está fazendo uma busca
+  // ampla de propósito (ex.: achar alternativas) — respeita isso.
+  const resolvedDataAlvo =
+    dataAlvo ??
+    (diasAFrente == null ? requestedDateFromHistory(ctx.history) : null) ??
+    undefined;
+  if (!dataAlvo && resolvedDataAlvo) {
+    console.log(
+      `[scheduler] listar_horarios conv=${ctx.conversationId}: data_alvo ausente do LLM — ancorando no dia pedido pelo lead (${resolvedDataAlvo})`,
+    );
+  }
+  const anchor = parseDataAlvoBrt(resolvedDataAlvo);
   const today = anchor && anchor.getTime() > now.getTime() ? anchor : now;
   const end = new Date(
     today.getTime() + (diasAFrente ?? SLOT_NEAR_WINDOW_DAYS) * 24 * 60 * 60 * 1000,
