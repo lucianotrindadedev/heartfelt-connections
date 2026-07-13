@@ -1058,10 +1058,26 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           prev_preview: lastAssistantMsg.slice(0, 120),
         })}`,
       );
-      if (hasBookingIntegration && (stage === "QUALIFICATION" || stage === "RECEPTION")) {
+      if (finalLeadData.appointment_id) {
+        // JÁ AGENDADO: nunca re-oferecer agendamento. O fallback antigo caía no
+        // ramo genérico e dizia "quer seguir com o agendamento agora? Posso te
+        // mostrar os horários" — sem sentido, a visita já está marcada. Caso
+        // real (Maple Bear Osasco, 11 96500-7002): visita confirmada p/ 14/07,
+        // a lead mandou "Ok" e o agente perguntou se ela queria agendar de novo.
         reply =
-          "Vou te mostrar os horários disponíveis pra você escolher o melhor, ok? 😊";
-        newStage = "SLOT_OFFER";
+          "Perfeito! Seu agendamento já está confirmado. Qualquer coisa que precisar, é só me chamar. 😊";
+        newStage = "CONFIRMED";
+      } else if (hasBookingIntegration && (stage === "QUALIFICATION" || stage === "RECEPTION")) {
+        // NÃO presume que o lead quer agendar — ele pode querer valores/dúvida.
+        // O fallback antigo forçava "vou te mostrar os horários" + SLOT_OFFER,
+        // empurrando agendamento em cima de quem só queria informação e ainda
+        // criando loop quando o contexto vinha poluído (msgs externas/eco
+        // duplicadas). Caso real (Maple Bear Osasco, 11 99241-0075): a lead
+        // queria PREÇO de matrícula/mensalidade e o agente repetia "vou te
+        // mostrar os horários". Pergunta neutra reabre o que ela precisa.
+        reply =
+          "Desculpa, acho que me confundi aqui! 😅 Como posso te ajudar: você quer agendar uma visita ou tirar alguma dúvida (valores, turmas, etc.)?";
+        newStage = "QUALIFICATION";
       } else if (hasBookingIntegration) {
         reply =
           "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
