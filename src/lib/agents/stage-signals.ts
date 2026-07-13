@@ -271,8 +271,17 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
 // outra semana ("só semana que vem"), o agente responde "vou verificar a
 // agenda" SEM chamar listar_horarios nesse turn — e a conversa morre esperando
 // os novos horários que nunca chegam (nada re-aciona o agente depois).
+//
+// "vou deixar reservado / logo te envio a confirmação" (caso real 13/07, MF
+// Beauty BSB, Maria de Fátima): sem agendamento criado (appointment_id nulo), o
+// agente disse "Já vou deixar tudo reservado por aqui e logo te envio a
+// confirmação" — uma promessa de reserva + confirmação FUTURA que o sistema
+// nunca cumpre sozinho (só reage a mensagem nova do lead). A lead achou que
+// estava agendada e agradeceu. Não bate nas palavras de confirmação PASSADA
+// ("agendei/reservei") do false_booking_claim, nem no "já te envio" (o gatilho
+// aqui é "logo", não "já"), então escapava dos dois guards.
 const STALL_REPLY_REGEX =
-  /(s[óo]\s+um\s+(instante|minut(?:o|inho)|moment(?:o|inho)|segund(?:o|inho))|um\s+(instante|moment(?:o|inho)|minutinho)|aguard[ae]\b|aguardar\b|j[áa]\s+(?:te\s+)?(retorno|volto|confirmo|aviso|respondo|envio|finalizo|verifico|checo|consulto)|vou\s+(finalizar|criar|fazer|registrar|organizar|gerar|preparar|montar|cadastrar|verificar|checar|consultar)\b|estou\s+(finalizando|criando|organizando|registrando|preparando|gerando|cadastrando|verificando|checando|consultando)|t[ôo]\s+(finalizando|criando|organizando|registrando|cadastrando|verificando|checando|consultando)|deixa?\s+eu\s+(finalizar|criar|organizar|registrar|cadastrar|verificar|checar|consultar)|pe[çc]o\s+que\s+aguarde|me\s+d[êe]\s+um\s+(instante|momento|minutinho)|rapidinho\s+(aqui|aí|pra))/i;
+  /(s[óo]\s+um\s+(instante|minut(?:o|inho)|moment(?:o|inho)|segund(?:o|inho))|um\s+(instante|moment(?:o|inho)|minutinho)|aguard[ae]\b|aguardar\b|(?:j[áa]|logo|em\s+seguida)\s+(?:te\s+|lhe\s+)?(retorno|volto|confirmo|aviso|respondo|envio|mando|passo|finalizo|verifico|checo|consulto)|vou\s+(finalizar|criar|fazer|registrar|organizar|gerar|preparar|montar|cadastrar|verificar|checar|consultar)\b|vou\s+deixar\s+(?:tudo\s+|isso\s+|j[áa]\s+)?(reservad|agendad|marcad|pronto|prontinho|certinh|garantid|organizad)|te\s+(envio|mando|passo)\s+(?:a\s+|o\s+)?(confirma[çc]|agendament)|estou\s+(finalizando|criando|organizando|registrando|preparando|gerando|cadastrando|verificando|checando|consultando)|t[ôo]\s+(finalizando|criando|organizando|registrando|cadastrando|verificando|checando|consultando)|deixa?\s+eu\s+(finalizar|criar|organizar|registrar|cadastrar|verificar|checar|consultar)|pe[çc]o\s+que\s+aguarde|me\s+d[êe]\s+um\s+(instante|momento|minutinho)|rapidinho\s+(aqui|aí|pra))/i;
 
 /**
  * True quando o `reply` do agente é só "enrolação" (promessa de agir / pedido

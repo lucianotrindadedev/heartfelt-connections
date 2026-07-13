@@ -404,6 +404,12 @@ describe("looksLikeStallReply", () => {
     "Já verifico os horários da semana que vem pra você.",
     "Estou checando a agenda, um momento.",
     "Vou consultar a agenda e já te aviso.",
+    // Caso real 13/07 (MF Beauty BSB, Maria de Fátima): promessa de reserva +
+    // confirmação futura sem agendar nada — a lead achou que estava agendada.
+    "Já vou deixar tudo reservado por aqui e logo te envio a confirmação!",
+    "Vou deixar tudo reservado para você.",
+    "Pode deixar que logo te envio a confirmação do seu horário.",
+    "Perfeito! Te mando a confirmação assim que estiver tudo certo.",
   ];
   for (const r of stalls) {
     it(`detecta stall: ${JSON.stringify(r.slice(0, 40))}`, () => {
