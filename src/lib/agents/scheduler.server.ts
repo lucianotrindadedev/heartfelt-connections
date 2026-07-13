@@ -91,6 +91,7 @@ import {
   clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
   requestedDateFromText,
+  requestedPeriodoFromText,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
 
@@ -626,6 +627,25 @@ function requestedDateFromHistory(
   return null;
 }
 
+/**
+ * Último turno (manhã/tarde/noite) pedido pelo lead nas mensagens recentes.
+ * Fallback do `periodo` quando o LLM esquece de passá-lo ao chamar
+ * listar_horarios — sem isso a busca não filtra por turno e o corte das 6 vagas
+ * mais próximas pode devolver só um turno (ex.: só tarde) mesmo o lead pedindo
+ * manhã. Caso real (Costa Lima Madureira, 21 99150-4698): lead pediu "de manhã",
+ * o LLM chamou listar_horarios sem periodo → só veio tarde.
+ */
+function requestedPeriodoFromHistory(
+  history: { role: "user" | "assistant"; content: string }[],
+): "manha" | "tarde" | "noite" | null {
+  const userMsgs = history.filter((m) => m.role === "user");
+  for (let i = userMsgs.length - 1; i >= 0; i--) {
+    const p = requestedPeriodoFromText(userMsgs[i]!.content);
+    if (p) return p;
+  }
+  return null;
+}
+
 // Janela padrão do slot offer: prioriza SEMPRE os horários mais próximos —
 // hoje + os próximos 3 dias. Se não houver vaga nesse período, a busca amplia
 // automaticamente até SLOT_WIDE_WINDOW_DAYS para achar as próximas datas livres.
@@ -713,6 +733,17 @@ async function execListarHorarios(
     today.getTime() + (diasAFrente ?? SLOT_NEAR_WINDOW_DAYS) * 24 * 60 * 60 * 1000,
   );
 
+  // Fallback do TURNO: quando o LLM não passa `periodo` mas o lead pediu um
+  // turno numa mensagem recente ("de manhã"), filtra por ele — senão o corte
+  // das 6 vagas mais próximas pode trazer só um turno e o agente diz "não tem
+  // de manhã" com a manhã livre (ver requestedPeriodoFromHistory).
+  const resolvedPeriodo = periodo ?? requestedPeriodoFromHistory(ctx.history) ?? undefined;
+  if (!periodo && resolvedPeriodo) {
+    console.log(
+      `[scheduler] listar_horarios conv=${ctx.conversationId}: periodo ausente do LLM — usando o turno pedido pelo lead (${resolvedPeriodo})`,
+    );
+  }
+
   // Google Calendar: usa lógica de janelas com expediente da clínica
   if (ctx.integrations.googleCalendar) {
     // Multi-agenda: resolve qual calendário consultar a partir do label.
@@ -748,7 +779,7 @@ async function execListarHorarios(
           // Turno pedido (manhã/tarde/noite): filtra ANTES do corte de 6 para a
           // tarde não cair fora quando a manhã tem vagas. Festas ("uma por dia")
           // não têm turno — não aplica.
-          periodoHoras: resolved.umaPorDia ? undefined : periodoParaHoras(periodo) ?? undefined,
+          periodoHoras: resolved.umaPorDia ? undefined : periodoParaHoras(resolvedPeriodo) ?? undefined,
           umaPorDia: resolved.umaPorDia,
           umaPorDiaDias: resolved.diasUmaPorDia,
           bufferMinutos: resolved.bufferMinutos,
@@ -864,7 +895,7 @@ async function execListarHorarios(
       );
       ceSlots = await listClinicExpertsSlots(ctx.accountId, fmtCe(today), fmtCe(wideEnd));
     }
-    const ceBounds = periodoParaHoras(periodo);
+    const ceBounds = periodoParaHoras(resolvedPeriodo);
     let cePeriodoAviso: string | undefined;
     if (ceBounds) {
       const noPeriodo = ceSlots.filter((s) => {
@@ -874,7 +905,7 @@ async function execListarHorarios(
       if (noPeriodo.length > 0) {
         ceSlots = noPeriodo;
       } else if (ceSlots.length > 0) {
-        cePeriodoAviso = `Sem vaga no turno pedido (${periodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
+        cePeriodoAviso = `Sem vaga no turno pedido (${resolvedPeriodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
       }
     }
     const ceLimited = ceSlots.slice(0, 6).map(formatCeSlot);
@@ -926,7 +957,7 @@ async function execListarHorarios(
   // slice(0,6) pegava só os horários mais cedo (manhã) e, quando o lead pedia
   // "tarde", a resposta era "não temos à tarde" mesmo com a tarde livre — os
   // slots da tarde caíam fora das 6 primeiras posições cronológicas.
-  const bounds = periodoParaHoras(periodo);
+  const bounds = periodoParaHoras(resolvedPeriodo);
   let periodoAviso: string | undefined;
   if (bounds) {
     const noPeriodo = slots.filter((s) => {
@@ -938,7 +969,7 @@ async function execListarHorarios(
     } else if (slots.length > 0) {
       // Turno pedido sem vaga, mas há horários em outro turno: não esconde os
       // reais — avisa o LLM para ser honesto ("à tarde não tenho, mas tenho...").
-      periodoAviso = `Sem vaga no turno pedido (${periodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
+      periodoAviso = `Sem vaga no turno pedido (${resolvedPeriodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
     }
   }
   // Limita a 6 (as mais próximas) para não confundir o lead.

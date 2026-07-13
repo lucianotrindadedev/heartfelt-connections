@@ -19,6 +19,7 @@ import {
   mentionsUnavailability,
   relativeDateIsExplanatory,
   requestedDateFromText,
+  requestedPeriodoFromText,
   tryAutoSelectOfferedSlot,
   isReadyForBooking,
   isSlotAcceptanceMessage,
@@ -364,6 +365,30 @@ describe("requestedDateFromText", () => {
   it("mensagem sem dia nenhum → null", () => {
     expect(requestedDateFromText("Sônia Mara Flauzino da Silva")).toBeNull();
     expect(requestedDateFromText("")).toBeNull();
+  });
+});
+
+// ── requestedPeriodoFromText (âncora de turno pro listar_horarios) ─────────
+
+describe("requestedPeriodoFromText", () => {
+  it("detecta manhã (caso Costa Lima Madureira 21 99150-4698)", () => {
+    expect(requestedPeriodoFromText("de manha mas eu so posso as terças e sabados")).toBe("manha");
+    expect(requestedPeriodoFromText("amanha, tem pela manha?")).toBe("manha");
+    expect(requestedPeriodoFromText("prefiro de manhã")).toBe("manha");
+  });
+
+  it("detecta tarde e noite", () => {
+    expect(requestedPeriodoFromText("pode ser à tarde")).toBe("tarde");
+    expect(requestedPeriodoFromText("só consigo de noite")).toBe("noite");
+  });
+
+  it("'amanhã' sozinho NÃO vira manhã (\\b evita casar 'amanhã')", () => {
+    expect(requestedPeriodoFromText("pode ser amanhã")).toBeNull();
+  });
+
+  it("sem turno → null", () => {
+    expect(requestedPeriodoFromText("quinta-feira")).toBeNull();
+    expect(requestedPeriodoFromText("")).toBeNull();
   });
 });
 

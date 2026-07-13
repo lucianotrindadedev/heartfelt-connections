@@ -1264,6 +1264,23 @@ export function requestedDateFromText(text: string): string | null {
   return relativeTargetDateBrt(t);
 }
 
+/**
+ * Turno ("manha"/"tarde"/"noite") que o lead PEDIU numa mensagem, ou null.
+ * Mesma detecção usada por pickSlotByPreference. O \b inicial em manh[aã] evita
+ * casar "amanhã" (o "m" ali é precedido de "a"; em "manhã"/"de manhã" o "m"
+ * abre palavra). Usada pelo scheduler para filtrar a busca pelo turno certo
+ * quando o LLM esquece de passar `periodo` — sem isso a busca traz só os
+ * horários mais cedo e diz "não tem de manhã/à tarde" mesmo com o turno livre.
+ */
+export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noite" | null {
+  const t = (text ?? "").toLowerCase();
+  if (!t) return null;
+  if (/\bmanh[aã]/.test(t)) return "manha";
+  if (/\btarde/.test(t)) return "tarde";
+  if (/\bnoite/.test(t)) return "noite";
+  return null;
+}
+
 function pickSlotByPreference(
   slots: OfferedSlot[],
   text: string,
