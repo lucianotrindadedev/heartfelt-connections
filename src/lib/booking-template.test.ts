@@ -37,6 +37,7 @@ import {
 } from "./booking-template";
 import type { AgentContext } from "./agents/context";
 import { normalizeBrazilPhone } from "./conversation-channel.server";
+import { stripNullishFields } from "./agents/parse-llm-json.server";
 import type { LeadData } from "./agents/stage";
 
 const SCHOOL_FIELDS: BookingFieldDef[] = [
@@ -148,8 +149,20 @@ describe("looksLikeIntentMessage", () => {
 // ── clearRejectedBookingName (destrava NAME_COLLECT em loop) ──────────────
 
 describe("clearRejectedBookingName", () => {
-  it("limpa o campo name quando preenchido (caso 'Tudo bem' preso)", () => {
-    expect(clearRejectedBookingName({ name: "Tudo bem" })).toEqual({ name: undefined });
+  it("limpa o campo name com STRING VAZIA, não undefined (caso '9 horas'/'Tudo bem' preso)", () => {
+    // "" (não undefined) porque o patch passa por stripNullishFields no
+    // orquestrador — undefined seria removido e o nome rejeitado NUNCA limparia.
+    expect(clearRejectedBookingName({ name: "Tudo bem" })).toEqual({ name: "" });
+    expect(clearRejectedBookingName({ name: "9 horas" })).toEqual({ name: "" });
+  });
+
+  it("o clear de name sobrevive ao stripNullishFields (regressão 21 97859-4196)", () => {
+    const patch = clearRejectedBookingName({ name: "9 horas" });
+    const afterStrip = stripNullishFields(patch as Record<string, unknown>);
+    // A chave 'name' PRECISA continuar presente (com "") após o strip — senão o
+    // merge no orquestrador não limpa o nome preso e o loop volta.
+    expect("name" in afterStrip).toBe(true);
+    expect(afterStrip.name).toBe("");
   });
 
   it("limpa guardians quando o nome veio de guardians", () => {
@@ -167,7 +180,7 @@ describe("clearRejectedBookingName", () => {
       name: "Tudo bem",
       custom_fields: { guardians: "X", child_name: "Y" },
     });
-    expect(out).toEqual({ name: undefined });
+    expect(out).toEqual({ name: "" });
   });
 
   it("no-op quando nao ha nome preenchido", () => {

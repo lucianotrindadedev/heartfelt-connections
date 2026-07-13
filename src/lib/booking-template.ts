@@ -1055,9 +1055,18 @@ export function resolveBookingLeadName(leadData: LeadData): string | undefined {
  * Caso real (21 97486-6018): name ficou preso em "Tudo bem" — que o regex
  * looksLikeIntentMessage não pega, mas o LLM rejeita — e a lead repetiu o nome
  * dezenas de vezes sem efeito. Segue a mesma prioridade de resolveBookingLeadName.
+ *
+ * IMPORTANTE: limpa com STRING VAZIA, nunca `undefined`. O patch de retorno passa
+ * por stripNullishFields no orquestrador (que remove chaves undefined/null antes
+ * do merge) — então `{ name: undefined }` era SILENCIOSAMENTE descartado e o nome
+ * rejeitado NUNCA era limpo, mantendo o loop de "confirme o nome completo" pra
+ * sempre. Caso real (21 97859-4196): name preso em "9 horas" (a lead respondeu o
+ * horário quando perguntaram o nome); ela mandou "Marinalva Francisco Fortunato"
+ * ~15 vezes sem efeito. "" sobrevive ao strip e conta como campo vazio
+ * (getMissingBookingFields/resolveBookingLeadName tratam "" como ausente).
  */
 export function clearRejectedBookingName(leadData: LeadData): Partial<LeadData> {
-  if (leadData.name?.trim()) return { name: undefined };
+  if (leadData.name?.trim()) return { name: "" };
   const cf = leadData.custom_fields ?? {};
   if (cf.guardians?.trim()) return { custom_fields: { ...cf, guardians: "" } };
   if (cf.child_name?.trim()) return { custom_fields: { ...cf, child_name: "" } };
