@@ -90,6 +90,9 @@ import {
   resolveBookingLeadName,
   clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
+  slotsOfferedInLastTurn,
+  patchFromSlot,
+  mentionsUnavailability,
   requestedDateFromText,
   requestedPeriodoFromText,
   requestedHoraFromText,
@@ -1102,6 +1105,133 @@ async function validatePatientNameLLM(
   }
 }
 
+// ── Resolução da escolha de horário ────────────────────────────────────────
+
+/**
+ * A LLM escolhe por ÍNDICE, nunca por horário/ISO. O espaço de saída é
+ * {0..N-1} ∪ {null} e quem mapeia índice → slot é o código — por isso ela não
+ * consegue inventar um horário que não foi oferecido nem forjar um agendamento
+ * (é a mesma garantia que LLM_FORBIDDEN_LEAD_FIELDS protege; ver
+ * lead-patch-guard.ts e o caso Clínica Bomfim 09/07).
+ */
+const SLOT_CHOICE_SCHEMA = z.object({
+  escolha: z.number().int().nullable(),
+  motivo: z.string().nullish(),
+});
+
+/**
+ * Resolve SEMANTICAMENTE qual dos horários oferecidos o lead escolheu — em vez
+ * de depender do formato em que ele escreveu o número. Cobre o que nenhuma
+ * regex cobre: "14: 30", "14.30", "duas e meia", "o primeiro", "o mais cedo",
+ * "aquele das 14".
+ *
+ * Devolve o ÍNDICE em `candidates` ou null (recusa, pergunta, ambíguo).
+ *
+ * Fail-CLOSED: se o validador (infra LLM) falhar, devolve null e NADA é
+ * selecionado — o agente repergunta o horário (comportamento de hoje). Ao
+ * contrário do validador de nome (fail-open), aqui um erro NUNCA pode virar um
+ * agendamento real.
+ */
+async function resolveSlotChoiceLLM(
+  ctx: AgentContext,
+  candidates: NonNullable<LeadData["offered_slots"]>,
+  lastUser: string,
+): Promise<number | null> {
+  const lista = candidates
+    .map((s, i) => `${i}: ${s.date_label} às ${s.time_label}`)
+    .join("\n");
+
+  try {
+    const { result } = await callLlmStructuredWithFallback<z.infer<typeof SLOT_CHOICE_SCHEMA>>(
+      ctx.orKey,
+      {
+        model: ctx.toolModel,
+        systemCached:
+          "Você identifica QUAL horário, de uma lista numerada, o paciente escolheu numa mensagem de WhatsApp. Responda SEMPRE em JSON.",
+        systemDynamic: "",
+        messages: [
+          {
+            role: "user",
+            content:
+              `Horários que o atendente ofereceu, nesta ordem:\n${lista}\n\n` +
+              `Mensagem do paciente: "${lastUser}"\n\n` +
+              `Qual ele escolheu? Responda { "escolha": <número da lista> | null, "motivo": "curto" }.\n\n` +
+              `Regras:\n` +
+              `- "escolha" DEVE ser um dos números da lista acima. NUNCA invente horário.\n` +
+              `- Aceite qualquer forma de escrever a hora: "14:30", "14: 30", "14.30", "14h30", "14h", "duas e meia", "2 e meia da tarde".\n` +
+              `- Aceite referência por ordem: "o primeiro"/"a 1ª" = ${0}, "o segundo" = ${1}, "o mais cedo" = o mais cedo da lista, "o mais tarde" = o mais tarde.\n` +
+              `- escolha=null se NÃO for uma escolha: recusa ("nenhum dos dois"), restrição/indisponibilidade ("só saio às 18h", "não posso de manhã"), pergunta ("tem na quinta?"), pedido de outro horário, ou se ficar ambíguo.\n` +
+              `- Na dúvida, escolha=null. É melhor o atendente reperguntar do que marcar o horário errado.`,
+          },
+        ],
+        maxTokens: 120,
+        temperature: 0,
+        toolChoice: "none",
+      },
+      (raw) => SLOT_CHOICE_SCHEMA.parse(raw),
+      ctx.toolFallbackModels,
+    );
+
+    const idx = result.escolha;
+    // Validação final: o índice PRECISA existir na lista. Qualquer coisa fora
+    // da faixa (alucinação) vira "não escolheu".
+    if (idx == null || !Number.isInteger(idx) || idx < 0 || idx >= candidates.length) {
+      return null;
+    }
+    console.log(
+      `[scheduler] slot resolvido por LLM conv=${ctx.conversationId} idx=${idx} iso=${candidates[idx]!.iso} motivo=${result.motivo ?? ""}`,
+    );
+    return idx;
+  } catch (e) {
+    console.warn(
+      `[scheduler] resolvedor de horário indisponível (fail-closed) conv=${ctx.conversationId}: ${e instanceof Error ? e.message : e}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Escolha de horário do lead: heurística determinística primeiro (instantânea e
+ * de graça — resolve "14:30", "9h", "o primeiro"), e só quando ela não resolve
+ * é que a LLM entra para interpretar a mensagem. Assim o caminho comum não paga
+ * latência nem token, e as formas que a regex nunca vai cobrir param de travar
+ * o agendamento (caso real Costa Lima Recreio, 21 98985-6865: "14: 30" e
+ * "14.30" viravam loop de "tive um problema ao registrar sua visita").
+ */
+async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
+  // Já escolhido neste turn (ou num anterior): nada a resolver. Sem isto, o
+  // tryDeterministicBooking — que roda DEPOIS do caminho principal — chamaria a
+  // LLM uma segunda vez no mesmo turn.
+  if ((ctx.leadData.selected_slot_iso ?? "").trim()) return {};
+
+  const det = tryAutoSelectOfferedSlot(ctx.stage, ctx.leadData, ctx.history);
+  if (Object.keys(det).length > 0) return det;
+
+  if (ctx.dryRun) return {};
+  if (ctx.stage !== "SLOT_OFFER" && ctx.stage !== "NAME_COLLECT" && ctx.stage !== "BOOKING") {
+    return {};
+  }
+  if ((ctx.leadData.offered_slots?.length ?? 0) === 0) return {};
+
+  const lastUser = [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
+  if (!lastUser) return {};
+
+  // Recusa/indisponibilidade NUNCA vai para a LLM — os guards determinísticos
+  // que impedem "só largo às 18:00" de virar agendamento continuam mandando.
+  if (looksLikeDecline(lastUser) || mentionsUnavailability(lastUser.toLowerCase())) return {};
+
+  // Candidatos: o que o agente falou no último turno, na ordem em que falou.
+  // Sem isso, "o primeiro" apontaria para offered_slots[0] — um horário que o
+  // agente pode nunca ter mencionado.
+  const spoken = slotsOfferedInLastTurn(ctx.leadData, ctx.history);
+  const candidates = spoken.length > 0 ? spoken : (ctx.leadData.offered_slots ?? []);
+  if (candidates.length === 0) return {};
+
+  const idx = await resolveSlotChoiceLLM(ctx, candidates, lastUser);
+  if (idx == null) return {};
+  return patchFromSlot(candidates[idx]!);
+}
+
 async function execCriarAgendamento(
   ctx: AgentContext,
   agendaLabel?: string,
@@ -1803,7 +1933,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
     return { patch: {}, toolsCalled: [] };
   }
 
-  const slotPatch = tryAutoSelectOfferedSlot(ctx.stage, ctx.leadData, ctx.history);
+  const slotPatch = await autoSelectSlot(ctx);
   if (Object.keys(slotPatch).length > 0) {
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotPatch);
   }
@@ -1935,7 +2065,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     baseDynamic += `\n\n# RESULTADO listar_horarios (automático)\n${slotListing.toolResult}\nUse os horários acima para oferecer ao lead.`;
   }
 
-  const slotAuto = tryAutoSelectOfferedSlot(ctx.stage, ctx.leadData, ctx.history);
+  const slotAuto = await autoSelectSlot(ctx);
   if (Object.keys(slotAuto).length > 0) {
     accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, slotAuto);
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotAuto);

@@ -1177,8 +1177,8 @@ function normalizeTimeLabel(raw: string): string {
  * de dígito nas bordas — os minutos precisam ser [0-5]\d e não podem ter um 3º
  * dígito colado.
  */
-function timesInText(text: string): Set<string> {
-  const out = new Set<string>();
+function orderedTimesInText(text: string): string[] {
+  const out: string[] = [];
   const re = new RegExp(
     String.raw`(?<![\d.,])(\d{1,2})(?:\s*[:h.,]\s*([0-5]\d)(?!\d)|\s*h(?:s|rs?|oras?)?\b)`,
     "gi",
@@ -1186,9 +1186,53 @@ function timesInText(text: string): Set<string> {
   for (const m of text.toLowerCase().matchAll(re)) {
     const h = Number(m[1]);
     if (!Number.isInteger(h) || h < 0 || h > 23) continue;
-    out.add(`${String(h).padStart(2, "0")}:${m[2] ?? "00"}`);
+    const t = `${String(h).padStart(2, "0")}:${m[2] ?? "00"}`;
+    if (!out.includes(t)) out.push(t);
   }
   return out;
+}
+
+function timesInText(text: string): Set<string> {
+  return new Set(orderedTimesInText(text));
+}
+
+/**
+ * Os slots que o agente REALMENTE ofereceu na última fala dele, na ORDEM em que
+ * os disse. É a lista de candidatos correta para resolver a escolha do lead —
+ * `offered_slots` traz até 6 vagas vindas da agenda, mas o agente só menciona 2
+ * por mensagem ("ofereça no máx 2 horários").
+ *
+ * Sem isso, "o primeiro" pegava offered_slots[0] — um horário que o agente pode
+ * NUNCA ter falado. Caso real (Costa Lima Recreio): offered_slots começava em
+ * 13:00, o agente ofereceu "14:30 ou 15:15", e "o primeiro" agendaria 13:00.
+ */
+export function slotsOfferedInLastTurn(
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+): OfferedSlot[] {
+  const slots = leadData.offered_slots ?? [];
+  if (slots.length === 0) return [];
+
+  const lastUserIdx = lastUserIndex(history);
+  if (lastUserIdx < 0) return [];
+
+  const turnText = lastAssistantTurnText(history, lastUserIdx);
+  if (!turnText.trim()) return [];
+
+  const ordered: OfferedSlot[] = [];
+  const seen = new Set<string>();
+  for (const time of orderedTimesInText(turnText)) {
+    const sameTime = slots.filter((s) => normalizeTimeLabel(s.time_label) === time);
+    // Mesmo horário em dias diferentes: fica com os que o agente citou pelo dia.
+    const byDay = sameTime.filter((s) => slotMentionedInText(s, turnText));
+    for (const s of byDay.length > 0 ? byDay : sameTime) {
+      if (!seen.has(s.iso)) {
+        seen.add(s.iso);
+        ordered.push(s);
+      }
+    }
+  }
+  return ordered;
 }
 
 function hourInBrt(iso: string): number {
@@ -1586,6 +1630,14 @@ function recentAssistantContext(
  * decidir "quais horários acabaram de ser oferecidos": ela arrasta ofertas
  * ANTIGAS, inclusive as que o lead já recusou, para dentro do contexto.
  */
+/** Índice da última mensagem do lead no histórico (-1 se não houver). */
+function lastUserIndex(history: { role: "user" | "assistant"; content: string }[]): number {
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") return i;
+  }
+  return -1;
+}
+
 function lastAssistantTurnText(
   history: { role: "user" | "assistant"; content: string }[],
   beforeIdx: number,
@@ -1598,7 +1650,7 @@ function lastAssistantTurnText(
   return turn.join("\n");
 }
 
-function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
+export function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
   return {
     selected_slot_iso: slot.iso,
     ...(slot.dentist_person_id != null ? { dentist_person_id: slot.dentist_person_id } : {}),
@@ -1676,13 +1728,7 @@ export function tryAutoSelectOfferedSlot(
   const slots = leadData.offered_slots ?? [];
   if (slots.length === 0) return {};
 
-  let lastUserIdx = -1;
-  for (let i = history.length - 1; i >= 0; i--) {
-    if (history[i]!.role === "user") {
-      lastUserIdx = i;
-      break;
-    }
-  }
+  const lastUserIdx = lastUserIndex(history);
   if (lastUserIdx < 0) return {};
 
   const lastUser = history[lastUserIdx]!.content.trim();
@@ -1726,11 +1772,16 @@ export function tryAutoSelectOfferedSlot(
     return {};
   }
 
-  if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(lastUser.toLowerCase()) && slots[0]) {
-    return patchFromSlot(slots[0]);
+  // Ordinal ("o primeiro", "a 2ª opção") se refere à ordem em que o AGENTE
+  // falou os horários, não à ordem de offered_slots (que traz até 6 vagas da
+  // agenda, das quais o agente só citou 2). Ver slotsOfferedInLastTurn.
+  const spoken = slotsOfferedInLastTurn(leadData, history);
+  const ordinalPool = spoken.length > 0 ? spoken : slots;
+  if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(lastUser.toLowerCase()) && ordinalPool[0]) {
+    return patchFromSlot(ordinalPool[0]);
   }
-  if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(lastUser.toLowerCase()) && slots[1]) {
-    return patchFromSlot(slots[1]);
+  if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(lastUser.toLowerCase()) && ordinalPool[1]) {
+    return patchFromSlot(ordinalPool[1]);
   }
 
   const mentionedInAssistant = slots.filter((s) => slotMentionedInText(s, assistantText));

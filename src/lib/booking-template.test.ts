@@ -22,6 +22,7 @@ import {
   requestedPeriodoFromText,
   requestedHoraFromText,
   tryAutoSelectOfferedSlot,
+  slotsOfferedInLastTurn,
   isReadyForBooking,
   isSlotAcceptanceMessage,
   isValidCpf,
@@ -820,6 +821,72 @@ describe("tryAutoSelectOfferedSlot — separador de minutos solto (Costa Lima Re
       { role: "user", content: "tarde" },
     ]);
     expect(patch).toEqual({});
+  });
+});
+
+// Ordinal ("o primeiro") se refere à ordem em que o AGENTE falou os horários,
+// não à ordem de offered_slots. offered_slots traz até 6 vagas vindas da
+// agenda, mas o agente só menciona 2 por mensagem — o código pegava
+// offered_slots[0], um horário que o agente podia NUNCA ter falado, e agendava
+// silenciosamente o horário errado.
+describe("tryAutoSelectOfferedSlot — ordinal usa a ordem falada pelo agente", () => {
+  const SEIS_VAGAS = [
+    { iso: "2026-07-15T13:00:00-03:00", date_label: "quarta-feira, 15/07", time_label: "13:00" },
+    { iso: "2026-07-15T13:45:00-03:00", date_label: "quarta-feira, 15/07", time_label: "13:45" },
+    { iso: "2026-07-15T14:30:00-03:00", date_label: "quarta-feira, 15/07", time_label: "14:30" },
+    { iso: "2026-07-15T15:15:00-03:00", date_label: "quarta-feira, 15/07", time_label: "15:15" },
+    { iso: "2026-07-15T16:00:00-03:00", date_label: "quarta-feira, 15/07", time_label: "16:00" },
+    { iso: "2026-07-15T16:45:00-03:00", date_label: "quarta-feira, 15/07", time_label: "16:45" },
+  ];
+  // O agente ofereceu a 3ª e a 4ª vaga da lista — não a 1ª.
+  const oferta = "Que tal quarta-feira, 15/07, às 14:30 ou às 15:15?";
+
+  it("'o primeiro' pega o 1º horário FALADO (14:30), não offered_slots[0] (13:00)", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SEIS_VAGAS }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: "o primeiro" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-15T14:30:00-03:00");
+  });
+
+  it("'o segundo' pega o 2º horário FALADO (15:15), não offered_slots[1] (13:45)", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SEIS_VAGAS }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: "o segundo" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-15T15:15:00-03:00");
+  });
+
+  it("sem horário falado pelo agente, o ordinal cai na ordem de offered_slots", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SEIS_VAGAS }, [
+      { role: "assistant", content: "Prefere manhã ou tarde?" },
+      { role: "user", content: "o primeiro" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-15T13:00:00-03:00");
+  });
+});
+
+describe("slotsOfferedInLastTurn", () => {
+  const VAGAS = [
+    { iso: "2026-07-15T13:00:00-03:00", date_label: "quarta-feira, 15/07", time_label: "13:00" },
+    { iso: "2026-07-15T14:30:00-03:00", date_label: "quarta-feira, 15/07", time_label: "14:30" },
+    { iso: "2026-07-15T15:15:00-03:00", date_label: "quarta-feira, 15/07", time_label: "15:15" },
+  ];
+
+  it("devolve só os horários falados, na ordem em que o agente os disse", () => {
+    const out = slotsOfferedInLastTurn({ offered_slots: VAGAS }, [
+      { role: "assistant", content: "Tenho às 15:15 ou às 14:30." },
+      { role: "user", content: "hmm" },
+    ]);
+    expect(out.map((s) => s.time_label)).toEqual(["15:15", "14:30"]);
+  });
+
+  it("não confunde o número do endereço com horário ofertado", () => {
+    const out = slotsOfferedInLastTurn({ offered_slots: VAGAS }, [
+      { role: "assistant", content: "Ficamos na Av. das Américas, 13.685, Loja 149." },
+      { role: "user", content: "ok" },
+    ]);
+    expect(out).toEqual([]);
   });
 });
 
