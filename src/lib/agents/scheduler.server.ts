@@ -92,6 +92,7 @@ import {
   tryAutoSelectOfferedSlot,
   requestedDateFromText,
   requestedPeriodoFromText,
+  requestedHoraFromText,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
 
@@ -646,6 +647,23 @@ function requestedPeriodoFromHistory(
   return null;
 }
 
+/**
+ * Hora exata (ex.: 16) que o lead pediu numa mensagem recente, ou null.
+ * Fallback do corte de 6 vagas: sem isso, dentro do turno filtrado o corte
+ * pega sempre as 6 mais cedo e nunca alcança um horário pedido mais tarde no
+ * mesmo turno (ver requestedHoraFromText).
+ */
+function requestedHoraFromHistory(
+  history: { role: "user" | "assistant"; content: string }[],
+): number | null {
+  const userMsgs = history.filter((m) => m.role === "user");
+  for (let i = userMsgs.length - 1; i >= 0; i--) {
+    const h = requestedHoraFromText(userMsgs[i]!.content);
+    if (h != null) return h;
+  }
+  return null;
+}
+
 // Janela padrão do slot offer: prioriza SEMPRE os horários mais próximos —
 // hoje + os próximos 3 dias. Se não houver vaga nesse período, a busca amplia
 // automaticamente até SLOT_WIDE_WINDOW_DAYS para achar as próximas datas livres.
@@ -743,6 +761,10 @@ async function execListarHorarios(
       `[scheduler] listar_horarios conv=${ctx.conversationId}: periodo ausente do LLM — usando o turno pedido pelo lead (${resolvedPeriodo})`,
     );
   }
+  // Hora exata pedida pelo lead ("16h", "às 16 horas"): usada para priorizar,
+  // dentro do turno, os horários mais próximos dela antes do corte de 6 — ver
+  // requestedHoraFromHistory.
+  const resolvedHora = requestedHoraFromHistory(ctx.history);
 
   // Google Calendar: usa lógica de janelas com expediente da clínica
   if (ctx.integrations.googleCalendar) {
@@ -972,8 +994,22 @@ async function execListarHorarios(
       periodoAviso = `Sem vaga no turno pedido (${resolvedPeriodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
     }
   }
-  // Limita a 6 (as mais próximas) para não confundir o lead.
-  const limited = slots.slice(0, 6).map(formatSlot);
+  // Limita a 6. Se o lead pediu uma hora exata ("16h"), prioriza os mais
+  // PRÓXIMOS dela antes do corte — senão o corte pega sempre os 6 mais cedo
+  // do turno (ex: 12:00-14:30) e nunca alcança um horário pedido mais tarde
+  // no mesmo turno (ex: 16:00), mesmo com esse horário livre.
+  const ranked =
+    resolvedHora != null
+      ? [...slots].sort((a, b) => {
+          const ha = Number(a.fromTime.slice(0, 2));
+          const hb = Number(b.fromTime.slice(0, 2));
+          return Math.abs(ha - resolvedHora) - Math.abs(hb - resolvedHora);
+        })
+      : slots;
+  const limited = ranked
+    .slice(0, 6)
+    .sort((a, b) => a.start.localeCompare(b.start))
+    .map(formatSlot);
   return {
     result: JSON.stringify({
       count: limited.length,

@@ -20,6 +20,7 @@ import {
   relativeDateIsExplanatory,
   requestedDateFromText,
   requestedPeriodoFromText,
+  requestedHoraFromText,
   tryAutoSelectOfferedSlot,
   isReadyForBooking,
   isSlotAcceptanceMessage,
@@ -389,6 +390,30 @@ describe("requestedPeriodoFromText", () => {
   it("sem turno → null", () => {
     expect(requestedPeriodoFromText("quinta-feira")).toBeNull();
     expect(requestedPeriodoFromText("")).toBeNull();
+  });
+});
+
+// ── requestedHoraFromText (prioridade de hora exata pro corte de 6 vagas) ──
+
+describe("requestedHoraFromText", () => {
+  it("detecta hora com 'às'/'as' sem sufixo (caso Jacqueline Gomes 21 96563-2113)", () => {
+    expect(requestedHoraFromText("Só posso na parte da tarde as 16")).toBe(16);
+    expect(requestedHoraFromText("Dia 23 só dá pra mim esse horário às 16 horas")).toBe(16);
+    expect(
+      requestedHoraFromText("Se não tiver dia 23, pode ser no dia 24, às 16 horas, não tem problema"),
+    ).toBe(16);
+  });
+
+  it("detecta hora com sufixo explícito sem 'às'", () => {
+    expect(requestedHoraFromText("Como já disse só posso no horário das 16 horas")).toBe(16);
+    expect(requestedHoraFromText("pode ser 16:00")).toBe(16);
+    expect(requestedHoraFromText("tem vaga 9h?")).toBe(9);
+  });
+
+  it("não confunde número de data solto com hora", () => {
+    expect(requestedHoraFromText("dia 23/07")).toBeNull();
+    expect(requestedHoraFromText("tenho 23 anos")).toBeNull();
+    expect(requestedHoraFromText("")).toBeNull();
   });
 });
 

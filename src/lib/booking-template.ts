@@ -1311,6 +1311,29 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
   return null;
 }
 
+/**
+ * Hora exata (0-23) que o lead PEDIU numa mensagem, ou null. Exige sufixo de
+ * hora explícito ("16h", "16 horas", "16:00") para não casar números soltos
+ * de data ("dia 23"). Usada pelo scheduler para priorizar, dentro do turno
+ * filtrado, os horários mais PRÓXIMOS da hora pedida antes do corte de 6 —
+ * sem isso o corte pega sempre os 6 mais cedo do turno (ex: 12:00-14:30) e
+ * nunca alcança um horário pedido mais tarde no mesmo turno (ex: 16:00),
+ * mesmo com esse horário livre (caso real: lead pediu 16h repetidas vezes,
+ * agenda da semana seguinte vazia, mas o corte só oferecia até 14:30).
+ */
+export function requestedHoraFromText(text: string): number | null {
+  const t = (text ?? "").toLowerCase();
+  if (!t) return null;
+  // "às 16", "as 16 horas" (o "às" já indica hora, sufixo opcional) OU
+  // "16h"/"16 horas"/"16:00" (sufixo de hora obrigatório sem "às").
+  const m = t.match(
+    /\b(?:[àa]s\s*(\d{1,2})(?:\s*h(?:oras?)?)?|(\d{1,2})\s*(?:h(?:oras?)?|:00))\b/,
+  );
+  if (!m) return null;
+  const h = Number(m[1] ?? m[2]);
+  return h >= 0 && h <= 23 ? h : null;
+}
+
 function pickSlotByPreference(
   slots: OfferedSlot[],
   text: string,
