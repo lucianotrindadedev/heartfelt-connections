@@ -1142,6 +1142,25 @@ function normalizeTimeLabel(raw: string): string {
   return "";
 }
 
+/**
+ * TODOS os horários citados num texto, normalizados ("09:00"). normalizeTimeLabel
+ * devolve só o primeiro — aqui precisamos do conjunto, para saber quais slots o
+ * agente acabou de oferecer de fato ("às 14h ou às 15h30" → {14:00, 15:30}).
+ *
+ * Datas não viram horário: "16/07" e "328" (número do endereço) não casam, pois
+ * exigimos o separador de minutos (":"/"h") ou o marcador de hora.
+ */
+function timesInText(text: string): Set<string> {
+  const out = new Set<string>();
+  const re = /(\d{1,2})(?::(\d{2})|h(\d{2})|\s*h(?:s|rs?|oras?)?\b)/gi;
+  for (const m of text.toLowerCase().matchAll(re)) {
+    const h = Number(m[1]);
+    if (!Number.isInteger(h) || h < 0 || h > 23) continue;
+    out.add(`${String(h).padStart(2, "0")}:${m[2] ?? m[3] ?? "00"}`);
+  }
+  return out;
+}
+
 function hourInBrt(iso: string): number {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return -1;
@@ -1338,6 +1357,7 @@ function pickSlotByPreference(
   slots: OfferedSlot[],
   text: string,
   assistantText: string,
+  lastTurnText: string,
 ): Partial<LeadData> | null {
   const t = text.toLowerCase();
 
@@ -1357,21 +1377,53 @@ function pickSlotByPreference(
 
   if (!targetDate && !wantMorning && !wantAfternoon && !wantEvening) return null;
 
-  let pool = slots;
   const mentioned = slots.filter((s) => slotMentionedInText(s, assistantText));
   const hasMentioned = mentioned.length > 0;
-  if (hasMentioned) pool = mentioned;
+
+  // Slots cujo HORÁRIO o agente disse em voz alta NO ÚLTIMO TURNO ("às 17h",
+  // "14:00"). É o único sinal confiável de "estes aqui foram OFERECIDOS agora":
+  // slotMentionedInText casa por DIA DA SEMANA em qualquer ponto do texto —
+  // inclusive quando o agente fala da INDISPONIBILIDADE do lead — e a janela
+  // larga (últimas 4 mensagens) ainda arrastaria ofertas já RECUSADAS.
+  const turnTimes = timesInText(lastTurnText);
+  const offeredNow = slots.filter((s) => {
+    const time = normalizeTimeLabel(s.time_label);
+    return time !== "" && turnTimes.has(time);
+  });
+
+  let pool = offeredNow.length > 0 ? offeredNow : hasMentioned ? mentioned : slots;
 
   // Preferência de TURNO pura ("manhã"/"tarde", sem data) dita ANTES de o agente
   // ofertar horários específicos NÃO é escolha de slot — é só um filtro. Não
   // auto-seleciona (deixa o agente LISTAR os horários reais e o lead escolher).
   // Evita o bug: lead pede "dia 7", agenda só tem 13/07, lead diz "tarde" e o
   // sistema travava 13/07 13:00 achando que era a escolha.
-  if (!targetDate && !hasMentioned && (wantMorning || wantAfternoon || wantEvening)) {
+  //
+  // O gate agora é offeredNow (horário dito), NÃO hasMentioned (dia da semana
+  // solto). Caso real (Clínica Bomfim, 21 96416-7887, 13/07): o agente ofertou
+  // "hoje 17h ou 18h", o lead RECUSOU ("tenho compromisso de segunda a quarta
+  // nesse horário") e o agente respondeu "como de SEGUNDA a quarta fica mais
+  // difícil, que tal quinta? … prefere manhã ou tarde?". A palavra "segunda"
+  // nessa frase — que fala da recusa do lead — fez slotMentionedInText casar os
+  // slots velhos de segunda-feira 13/07, hasMentioned virou true e este guard
+  // foi desarmado. O "Tarde" seguinte (resposta ao "manhã ou tarde?", ou seja um
+  // FILTRO para quinta) auto-selecionou 13/07 17:00 — justamente o horário
+  // recusado — e o booking determinístico criou o agendamento na Clinicorp sem
+  // o lead nunca ter confirmado nada.
+  if (!targetDate && offeredNow.length === 0 && (wantMorning || wantAfternoon || wantEvening)) {
     return null;
   }
 
   let filtered = pool;
+
+  // Horário EXPLÍCITO na mensagem do lead ("quinta às 15h30") manda sobre o
+  // resto: sem isto, um pedido com dia + hora caía no filtro só por data e
+  // pegava o slot MAIS CEDO do dia, agendando um horário que o lead não pediu.
+  const userTime = normalizeTimeLabel(t);
+  if (userTime) {
+    filtered = filtered.filter((s) => normalizeTimeLabel(s.time_label) === userTime);
+    if (filtered.length === 0) return null;
+  }
   if (targetDate) {
     filtered = filtered.filter((s) => dateInBrt(new Date(s.iso)) === targetDate);
   }
@@ -1496,6 +1548,26 @@ function recentAssistantContext(
     .join("\n");
 }
 
+/**
+ * Só as mensagens do agente do ÚLTIMO turno — as que vieram depois da mensagem
+ * anterior do lead. É a esse turno que o lead está respondendo.
+ *
+ * recentAssistantContext (as últimas 4 mensagens) é uma janela larga demais para
+ * decidir "quais horários acabaram de ser oferecidos": ela arrasta ofertas
+ * ANTIGAS, inclusive as que o lead já recusou, para dentro do contexto.
+ */
+function lastAssistantTurnText(
+  history: { role: "user" | "assistant"; content: string }[],
+  beforeIdx: number,
+): string {
+  const turn: string[] = [];
+  for (let i = beforeIdx - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") break;
+    turn.unshift(history[i]!.content);
+  }
+  return turn.join("\n");
+}
+
 function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
   return {
     selected_slot_iso: slot.iso,
@@ -1585,8 +1657,9 @@ export function tryAutoSelectOfferedSlot(
   if (!lastUser) return {};
 
   const assistantText = recentAssistantContext(history, lastUserIdx);
+  const lastTurnText = lastAssistantTurnText(history, lastUserIdx);
 
-  const prefPatch = pickSlotByPreference(slots, lastUser, assistantText);
+  const prefPatch = pickSlotByPreference(slots, lastUser, assistantText, lastTurnText);
   if (prefPatch) return prefPatch;
 
   if (!isSlotAcceptanceMessage(lastUser)) return {};

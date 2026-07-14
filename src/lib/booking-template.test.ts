@@ -334,6 +334,75 @@ describe("tryAutoSelectOfferedSlot — negação/explicação não seleciona", (
 
 // ── requestedDateFromText (âncora de data pro listar_horarios) ─────────────
 
+// Caso real (Clínica Bomfim, agente "Assistente Virtual", lead 21 96416-7887,
+// 13/07/2026). O agente ofertou "hoje às 17h ou 18h", o lead RECUSOU ("tenho
+// compromisso de segunda a quarta nesse horário"), o agente propôs quinta e
+// perguntou "manhã ou tarde?" — e o "Tarde" do lead auto-selecionou o slot de
+// SEGUNDA 13/07 17:00 (o horário recusado). O booking determinístico criou o
+// agendamento na Clinicorp e marcou stage=CONFIRMED sem o lead ter confirmado
+// nada — e sem nem avisá-lo.
+//
+// A palavra "segunda" na frase do agente sobre a RECUSA ("como de segunda a
+// quarta fica mais difícil") fez slotMentionedInText casar os slots velhos de
+// segunda-feira, desarmando o guard de "turno puro não é escolha de slot".
+describe("tryAutoSelectOfferedSlot — turno puro não pode ressuscitar slot recusado (Clínica Bomfim)", () => {
+  const slotsSegunda = [
+    { iso: "2026-07-13T17:00:00-03:00", date_label: "segunda-feira, 13/07", time_label: "17:00" },
+    { iso: "2026-07-13T17:30:00-03:00", date_label: "segunda-feira, 13/07", time_label: "17:30" },
+    { iso: "2026-07-13T18:00:00-03:00", date_label: "segunda-feira, 13/07", time_label: "18:00" },
+  ];
+
+  it("'Tarde' (resposta a 'manhã ou tarde?') NÃO seleciona o slot de segunda que o lead recusou", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSegunda }, [
+      { role: "assistant", content: "Tenho dois horários próximos: hoje às 17h ou hoje às 18h." },
+      { role: "user", content: "Tenho compromisso de segunda a quarta nesse horário" },
+      {
+        role: "assistant",
+        content:
+          "Entendo! Como de segunda a quarta fica mais difícil no fim do dia, que tal quinta-feira?",
+      },
+      {
+        role: "assistant",
+        content:
+          "Para quinta-feira, dia 16/07, ficaria melhor um horário na parte da manhã ou na parte da tarde?",
+      },
+      { role: "user", content: "Tarde" },
+    ]);
+    expect(patch).toEqual({});
+  });
+
+  it("o dia da semana citado numa frase de RECUSA não conta como slot oferecido", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSegunda }, [
+      {
+        role: "assistant",
+        content: "Como de segunda a quarta fica mais difícil, que tal quinta?",
+      },
+      { role: "user", content: "de tarde" },
+    ]);
+    expect(patch).toEqual({});
+  });
+
+  it("mas 'tarde' AINDA seleciona quando o agente acabou de dizer os horários", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSegunda }, [
+      { role: "assistant", content: "Tenho hoje às 17:00 ou às 18:00. Qual prefere?" },
+      { role: "user", content: "tarde" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-13T17:00:00-03:00");
+  });
+
+  it("horário explícito do lead manda sobre o filtro de data (não pega o mais cedo do dia)", () => {
+    const slotsQuinta = [
+      { iso: "2026-07-16T14:00:00-03:00", date_label: "quinta-feira, 16/07", time_label: "14:00" },
+      { iso: "2026-07-16T15:30:00-03:00", date_label: "quinta-feira, 16/07", time_label: "15:30" },
+    ];
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsQuinta }, [
+      { role: "assistant", content: "Consigo quinta 16/07 às 14h ou às 15h30. Qual prefere?" },
+      { role: "user", content: "quinta às 15h30" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-16T15:30:00-03:00");
+  });
+});
+
 describe("requestedDateFromText", () => {
   function weekdayStemBrt(iso: string): string {
     return new Intl.DateTimeFormat("pt-BR", { weekday: "long", timeZone: "America/Sao_Paulo" })
