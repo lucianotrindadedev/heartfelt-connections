@@ -1718,6 +1718,10 @@ ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n`
     ld.selected_slot_iso
       ? `\n# HORÁRIO JÁ ESCOLHIDO PELO LEAD\nselected_slot_iso=${ld.selected_slot_iso}\nNÃO chame listar_horarios de novo. Confirme este horário ao lead e colete os campos pendentes.\n`
       : ""
+  }${
+    ctx.stage === "CONFIRMED" && ld.booked_slot_iso && new Date(ld.booked_slot_iso).getTime() < now.getTime()
+      ? `\n# ATENÇÃO: O AGENDAMENTO REGISTRADO JÁ PASSOU\nbooked_slot_iso=${ld.booked_slot_iso} é ANTERIOR a agora (${todayIso}) — essa visita JÁ ACONTECEU. Se o lead escreve de novo pedindo para "confirmar" uma consulta, é porque está falando de algo NOVO (ex.: um retorno/procedimento sugerido durante a visita anterior) que AINDA NÃO está registrado no sistema — NÃO existe outro appointment_id. NUNCA reafirme o horário antigo (ex.: "confirmado para ontem às Xh") como se respondesse à pergunta dele — isso não faz sentido e confunde o lead. Diga que vai verificar com a equipe os detalhes dessa nova consulta e use next_stage="ESCALATED" com lead_data_patch.escalation_reason explicando a situação (não há registro do novo agendamento sugerido).\n`
+      : ""
   }
 # RETORNO AGENDADO (NÃO confundir com agendar consulta)
 Se o lead disser que não pode falar agora e pedir contato em outra data ("me chama
