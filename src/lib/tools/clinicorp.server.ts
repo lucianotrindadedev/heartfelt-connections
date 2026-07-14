@@ -341,6 +341,29 @@ function phoneVariantsForPatientGet(phone: string): string[] {
   return [...variants];
 }
 
+/**
+ * Núcleo comparável de um telefone BR: só dígitos, sem prefixo 55, sem o "9"
+ * de celular (alguns cadastros gravam com, outros sem). Ex.: "+55 (21)
+ * 97012-8245", "5521970128245", "21970128245", "2170128245" → "2170128245".
+ * Usado para casar o telefone do cadastro Clinicorp com o do lead na dedup
+ * por nome (a busca por ?Phone= do Clinicorp NÃO acha pacientes criados só com
+ * MobilePhone — ver findClinicorpPatient).
+ */
+function brazilPhoneCore(raw: string | number | null | undefined): string {
+  let d = String(raw ?? "").replace(/\D/g, "");
+  if (d.length > 11 && d.startsWith("55")) d = d.slice(2);
+  // Remove o 9 extra de celular após o DDD (11 dígitos → 10) para comparar
+  // cadastros gravados com e sem o nono dígito.
+  if (d.length === 11 && d[2] === "9") d = d.slice(0, 2) + d.slice(3);
+  return d;
+}
+
+export function sameBrazilPhone(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
+  const ca = brazilPhoneCore(a);
+  const cb = brazilPhoneCore(b);
+  return ca.length >= 8 && ca === cb;
+}
+
 interface ClinicorpPatientRaw {
   PatientId?: number;
   Patient_PersonId?: number;
@@ -410,17 +433,58 @@ async function fetchPatientByPhone(
   return normalizePatient(picked, phoneValue);
 }
 
+/**
+ * Busca pacientes pelo Name (endpoint patient/get?Name=). Retorna TODOS os
+ * cadastros com esse nome (a API só casa nome praticamente completo). Usada
+ * como fallback da dedup quando a busca por telefone falha.
+ */
+async function fetchPatientsByName(
+  config: ClinicorpConfig,
+  name: string,
+): Promise<ClinicorpPatientRaw[]> {
+  const url = new URL(`${config.baseUrl}/rest/v1/patient/get`);
+  url.searchParams.set("subscriber_id", config.subscriberId);
+  url.searchParams.set("Name", name);
+
+  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
+  if (!res.ok) return [];
+
+  const json = (await res.json()) as unknown;
+  if (Array.isArray(json)) return json as ClinicorpPatientRaw[];
+  if (json && typeof json === "object") {
+    const obj = json as Record<string, unknown>;
+    if (Array.isArray(obj.patients)) return obj.patients as ClinicorpPatientRaw[];
+    if (obj.patient && typeof obj.patient === "object") return [obj.patient as ClinicorpPatientRaw];
+  }
+  return [];
+}
+
 export async function findClinicorpPatient(
   accountId: string,
   phone: string,
+  name?: string,
 ): Promise<ClinicorpPatient | null> {
   const config = await loadConfig(accountId);
 
-  // n8n usa dígitos sem prefixo 55; tentamos todas as variantes comuns
+  // 1. Busca por telefone (n8n usa dígitos sem prefixo 55; tentamos variantes).
   for (const variant of phoneVariantsForPatientGet(phone)) {
     const found = await fetchPatientByPhone(config, variant);
     if (found?.id) return found;
   }
+
+  // 2. Fallback por NOME + verificação de telefone. A busca por ?Phone= do
+  // Clinicorp NÃO encontra pacientes que o agente criou (gravados só com
+  // MobilePhone) — o passo 1 volta vazio e, sem este fallback, cada
+  // agendamento cria um cadastro NOVO do mesmo paciente (duplicatas). Aqui
+  // buscamos por nome e só reutilizamos um cadastro cujo telefone bate com o
+  // do lead — homônimos com telefone diferente NÃO são reaproveitados.
+  if (name?.trim()) {
+    const rows = await fetchPatientsByName(config, name.trim());
+    const matches = rows.filter((r) => sameBrazilPhone(r.Phone ?? r.phone, phone));
+    const picked = pickActivePatient(matches);
+    if (picked) return normalizePatient(picked, phone);
+  }
+
   return null;
 }
 
@@ -507,8 +571,10 @@ export async function createClinicorpAppointment(
   // Duração da consulta: usa o valor configurado (default 40 min)
   const duracaoMin = config.duracaoConsulta;
 
-  // 1. Busca ou cria paciente
-  let patient = await findClinicorpPatient(accountId, params.phone);
+  // 1. Busca ou cria paciente. Passa o nome para a dedup por nome+telefone
+  // (a busca só por telefone não acha cadastros criados pelo agente — ver
+  // findClinicorpPatient), evitando criar um paciente duplicado a cada visita.
+  let patient = await findClinicorpPatient(accountId, params.phone, params.name);
   let patientId: number | null = patient?.id ?? null;
 
   if (!patientId) {

@@ -485,8 +485,14 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
     }
   }
 
-  // Default: Clinicorp
-  const patient = await findClinicorpPatient(ctx.accountId, ctx.effectivePhone);
+  // Default: Clinicorp. Passa o nome coletado (se houver) para a dedup por
+  // nome+telefone — a busca só por telefone não acha cadastros criados pelo
+  // agente (ver findClinicorpPatient).
+  const patient = await findClinicorpPatient(
+    ctx.accountId,
+    ctx.effectivePhone,
+    ctx.leadData.name ?? undefined,
+  );
   if (!patient?.id) {
     return { result: JSON.stringify({ found: false }) };
   }
