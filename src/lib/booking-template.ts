@@ -1106,11 +1106,23 @@ export function isReadyForBooking(
 
 type OfferedSlot = NonNullable<LeadData["offered_slots"]>[number];
 
-// Horário COM minutos: "09:00", "9:00" e também "9h30" (o separador "h" é o
-// jeito mais comum de escrever hora no WhatsApp e não era reconhecido — só o
-// ":" era). Sem o "h" aqui, "9h30" caía no fallback de slot mencionado e podia
-// casar um horário DIFERENTE do pedido.
-const TIME_WITH_MINUTES_RE = /(\d{1,2})[:h](\d{2})/;
+// Separador entre hora e minutos, como o lead escreve no WhatsApp: ":", "h",
+// "." e "," — com espaço opcional dos dois lados ("14:30", "14: 30", "14.30",
+// "14h30", "14 h 30"). Antes os minutos precisavam vir COLADOS a ":" ou "h", e
+// só esses dois separadores valiam: "14: 30" e "14.30" não eram reconhecidos
+// como horário em lugar nenhum. Caso real (Costa Lima Recreio, 21 98985-6865):
+// a lead aceitou o horário ofertado escrevendo "14: 30 fica bom pra mim" e
+// depois "14.30" — selected_slot_iso NUNCA era gravado, o agendamento não saía
+// e o agente repetia "tive um problema ao registrar sua visita", em loop.
+//
+// As guardas de dígito nas bordas — (?<![\d.,]) antes e (?!\d) depois — impedem
+// que valor monetário vire horário: em "R$ 1.500" o "1.500" não casa (o "500"
+// tem um 3º dígito) e em "1.500,00" o "500,00" tampouco (o "5" vem depois de
+// ponto). Sem elas, o "." como separador leria preço como hora.
+// Minutos restritos a [0-5]\d: com o "." como separador, `\d{2}` faria "14.75"
+// (um decimal/valor) virar "horário".
+const HH_MM_SRC = String.raw`(?<![\d.,])(\d{1,2})\s*[:h.,]\s*([0-5]\d)(?!\d)`;
+const TIME_WITH_MINUTES_RE = new RegExp(HH_MM_SRC, "i");
 // Hora CHEIA, sem minutos: "9h", "9 h", "9hs", "9hrs", "9 horas". O lookahead
 // negativo impede de casar "9h30" aqui (esse é o caso acima).
 const BARE_HOUR_RE = /(?:^|[^\d])(\d{1,2})\s*h(?:s|rs?|oras?)?(?![\d:])/i;
@@ -1132,7 +1144,16 @@ const AS_BARE_HOUR_RE = /(?:^|\s)[àa]s\s+(\d{1,2})(?![\d:h])/i;
 function normalizeTimeLabel(raw: string): string {
   const t = (raw ?? "").toLowerCase();
   const withMinutes = t.match(TIME_WITH_MINUTES_RE);
-  if (withMinutes) return `${withMinutes[1]!.padStart(2, "0")}:${withMinutes[2]}`;
+  if (withMinutes) {
+    const h = Number(withMinutes[1]);
+    const m = Number(withMinutes[2]);
+    // Hora/minuto fora da faixa não é horário ("25:99", "14.75"). Sem esta
+    // checagem qualquer par de números separados por ponto virava "hora".
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+      return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+    return "";
+  }
 
   const bare = t.match(BARE_HOUR_RE) ?? t.match(AS_BARE_HOUR_RE);
   if (bare) {
@@ -1147,16 +1168,25 @@ function normalizeTimeLabel(raw: string): string {
  * devolve só o primeiro — aqui precisamos do conjunto, para saber quais slots o
  * agente acabou de oferecer de fato ("às 14h ou às 15h30" → {14:00, 15:30}).
  *
- * Datas não viram horário: "16/07" e "328" (número do endereço) não casam, pois
- * exigimos o separador de minutos (":"/"h") ou o marcador de hora.
+ * Usa o MESMO conjunto de separadores de HH_MM_SRC (":", "h", ".", ",", com
+ * espaço opcional) — manter um regex de horário próprio aqui é o que faz essa
+ * classe de bug voltar em outro ponto do parser.
+ *
+ * Datas e números de endereço não viram horário: "16/07" não tem separador de
+ * minutos válido, e "13.685" (Av. das Américas, 13.685) é barrado pelas guardas
+ * de dígito nas bordas — os minutos precisam ser [0-5]\d e não podem ter um 3º
+ * dígito colado.
  */
 function timesInText(text: string): Set<string> {
   const out = new Set<string>();
-  const re = /(\d{1,2})(?::(\d{2})|h(\d{2})|\s*h(?:s|rs?|oras?)?\b)/gi;
+  const re = new RegExp(
+    String.raw`(?<![\d.,])(\d{1,2})(?:\s*[:h.,]\s*([0-5]\d)(?!\d)|\s*h(?:s|rs?|oras?)?\b)`,
+    "gi",
+  );
   for (const m of text.toLowerCase().matchAll(re)) {
     const h = Number(m[1]);
     if (!Number.isInteger(h) || h < 0 || h > 23) continue;
-    out.add(`${String(h).padStart(2, "0")}:${m[2] ?? m[3] ?? "00"}`);
+    out.add(`${String(h).padStart(2, "0")}:${m[2] ?? "00"}`);
   }
   return out;
 }
@@ -1578,13 +1608,15 @@ function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
 // Um horário citado NO MEIO de uma frase, em qualquer forma: "09:00", "9h30",
 // "9h", "9 horas". Antes só `\d{1,2}:\d{2}` era considerado horário, então
 // "pode ser 9h" / "sexta 9h" não eram lidos como aceite.
-const TIME_IN_TEXT_SRC = String.raw`\d{1,2}(?::\d{2}|h\d{2}|\s*h(?:s|rs?|oras?)?\b)`;
+// Mesmos separadores/espaçamento de HH_MM_SRC ("14:30", "14: 30", "14.30",
+// "14h30") — antes só ":"/"h" colados aos minutos valiam aqui também.
+const TIME_IN_TEXT_SRC = String.raw`(?<![\d.,])\d{1,2}(?:\s*[:h.,]\s*[0-5]\d(?!\d)|\s*h(?:s|rs?|oras?)?\b)`;
 const TIME_IN_TEXT_RE = new RegExp(TIME_IN_TEXT_SRC, "i");
-// A mensagem inteira é SÓ um horário: "18:20", "às 18:20", "9h", "9 horas",
-// "às 9". Um número solto ("9") fica de fora de propósito — sem o marcador de
-// hora ou a preposição não dá pra distinguir de dia do mês/idade/quantidade.
+// A mensagem inteira é SÓ um horário: "18:20", "14.30", "às 18:20", "9h",
+// "9 horas", "às 9". Um número solto ("9") fica de fora de propósito — sem o
+// marcador de hora ou a preposição não dá pra distinguir de dia do mês/idade.
 const ONLY_TIME_RE = new RegExp(
-  String.raw`^(?:(?:[àa]s?\s+)?\d{1,2}(?::\d{2}|h\d{2}|\s*h(?:s|rs?|oras?)?)|[àa]s\s+\d{1,2})\s*[.!?]?$`,
+  String.raw`^(?:(?:[àa]s?\s+)?\d{1,2}(?:\s*[:h.,]\s*[0-5]\d|\s*h(?:s|rs?|oras?)?)|[àa]s\s+\d{1,2})\s*[.!?]?$`,
   "i",
 );
 

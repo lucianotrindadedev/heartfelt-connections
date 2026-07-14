@@ -675,6 +675,21 @@ describe("isSlotAcceptanceMessage", () => {
     ["1 ano", false],
     // Indisponibilidade em hora cheia continua sendo recusa, não aceite.
     ["só saio do trabalho as 18h", false],
+    // Caso real (Costa Lima Recreio, 21 98985-6865, 14/07): a lead aceitou o
+    // horário ofertado escrevendo "14: 30" (espaço depois do ":") e depois
+    // "14.30" (ponto). Os minutos precisavam vir COLADOS a ":"/"h", então
+    // nenhum dos dois era horário — o slot nunca era gravado e o agente
+    // repetia "tive um problema ao registrar sua visita", em loop.
+    ["14: 30 fica bom pra mim", true],
+    ["14.30", true],
+    ["14 : 30", true],
+    ["14,30", true],
+    ["pode ser 14.30", true],
+    // Valor monetário NÃO é horário (guardas de dígito nas bordas do regex).
+    ["o valor de 1.500 ficou bom", false],
+    ["ficou bom, R$ 1.500,00", false],
+    // Hora/minuto fora da faixa não é horário.
+    ["14.75", false],
   ])("isSlotAcceptanceMessage(%j) → %s", (input, expected) => {
     expect(isSlotAcceptanceMessage(input)).toBe(expected);
   });
@@ -742,6 +757,67 @@ describe("tryAutoSelectOfferedSlot — hora cheia sem minutos (Costa Lima Recrei
     const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSexta }, [
       { role: "assistant", content: "Tenho sexta-feira às 09:00 e às 09:45. Qual prefere?" },
       { role: "user", content: "só saio do trabalho as 9h" },
+    ]);
+    expect(patch).toEqual({});
+  });
+});
+
+// Caso real (Costa Lima Recreio, lead 21 98985-6865, 14/07/2026). O agente
+// ofertou "quarta 15/07 às 14:30 ou às 15:15"; a lead aceitou escrevendo
+// "14: 30 fica bom pra mim" e, ao ser reperguntada, "14.30".
+//
+// Cadeia da falha: os regexes de horário exigiam os minutos COLADOS a ":"/"h"
+// (só esses dois separadores). "14: 30" (espaço) e "14.30" (ponto) não eram
+// horário em ramo nenhum → selected_slot_iso nunca gravado → o booking
+// determinístico não disparava e o agente respondia "tive um problema ao
+// registrar sua visita. Pode me confirmar o horário?" — em loop.
+describe("tryAutoSelectOfferedSlot — separador de minutos solto (Costa Lima Recreio)", () => {
+  const slotsQuarta = [
+    { iso: "2026-07-15T14:30:00-03:00", date_label: "quarta-feira, 15/07", time_label: "14:30" },
+    { iso: "2026-07-15T15:15:00-03:00", date_label: "quarta-feira, 15/07", time_label: "15:15" },
+  ];
+  const oferta = "que tal agendarmos para essa quarta-feira, 15/07, às 14:30 ou às 15:15?";
+
+  it.each([
+    "14: 30 fica bom pra mim", // o que a lead realmente escreveu
+    "14.30", // e depois isso
+    "14 : 30",
+    "14,30",
+    "14:30",
+  ])("'%s' seleciona o slot das 14:30", (msg) => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsQuarta }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: msg },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-15T14:30:00-03:00");
+  });
+
+  it("'15.15' seleciona o segundo slot, não o primeiro", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsQuarta }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: "15.15" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-15T15:15:00-03:00");
+  });
+
+  it("valor monetário com ponto não vira horário nem seleciona slot", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsQuarta }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: "o tratamento de 1.500 ficou bom pra mim" },
+    ]);
+    expect(patch).toEqual({});
+  });
+
+  // O endereço da própria clínica tem ponto de milhar ("Av. das Américas,
+  // 13.685") e aparece na mensagem do agente. Não pode ser lido como um
+  // horário ofertado (13:68 nem existe; a guarda de minutos [0-5]\d barra).
+  it("número de endereço com ponto no texto do agente não vira horário ofertado", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsQuarta }, [
+      {
+        role: "assistant",
+        content: "Ficamos na Av. das Américas, 13.685, Loja 149. Prefere manhã ou tarde?",
+      },
+      { role: "user", content: "tarde" },
     ]);
     expect(patch).toEqual({});
   });
