@@ -1672,6 +1672,34 @@ const ONLY_TIME_RE = new RegExp(
   "i",
 );
 
+// Escolha por ORDEM ("o primeiro", "quero esse primeiro horário", "a 2ª opção").
+//
+// O ordinal SOZINHO no meio da frase não basta: em "primeiro preciso saber o
+// valor" / "primeiro me diz o preço" o "primeiro" é ADVÉRBIO, não escolha — e
+// casar isso agendaria o horário 0 em cima de quem só queria informação. Por
+// isso exigimos um sinal de escolha junto do ordinal:
+//   a) determinante antes — "o/esse/este/aquele primeiro"; ou
+//   b) substantivo depois — "primeiro horário", "primeira opção"; ou
+//   c) o ordinal sozinho, ancorado, como a mensagem inteira — "o primeiro".
+const ordinalRe = (n: 1 | 2) => {
+  const word = n === 1 ? String.raw`primeir[oa]` : String.raw`segund[oa]`;
+  const num = n === 1 ? String.raw`1[ªº]|1a\b` : String.raw`2[ªº]|2a\b`;
+  const noun = String.raw`(?:hor[áa]rio|op[cç][ãa]o|vaga|hora)`;
+  const det = String.raw`(?:o|a|os|as|esse|essa|este|esta|aquele|aquela)`;
+  return new RegExp(
+    // "o primeiro" / "primeiro" — o ordinal é a mensagem INTEIRA. Ancorado no
+    // fim de propósito: sem isso "primeiro preciso saber o valor" (advérbio)
+    // casava e agendava o horário 0 em cima de quem só queria informação.
+    String.raw`(?:^\s*(?:${det}\s+)?${word}\s*[.!?]*$)` +
+      String.raw`|(?:\b${det}\s+${word}\b)` + // "quero ESSE PRIMEIRO ..."
+      String.raw`|(?:\b${word}\s+${noun}\b)` + // "... PRIMEIRO HORÁRIO"
+      String.raw`|(?:${num})|(?:op[cç][ãa]o\s*${n})`,
+    "i",
+  );
+};
+const FIRST_ORDINAL_RE = ordinalRe(1);
+const SECOND_ORDINAL_RE = ordinalRe(2);
+
 export function isSlotAcceptanceMessage(text: string): boolean {
   const t = text.trim().toLowerCase();
   // Recusa ("nenhum dos 2") ou indisponibilidade ("só largo às 18:00") NUNCA é
@@ -1689,8 +1717,8 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   ) {
     return true;
   }
-  if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(t)) return true;
-  if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(t)) return true;
+  if (FIRST_ORDINAL_RE.test(t)) return true;
+  if (SECOND_ORDINAL_RE.test(t)) return true;
   if (
     TIME_IN_TEXT_RE.test(t) &&
     /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero|otimo|ótimo|t[aá] otimo|t[aá] ótimo|legal|bom|maravilha|certo|fechado|perfeito|marcar|agendar)/i.test(
@@ -1777,10 +1805,10 @@ export function tryAutoSelectOfferedSlot(
   // agenda, das quais o agente só citou 2). Ver slotsOfferedInLastTurn.
   const spoken = slotsOfferedInLastTurn(leadData, history);
   const ordinalPool = spoken.length > 0 ? spoken : slots;
-  if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(lastUser.toLowerCase()) && ordinalPool[0]) {
+  if (FIRST_ORDINAL_RE.test(lastUser.toLowerCase()) && ordinalPool[0]) {
     return patchFromSlot(ordinalPool[0]);
   }
-  if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(lastUser.toLowerCase()) && ordinalPool[1]) {
+  if (SECOND_ORDINAL_RE.test(lastUser.toLowerCase()) && ordinalPool[1]) {
     return patchFromSlot(ordinalPool[1]);
   }
 

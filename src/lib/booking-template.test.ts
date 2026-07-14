@@ -866,6 +866,53 @@ describe("tryAutoSelectOfferedSlot — ordinal usa a ordem falada pelo agente", 
   });
 });
 
+// Escolha por ordem em frase NATURAL ("eu quero esse primeiro horário"). A
+// regex antiga era ancorada em "^(o )?primeiro", então só o "o primeiro" seco
+// funcionava — qualquer frase em volta caía fora e o agendamento dependia da
+// LLM. E soltar a âncora sem cuidado quebra o "primeiro" ADVÉRBIO ("primeiro
+// preciso saber o valor"), que agendaria o horário 0 em cima de quem só queria
+// informação. Por isso o ordinal exige determinante antes OU substantivo depois.
+describe("tryAutoSelectOfferedSlot — ordinal em frase natural", () => {
+  const SLOTS = [
+    { iso: "2026-07-15T14:30:00-03:00", date_label: "quarta-feira, 15/07", time_label: "14:30" },
+    { iso: "2026-07-15T15:30:00-03:00", date_label: "quarta-feira, 15/07", time_label: "15:30" },
+  ];
+  const oferta = "Tenho quarta-feira, 15/07, às 14:30 ou às 15:30. Qual prefere?";
+  const escolha = (msg: string) =>
+    tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: msg },
+    ]).selected_slot_iso ?? null;
+
+  it.each([
+    "eu quero esse primeiro horario",
+    "quero o primeiro horário",
+    "vou querer o primeiro horario",
+    "prefiro o primeiro",
+    "esse primeiro ta bom",
+    "o primeiro",
+    "a 1ª opção",
+  ])("'%s' → 14:30", (msg) => {
+    expect(escolha(msg)).toBe("2026-07-15T14:30:00-03:00");
+  });
+
+  it.each(["quero o segundo horario", "a segunda opção", "esse segundo"])(
+    "'%s' → 15:30",
+    (msg) => {
+      expect(escolha(msg)).toBe("2026-07-15T15:30:00-03:00");
+    },
+  );
+
+  // "primeiro" ADVÉRBIO não é escolha de horário — não pode selecionar nada.
+  it.each([
+    "primeiro preciso saber o valor",
+    "primeiro me diz o preço",
+    "primeiro quero entender o tratamento",
+  ])("'%s' NÃO seleciona horário", (msg) => {
+    expect(escolha(msg)).toBeNull();
+  });
+});
+
 describe("slotsOfferedInLastTurn", () => {
   const VAGAS = [
     { iso: "2026-07-15T13:00:00-03:00", date_label: "quarta-feira, 15/07", time_label: "13:00" },
