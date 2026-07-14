@@ -1106,10 +1106,40 @@ export function isReadyForBooking(
 
 type OfferedSlot = NonNullable<LeadData["offered_slots"]>[number];
 
+// Horário COM minutos: "09:00", "9:00" e também "9h30" (o separador "h" é o
+// jeito mais comum de escrever hora no WhatsApp e não era reconhecido — só o
+// ":" era). Sem o "h" aqui, "9h30" caía no fallback de slot mencionado e podia
+// casar um horário DIFERENTE do pedido.
+const TIME_WITH_MINUTES_RE = /(\d{1,2})[:h](\d{2})/;
+// Hora CHEIA, sem minutos: "9h", "9 h", "9hs", "9hrs", "9 horas". O lookahead
+// negativo impede de casar "9h30" aqui (esse é o caso acima).
+const BARE_HOUR_RE = /(?:^|[^\d])(\d{1,2})\s*h(?:s|rs?|oras?)?(?![\d:])/i;
+// Hora cheia anunciada por preposição, sem o marcador "h": "às 9", "as 9".
+// Um número solto ("9") NÃO entra: seria ambíguo com dia do mês, idade, etc.
+const AS_BARE_HOUR_RE = /(?:^|\s)[àa]s\s+(\d{1,2})(?![\d:h])/i;
+
+/**
+ * Normaliza para "HH:MM" qualquer horário escrito pelo lead. Aceita as formas
+ * usuais no WhatsApp — "09:00", "9h30", "9h", "9 horas", "às 9".
+ *
+ * A hora cheia sem minutos era o buraco: o regex antigo exigia `\d{1,2}:\d{2}`,
+ * então "9h" virava string vazia e o lead NUNCA tinha o slot selecionado.
+ * Caso real (Costa Lima Recreio, 21 97558-2703, 14/07): o lead respondeu "9h"
+ * aos horários ofertados (09:00 / 09:45), o `selected_slot_iso` nunca foi
+ * gravado e o agente voltou a perguntar "qual horário fica melhor pra você?"
+ * mesmo depois de ele já ter confirmado o horário e enviado o nome completo.
+ */
 function normalizeTimeLabel(raw: string): string {
-  const m = raw.match(/(\d{1,2}):(\d{2})/);
-  if (!m) return "";
-  return `${m[1]!.padStart(2, "0")}:${m[2]}`;
+  const t = (raw ?? "").toLowerCase();
+  const withMinutes = t.match(TIME_WITH_MINUTES_RE);
+  if (withMinutes) return `${withMinutes[1]!.padStart(2, "0")}:${withMinutes[2]}`;
+
+  const bare = t.match(BARE_HOUR_RE) ?? t.match(AS_BARE_HOUR_RE);
+  if (bare) {
+    const h = Number(bare[1]);
+    if (Number.isInteger(h) && h >= 0 && h <= 23) return `${String(h).padStart(2, "0")}:00`;
+  }
+  return "";
 }
 
 function hourInBrt(iso: string): number {
@@ -1389,7 +1419,10 @@ function slotMentionedInText(slot: OfferedSlot, text: string): boolean {
   const hay = text.toLowerCase();
   const time = normalizeTimeLabel(slot.time_label);
   const userTime = normalizeTimeLabel(hay);
-  if (time && hay.includes(time)) return true;
+  // Compara NORMALIZADO, não como substring: o slot guarda "09:00" e o lead
+  // escreve "9h" / "9 horas" / "às 9". O `includes` literal nunca casava essas
+  // formas e o slot ficava sem ser reconhecido como mencionado.
+  if (time && (hay.includes(time) || userTime === time)) return true;
 
   const dayPart = slot.date_label.split(/[,/]/)[0]?.trim().toLowerCase() ?? "";
   const weekdayStems = [
@@ -1447,6 +1480,19 @@ function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
   };
 }
 
+// Um horário citado NO MEIO de uma frase, em qualquer forma: "09:00", "9h30",
+// "9h", "9 horas". Antes só `\d{1,2}:\d{2}` era considerado horário, então
+// "pode ser 9h" / "sexta 9h" não eram lidos como aceite.
+const TIME_IN_TEXT_SRC = String.raw`\d{1,2}(?::\d{2}|h\d{2}|\s*h(?:s|rs?|oras?)?\b)`;
+const TIME_IN_TEXT_RE = new RegExp(TIME_IN_TEXT_SRC, "i");
+// A mensagem inteira é SÓ um horário: "18:20", "às 18:20", "9h", "9 horas",
+// "às 9". Um número solto ("9") fica de fora de propósito — sem o marcador de
+// hora ou a preposição não dá pra distinguir de dia do mês/idade/quantidade.
+const ONLY_TIME_RE = new RegExp(
+  String.raw`^(?:(?:[àa]s?\s+)?\d{1,2}(?::\d{2}|h\d{2}|\s*h(?:s|rs?|oras?)?)|[àa]s\s+\d{1,2})\s*[.!?]?$`,
+  "i",
+);
+
 export function isSlotAcceptanceMessage(text: string): boolean {
   const t = text.trim().toLowerCase();
   // Recusa ("nenhum dos 2") ou indisponibilidade ("só largo às 18:00") NUNCA é
@@ -1457,35 +1503,36 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   // "Só largo as 18:00" — o sistema entendeu como aceite e agendou.
   if (looksLikeDecline(text) || mentionsUnavailability(t)) return false;
   if (
-    /^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado)(?:\s+(?:as?|às|o|a|no|na|em)\s+\d{1,2}:\d{2})?[!.?\s]*$/i.test(
-      t,
-    )
+    new RegExp(
+      String.raw`^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado)(?:\s+(?:as?|às|o|a|no|na|em)\s+${TIME_IN_TEXT_SRC})?[!.?\s]*$`,
+      "i",
+    ).test(t)
   ) {
     return true;
   }
   if (/^(o\s+)?primeir[oa]|1ª|1a\b|opção\s*1/i.test(t)) return true;
   if (/^(o\s+)?segund[oa]|2ª|2a\b|opção\s*2/i.test(t)) return true;
   if (
-    /\d{1,2}:\d{2}/.test(t) &&
-    /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero|otimo|ótimo|t[aá] otimo|t[aá] ótimo|legal|bom|maravilha|certo|fechado|perfeito)/i.test(
+    TIME_IN_TEXT_RE.test(t) &&
+    /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero|otimo|ótimo|t[aá] otimo|t[aá] ótimo|legal|bom|maravilha|certo|fechado|perfeito|marcar|agendar)/i.test(
       t,
     )
   ) {
     return true;
   }
   if (
-    /\d{1,2}:\d{2}/.test(t) &&
+    TIME_IN_TEXT_RE.test(t) &&
     /(segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)/i.test(t)
   ) {
     return true;
   }
-  // Fallback final: a mensagem é SÓ um horário (ex.: "18:20", "às 18:20"), sem
-  // texto adicional. Texto extra ao redor do horário (ex.: "Só largo às
+  // Fallback final: a mensagem é SÓ um horário (ex.: "18:20", "às 18:20", "9h"),
+  // sem texto adicional. Texto extra ao redor do horário (ex.: "Só largo às
   // 18:00" — uma RESTRIÇÃO, não uma escolha) não deve cair aqui. Caso real
   // (Clínica Bomfim, 09/07): "Só largo as 18:00" tinha "18:00" mas era recusa
   // dos horários ofertados, não aceite — o fallback antigo lia qualquer HH:MM
   // solto na frase como escolha.
-  return /^(?:[aà]s?\s+)?\d{1,2}[:h]\d{2}\s*(?:h(?:oras)?)?[.!?]?$/i.test(t);
+  return ONLY_TIME_RE.test(t);
 }
 
 /**

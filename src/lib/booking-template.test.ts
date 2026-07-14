@@ -563,8 +563,93 @@ describe("isSlotAcceptanceMessage", () => {
     ["Nenhum dos 2", false],
     ["Só largo as 18:00", false],
     ["não posso às 15:00", false],
+    // Caso real (Costa Lima Recreio, 21 97558-2703, 14/07): hora CHEIA, sem
+    // minutos. O regex antigo exigia `\d{1,2}:\d{2}`, então "9h" não era aceite
+    // de horário — o lead escolheu "9h" duas vezes e o slot nunca foi gravado.
+    ["9h", true],
+    ["9 h", true],
+    ["9hs", true],
+    ["9 horas", true],
+    ["às 9", true],
+    ["as 9", true],
+    ["9h30", true],
+    ["eu já falei que pode marcar 9h", true],
+    ["sexta 9h", true],
+    // Número solto continua NÃO sendo horário: seria ambíguo com dia do mês,
+    // idade, quantidade de filhos, etc.
+    ["9", false],
+    ["1 ano", false],
+    // Indisponibilidade em hora cheia continua sendo recusa, não aceite.
+    ["só saio do trabalho as 18h", false],
   ])("isSlotAcceptanceMessage(%j) → %s", (input, expected) => {
     expect(isSlotAcceptanceMessage(input)).toBe(expected);
+  });
+});
+
+// Caso real (Costa Lima Recreio, agente "Assistente Virtual", lead 21
+// 97558-2703, 14/07/2026). O agente ofertou "sexta 09:00 / 09:45", o lead
+// respondeu "9h" e depois mandou o nome completo — e o agente voltou a
+// perguntar "qual horário fica melhor pra você?".
+//
+// Cadeia da falha: "9h" não casava em NENHUM ramo de isSlotAcceptanceMessage
+// (todos exigiam minutos), tryAutoSelectOfferedSlot devolvia {} e
+// selected_slot_iso NUNCA era gravado. Como lead-patch-guard proíbe o LLM de
+// setar selected_slot_iso (só a heurística determinística pode), o campo ficou
+// vazio pra sempre: o booking determinístico nunca disparou e o guard anti-stall
+// caiu no ramo "sem slot escolhido" → reperguntou o horário e voltou pra
+// SLOT_OFFER, num loop.
+describe("tryAutoSelectOfferedSlot — hora cheia sem minutos (Costa Lima Recreio)", () => {
+  const slotsSexta = [
+    { iso: "2026-07-17T09:00:00-03:00", date_label: "sexta-feira, 17/07", time_label: "09:00" },
+    { iso: "2026-07-17T09:45:00-03:00", date_label: "sexta-feira, 17/07", time_label: "09:45" },
+  ];
+
+  it("'9h' seleciona o slot das 09:00", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSexta }, [
+      { role: "assistant", content: "Tenho sexta-feira às 09:00 e às 09:45. Qual prefere?" },
+      { role: "user", content: "9h" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-17T09:00:00-03:00");
+  });
+
+  it.each(["9 horas", "às 9", "9hs"])("'%s' também seleciona o slot das 09:00", (msg) => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSexta }, [
+      { role: "assistant", content: "Tenho sexta-feira às 09:00 e às 09:45. Qual prefere?" },
+      { role: "user", content: msg },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-17T09:00:00-03:00");
+  });
+
+  it("'eu já falei que pode marcar 9h' seleciona o slot das 09:00", () => {
+    const patch = tryAutoSelectOfferedSlot("NAME_COLLECT", { offered_slots: slotsSexta }, [
+      { role: "assistant", content: "Qual horário fica melhor pra você?" },
+      { role: "user", content: "eu já falei que pode marcar 9h" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-17T09:00:00-03:00");
+  });
+
+  it("'9h45' seleciona o segundo slot, não o primeiro", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSexta }, [
+      { role: "assistant", content: "Tenho sexta-feira às 09:00 e às 09:45. Qual prefere?" },
+      { role: "user", content: "9h45" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-17T09:45:00-03:00");
+  });
+
+  it("hora cheia que NÃO existe em offered_slots não seleciona nada", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSexta }, [
+      { role: "assistant", content: "Tenho sexta-feira às 09:00 e às 09:45. Qual prefere?" },
+      { role: "user", content: "15h" },
+    ]);
+    expect(patch).toEqual({});
+  });
+
+  it("indisponibilidade em hora cheia não vira escolha de slot", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slotsSexta }, [
+      { role: "assistant", content: "Tenho sexta-feira às 09:00 e às 09:45. Qual prefere?" },
+      { role: "user", content: "só saio do trabalho as 9h" },
+    ]);
+    expect(patch).toEqual({});
   });
 });
 
