@@ -34,6 +34,7 @@ import { Route as ApiPublicDiagFollowupRouteImport } from './routes/api/public/d
 import { Route as ApiPublicCronWarmupSequenceRouteImport } from './routes/api/public/cron/warmup-sequence'
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
+import { Route as ApiPublicCronMonitorDivergenciaRouteImport } from './routes/api/public/cron/monitor-divergencia'
 import { Route as ApiPublicCronKnowledgeDistillerRouteImport } from './routes/api/public/cron/knowledge-distiller'
 import { Route as ApiPublicCronFollowupSequenceRouteImport } from './routes/api/public/cron/followup-sequence'
 import { Route as ApiPublicCronFollowupRouteImport } from './routes/api/public/cron/followup'
@@ -176,6 +177,12 @@ const ApiPublicCronQueueRoute = ApiPublicCronQueueRouteImport.update({
   path: '/api/public/cron/queue',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicCronMonitorDivergenciaRoute =
+  ApiPublicCronMonitorDivergenciaRouteImport.update({
+    id: '/api/public/cron/monitor-divergencia',
+    path: '/api/public/cron/monitor-divergencia',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicCronKnowledgeDistillerRoute =
   ApiPublicCronKnowledgeDistillerRouteImport.update({
     id: '/api/public/cron/knowledge-distiller',
@@ -256,6 +263,7 @@ export interface FileRoutesByFullPath {
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
+  '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
@@ -289,6 +297,7 @@ export interface FileRoutesByTo {
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
+  '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
@@ -327,6 +336,7 @@ export interface FileRoutesById {
   '/api/public/cron/followup': typeof ApiPublicCronFollowupRoute
   '/api/public/cron/followup-sequence': typeof ApiPublicCronFollowupSequenceRoute
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
+  '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
@@ -365,6 +375,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/knowledge-distiller'
+    | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
     | '/api/public/cron/warmup-sequence'
@@ -398,6 +409,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/knowledge-distiller'
+    | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
     | '/api/public/cron/warmup-sequence'
@@ -435,6 +447,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/followup'
     | '/api/public/cron/followup-sequence'
     | '/api/public/cron/knowledge-distiller'
+    | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/queue'
     | '/api/public/cron/warmup'
     | '/api/public/cron/warmup-sequence'
@@ -462,6 +475,7 @@ export interface RootRouteChildren {
   ApiPublicCronFollowupRoute: typeof ApiPublicCronFollowupRoute
   ApiPublicCronFollowupSequenceRoute: typeof ApiPublicCronFollowupSequenceRoute
   ApiPublicCronKnowledgeDistillerRoute: typeof ApiPublicCronKnowledgeDistillerRoute
+  ApiPublicCronMonitorDivergenciaRoute: typeof ApiPublicCronMonitorDivergenciaRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
   ApiPublicCronWarmupSequenceRoute: typeof ApiPublicCronWarmupSequenceRoute
@@ -655,6 +669,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicCronQueueRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/cron/monitor-divergencia': {
+      id: '/api/public/cron/monitor-divergencia'
+      path: '/api/public/cron/monitor-divergencia'
+      fullPath: '/api/public/cron/monitor-divergencia'
+      preLoaderRoute: typeof ApiPublicCronMonitorDivergenciaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron/knowledge-distiller': {
       id: '/api/public/cron/knowledge-distiller'
       path: '/api/public/cron/knowledge-distiller'
@@ -801,6 +822,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicCronFollowupRoute: ApiPublicCronFollowupRoute,
   ApiPublicCronFollowupSequenceRoute: ApiPublicCronFollowupSequenceRoute,
   ApiPublicCronKnowledgeDistillerRoute: ApiPublicCronKnowledgeDistillerRoute,
+  ApiPublicCronMonitorDivergenciaRoute: ApiPublicCronMonitorDivergenciaRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,
   ApiPublicCronWarmupSequenceRoute: ApiPublicCronWarmupSequenceRoute,
