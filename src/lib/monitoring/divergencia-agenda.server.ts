@@ -1,15 +1,82 @@
-// Monitor de DIVERGÊNCIA de agendamento (lógica canônica, server-only).
+// Monitor de agendamento (lógica canônica, server-only). Dois sinais, ambos
+// SOMENTE LEITURA:
 //
-// Compara a data que o AGENTE afirmou ao lead no texto (DD/MM) com a data
-// efetivamente AGENDADA (booked_slot_iso). Quando a data agendada nunca apareceu
-// no texto → agendamento fantasma: o lead acha que vai num dia, o CRM tem outro
-// (caso Costa Lima Recreio, Melissa 21 99305-7044).
+//  1) DIVERGÊNCIA — a data que o agente afirmou ao lead no texto (DD/MM) não bate
+//     com a data efetivamente agendada (booked_slot_iso). Fantasma: o lead acha
+//     um dia, o CRM tem outro (caso Costa Lima Recreio, Melissa 21 99305-7044).
 //
-// Reusa EXATAMENTE os mesmos helpers do guard de booking (affirmedDatesFromAssistant
-// + ddmmInBrt em booking-template.ts) — o que o scheduler bloqueia em tempo real é
-// o mesmo que este monitor audita depois. Somente LEITURA.
+//  2) SLOT PRESO (stale) — o slot escolhido (selected_slot_iso) não está na oferta
+//     corrente (offered_slots) e o agendamento NÃO saiu (sem appointment_id).
+//     Seleção "presa" numa rodada de oferta anterior → booking falha técnico e a
+//     conversa trava/escala (caso Costa Lima Recreio, Neymar Junior 21 97558-2703).
+//
+// Os helpers abaixo ESPELHAM src/lib/booking-template.ts (mantidos em sincronia);
+// ficam inline de propósito para o monitor não depender da ordem de merge das PRs
+// que introduzem esses helpers no app.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { affirmedDatesFromAssistant, ddmmInBrt } from "@/lib/booking-template";
+
+// ── helpers (espelham src/lib/booking-template.ts) ─────────────────────────
+
+interface OfferedSlotLite {
+  iso: string;
+}
+
+/** DD/MM (zero-padded, fuso BRT) de um instante ISO. "" se inválido. */
+export function ddmmInBrt(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+  }).format(d);
+}
+
+/** Rótulo curto "qua 15/07 13:00" p/ logs/relatório. */
+export function labelBrt(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const wd = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "short" })
+    .format(d)
+    .replace(".", "");
+  const hm = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+  return `${wd} ${ddmmInBrt(iso)} ${hm}`;
+}
+
+/** Datas DD/MM (zero-padded) afirmadas pelo agente nos textos dados. */
+export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const raw of texts) {
+    const matches = (raw ?? "").matchAll(/\b(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?\b/g);
+    for (const m of matches) {
+      const dd = Number(m[1]);
+      const mm = Number(m[2]);
+      if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) {
+        out.add(`${String(dd).padStart(2, "0")}/${String(mm).padStart(2, "0")}`);
+      }
+    }
+  }
+  return out;
+}
+
+/** selected_slot_iso NÃO está entre os horários da oferta corrente. Fail-open
+ *  quando offered vazio (sem oferta atual não dá pra aferir). */
+export function selectedSlotIsStale(
+  selectedIso: string | null | undefined,
+  offeredSlots: OfferedSlotLite[] | null | undefined,
+): boolean {
+  const sel = (selectedIso ?? "").trim();
+  const offered = offeredSlots ?? [];
+  if (!sel || offered.length === 0) return false;
+  return !offered.some((s) => s.iso === sel);
+}
+
+// ── tipos de saída ─────────────────────────────────────────────────────────
 
 export interface DivergenciaItem {
   conv: string;
@@ -30,6 +97,25 @@ export interface DivergenciaResumo {
   sem_iso: number;
   divergencias: DivergenciaItem[];
 }
+
+export interface StaleSlotItem {
+  conv: string;
+  conta: string;
+  fone: string;
+  atualizado: string;
+  selected_iso: string;
+  offered_isos: string[];
+  stage: string | null;
+  escalation_reason: string | null;
+}
+
+export interface StaleSlotResumo {
+  total_sem_agendamento: number; // conversas com selected_slot_iso e SEM appointment_id
+  stale: number;
+  itens: StaleSlotItem[];
+}
+
+// ── util ───────────────────────────────────────────────────────────────────
 
 /** Lê TODAS as linhas de um builder, paginando de 1000 em 1000 (o Supabase corta
  *  em 1000 por página — sem isto lotes grandes truncam silenciosamente). */
@@ -53,51 +139,29 @@ async function fetchAll<T = Record<string, unknown>>(builder: {
   return rows;
 }
 
-/** Rótulo curto "qua 15/07 13:00" p/ logs/relatório. */
-function labelBrt(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  const wd = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", weekday: "short" })
-    .format(d)
-    .replace(".", "");
-  const hm = new Intl.DateTimeFormat("pt-BR", {
-    timeZone: "America/Sao_Paulo",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(d);
-  return `${wd} ${ddmmInBrt(iso)} ${hm}`;
+interface ConvRow {
+  id: string;
+  agent_id: string | null;
+  phone: string | null;
+  lead_phone: string | null;
+  meta: {
+    stage?: string;
+    lead_data?: {
+      booked_slot_iso?: string;
+      selected_slot_iso?: string;
+      offered_slots?: OfferedSlotLite[];
+      appointment_id?: string | number;
+      escalation_reason?: string;
+    };
+  } | null;
+  atualizado_em: string;
 }
 
-/**
- * Varre as conversas com agendamento e classifica cada uma.
- * @param sb        cliente Supabase service-role (getSelfhost()).
- * @param windowDays se informado, só conversas atualizadas nos últimos N dias
- *                   (o cron usa janela curta; a varredura manual usa a base toda).
- */
-export async function scanDivergenciasAgenda(
+/** agent_id → nome da conta (para rotular por clínica). */
+async function resolveAccountNames(
   sb: SupabaseClient,
-  windowDays?: number,
-): Promise<DivergenciaResumo> {
-  let convBuilder = sb
-    .from("conversations")
-    .select("id, agent_id, phone, lead_phone, meta, atualizado_em")
-    .not("meta->lead_data->>booked_slot_iso", "is", null)
-    .order("atualizado_em", { ascending: false });
-  if (windowDays && windowDays > 0) {
-    const since = new Date(Date.now() - windowDays * 86_400_000).toISOString();
-    convBuilder = convBuilder.gte("atualizado_em", since);
-  }
-  const convs = await fetchAll<{
-    id: string;
-    agent_id: string | null;
-    phone: string | null;
-    lead_phone: string | null;
-    meta: { lead_data?: { booked_slot_iso?: string; selected_slot_iso?: string } } | null;
-    atualizado_em: string;
-  }>(convBuilder);
-
-  // agentes → contas (para agrupar/rotular por clínica)
+  convs: ConvRow[],
+): Promise<(agentId: string | null) => string> {
   const agentIds = [...new Set(convs.map((c) => c.agent_id).filter(Boolean))] as string[];
   const agentToAccount: Record<string, string> = {};
   for (let i = 0; i < agentIds.length; i += 200) {
@@ -110,6 +174,34 @@ export async function scanDivergenciasAgenda(
     const { data } = await sb.from("accounts").select("id, nome").in("id", accountIds.slice(i, i + 200));
     for (const a of data ?? []) accountName[a.id as string] = a.nome as string;
   }
+  return (agentId) => accountName[agentToAccount[agentId ?? ""] ?? ""] ?? "(conta?)";
+}
+
+/** "atualizado_em" >= agora - N dias, em ISO; null se sem janela. */
+function sinceIso(windowDays?: number): string | null {
+  if (!windowDays || windowDays <= 0) return null;
+  return new Date(Date.now() - windowDays * 86_400_000).toISOString();
+}
+
+// ── sinal 1: divergência (afirmado no texto ≠ agendado) ────────────────────
+
+/**
+ * @param sb        cliente Supabase service-role (getSelfhost()).
+ * @param windowDays se informado, só conversas atualizadas nos últimos N dias.
+ */
+export async function scanDivergenciasAgenda(
+  sb: SupabaseClient,
+  windowDays?: number,
+): Promise<DivergenciaResumo> {
+  let convQuery = sb
+    .from("conversations")
+    .select("id, agent_id, phone, lead_phone, meta, atualizado_em")
+    .not("meta->lead_data->>booked_slot_iso", "is", null)
+    .order("atualizado_em", { ascending: false });
+  const sinceDiv = sinceIso(windowDays);
+  if (sinceDiv) convQuery = convQuery.gte("atualizado_em", sinceDiv);
+  const convs = await fetchAll<ConvRow>(convQuery);
+  const contaDe = await resolveAccountNames(sb, convs);
 
   // mensagens do agente, em lote PAGINADO (um lote de conversas rende >1000 msgs
   // e a página de 1000 truncaria — foi o que escondeu a conversa da Melissa).
@@ -161,7 +253,7 @@ export async function scanDivergenciasAgenda(
           .slice(0, 140) ?? "";
       resumo.divergencias.push({
         conv: c.id,
-        conta: accountName[agentToAccount[c.agent_id ?? ""] ?? ""] ?? "(conta?)",
+        conta: contaDe(c.agent_id),
         fone: c.lead_phone || c.phone || "(sem fone)",
         atualizado: c.atualizado_em,
         agendado_iso: booked,
@@ -174,4 +266,49 @@ export async function scanDivergenciasAgenda(
   return resumo;
 }
 
-export { labelBrt };
+// ── sinal 2: slot preso (selected ∉ offered, sem agendamento) ──────────────
+
+/**
+ * Conversas em que o slot escolhido não está na oferta corrente E o agendamento
+ * não saiu (sem appointment_id) — o padrão de falha do caso Neymar. Só considera
+ * SEM appointment_id de propósito: com agendamento, o `selected ∉ offered` do
+ * snapshot é majoritariamente ruído de ofertas sequenciais/remarcação (a oferta
+ * foi sobrescrita DEPOIS do booking), não a falha que o guard pega.
+ */
+export async function scanStaleSlots(
+  sb: SupabaseClient,
+  windowDays?: number,
+): Promise<StaleSlotResumo> {
+  let staleQuery = sb
+    .from("conversations")
+    .select("id, agent_id, phone, lead_phone, meta, atualizado_em")
+    .not("meta->lead_data->>selected_slot_iso", "is", null)
+    .is("meta->lead_data->>appointment_id", null)
+    .order("atualizado_em", { ascending: false });
+  const sinceStale = sinceIso(windowDays);
+  if (sinceStale) staleQuery = staleQuery.gte("atualizado_em", sinceStale);
+  const convs = await fetchAll<ConvRow>(staleQuery);
+  const contaDe = await resolveAccountNames(sb, convs);
+
+  const resumo: StaleSlotResumo = {
+    total_sem_agendamento: convs.length,
+    stale: 0,
+    itens: [],
+  };
+  for (const c of convs) {
+    const ld = c.meta?.lead_data ?? {};
+    if (!selectedSlotIsStale(ld.selected_slot_iso, ld.offered_slots)) continue;
+    resumo.stale++;
+    resumo.itens.push({
+      conv: c.id,
+      conta: contaDe(c.agent_id),
+      fone: c.lead_phone || c.phone || "(sem fone)",
+      atualizado: c.atualizado_em,
+      selected_iso: (ld.selected_slot_iso ?? "").trim(),
+      offered_isos: (ld.offered_slots ?? []).map((s) => s.iso),
+      stage: c.meta?.stage ?? null,
+      escalation_reason: ld.escalation_reason ?? null,
+    });
+  }
+  return resumo;
+}
