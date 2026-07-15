@@ -290,6 +290,94 @@ async function fetchAvailableTimesForDate(
   return parseCalendarDay(json, date.slice(0, 10));
 }
 
+/** "HH:MM" (ou "H:MM") → minutos do dia. -1 se inválido. */
+function timeToMin(t: string): number {
+  const m = /(\d{1,2}):(\d{2})/.exec(t ?? "");
+  if (!m) return -1;
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mi)) return -1;
+  return h * 60 + mi;
+}
+
+interface BusyInterval {
+  localDate: string; // YYYY-MM-DD
+  professionalId?: number;
+  fromMin: number;
+  toMin: number;
+}
+
+/**
+ * Intervalos REALMENTE ocupados na agenda (appointment/list), por dia e
+ * profissional. A agenda ONLINE (get_avaliable_times_calendar) devolve horários
+ * como livres que na verdade já têm consulta marcada — validado em produção
+ * (Costa Lima Recreio: 17/07 09:45 vinha "livre" mas havia paciente 09:45-10:00,
+ * e o create batia em "O horário solicitado encontra-se ocupado"). Cruzamos as
+ * duas fontes para só ofertar o que está de fato livre.
+ */
+async function fetchBusyIntervals(
+  config: ClinicorpConfig,
+  from: string,
+  to: string,
+): Promise<BusyInterval[]> {
+  const url = new URL(`${config.baseUrl}/rest/v1/appointment/list`);
+  url.searchParams.set("subscriber_id", config.subscriberId);
+  url.searchParams.set("business_id", String(config.businessId));
+  url.searchParams.set("from", from.slice(0, 10));
+  url.searchParams.set("to", to.slice(0, 10));
+
+  const res = await fetchClinicorp(url.toString(), { headers: authHeaders(config) });
+  if (!res.ok) {
+    console.error(`[clinicorp] busy intervals: list falhou ${res.status}`);
+    return [];
+  }
+  const json = (await res.json()) as unknown;
+  const rows = Array.isArray(json) ? (json as Record<string, unknown>[]) : [];
+  const out: BusyInterval[] = [];
+  for (const a of rows) {
+    if (a.Deleted) continue;
+    const localDate = String(a.date ?? "").slice(0, 10);
+    const fromMin = timeToMin(String(a.fromTime ?? ""));
+    const toMin = timeToMin(String(a.toTime ?? ""));
+    if (!localDate || fromMin < 0 || toMin < 0) continue;
+    const dpid = Number(
+      a.Dentist_PersonId ?? a.dentist_person_id ?? a.DentistPersonId ?? a.dentistPersonId,
+    );
+    out.push({
+      localDate,
+      professionalId: Number.isFinite(dpid) && dpid > 0 ? dpid : undefined,
+      fromMin,
+      toMin,
+    });
+  }
+  return out;
+}
+
+/**
+ * Um slot (fromTime + duração) está LIVRE quando nenhum agendamento real do
+ * mesmo dia/profissional se sobrepõe à janela de reserva. Janela = [start,
+ * start+dur). Profissional diferente não conflita; agendamento adjacente
+ * (termina onde o slot começa) não conflita. É a mesma checagem que o Clinicorp
+ * faz no create — por isso casa com o "horário ocupado" que ele devolve.
+ */
+export function isSlotFreeAgainstBusy(
+  slot: { localDate: string; fromTime: string; dentistPersonId?: number },
+  durMin: number,
+  busy: ReadonlyArray<{ localDate: string; professionalId?: number; fromMin: number; toMin: number }>,
+): boolean {
+  const startMin = timeToMin(slot.fromTime);
+  if (startMin < 0) return true; // sem hora parseável, não descarta
+  const endMin = startMin + durMin;
+  for (const b of busy) {
+    if (b.localDate !== slot.localDate) continue;
+    if (slot.dentistPersonId && b.professionalId && b.professionalId !== slot.dentistPersonId) {
+      continue; // profissionais diferentes não conflitam
+    }
+    if (startMin < b.toMin && endMin > b.fromMin) return false; // sobreposição
+  }
+  return true;
+}
+
 export async function listClinicorpSlots(
   accountId: string,
   from: string,
@@ -299,9 +387,10 @@ export async function listClinicorpSlots(
   const dates = enumerateDates(from, to);
   if (!dates.length) return [];
 
-  const perDay = await Promise.all(
-    dates.map((d) => fetchAvailableTimesForDate(config, d).catch(() => [])),
-  );
+  const [perDay, busy] = await Promise.all([
+    Promise.all(dates.map((d) => fetchAvailableTimesForDate(config, d).catch(() => []))),
+    fetchBusyIntervals(config, from, to).catch(() => [] as BusyInterval[]),
+  ]);
   let merged = perDay.flat();
 
   if (config.profissionalIds.length > 0) {
@@ -309,6 +398,23 @@ export async function listClinicorpSlots(
     merged = merged.filter(
       (s) => !s.dentistPersonId || allowed.has(s.dentistPersonId),
     );
+  }
+
+  // CROSS-CHECK: remove o horário que colide com um agendamento REAL. A janela
+  // de reserva vai de fromTime até fromTime+duração (o que o create tenta). Um
+  // slot é livre só se NENHUM agendamento do mesmo profissional (ou de qualquer
+  // um, quando o slot não traz profissional) se sobrepõe a essa janela. Sem
+  // isto, o agente ofertava horário ocupado e o create falhava.
+  const dur = config.duracaoConsulta > 0 ? config.duracaoConsulta : 40;
+  if (busy.length > 0) {
+    const before = merged.length;
+    merged = merged.filter((s) => isSlotFreeAgainstBusy(s, dur, busy));
+    const removed = before - merged.length;
+    if (removed > 0) {
+      console.log(
+        `[clinicorp] cross-check: removidos ${removed}/${before} horários ocupados (agenda online x agendamentos reais)`,
+      );
+    }
   }
 
   const seen = new Set<string>();

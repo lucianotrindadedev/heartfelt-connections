@@ -988,33 +988,41 @@ async function execListarHorarios(
   const fmt = (d: Date) =>
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
 
+  const bounds = periodoParaHoras(resolvedPeriodo);
+  const inPeriodo = (arr: ClinicorpSlot[]) =>
+    bounds
+      ? arr.filter((s) => {
+          const h = Number(s.fromTime.slice(0, 2));
+          return Number.isFinite(h) && h >= bounds.min && h < bounds.max;
+        })
+      : arr;
+
   let slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(end));
-  // Sem vaga na janela próxima (hoje + 3 dias)? Amplia automaticamente para achar
-  // as próximas datas livres — mesma lógica do Google Calendar.
-  if (slots.length === 0 && !anchor && diasAFrente == null) {
+  // Amplia a busca para a janela ampla (até 60 dias) quando: (a) NÃO há vaga
+  // nenhuma na janela próxima, OU (b) o lead pediu um TURNO e não há vaga NESSE
+  // turno na janela próxima. Assim "de tarde" VARRE vários dias até achar uma
+  // tarde livre — em vez de devolver manhã ou vazio. Combinado com o cross-check
+  // (só horários REALMENTE livres), o agente para de ofertar horário ocupado e
+  // sempre alcança as próximas vagas de verdade. Só em busca "simples" (o LLM
+  // não fixou data nem dias_a_frente).
+  const canExpand = !anchor && diasAFrente == null;
+  if (canExpand && (slots.length === 0 || (!!bounds && inPeriodo(slots).length === 0))) {
     const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     console.log(
-      `[scheduler] listar_horarios (clinicorp) conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+      `[scheduler] listar_horarios (clinicorp) conv=${ctx.conversationId}: sem vaga${bounds ? ` no turno (${resolvedPeriodo})` : ""} em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
     );
     slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(wideEnd));
   }
-  // Filtro de TURNO (manhã/tarde/noite) ANTES do corte de 6. Sem isso, o
-  // slice(0,6) pegava só os horários mais cedo (manhã) e, quando o lead pedia
-  // "tarde", a resposta era "não temos à tarde" mesmo com a tarde livre — os
-  // slots da tarde caíam fora das 6 primeiras posições cronológicas.
-  const bounds = periodoParaHoras(resolvedPeriodo);
+  // Filtro de TURNO ANTES do corte de 6 (senão o slice pegava só os mais cedo).
   let periodoAviso: string | undefined;
   if (bounds) {
-    const noPeriodo = slots.filter((s) => {
-      const h = Number(s.fromTime.slice(0, 2));
-      return Number.isFinite(h) && h >= bounds.min && h < bounds.max;
-    });
+    const noPeriodo = inPeriodo(slots);
     if (noPeriodo.length > 0) {
       slots = noPeriodo;
     } else if (slots.length > 0) {
-      // Turno pedido sem vaga, mas há horários em outro turno: não esconde os
+      // Nem na janela ampla há vaga NESSE turno, mas há em outro: não esconde os
       // reais — avisa o LLM para ser honesto ("à tarde não tenho, mas tenho...").
-      periodoAviso = `Sem vaga no turno pedido (${resolvedPeriodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
+      periodoAviso = `Sem vaga no turno pedido (${resolvedPeriodo}) nos próximos ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
     }
   }
   // Limita a 6. Se o lead pediu uma hora exata ("16h"), prioriza os mais
