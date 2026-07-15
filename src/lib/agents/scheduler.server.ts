@@ -1386,6 +1386,23 @@ async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
   return patchFromSlot(candidates[idx]!);
 }
 
+/**
+ * true quando o horário a agendar NÃO é um dos que a busca realmente ofereceu.
+ * selected_slot_iso deveria sempre ser membro de offered_slots (a escolha sai
+ * de lá). Se não é, é um horário fantasma — inventado pelo modelo ou um slot
+ * velho que sobrou depois de offered_slots ser atualizado. Sem offered_slots
+ * (lista vazia) não dá para validar → retorna false (deixa outros guards agir).
+ */
+export function isSlotNotOffered(
+  selectedIso: string | null | undefined,
+  offeredSlots: ReadonlyArray<{ iso: string }>,
+): boolean {
+  const sel = (selectedIso ?? "").trim();
+  if (!sel) return false;
+  if (offeredSlots.length === 0) return false;
+  return !offeredSlots.some((s) => s.iso === sel);
+}
+
 async function execCriarAgendamento(
   ctx: AgentContext,
   agendaLabel?: string,
@@ -1480,6 +1497,41 @@ async function execCriarAgendamento(
 
   if (!ld.selected_slot_iso) {
     return { result: JSON.stringify({ ok: false, error: "selected_slot_iso ausente" }) };
+  }
+
+  // GUARD DE DISPONIBILIDADE REAL: o horário a marcar TEM que ser um dos que a
+  // busca (listar_horarios) realmente ofereceu. offered_slots é a lista de
+  // vagas REAIS da agenda; selected_slot_iso deveria sempre sair dela (a
+  // heurística/o resolvedor escolhem por índice dentro dela). Se não bate, é
+  // um horário FANTASMA — ou um slot velho que sobrou de uma oferta anterior
+  // (offered_slots foi atualizado e a escolha não), ou uma hora inventada.
+  // Caso real (Costa Lima Recreio, Osiane 21 96678-6864): ofertou a tarde
+  // (17/07 13:00), a lead pediu manhã, offered_slots virou os da manhã, mas
+  // selected_slot_iso ficou preso em 13:00 → o create tentava marcar 13:00.
+  // Só valida quando há offered_slots; sem eles, deixa os outros guards agirem.
+  const offered = ld.offered_slots ?? [];
+  if (isSlotNotOffered(ld.selected_slot_iso, offered)) {
+    console.warn(
+      `[scheduler:telemetry] ${JSON.stringify({
+        event: "slot_not_offered_blocked",
+        conv: ctx.conversationId,
+        account: ctx.accountId,
+        agent: ctx.agentId,
+        selected: ld.selected_slot_iso,
+        offered: offered.map((s) => s.iso),
+        model: ctx.model,
+      })}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error_kind: "slot_not_offered",
+        error:
+          `O horário ${slotHumanLabel(ld.selected_slot_iso)} NÃO está na lista de horários realmente disponíveis desta agenda — não existe ou é de uma oferta antiga. NÃO agende esse horário e NÃO invente horários. Chame listar_horarios e ofereça ao lead APENAS os horários exatos que a ferramenta retornar.`,
+      }),
+      // Zera a escolha velha/fantasma para forçar nova listagem real.
+      patch: { selected_slot_iso: undefined },
+    };
   }
 
   // GUARD DE CONSISTÊNCIA (data afirmada ao lead vs. slot escolhido): se o
@@ -2640,6 +2692,21 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           stripLlmForbiddenFields((cRes.lead_data_patch ?? {}) as Record<string, unknown>),
         ) as Partial<LeadData>,
       );
+    }
+  }
+
+  // Persiste o MOTIVO da falha de agendamento no meta da mensagem, em QUALQUER
+  // caminho (determinístico, tool-loop ou late booking) — não só no ramo de
+  // confirmação falsa. Sem isto ficávamos cegos ao "por que" de uma falha
+  // técnica: caso real (Costa Lima Recreio, Osiane 21 96678-6864) escalou por
+  // falha técnica e nenhuma mensagem guardou o erro real da API.
+  if (lastBookingFailureResult) {
+    const em = lastBookingFailureResult.match(/"error"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    const ek = lastBookingFailureResult.match(/"error_kind"\s*:\s*"([^"]+)"/);
+    if (em && mergedTelemetry.booking_error == null) mergedTelemetry.booking_error = em[1].slice(0, 300);
+    if (ek && mergedTelemetry.booking_error_kind == null) mergedTelemetry.booking_error_kind = ek[1];
+    if (ctx.leadData.selected_slot_iso && mergedTelemetry.booking_failed_slot == null) {
+      mergedTelemetry.booking_failed_slot = ctx.leadData.selected_slot_iso;
     }
   }
 
