@@ -93,6 +93,7 @@ import {
   slotsOfferedInLastTurn,
   patchFromSlot,
   mentionsUnavailability,
+  leadRequestedUnofferedDate,
   requestedDateFromText,
   requestedPeriodoFromText,
   requestedHoraFromText,
@@ -246,7 +247,8 @@ const SCHEDULER_TOOLS: LlmTool[] = [
           data_alvo: {
             type: "string",
             description:
-              "Data específica pedida pelo lead, no formato YYYY-MM-DD (ex: '2026-07-25'). A busca começa nessa data. Omita se o lead não citou uma data.",
+              "Data específica pedida pelo lead PARA A CONSULTA, no formato YYYY-MM-DD (ex: '2026-07-25'). A busca começa nessa data. Omita se o lead não citou uma data. " +
+              "NÃO use a data em que o lead VOLTA de viagem / fica disponível ('volto dia 07', 'chego dia 10', 'estou de férias até X') — essa é o PRIMEIRO dia possível, não a data desejada; ofereça a partir do dia SEGUINTE à volta, nunca o próprio dia da volta. Se o lead disser a data desejada depois ('quero dia 11'), use essa.",
           },
           dias_a_frente: {
             type: "integer",
@@ -1246,6 +1248,12 @@ async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
   // Recusa/indisponibilidade NUNCA vai para a LLM — os guards determinísticos
   // que impedem "só largo às 18:00" de virar agendamento continuam mandando.
   if (looksLikeDecline(lastUser) || mentionsUnavailability(lastUser.toLowerCase())) return {};
+
+  // Lead pediu uma DATA que não está entre os slots ofertados ("dia 11/08" com
+  // ofertas de 07-08/08): quer trocar de dia. Não deixa a LLM escolher um slot
+  // do dia errado — o agente re-lista na data pedida. Ver o mesmo guard em
+  // tryAutoSelectOfferedSlot (caso Wagner 21 99401-9696).
+  if (leadRequestedUnofferedDate(ctx.leadData, ctx.history)) return {};
 
   // Candidatos: o que o agente falou no último turno, na ordem em que falou.
   // Sem isso, "o primeiro" apontaria para offered_slots[0] — um horário que o

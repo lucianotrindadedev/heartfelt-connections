@@ -1447,7 +1447,27 @@ export function mentionsUnavailability(text: string): boolean {
       t,
     ) ||
     /amanh[ãa]\s+n[ãa]o\b/.test(t) ||
-    /\bimposs[íi]vel\b/.test(t)
+    /\bimposs[íi]vel\b/.test(t) ||
+    mentionsTravelReturn(t)
+  );
+}
+
+/**
+ * O lead está VIAJANDO / de férias e cita o dia da VOLTA ("volto dia 07", "só
+ * chego dia X", "estou viajando", "de férias"). Essa data é quando ele fica
+ * DISPONÍVEL, não quando quer a consulta — não pode virar âncora de
+ * agendamento nem ser lida como escolha. Caso real (Costa Lima Recreio, Wagner
+ * 21 99401-9696): "estou viajando de férias volto o rio dia 07 de agosto" fez o
+ * sistema ofertar/agendar justamente o 07/08 (dia da volta, à noite).
+ */
+export function mentionsTravelReturn(text: string): boolean {
+  const t = (text ?? "").toLowerCase();
+  if (!t) return false;
+  return (
+    /\bviaj/.test(t) || // viajar, viajando, viagem
+    /\bde\s+f[ée]rias\b/.test(t) ||
+    /\bs[óo]\s+(volto|chego|retorno|regresso)\b/.test(t) ||
+    /\b(volto|chego|retorno|regresso)\s+(dia|no\s+dia|em|s[óo]|de|ao?)\b/.test(t)
   );
 }
 
@@ -1492,6 +1512,41 @@ export function ddmmInBrt(iso: string): string {
     day: "2-digit",
     month: "2-digit",
   }).format(d); // "15/07"
+}
+
+/**
+ * Data ABSOLUTA (DD/MM zero-padded) que o lead escreveu numa mensagem, ou null.
+ * Reconhece "11/08", "dia 11/08", "11/8", "dia 11 de agosto", "11 de agosto".
+ * relativeTargetDateBrt só entende relativo/dia-da-semana — não datas absolutas.
+ *
+ * NÃO casa horário ("14:30" — separador ":"/"h", não "/") nem valor/endereço
+ * ("13.685" — ponto, e o mês precisa ser 1-12). Usada para detectar quando o
+ * lead pede uma data que NÃO está entre os slots ofertados (ver
+ * requestedDdMmFromRecentUser / o guard em tryAutoSelectOfferedSlot).
+ */
+export function absoluteDdMmFromText(text: string): string | null {
+  const t = (text ?? "").toLowerCase();
+  if (!t) return null;
+  // Numérica: "11/08", "dia 11/8". Barra ou hífen; NÃO ponto (evita "13.685").
+  const num = t.match(/\b(\d{1,2})[/-](\d{1,2})(?![/\-.]?\d)/);
+  if (num) {
+    const d = Number(num[1]);
+    const m = Number(num[2]);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12) {
+      return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}`;
+    }
+  }
+  // Textual: "11 de agosto", "11 agosto".
+  const semAcc = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const txt = semAcc.match(/\b(\d{1,2})\s*(?:de\s+)?([a-z]+)\b/);
+  if (txt) {
+    const d = Number(txt[1]);
+    const m = MONTHS_PT[txt[2]!];
+    if (m && d >= 1 && d <= 31) {
+      return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -1782,11 +1837,53 @@ function lastAssistantTurnText(
   return turn.join("\n");
 }
 
+/**
+ * As mensagens do lead do ÚLTIMO turno (a rajada final de mensagens do lead, sem
+ * fala do agente no meio). O lead costuma quebrar um pedido em várias mensagens
+ * seguidas ("Pode ser dia 11/08" + "Na parte da manhã") — olhar só a última
+ * perderia a data que veio na mensagem anterior da mesma rajada.
+ */
+function lastUserBurst(
+  history: { role: "user" | "assistant"; content: string }[],
+): string[] {
+  const out: string[] = [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role !== "user") break;
+    out.unshift(history[i]!.content);
+  }
+  return out;
+}
+
 export function patchFromSlot(slot: OfferedSlot): Partial<LeadData> {
   return {
     selected_slot_iso: slot.iso,
     ...(slot.dentist_person_id != null ? { dentist_person_id: slot.dentist_person_id } : {}),
   };
+}
+
+/**
+ * true quando o lead, na sua rajada final de mensagens, pediu uma DATA absoluta
+ * ("dia 11/08") que NÃO corresponde a nenhum slot ofertado — sinal de que ele
+ * quer MUDAR de dia, não escolher entre os horários já oferecidos. Nesse caso
+ * nenhuma escolha (nem determinística, nem por LLM) deve finalizar um slot: o
+ * agente precisa re-listar na data pedida. Caso real (Costa Lima Recreio,
+ * Wagner 21 99401-9696): ofertou 07/08 e 08/08, o lead pediu "dia 11/08" + "de
+ * manhã", e o "manhã" agendava 07/08 09:00 — o dia que ele acabara de recusar.
+ * O lead costuma quebrar "dia 11/08" e "de manhã" em duas mensagens seguidas,
+ * por isso olhamos a rajada inteira, não só a última.
+ */
+export function leadRequestedUnofferedDate(
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+): boolean {
+  const slots = leadData.offered_slots ?? [];
+  if (slots.length === 0) return false;
+  const offeredDdMm = new Set(slots.map((s) => ddmmInBrt(s.iso)).filter(Boolean));
+  for (const msg of lastUserBurst(history)) {
+    const ddmm = absoluteDdMmFromText(msg);
+    if (ddmm && !offeredDdMm.has(ddmm)) return true;
+  }
+  return false;
 }
 
 // Um horário citado NO MEIO de uma frase, em qualquer forma: "09:00", "9h30",
@@ -1893,6 +1990,10 @@ export function tryAutoSelectOfferedSlot(
 
   const lastUser = history[lastUserIdx]!.content.trim();
   if (!lastUser) return {};
+
+  // GUARD: o lead pediu uma DATA que NÃO está entre os slots ofertados. Ele
+  // está tentando MUDAR de dia — não finalize nenhum slot (nem por turno).
+  if (leadRequestedUnofferedDate(leadData, history)) return {};
 
   const assistantText = recentAssistantContext(history, lastUserIdx);
   const lastTurnText = lastAssistantTurnText(history, lastUserIdx);

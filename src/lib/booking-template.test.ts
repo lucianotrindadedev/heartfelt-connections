@@ -17,6 +17,7 @@ import {
   formatCpf,
   getMissingBookingFields,
   mentionsUnavailability,
+  absoluteDdMmFromText,
   relativeDateIsExplanatory,
   requestedDateFromText,
   requestedPeriodoFromText,
@@ -210,6 +211,64 @@ describe("mentionsUnavailability", () => {
     expect(mentionsUnavailability("pode ser amanhã")).toBe(false);
     expect(mentionsUnavailability("quero amanhã de manhã")).toBe(false);
     expect(mentionsUnavailability("prefiro dia 15")).toBe(false);
+  });
+  // Data de VOLTA de viagem = indisponível até lá, não é pedido de agendamento.
+  // Caso real (Costa Lima Recreio, Wagner 21 99401-9696).
+  it("detecta viagem / volta como indisponibilidade", () => {
+    expect(mentionsUnavailability("estou viajando de férias volto o rio dia 07 de agosto")).toBe(true);
+    expect(mentionsUnavailability("só chego dia 07")).toBe(true);
+    expect(mentionsUnavailability("volto dia 11")).toBe(true);
+    expect(mentionsUnavailability("tô de férias")).toBe(true);
+  });
+  it("NÃO confunde pedido real de data com viagem", () => {
+    expect(mentionsUnavailability("pode ser dia 11/08")).toBe(false);
+    expect(mentionsUnavailability("na parte da manhã")).toBe(false);
+  });
+});
+
+// absoluteDdMmFromText — data absoluta escrita pelo lead (não relativa).
+describe("absoluteDdMmFromText", () => {
+  it("reconhece DD/MM e 'DD de mês'", () => {
+    expect(absoluteDdMmFromText("pode ser dia 11/08")).toBe("11/08");
+    expect(absoluteDdMmFromText("11/8")).toBe("11/08");
+    expect(absoluteDdMmFromText("dia 11 de agosto")).toBe("11/08");
+    expect(absoluteDdMmFromText("07 de agosto")).toBe("07/08");
+  });
+  it("NÃO confunde horário, endereço, idade ou período com data", () => {
+    expect(absoluteDdMmFromText("14:30")).toBeNull();
+    expect(absoluteDdMmFromText("Av. das Américas, 13.685")).toBeNull();
+    expect(absoluteDdMmFromText("1 ano")).toBeNull();
+    expect(absoluteDdMmFromText("de manhã")).toBeNull();
+  });
+});
+
+// Guard: lead pede data que não está entre os slots ofertados → não finaliza.
+// Caso real (Costa Lima Recreio, Wagner 21 99401-9696): ofertou 07/08 e 08/08,
+// lead pediu "dia 11/08" + "de manhã", o "manhã" agendava 07/08 09:00 (o dia da
+// volta de viagem, que ele recusou).
+describe("tryAutoSelectOfferedSlot — data pedida fora dos slots ofertados (Wagner)", () => {
+  const SLOTS = [
+    { iso: "2026-08-07T09:00:00-03:00", date_label: "sexta-feira, 07/08", time_label: "09:00" },
+    { iso: "2026-08-07T09:45:00-03:00", date_label: "sexta-feira, 07/08", time_label: "09:45" },
+    { iso: "2026-08-08T09:00:00-03:00", date_label: "sábado, 08/08", time_label: "09:00" },
+  ];
+  const oferta = "consigo te encaixar em 07/08 às 09:00 ou 09:45. Qual prefere?";
+
+  it("'Pode ser dia 11/08' + 'Na parte da manhã' NÃO seleciona 07/08 09:00", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: "Pode ser dia 11/08" },
+      { role: "user", content: "Na parte da manhã" },
+    ]);
+    expect(patch).toEqual({});
+  });
+
+  it("pedir uma data que EXISTE nos slots (07/08) segue selecionando por turno", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: "Na parte da manhã" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-08-07T09:00:00-03:00");
   });
 });
 
