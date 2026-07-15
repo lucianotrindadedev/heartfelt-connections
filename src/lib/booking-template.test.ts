@@ -23,6 +23,7 @@ import {
   requestedHoraFromText,
   affirmedDatesFromAssistant,
   ddmmInBrt,
+  selectedSlotIsStale,
   tryAutoSelectOfferedSlot,
   slotsOfferedInLastTurn,
   isReadyForBooking,
@@ -559,6 +560,38 @@ describe("affirmedDatesFromAssistant", () => {
     ]);
     expect(affirmed.has(ddmmInBrt("2026-07-15T13:00:00-03:00"))).toBe(true);
     expect(affirmed.has(ddmmInBrt("2026-07-16T13:00:00-03:00"))).toBe(true);
+  });
+});
+
+// ── selectedSlotIsStale (guard de oferta-corrente no booking) ──────────────
+
+describe("selectedSlotIsStale", () => {
+  const slot = (iso: string) => ({ iso, date_label: "", time_label: "" });
+
+  it("caso Neymar (21 97558-2703): selected preso em 22/07, oferta atual é 03/08 → stale", () => {
+    const offered = [
+      slot("2026-08-03T09:00:00-03:00"),
+      slot("2026-08-03T09:45:00-03:00"),
+      slot("2026-08-04T09:00:00-03:00"),
+    ];
+    expect(selectedSlotIsStale("2026-07-22T09:00:00-03:00", offered)).toBe(true);
+  });
+
+  it("slot escolhido está na oferta atual → não é stale", () => {
+    const offered = [slot("2026-08-03T09:00:00-03:00"), slot("2026-08-04T09:00:00-03:00")];
+    expect(selectedSlotIsStale("2026-08-03T09:00:00-03:00", offered)).toBe(false);
+  });
+
+  it("fail-open: sem offered_slots (ou vazio) não bloqueia", () => {
+    expect(selectedSlotIsStale("2026-08-03T09:00:00-03:00", [])).toBe(false);
+    expect(selectedSlotIsStale("2026-08-03T09:00:00-03:00", null)).toBe(false);
+    expect(selectedSlotIsStale("2026-08-03T09:00:00-03:00", undefined)).toBe(false);
+  });
+
+  it("sem selected → não bloqueia", () => {
+    const offered = [slot("2026-08-03T09:00:00-03:00")];
+    expect(selectedSlotIsStale("", offered)).toBe(false);
+    expect(selectedSlotIsStale(null, offered)).toBe(false);
   });
 });
 

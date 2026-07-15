@@ -98,6 +98,7 @@ import {
   requestedHoraFromText,
   affirmedDatesFromAssistant,
   ddmmInBrt,
+  selectedSlotIsStale,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
 
@@ -1353,6 +1354,37 @@ async function execCriarAgendamento(
 
   if (!ld.selected_slot_iso) {
     return { result: JSON.stringify({ ok: false, error: "selected_slot_iso ausente" }) };
+  }
+
+  // GUARD DE OFERTA-CORRENTE: o slot a agendar TEM que estar entre os horários
+  // da oferta atual (offered_slots). Uma seleção "presa" numa rodada de oferta
+  // ANTERIOR vai ao CRM sem end_iso válido e/ou numa vaga obsoleta → rejeição
+  // técnica e escalada. Caso real (Costa Lima Recreio, Neymar Junior
+  // 21 97558-2703): ofertou 22/07, depois 03/08; o lead escolheu "esse primeiro"
+  // (03/08 09:00) mas selected_slot_iso ficou preso em 22/07 09:00 (oferta
+  // superada) → 4 tentativas falharam e a conversa escalou. Zera só a seleção
+  // (mantém offered_slots, que está correta) p/ o lead reescolher da oferta atual.
+  if (selectedSlotIsStale(ld.selected_slot_iso, ld.offered_slots)) {
+    console.warn(
+      `[scheduler:telemetry] ${JSON.stringify({
+        event: "stale_slot_blocked",
+        conv: ctx.conversationId,
+        account: ctx.accountId,
+        agent: ctx.agentId,
+        selected: ld.selected_slot_iso,
+        offered: (ld.offered_slots ?? []).map((s) => s.iso),
+        model: ctx.model,
+      })}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error_kind: "stale_slot",
+        error:
+          "O horário escolhido não está entre os horários oferecidos agora. NÃO agende. Reapresente os horários atuais e peça ao lead para escolher um deles.",
+      }),
+      patch: { selected_slot_iso: undefined },
+    };
   }
 
   // GUARD DE CONSISTÊNCIA (data afirmada ao lead vs. slot escolhido): se o

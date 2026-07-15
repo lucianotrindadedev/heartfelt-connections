@@ -1520,6 +1520,28 @@ export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
 }
 
 /**
+ * O slot escolhido (selected_slot_iso) NÃO está entre os horários da oferta
+ * CORRENTE (offered_slots) — sinal de seleção "presa" numa rodada de oferta
+ * anterior, já superada. Booking com slot assim vai sem `end_iso` válido e/ou
+ * numa vaga obsoleta → o CRM rejeita como falha técnica e o atendimento escala.
+ * Caso real (Costa Lima Recreio, Neymar Junior 21 97558-2703): o agente ofereceu
+ * 22/07, depois 03/08; o lead escolheu "esse primeiro" (03/08 09:00) mas o
+ * selected_slot_iso ficou preso em 22/07 09:00 (oferta anterior) → 4 tentativas
+ * de agendar falharam e a conversa foi escalada.
+ * Fail-open: com offered_slots vazio retorna false (sem oferta corrente não dá
+ * pra aferir — não bloqueia).
+ */
+export function selectedSlotIsStale(
+  selectedIso: string | null | undefined,
+  offeredSlots: OfferedSlot[] | null | undefined,
+): boolean {
+  const sel = (selectedIso ?? "").trim();
+  const offered = offeredSlots ?? [];
+  if (!sel || offered.length === 0) return false;
+  return !offered.some((s) => s.iso === sel);
+}
+
+/**
  * Turno ("manha"/"tarde"/"noite") que o lead PEDIU numa mensagem, ou null.
  * Mesma detecção usada por pickSlotByPreference. O \b inicial em manh[aã] evita
  * casar "amanhã" (o "m" ali é precedido de "a"; em "manhã"/"de manhã" o "m"
