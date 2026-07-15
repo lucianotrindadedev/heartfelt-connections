@@ -1260,6 +1260,78 @@ function dateInBrt(d: Date): string {
 
 const WEEKDAY_STEMS = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
 
+/** Segunda-feira da PRÓXIMA semana — sempre a semana seguinte à atual, em BRT.
+ *  "próxima semana"/"semana que vem" nunca cai na semana corrente, mesmo se
+ *  hoje já for segunda (8 - isoDow ∈ [1..7] → nunca zero). */
+function nextWeekMondayBrt(nowMs: number): string {
+  const DAY = 86_400_000;
+  const abbr = new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    timeZone: "America/Sao_Paulo",
+  }).format(new Date(nowMs));
+  const isoDow =
+    ({ Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 } as Record<string, number>)[
+      abbr
+    ] ?? 1;
+  return dateInBrt(new Date(nowMs + (8 - isoDow) * DAY));
+}
+
+/** Primeiro dia do mês SEGUINTE ao atual, em BRT (ex.: 15/07 → 2026-08-01).
+ *  Calculado por partes de calendário (não por soma de ms) p/ não estourar o
+ *  mês em fusos/horário de verão. A busca de horários a partir daí acha as
+ *  primeiras vagas do mês (auto-ampliando a janela se os 1ºs dias estiverem
+ *  cheios). */
+function firstDayOfNextMonthBrt(nowMs: number): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(new Date(nowMs));
+  const y = Number(parts.find((p) => p.type === "year")!.value);
+  const m = Number(parts.find((p) => p.type === "month")!.value); // 1..12
+  const ny = m === 12 ? y + 1 : y;
+  const nm = m === 12 ? 1 : m + 1;
+  return `${ny}-${String(nm).padStart(2, "0")}-01`;
+}
+
+/** Números por extenso comuns em pedidos de prazo ("daqui a três dias"). */
+const NUM_WORDS_PT: Record<string, number> = {
+  um: 1,
+  uma: 1,
+  dois: 2,
+  duas: 2,
+  tres: 3,
+  quatro: 4,
+  cinco: 5,
+  seis: 6,
+  sete: 7,
+  oito: 8,
+  nove: 9,
+  dez: 10,
+  quinze: 15,
+  vinte: 20,
+  trinta: 30,
+};
+
+/**
+ * Prazo relativo em contagem: "daqui a X dias/semanas", "em X dias", "dentro de
+ * X semanas", com X em dígito ou por extenso. Resolve para a data alvo (BRT).
+ * Retorna null se não houver. Exige um prefixo de prazo (daqui/em/dentro de)
+ * para não casar "faz 3 dias que..." (fato passado). Recebe o texto já sem
+ * acento (semNorm).
+ */
+function relativeCountDateBrt(semNorm: string, nowMs: number): string | null {
+  const DAY = 86_400_000;
+  const m = semNorm.match(
+    /\b(?:daqui|em|dentro\s+de)\b[^\d]*?(\d{1,3}|um|uma|dois|duas|tres|quatro|cinco|seis|sete|oito|nove|dez|quinze|vinte|trinta)\s+(dias?|semanas?)\b/,
+  );
+  if (!m) return null;
+  const n = /^\d+$/.test(m[1]!) ? Number(m[1]) : NUM_WORDS_PT[m[1]!];
+  if (!n || n <= 0 || n > 120) return null; // guarda contra absurdos ("daqui a 999 dias")
+  const mult = m[2]!.startsWith("semana") ? 7 : 1;
+  return dateInBrt(new Date(nowMs + n * mult * DAY));
+}
+
 /** Próxima ocorrência (hoje incluído) do dia da semana pedido, em BRT. */
 function nextWeekdayDateBrt(weekdayStem: string, nowMs: number): string {
   const DAY = 86_400_000;
@@ -1293,6 +1365,30 @@ function relativeTargetDateBrt(t: string): string | null {
   if (/depois\s+de\s+amanh[aã]/.test(t)) return dateInBrt(new Date(now + 2 * DAY));
   if (/\bamanh[aã]/.test(t)) return dateInBrt(new Date(now + DAY));
   if (/\bhoje\b/.test(t)) return dateInBrt(new Date(now));
+
+  const semNorm = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  // Referências de SEMANA/MÊS/PRAZO. Sem isto o lead pede "próxima semana"/"mês
+  // que vem"/"daqui a 10 dias", o LLM não passa data_alvo e a busca ancora em
+  // HOJE — ofertando/agendando o dia ERRADO. Caso real (Costa Lima Recreio,
+  // Melissa 21 99305-7044): pediu "próxima semana", o sistema agendou quarta
+  // 15/07 (desta semana) enquanto todo o texto dizia segunda 20/07. Só valem
+  // quando NÃO há um dia da semana citado junto — "quinta da próxima semana"
+  // deve resolver pela quinta, não pela segunda.
+  const hasWeekday = /\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/.test(
+    semNorm,
+  );
+  if (!hasWeekday) {
+    // Prazo em contagem ("daqui a 3 dias", "em 2 semanas") — antes das frases
+    // de semana/mês porque "daqui a 2 semanas" cita "semanas" mas é contagem.
+    const byCount = relativeCountDateBrt(semNorm, now);
+    if (byCount) return byCount;
+    if (/\b(?:proxima\s+semana|semana\s+que\s+vem|semana\s+seguinte)\b/.test(semNorm)) {
+      return nextWeekMondayBrt(now);
+    }
+    if (/\b(?:proximo\s+mes|mes\s+que\s+vem|mes\s+seguinte)\b/.test(semNorm)) {
+      return firstDayOfNextMonthBrt(now);
+    }
+  }
 
   // Dia da semana citado explicitamente. Sem isto, quando o lead pede um dia
   // DIFERENTE do que foi ofertado (ex.: ofertou segunda, lead pede "terça
@@ -1385,6 +1481,42 @@ export function requestedDateFromText(text: string): string | null {
   if (!t) return null;
   if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
   return relativeTargetDateBrt(t);
+}
+
+/** DD/MM (zero-padded, fuso BRT) de um instante ISO. "" se inválido. */
+export function ddmmInBrt(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+  }).format(d); // "15/07"
+}
+
+/**
+ * Datas (DD/MM, zero-padded) que o AGENTE afirmou ao lead nas mensagens dadas.
+ * Usada para travar o booking quando o slot escolhido cai num dia que NUNCA foi
+ * mostrado ao lead no texto — sinal de que o modelo reescreveu a data dos slots.
+ * Caso real (Costa Lima Recreio, Melissa 21 99305-7044): a tool devolveu slots
+ * de quarta 15/07, mas o agente escreveu "segunda-feira, 20/07"; o "13h" do lead
+ * casou o slot oculto de 15/07 e agendou o dia ERRADO com o lead achando 20/07.
+ * Ignora números com ponto/milhar (ex.: "Av. das Américas, 13.685") — só casa
+ * DD/MM com barra.
+ */
+export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
+  const out = new Set<string>();
+  for (const raw of texts) {
+    const matches = (raw ?? "").matchAll(/\b(\d{1,2})\/(\d{1,2})(?:\/\d{2,4})?\b/g);
+    for (const m of matches) {
+      const dd = Number(m[1]);
+      const mm = Number(m[2]);
+      if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) {
+        out.add(`${String(dd).padStart(2, "0")}/${String(mm).padStart(2, "0")}`);
+      }
+    }
+  }
+  return out;
 }
 
 /**

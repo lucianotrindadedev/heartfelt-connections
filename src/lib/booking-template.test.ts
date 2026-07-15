@@ -21,6 +21,8 @@ import {
   requestedDateFromText,
   requestedPeriodoFromText,
   requestedHoraFromText,
+  affirmedDatesFromAssistant,
+  ddmmInBrt,
   tryAutoSelectOfferedSlot,
   slotsOfferedInLastTurn,
   isReadyForBooking,
@@ -436,6 +438,127 @@ describe("requestedDateFromText", () => {
   it("mensagem sem dia nenhum → null", () => {
     expect(requestedDateFromText("Sônia Mara Flauzino da Silva")).toBeNull();
     expect(requestedDateFromText("")).toBeNull();
+  });
+
+  // Referência de SEMANA — caso Costa Lima Recreio, Melissa (21) 99305-7044:
+  // pediu "próxima semana", o sistema ancorou em HOJE e agendou quarta 15/07
+  // (desta semana) enquanto o texto dizia segunda 20/07.
+  it("reconhece 'próxima semana' → segunda-feira da semana seguinte", () => {
+    const today = dateInBrtLocal(new Date());
+    for (const frase of [
+      "Sim. Se possível, para a próxima semana",
+      "pode ser semana que vem?",
+      "só consigo na semana seguinte",
+    ]) {
+      const d = requestedDateFromText(frase);
+      expect(d, frase).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(weekdayStemBrt(d!), frase).toBe("segunda");
+      expect(d! > today, `${frase} → ${d} deve ser futuro (hoje ${today})`).toBe(true);
+    }
+  });
+
+  it("'próxima quinta' resolve pela quinta, não pela segunda da semana", () => {
+    const d = requestedDateFromText("pode ser na próxima quinta?");
+    expect(weekdayStemBrt(d!)).toBe("quinta");
+  });
+
+  it("reconhece 'mês que vem' → dia 01 do mês seguinte", () => {
+    const now = new Date();
+    const y = Number(
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric" }).format(
+        now,
+      ),
+    );
+    const m = Number(
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", month: "2-digit" }).format(
+        now,
+      ),
+    );
+    const esperado = `${m === 12 ? y + 1 : y}-${String(m === 12 ? 1 : m + 1).padStart(2, "0")}-01`;
+    for (const frase of ["pode ser mês que vem?", "só no próximo mês", "fica pro mês seguinte"]) {
+      expect(requestedDateFromText(frase), frase).toBe(esperado);
+    }
+  });
+
+  it("reconhece prazo 'daqui a X dias/semanas' (dígito e por extenso)", () => {
+    const DAY = 86_400_000;
+    const dISO = (offsetDays: number) =>
+      dateInBrtLocal(new Date(Date.now() + offsetDays * DAY));
+    expect(requestedDateFromText("consigo daqui a 3 dias")).toBe(dISO(3));
+    expect(requestedDateFromText("pode ser em 10 dias")).toBe(dISO(10));
+    expect(requestedDateFromText("dentro de 2 semanas")).toBe(dISO(14));
+    expect(requestedDateFromText("daqui a uma semana")).toBe(dISO(7));
+    expect(requestedDateFromText("daqui uns três dias")).toBe(dISO(3));
+  });
+
+  it("prazo passado/absurdo não vira pedido", () => {
+    // "faz 3 dias" = fato passado, sem prefixo daqui/em/dentro de
+    expect(requestedDateFromText("faz 3 dias que estou com dor")).toBeNull();
+    // negação já é barrada antes (mentionsUnavailability)
+    expect(requestedDateFromText("daqui a 3 dias não posso")).toBeNull();
+    // fora do limite sensato
+    expect(requestedDateFromText("daqui a 999 dias")).toBeNull();
+  });
+});
+
+// helper local: data YYYY-MM-DD (BRT) de um instante — só p/ comparação nos testes
+function dateInBrtLocal(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+// ── ddmmInBrt / affirmedDatesFromAssistant (guard de data no booking) ──────
+
+describe("ddmmInBrt", () => {
+  it("extrai DD/MM zero-padded no fuso BRT", () => {
+    expect(ddmmInBrt("2026-07-15T13:00:00-03:00")).toBe("15/07");
+    expect(ddmmInBrt("2026-07-20T09:00:00-03:00")).toBe("20/07");
+  });
+  it("ISO inválido → string vazia", () => {
+    expect(ddmmInBrt("não-é-iso")).toBe("");
+    expect(ddmmInBrt("")).toBe("");
+  });
+});
+
+describe("affirmedDatesFromAssistant", () => {
+  it("coleta as datas DD/MM afirmadas pelo agente (padroniza zero-padding)", () => {
+    const set = affirmedDatesFromAssistant([
+      "Para a próxima semana, tenho segunda-feira, dia 20/07:",
+      "• Segunda-feira, 20/07 às 11:30\n• Segunda-feira, 20/07 às 13:00",
+    ]);
+    expect([...set]).toEqual(["20/07"]);
+  });
+
+  it("dia de um dígito vira zero-padded (3/7 → 03/07)", () => {
+    expect([...affirmedDatesFromAssistant(["tenho vaga dia 3/7"])]).toEqual(["03/07"]);
+  });
+
+  it("ignora números com ponto/milhar (endereço não é data)", () => {
+    const set = affirmedDatesFromAssistant([
+      "Av. das Américas, 13.685, Loja 149 - Barra da Tijuca",
+    ]);
+    expect(set.size).toBe(0);
+  });
+
+  it("mismatch do caso real: agente disse 20/07, slot é 15/07", () => {
+    const affirmed = affirmedDatesFromAssistant([
+      "Perfeito, Melissa! Data: Segunda-feira, 20/07 Horário: 13:00",
+    ]);
+    const slot = ddmmInBrt("2026-07-15T13:00:00-03:00");
+    expect(affirmed.size).toBeGreaterThan(0);
+    expect(affirmed.has(slot)).toBe(false); // → guard bloqueia o agendamento
+  });
+
+  it("oferta multi-data: o slot escolhido está entre as afirmadas → não bloqueia", () => {
+    const affirmed = affirmedDatesFromAssistant([
+      "Tenho terça 15/07 e quarta 16/07, qual prefere?",
+    ]);
+    expect(affirmed.has(ddmmInBrt("2026-07-15T13:00:00-03:00"))).toBe(true);
+    expect(affirmed.has(ddmmInBrt("2026-07-16T13:00:00-03:00"))).toBe(true);
   });
 });
 
