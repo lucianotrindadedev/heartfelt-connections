@@ -1134,6 +1134,125 @@ async function validatePatientNameLLM(
   }
 }
 
+// ── Portão de intenção de agendamento ──────────────────────────────────────
+
+const BOOKING_INTENT_SCHEMA = z.object({
+  agendar: z.boolean(),
+  motivo: z.string().nullish(),
+});
+
+/** Rótulo humano (dia da semana + DD/MM + HH:MM, BRT) de um ISO. */
+function slotHumanLabel(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+}
+
+/**
+ * BARREIRA FINAL antes de criar um agendamento REAL. Lê a conversa inteira e o
+ * horário exato prestes a ser marcado, e decide — via LLM, com contexto completo
+ * — se o paciente pediu/confirmou CLARAMENTE aquele dia e horário.
+ *
+ * É o ponto único onde as três falhas recorrentes convergem: (a) agendar quando
+ * o lead recusou/pediu para não agendar; (b) agendar no dia/horário ERRADO
+ * (diferente do que o lead pediu); (c) agendar sem o lead ter confirmado. A
+ * heurística determinística é rápida mas erra com confiança — aqui um juiz com
+ * a conversa toda tem a palavra final. Casos reais: Wagner 21 99401-9696
+ * (agendou 07/08, o lead queria 11/08), Clínica Bomfim 21 96416-7887 (agendou o
+ * horário que o lead recusou).
+ *
+ * Fail-OPEN: se a infra da LLM falhar, NÃO bloqueia (evita derrubar o
+ * agendamento da clínica inteira num soluço de rede) — os guards determinísticos
+ * anteriores (recusa, data afirmada, viagem) seguem valendo. Loga alto.
+ */
+async function verifyBookingIntentLLM(
+  ctx: AgentContext,
+  slotIso: string,
+): Promise<{ ok: boolean; reason: string }> {
+  const ld = ctx.leadData;
+  const slotLabel = slotHumanLabel(slotIso);
+  const offered = (ld.offered_slots ?? [])
+    .map((s) => `- ${s.date_label} às ${s.time_label}`)
+    .join("\n");
+  // Conversa recente, ambos os lados, rotulada. Últimas ~16 mensagens não-vazias.
+  const convo = ctx.history
+    .filter((m) => (m.content ?? "").trim().length > 0)
+    .slice(-16)
+    .map((m) => `${m.role === "user" ? "Paciente" : "Atendente"}: ${m.content.trim()}`)
+    .join("\n");
+  const hoje = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date());
+
+  try {
+    const { result } = await callLlmStructuredWithFallback<z.infer<typeof BOOKING_INTENT_SCHEMA>>(
+      ctx.orKey,
+      {
+        model: ctx.toolModel,
+        systemCached:
+          "Você é a barreira final antes de criar um agendamento real numa clínica. Decide se o paciente pediu/confirmou CLARAMENTE o dia e horário que estão prestes a ser marcados. Responda SEMPRE em JSON.",
+        systemDynamic: "",
+        messages: [
+          {
+            role: "user",
+            content:
+              `Hoje é ${hoje}.\n\n` +
+              `O sistema está prestes a MARCAR este horário:\n>>> ${slotLabel} <<<\n\n` +
+              (offered ? `Horários que foram oferecidos ao paciente:\n${offered}\n\n` : "") +
+              `Conversa (mais recente por último):\n${convo}\n\n` +
+              `O paciente pediu ou confirmou CLARAMENTE marcar em ${slotLabel}?\n` +
+              `Responda { "agendar": true|false, "motivo": "curto" }.\n\n` +
+              `Responda agendar=false se o paciente:\n` +
+              `- recusou ou disse que NÃO quer agendar agora;\n` +
+              `- pediu para ser contatado depois / adiar / "me chama quando";\n` +
+              `- pediu um DIA ou HORÁRIO diferente do que está sendo marcado (ex.: sistema vai marcar ${slotLabel} mas o paciente pediu outro dia);\n` +
+              `- disse que não pode nesse dia/horário (viagem, trabalho, etc.);\n` +
+              `- ainda NÃO confirmou esse horário específico.\n` +
+              `Responda agendar=true só se estiver CLARO que ele quer esse dia e horário.\n` +
+              `Na dúvida, agendar=false — é melhor o atendente reconfirmar do que marcar errado.`,
+          },
+        ],
+        maxTokens: 150,
+        temperature: 0,
+        toolChoice: "none",
+      },
+      (raw) => BOOKING_INTENT_SCHEMA.parse(raw),
+      ctx.toolFallbackModels,
+    );
+    if (!result.agendar) {
+      console.warn(
+        `[scheduler:telemetry] ${JSON.stringify({
+          event: "booking_intent_hold",
+          conv: ctx.conversationId,
+          account: ctx.accountId,
+          agent: ctx.agentId,
+          slot: slotIso,
+          motivo: result.motivo ?? "",
+          model: ctx.model,
+        })}`,
+      );
+    }
+    return { ok: !!result.agendar, reason: result.motivo ?? "" };
+  } catch (e) {
+    console.warn(
+      `[scheduler] portão de intenção indisponível (fail-open) conv=${ctx.conversationId}: ${e instanceof Error ? e.message : e}`,
+    );
+    return { ok: true, reason: "gate_indisponivel" };
+  }
+}
+
 // ── Resolução da escolha de horário ────────────────────────────────────────
 
 /**
@@ -1422,6 +1541,30 @@ async function execCriarAgendamento(
       }),
     };
   }
+  // BARREIRA FINAL DE INTENÇÃO: antes de criar o agendamento REAL, um juiz LLM
+  // com a conversa inteira confirma que o paciente quer ESTE dia e horário. É
+  // por aqui que passam as três falhas recorrentes (agendar recusado, agendar
+  // dia errado, agendar sem confirmação). Fail-open no erro de infra.
+  if (!ctx.dryRun) {
+    const intent = await verifyBookingIntentLLM(ctx, ld.selected_slot_iso);
+    if (!intent.ok) {
+      console.warn(
+        `[scheduler] portão de intenção BLOQUEOU o agendamento conv=${ctx.conversationId} slot=${ld.selected_slot_iso} motivo=${intent.reason}`,
+      );
+      return {
+        result: JSON.stringify({
+          ok: false,
+          error_kind: "intent_hold",
+          error:
+            `O paciente NÃO confirmou claramente marcar em ${slotHumanLabel(ld.selected_slot_iso)} (motivo: ${intent.reason}). ` +
+            `NÃO diga que agendou. Releia a última mensagem dele e responda ao que ele realmente pediu: se ele quer outro dia/horário, chame listar_horarios na data certa; se pediu para ser contatado depois, registre o retorno; se recusou, acolha. Só agende depois de uma confirmação clara.`,
+        }),
+        // Zera a escolha para não reagendar o mesmo slot em loop no próximo turn.
+        patch: { selected_slot_iso: undefined },
+      };
+    }
+  }
+
   const bookingPhone = resolveBookingPhone(ctx);
   if (!bookingPhone) {
     return { result: JSON.stringify({ ok: false, error: "telefone ausente" }) };
