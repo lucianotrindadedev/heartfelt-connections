@@ -27,6 +27,21 @@ import { existsSync } from "fs";
 import { join, resolve } from "path";
 import { build as esbuild } from "esbuild";
 
+// Commit do build — injetado no bundle do servidor (define abaixo) e exposto em
+// /api/health. Deixa de ser adivinhação saber QUAL versão está no ar. Ordem:
+// SOURCE_COMMIT (Coolify/CI) → git rev-parse local → "unknown".
+function resolveBuildCommit() {
+  const env = process.env.SOURCE_COMMIT || process.env.COOLIFY_GIT_COMMIT_SHA || process.env.GIT_COMMIT;
+  if (env && env.trim()) return env.trim().slice(0, 12);
+  try {
+    return execSync("git rev-parse --short=12 HEAD", { encoding: "utf8" }).trim();
+  } catch {
+    return "unknown";
+  }
+}
+const BUILD_COMMIT = resolveBuildCommit();
+console.log(`🏷️   Build commit: ${BUILD_COMMIT}`);
+
 // --external-deps (build:coolify): NÃO bundla jsdom/pdf-parse — eles leem arquivos
 // (default-stylesheet.css) e usam import.meta.url em runtime, o que quebra quando
 // empacotados num único CJS (__dirname/import.meta viram o dir do bundle). No Coolify
@@ -103,6 +118,8 @@ await esbuild({
   outfile: join(FUNC_DIR, "server-bundle.cjs"),
   external: ["*.node", ...(EXTERNAL_DEPS ? RUNTIME_EXTERNALS : [])],
   logLevel: "warning",
+  // Grava o commit do build no bundle → /api/health mostra a versão no ar.
+  define: { "process.env.BUILD_COMMIT": JSON.stringify(BUILD_COMMIT) },
   // Ignora sideEffects:false do package.json — o servidor precisa de TODOS os módulos
   ignoreAnnotations: true,
   // Não minifica para manter stack traces legíveis nos logs do Vercel
