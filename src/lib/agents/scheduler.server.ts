@@ -96,6 +96,8 @@ import {
   requestedDateFromText,
   requestedPeriodoFromText,
   requestedHoraFromText,
+  affirmedDatesFromAssistant,
+  ddmmInBrt,
   resolveGcalEventTemplates,
 } from "@/lib/booking-template";
 
@@ -960,11 +962,21 @@ async function execListarHorarios(
         patch: { offered_slots: [] },
       };
     }
+    const ceAnchorKey = anchor
+      ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
+      : null;
+    const ceRequestedDateUnavailable =
+      !!ceAnchorKey && !ceLimited.some((s) => (s.iso ?? "").slice(0, 10) === ceAnchorKey);
     return {
       result: JSON.stringify({
         count: ceLimited.length,
         slots: ceLimited,
         ...(cePeriodoAviso ? { aviso_periodo: cePeriodoAviso } : {}),
+        ...(ceRequestedDateUnavailable
+          ? {
+              aviso_data: `SEM VAGA em ${ceAnchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${ceAnchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${ceAnchorKey}).`,
+            }
+          : {}),
       }),
       patch: { offered_slots: ceLimited },
     };
@@ -1019,11 +1031,26 @@ async function execListarHorarios(
     .slice(0, 6)
     .sort((a, b) => a.start.localeCompare(b.start))
     .map(formatSlot);
+  // Data pedida (anchor) sem vaga, mas há vaga em OUTRAS datas: avisa o modelo
+  // para NÃO afirmar/confirmar a data pedida — senão ele tende a ecoar o dia
+  // pedido mesmo com os slots sendo de outro dia (mesma proteção do Google
+  // Calendar acima). Sem isto, o modelo relabela os slots reais e o lead recebe
+  // uma data que não corresponde ao horário realmente reservado.
+  const anchorKey = anchor
+    ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
+    : null;
+  const requestedDateUnavailable =
+    !!anchorKey && !limited.some((s) => (s.iso ?? "").slice(0, 10) === anchorKey);
   return {
     result: JSON.stringify({
       count: limited.length,
       slots: limited,
       ...(periodoAviso ? { aviso_periodo: periodoAviso } : {}),
+      ...(requestedDateUnavailable
+        ? {
+            aviso_data: `SEM VAGA em ${anchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${anchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${anchorKey}).`,
+          }
+        : {}),
     }),
     patch: { offered_slots: limited },
   };
@@ -1326,6 +1353,45 @@ async function execCriarAgendamento(
 
   if (!ld.selected_slot_iso) {
     return { result: JSON.stringify({ ok: false, error: "selected_slot_iso ausente" }) };
+  }
+
+  // GUARD DE CONSISTÊNCIA (data afirmada ao lead vs. slot escolhido): se o
+  // agente afirmou ao lead uma data (DD/MM) e o slot a agendar cai num dia
+  // DIFERENTE — que nunca foi mostrado no texto —, NÃO agenda. É o sinal de que
+  // o modelo reescreveu a data dos slots reais. Caso real (Costa Lima Recreio,
+  // Melissa 21 99305-7044): a tool devolveu quarta 15/07, o agente escreveu
+  // "segunda 20/07", o "13h" casou o slot oculto de 15/07 e agendou o dia
+  // ERRADO com o lead achando que era 20/07. Fail-open: só bloqueia quando há
+  // uma data explícita no texto do agente E o slot não bate com nenhuma delas.
+  const affirmedDates = affirmedDatesFromAssistant(
+    ctx.history
+      .filter((m) => m.role === "assistant")
+      .slice(-8)
+      .map((m) => m.content),
+  );
+  const slotDdmm = ddmmInBrt(ld.selected_slot_iso);
+  if (affirmedDates.size > 0 && slotDdmm && !affirmedDates.has(slotDdmm)) {
+    console.warn(
+      `[scheduler:telemetry] ${JSON.stringify({
+        event: "slot_date_mismatch_blocked",
+        conv: ctx.conversationId,
+        account: ctx.accountId,
+        agent: ctx.agentId,
+        slot_ddmm: slotDdmm,
+        affirmed_ddmm: [...affirmedDates],
+        model: ctx.model,
+      })}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error_kind: "date_mismatch",
+        error: `O horário escolhido é do dia ${slotDdmm}, mas ao lead foi dito ${[...affirmedDates].join(" / ")}. NÃO agende esse horário. Chame listar_horarios com data_alvo (YYYY-MM-DD) da data que o lead realmente pediu e ofereça os horários REAIS dessa data antes de agendar.`,
+      }),
+      // Zera o slot/oferta para forçar nova listagem na data correta — sem isso
+      // o "13h" volta a casar o mesmo slot oculto e o guard entra em loop.
+      patch: { selected_slot_iso: undefined, offered_slots: undefined },
+    };
   }
 
   const leadName = resolveBookingLeadName(ld);
