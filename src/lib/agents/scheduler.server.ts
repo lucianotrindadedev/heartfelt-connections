@@ -1363,11 +1363,52 @@ async function resolveSlotChoiceLLM(
  * o agendamento (caso real Costa Lima Recreio, 21 98985-6865: "14: 30" e
  * "14.30" viravam loop de "tive um problema ao registrar sua visita").
  */
+/**
+ * Valor usado para ZERAR selected_slot_iso num patch. Tem que ser "" e NUNCA
+ * undefined: o orquestrador passa o lead_data_patch por stripNullishFields antes
+ * de mergear/persistir, então uma chave undefined é REMOVIDA do patch e o valor
+ * velho sobrevive no banco — a limpeza só valia dentro do turn e o slot recusado
+ * voltava no turn seguinte. Foi o que aconteceu com a Silvia (12 97407-5229):
+ * o guard slot_not_offered "limpou" a escolha, mas o lead_data persistido seguiu
+ * com selected_slot_iso=2026-07-16T16:00 e o agente reafirmou o dia recusado.
+ * "" sobrevive ao strip e é falsy em todos os checks a jusante (`!selected`,
+ * `(selected ?? "").trim()`). Mesmo padrão de clearRejectedBookingName.
+ */
+const CLEARED_SLOT = "";
+
 async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
   // Já escolhido neste turn (ou num anterior): nada a resolver. Sem isto, o
   // tryDeterministicBooking — que roda DEPOIS do caminho principal — chamaria a
   // LLM uma segunda vez no mesmo turn.
-  if ((ctx.leadData.selected_slot_iso ?? "").trim()) return {};
+  //
+  // MAS a escolha só vale enquanto o lead não disser que NÃO pode nesse dia: o
+  // selected_slot_iso era GRUDENTO — uma vez setado, este return abandonava a
+  // função e nada mais o limpava (só os guards do criar_agendamento, tarde
+  // demais). Caso real (Escudero, Silvia 12 97407-5229): "pode ser a tarde"
+  // auto-selecionou 16/07 16:00; ela respondeu "por hoje não vou conseguir ir,
+  // pode ser amanhã ou sábado" e o agente REAFIRMOU "ficou para 16/07 às 16:00"
+  // duas vezes, quebrando só no guard do booking. Recusa/indisponibilidade →
+  // limpa a escolha para o agente reofertar.
+  //
+  // Limpamos com QUALQUER recusa, sem tentar adivinhar de que dia ela fala: na
+  // frase real da lead o requestedDateFromText devolve null (a negação impede a
+  // extração da data, e com razão), então não há sinal confiável de dia. O pior
+  // caso de limpar demais é reofertar um turn a mais; o de limpar de menos é
+  // reafirmar um dia recusado e queimar o lead.
+  if ((ctx.leadData.selected_slot_iso ?? "").trim()) {
+    const lastUserMsg =
+      [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
+    if (
+      lastUserMsg &&
+      (looksLikeDecline(lastUserMsg) || mentionsUnavailability(lastUserMsg.toLowerCase()))
+    ) {
+      console.log(
+        `[scheduler] lead recusou o horário escolhido conv=${ctx.conversationId} iso=${ctx.leadData.selected_slot_iso} — limpando a escolha p/ reofertar`,
+      );
+      return { selected_slot_iso: CLEARED_SLOT };
+    }
+    return {};
+  }
 
   const det = tryAutoSelectOfferedSlot(ctx.stage, ctx.leadData, ctx.history);
   if (Object.keys(det).length > 0) return det;
@@ -1547,7 +1588,7 @@ async function execCriarAgendamento(
           `O horário ${slotHumanLabel(ld.selected_slot_iso)} NÃO está na lista de horários realmente disponíveis desta agenda — não existe ou é de uma oferta antiga. NÃO agende esse horário e NÃO invente horários. Chame listar_horarios e ofereça ao lead APENAS os horários exatos que a ferramenta retornar.`,
       }),
       // Zera a escolha velha/fantasma para forçar nova listagem real.
-      patch: { selected_slot_iso: undefined },
+      patch: { selected_slot_iso: CLEARED_SLOT },
     };
   }
 
@@ -1586,7 +1627,9 @@ async function execCriarAgendamento(
       }),
       // Zera o slot/oferta para forçar nova listagem na data correta — sem isso
       // o "13h" volta a casar o mesmo slot oculto e o guard entra em loop.
-      patch: { selected_slot_iso: undefined, offered_slots: undefined },
+      // `[]` (não undefined) pelo mesmo motivo do CLEARED_SLOT: undefined é
+      // removido pelo stripNullishFields e a oferta velha sobreviveria.
+      patch: { selected_slot_iso: CLEARED_SLOT, offered_slots: [] },
     };
   }
 
@@ -1629,7 +1672,7 @@ async function execCriarAgendamento(
             `NÃO diga que agendou. Releia a última mensagem dele e responda ao que ele realmente pediu: se ele quer outro dia/horário, chame listar_horarios na data certa; se pediu para ser contatado depois, registre o retorno; se recusou, acolha. Só agende depois de uma confirmação clara.`,
         }),
         // Zera a escolha para não reagendar o mesmo slot em loop no próximo turn.
-        patch: { selected_slot_iso: undefined },
+        patch: { selected_slot_iso: CLEARED_SLOT },
       };
     }
   }
@@ -2885,7 +2928,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       outPatch = {
         ...outPatch,
         appointment_id: undefined,
-        selected_slot_iso: undefined,
+        selected_slot_iso: CLEARED_SLOT,
         offered_slots: remaining,
       };
       console.warn(
