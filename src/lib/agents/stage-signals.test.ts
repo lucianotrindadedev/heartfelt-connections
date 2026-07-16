@@ -410,6 +410,13 @@ describe("looksLikeStallReply", () => {
     "Vou deixar tudo reservado para você.",
     "Pode deixar que logo te envio a confirmação do seu horário.",
     "Perfeito! Te mando a confirmação assim que estiver tudo certo.",
+    // Caso real 15/07 (Costa Lima Recreio, Luciano): "vou buscar" + "instantinho"
+    // não eram detectados — o agente prometeu buscar a tarde e não trouxe nada.
+    "Como você trabalha pela manhã, vou buscar as opções da tarde. Só um instantinho.",
+    "Vou buscar os horários disponíveis pra você.",
+    "Deixa eu dar uma olhada na agenda aqui.",
+    "Só um instantinho que já te trago as opções.",
+    "Vou procurar um horário mais tarde pra você.",
   ];
   for (const r of stalls) {
     it(`detecta stall: ${JSON.stringify(r.slice(0, 40))}`, () => {

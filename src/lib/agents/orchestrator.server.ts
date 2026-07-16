@@ -1019,7 +1019,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           "Quase lá! Só me confirma que posso garantir esse horário pra você que eu finalizo o agendamento. 😊";
         newStage = "BOOKING";
       } else {
-        reply = "Pra seguir com seu agendamento, qual horário fica melhor pra você?";
+        // SLOT_OFFER sem slot escolhido: em vez de só perguntar "qual horário?"
+        // (o lead fica sem ver opção), APRESENTA os horários que já temos. O
+        // lead pediu justamente pra ver os horários — não enrola nem devolve
+        // vazio. Caso real (Costa Lima Recreio, Luciano): o agente respondeu
+        // "vou buscar as opções da tarde... só um instantinho" e não trouxe nada.
+        const offered = finalLeadData.offered_slots ?? [];
+        if (offered.length > 0) {
+          const opcoes = offered
+            .slice(0, 2)
+            .map((s) => `${s.date_label} às ${s.time_label}`)
+            .join(" ou ");
+          reply = `Tenho estes horários disponíveis: ${opcoes}. Qual fica melhor pra você? 😊`;
+        } else {
+          reply = "Pra seguir com seu agendamento, qual horário fica melhor pra você?";
+        }
         newStage = "SLOT_OFFER";
       }
     }
