@@ -202,15 +202,29 @@ function timeToMinutes(hhmm: string): number {
   return (h ?? 0) * 60 + (m ?? 0);
 }
 
-/** true quando `time` (HH:MM) cai dentro de algum bloco [inicio,fim) do dia. */
-function withinBlocks(time: string, blocks: Disponibilidade[string]): boolean {
+/**
+ * true quando a CONSULTA INTEIRA — de `time` (HH:MM) até `time + duracaoMin` —
+ * cabe dentro de algum bloco de expediente [inicio,fim) do dia.
+ *
+ * Antes checava só o INÍCIO (`t < end`), então um slot de 17:15 com consulta de
+ * 40 min era ofertado numa clínica que fecha 17:30 (17:15+40=17:55 > 17:30).
+ * Caso real (Costa Lima Recreio / Odonto: lead só podia após 17h e a clínica
+ * fecha 17:30). O Google Calendar já checava o fim (`endMin <= bFim`); aqui a
+ * checagem era incompleta. `duracaoMin=0` mantém o comportamento antigo.
+ */
+export function withinBlocks(
+  time: string,
+  blocks: Disponibilidade[string],
+  duracaoMin = 0,
+): boolean {
   if (!blocks?.length) return false;
   const t = timeToMinutes(time);
+  const fim = t + Math.max(0, duracaoMin);
   return blocks.some((b) => {
     const start = timeToMinutes(b.inicio);
     let end = timeToMinutes(b.fim);
     if (end === 0) end = 1440; // "00:00" de fim = meia-noite
-    return t >= start && t < end;
+    return t >= start && fim <= end;
   });
 }
 
@@ -255,7 +269,9 @@ async function fetchAvailableHoursForDay(
   const duracao = prof.duracaoMinutos ?? config.duracaoConsulta;
 
   return times
-    .filter((t) => !blocks?.length || withinBlocks(t, blocks)) // sem blocks configurados = confia 100% na API
+    // sem blocks configurados = confia 100% na API; com blocks, a consulta
+    // INTEIRA (início + duração) precisa caber antes do fim do expediente.
+    .filter((t) => !blocks?.length || withinBlocks(t, blocks, duracao))
     .map((t) => {
       const toTime = addMinutesToTime(t, duracao);
       return {

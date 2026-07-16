@@ -378,6 +378,44 @@ export function isSlotFreeAgainstBusy(
   return true;
 }
 
+/**
+ * Remove os slots cuja consulta (fromTime + durMin) ultrapassaria o fim do
+ * expediente. O Clinicorp não expõe horário de funcionamento; a grade de
+ * get_avaliable_times_calendar é a fonte — o fim da ÚLTIMA janela do dia, por
+ * profissional, é o fechamento efetivo. Sem isto um slot de 17:15 com consulta
+ * de 40 min era ofertado numa agenda que fecha 17:30 (17:15+40=17:55): depois de
+ * fechar não há grade nem agendamento, então o cross-check de ocupados deixava
+ * passar. Caso real (Odonto Carioca/occampogrande, lead que só podia após 17h).
+ *
+ * IMPORTANTE: receba a grade CRUA (antes de remover ocupados). Um agendamento na
+ * última janela do dia não adianta o horário de FECHAR — quem fecha 17:30 segue
+ * fechando 17:30 mesmo com a última vaga tomada, e 16:50 continua cabendo.
+ *
+ * Só limita pelo FIM do dia (última janela), não por buracos no meio — um buraco
+ * mid-day é agendamento (tratado por isSlotFreeAgainstBusy) ou padrão da própria
+ * grade, e cortar por ele derrubaria horários válidos (medido em produção: a
+ * cobertura contígua derrubava até 50% dos slots, incluindo os do meio do dia).
+ */
+export function filterSlotsByClosing<
+  T extends { localDate: string; fromTime: string; toTime: string; dentistPersonId?: number },
+>(slots: T[], durMin: number): T[] {
+  const closingByKey = new Map<string, number>();
+  for (const s of slots) {
+    const key = `${s.localDate}|${s.dentistPersonId ?? ""}`;
+    const end = timeToMin(s.toTime);
+    if (end < 0) continue;
+    const cur = closingByKey.get(key);
+    if (cur == null || end > cur) closingByKey.set(key, end);
+  }
+  return slots.filter((s) => {
+    const closing = closingByKey.get(`${s.localDate}|${s.dentistPersonId ?? ""}`);
+    if (closing == null) return true;
+    const start = timeToMin(s.fromTime);
+    if (start < 0) return true; // sem hora parseável, não descarta
+    return start + durMin <= closing;
+  });
+}
+
 export async function listClinicorpSlots(
   accountId: string,
   from: string,
@@ -400,12 +438,26 @@ export async function listClinicorpSlots(
     );
   }
 
+  const dur = config.duracaoConsulta > 0 ? config.duracaoConsulta : 40;
+
+  // FECHAMENTO: a consulta INTEIRA precisa caber antes do fim do expediente
+  // (calculado da grade CRUA, antes de remover ocupados — ver filterSlotsByClosing).
+  {
+    const before = merged.length;
+    merged = filterSlotsByClosing(merged, dur);
+    const removed = before - merged.length;
+    if (removed > 0) {
+      console.log(
+        `[clinicorp] fechamento: removidos ${removed}/${before} horários cuja consulta (${dur}min) passaria do fim do expediente`,
+      );
+    }
+  }
+
   // CROSS-CHECK: remove o horário que colide com um agendamento REAL. A janela
   // de reserva vai de fromTime até fromTime+duração (o que o create tenta). Um
   // slot é livre só se NENHUM agendamento do mesmo profissional (ou de qualquer
   // um, quando o slot não traz profissional) se sobrepõe a essa janela. Sem
   // isto, o agente ofertava horário ocupado e o create falhava.
-  const dur = config.duracaoConsulta > 0 ? config.duracaoConsulta : 40;
   if (busy.length > 0) {
     const before = merged.length;
     merged = merged.filter((s) => isSlotFreeAgainstBusy(s, dur, busy));
