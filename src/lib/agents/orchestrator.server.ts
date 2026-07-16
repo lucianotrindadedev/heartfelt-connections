@@ -1200,6 +1200,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           preflight_dirty_fields: (result.telemetry?.dirty_fields as string[]) || undefined,
           double_booking_blocked:
             (result.telemetry?.double_booking_blocked as boolean) || undefined,
+          // Diagnóstico de falha de agendamento. Estas chaves eram calculadas pelo
+          // scheduler e DESCARTADAS aqui (a lista era fixa), então toda escalada por
+          // "falha técnica" chegava ao banco sem o motivo real — cegueira que custou
+          // os diagnósticos de 07/07 e 15-16/07. Repassar cru o que o scheduler mediu.
+          booking_error: (result.telemetry?.booking_error as string) || undefined,
+          booking_error_kind: (result.telemetry?.booking_error_kind as string) || undefined,
+          booking_failure_kind: (result.telemetry?.booking_failure_kind as string) || undefined,
+          booking_failed_slot: (result.telemetry?.booking_failed_slot as string) || undefined,
+          booking_guard_hold: (result.telemetry?.booking_guard_hold as string) || undefined,
+          false_confirmation_blocked:
+            (result.telemetry?.false_confirmation_blocked as boolean) || undefined,
+          booking_escalated_technical:
+            (result.telemetry?.booking_escalated_technical as boolean) || undefined,
+          booking_validation_only_blocked:
+            (result.telemetry?.booking_validation_only_blocked as boolean) || undefined,
         },
         sessionId,
         effectivePhone ?? conversationPhone,

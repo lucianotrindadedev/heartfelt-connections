@@ -64,6 +64,7 @@ import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import {
   classifyBookingError,
   parseBookingFailure,
+  isGuardHoldFailure,
   isValidationOnlyFailure,
   pruneOfferedSlot,
   buildConflictReply,
@@ -2370,8 +2371,15 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // true quando a ÚLTIMA tentativa falhou por VALIDAÇÃO (campo obrigatório
   // faltando/inválido) — não é conflito nem falha técnica de create. A trava
   // final não deve mentir "horário indisponível" nesse caso (ver
-  // isValidationOnlyFailure).
-  let bookingValidationOnly = isValidationOnlyFailure(autoBooking.toolResult);
+  // isValidationOnlyFailure) — idem para os HOLDS de guard (intent_hold,
+  // slot_not_offered, date_mismatch): o create nem chegou a ser tentado.
+  let bookingValidationOnly =
+    isValidationOnlyFailure(autoBooking.toolResult) || isGuardHoldFailure(autoBooking.toolResult);
+  // Qual guard segurou o agendamento (intent_hold/slot_not_offered/date_mismatch),
+  // para telemetria: distingue no banco um hold correto de uma falha real.
+  let bookingGuardHold: string | undefined = isGuardHoldFailure(autoBooking.toolResult)
+    ? (autoBooking.toolResult?.match(/"error_kind"\s*:\s*"([^"]+)"/)?.[1] ?? undefined)
+    : undefined;
   // Guarda o resultado cru da última falha de booking p/ persistir o erro no meta
   // da mensagem (diagnóstico). Sem isto, a causa do "indisponível" ficava só no
   // log do servidor e invisível no banco.
@@ -2384,6 +2392,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         ? "Evento criado na agenda. Confirme ao lead e use next_stage=CONFIRMED."
         : invalidNameBlocked
           ? "O nome informado NÃO é um nome de pessoa válido. NÃO agende e NÃO ofereça horários. Peça gentilmente o NOME COMPLETO do paciente (nome e sobrenome) para finalizar. next_stage=NAME_COLLECT."
+          : isGuardHoldFailure(autoBooking.toolResult)
+          ? "O agendamento foi SEGURADO de propósito (veja error_kind e a instrução no resultado acima). NÃO houve problema técnico e NÃO houve indisponibilidade — não diga nenhuma das duas coisas ao lead. Siga exatamente a instrução do resultado e responda ao que o lead realmente pediu."
           : 'Falha ao registrar o agendamento. NÃO confirme. Se o resultado indicar error_kind="conflict" (horário ocupado), peça desculpas e ofereça OUTRO horário (nunca o que falhou). Se error_kind="technical" (falha ao registrar, horário segue livre), NÃO diga que ficou indisponível: peça desculpas por um problema técnico momentâneo e diga que já vai tentar registrar de novo.');
   }
 
@@ -2532,7 +2542,16 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         doubleBookingBlocked = true;
       }
       if (isBookingTool) {
-        bookingValidationOnly = isValidationOnlyFailure(outcome.result);
+        // Validação pendente OU hold de guard: nos dois casos o create nunca foi
+        // tentado. A trava de confirmação falsa não pode inventar "indisponível"
+        // (default conflict) nem "problema técnico" — o LLM já recebeu no
+        // resultado da tool a instrução do que fazer e responde ao lead.
+        bookingValidationOnly =
+          isValidationOnlyFailure(outcome.result) || isGuardHoldFailure(outcome.result);
+        if (isGuardHoldFailure(outcome.result)) {
+          bookingGuardHold =
+            outcome.result.match(/"error_kind"\s*:\s*"([^"]+)"/)?.[1] ?? bookingGuardHold;
+        }
         const f = parseBookingFailure(outcome.result);
         if (f) {
           bookingFailureKind = f.kind;
@@ -2648,7 +2667,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       if (lateBooking.toolResult?.includes('"need_valid_name":true')) {
         invalidNameBlocked = true;
       }
-      bookingValidationOnly = isValidationOnlyFailure(lateBooking.toolResult);
+      bookingValidationOnly =
+        isValidationOnlyFailure(lateBooking.toolResult) || isGuardHoldFailure(lateBooking.toolResult);
       const lf = parseBookingFailure(lateBooking.toolResult);
       if (lf) {
         bookingFailureKind = lf.kind;
@@ -2708,6 +2728,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // confirmação falsa. Sem isto ficávamos cegos ao "por que" de uma falha
   // técnica: caso real (Costa Lima Recreio, Osiane 21 96678-6864) escalou por
   // falha técnica e nenhuma mensagem guardou o erro real da API.
+  if (bookingGuardHold) mergedTelemetry.booking_guard_hold = bookingGuardHold;
   if (lastBookingFailureResult) {
     const em = lastBookingFailureResult.match(/"error"\s*:\s*"((?:[^"\\]|\\.)*)"/);
     const ek = lastBookingFailureResult.match(/"error_kind"\s*:\s*"([^"]+)"/);

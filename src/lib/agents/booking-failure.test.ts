@@ -72,6 +72,31 @@ describe("parseBookingFailure", () => {
     expect(parseBookingFailure('{"ok":false,"error":"telefone ausente"}')).toBeNull();
   });
 
+  it("ignora HOLDS de guard (intent_hold/slot_not_offered/date_mismatch)", () => {
+    // Casos reais 15-16/07 (Gustavo 21 99969-7832, Klaiby 61 98176-3084): o guard
+    // segurou o agendamento de propósito e a falta de error_kind conhecido fazia
+    // cair na inferência por texto → "technical" → "probleminha técnico" + escalada.
+    expect(
+      parseBookingFailure(
+        '{"ok":false,"error_kind":"intent_hold","error":"O paciente NÃO confirmou claramente marcar em sexta 17/07 às 13:00 (motivo: perguntou se pode confirmar amanhã)."}',
+      ),
+    ).toBeNull();
+    expect(
+      parseBookingFailure(
+        '{"ok":false,"error_kind":"slot_not_offered","error":"O horário NÃO está na lista de horários realmente disponíveis desta agenda."}',
+      ),
+    ).toBeNull();
+    expect(
+      parseBookingFailure(
+        '{"ok":false,"error_kind":"date_mismatch","error":"O horário escolhido é do dia 17/07, mas ao lead foi dito 20/07."}',
+      ),
+    ).toBeNull();
+  });
+
+  it("não inventa falha técnica para error_kind desconhecido", () => {
+    expect(parseBookingFailure('{"ok":false,"error_kind":"algo_novo","error":"x"}')).toBeNull();
+  });
+
   it("classifica mesmo validação-like SE houver error_kind explícito", () => {
     // create real que por acaso menciona 'ausente' no corpo do erro Clinicorp
     expect(

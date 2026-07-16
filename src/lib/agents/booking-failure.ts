@@ -33,18 +33,51 @@ const VALIDATION_MARKERS =
   /"missing"\s*:|"need_valid_name"|NOME_INVALIDO|Campos obrigatórios|selected_slot_iso ausente|name ausente|telefone ausente/i;
 
 /**
+ * `error_kind` emitidos pelos GUARDS do scheduler: o agendamento foi segurado de
+ * PROPÓSITO (slot fora da oferta real, data divergente da afirmada ao lead,
+ * intenção não confirmada). Não são falha de create — o horário nunca chegou a
+ * ser tentado e nada está quebrado.
+ *
+ * Casos reais 15-16/07 (Gustavo 21 99969-7832 / Sorriamed e Klaiby 61 98176-3084
+ * / MF Beauty): o guard de intenção segurou corretamente ("Posso confirmar
+ * amanhã?" e "Segunda" contra um slot de sexta), mas como esses kinds não eram
+ * reconhecidos aqui, a classificação caía na inferência por texto e virava
+ * "technical" → o lead recebia "tive um probleminha técnico" (mentira: não havia
+ * problema técnico) e, no 2º turn, a conversa escalava para humano com
+ * escalation_reason="falha_tecnica_agendamento". A resposta certa é deixar o LLM
+ * responder ao que o lead pediu, que é o que a própria mensagem do guard instrui.
+ */
+const GUARD_HOLD_KINDS = new Set(["slot_not_offered", "date_mismatch", "intent_hold"]);
+
+/**
+ * true quando `result` é um HOLD deliberado de guard (ver GUARD_HOLD_KINDS) — não
+ * é conflito de horário nem falha técnica de create.
+ */
+export function isGuardHoldFailure(result: string | undefined | null): boolean {
+  if (!result) return false;
+  const m = result.match(/"error_kind"\s*:\s*"([^"]+)"/);
+  return m ? GUARD_HOLD_KINDS.has(m[1]) : false;
+}
+
+/**
  * Extrai a classificação de falha REAL de create de um `result` (JSON string) de
- * criar_agendamento. Retorna null quando não é falha (ok:true/ausente) ou quando
- * é apenas erro de validação (campo pendente etc.).
- * Prioriza o campo explícito `error_kind` (que só as falhas de create carregam);
- * se ausente, infere do texto — exceto para erros de validação.
+ * criar_agendamento. Retorna null quando não é falha (ok:true/ausente), quando é
+ * apenas erro de validação (campo pendente etc.) ou quando é um hold de guard.
+ * Só o `error_kind` explícito "conflict"/"technical" marca falha de create; um
+ * kind desconhecido NUNCA vira falha técnica inventada (fail-safe: novos guards
+ * entram sem produzir "probleminha técnico" falso). Sem `error_kind`, infere do
+ * texto — exceto para erros de validação.
  */
 export function parseBookingFailure(
   result: string | undefined | null,
 ): { kind: BookingFailureKind } | null {
   if (!result) return null;
-  const m = result.match(/"error_kind"\s*:\s*"(conflict|technical)"/);
-  if (m) return { kind: m[1] as BookingFailureKind };
+  const kindMatch = result.match(/"error_kind"\s*:\s*"([^"]+)"/);
+  if (kindMatch) {
+    const kind = kindMatch[1];
+    if (kind === "conflict" || kind === "technical") return { kind };
+    return null;
+  }
   if (!/"ok"\s*:\s*false/.test(result)) return null;
   if (VALIDATION_MARKERS.test(result)) return null;
   return { kind: classifyBookingError(result) };
