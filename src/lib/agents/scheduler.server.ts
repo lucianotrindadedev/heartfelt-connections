@@ -2320,8 +2320,12 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // RAG com Gate: modelo barato decide se a msg precisa de busca.
   const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
   let ragContext = "";
+  const gateCost = { costUsd: 0, tokensIn: 0, tokensOut: 0 };
   if (lastUserMsg) {
     const gate = await decideRagNeed(ctx.orKey, ctx.ragGateModel, ctx.history, lastUserMsg);
+    gateCost.costUsd = gate.costUsd;
+    gateCost.tokensIn = gate.tokensIn;
+    gateCost.tokensOut = gate.tokensOut;
     if (gate.need) {
       const ragChunks = await searchKnowledge(ctx.agentId, gate.query || lastUserMsg, 5);
       ragContext = formatChunksAsContext(ragChunks);
@@ -2411,9 +2415,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const history: LlmMessage[] = ctx.history.map((m) => ({ role: m.role, content: m.content }));
 
   let workingMessages: LlmMessage[] = [...history];
-  let totalTokensIn = 0;
-  let totalTokensOut = 0;
-  let totalCostUsd = 0;
+  let totalTokensIn = gateCost.tokensIn;
+  let totalTokensOut = gateCost.tokensOut;
+  let totalCostUsd = gateCost.costUsd;
   // Telemetria: marca quando o LLM tentou criar agendamento DUPLICADO no mesmo
   // turn (apos o tryDeterministicBooking ja ter criado). O guard em
   // execCriarAgendamento retorna already_booked:true e a flag vai para

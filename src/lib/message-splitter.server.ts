@@ -204,10 +204,18 @@ function ruleBasedSplit(text: string): string[] {
   return [trimmed];
 }
 
+/** Custo/tokens de uma chamada LLM, para telemetria. */
+export interface SplitCost {
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
+}
+
 async function llmSplitOne(
   text: string,
   orKey: string,
   model: string,
+  onCost?: (c: SplitCost) => void,
 ): Promise<string[] | null> {
   const res = await fetch(OPENROUTER_URL, {
     method: "POST",
@@ -237,7 +245,14 @@ async function llmSplitOne(
 
   const json = (await res.json()) as {
     choices?: { message?: { content?: string } }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
   };
+  // Custo cobrado mesmo que o parse abaixo falhe — o modelo já rodou.
+  onCost?.({
+    costUsd: json.usage?.cost ?? 0,
+    tokensIn: json.usage?.prompt_tokens ?? 0,
+    tokensOut: json.usage?.completion_tokens ?? 0,
+  });
   const raw = (json.choices?.[0]?.message?.content ?? "").trim();
   if (!raw) return null;
 
@@ -260,11 +275,16 @@ async function llmSplitOne(
 /** Tenta o splitter em cada modelo da lista (primário + fallback) até um
  *  responder. Timeout/erro num modelo → tenta o próximo; se todos falharem,
  *  retorna null e o chamador usa a divisão por regras. */
-async function llmSplit(text: string, orKey: string, models: string[]): Promise<string[] | null> {
+async function llmSplit(
+  text: string,
+  orKey: string,
+  models: string[],
+  onCost?: (c: SplitCost) => void,
+): Promise<string[] | null> {
   const chain = models.filter((m, i) => m && models.indexOf(m) === i);
   for (const model of chain) {
     try {
-      const r = await llmSplitOne(text, orKey, model);
+      const r = await llmSplitOne(text, orKey, model, onCost);
       if (r && r.length > 1) return r;
     } catch (e) {
       console.warn(
@@ -278,6 +298,7 @@ async function llmSplit(text: string, orKey: string, models: string[]): Promise<
 export async function splitMessage(
   text: string,
   accountId: string,
+  onCost?: (c: SplitCost) => void,
 ): Promise<string[]> {
   const trimmed = text.trim();
   if (!trimmed) return [];
@@ -313,7 +334,7 @@ export async function splitMessage(
           const model =
             (llmRow.data as Record<string, unknown> | null)?.splitter_model as string | undefined
             || DEFAULT_SPLITTER_MODEL;
-          const llmResult = await llmSplit(trimmed, orKey, [model, DEFAULT_AUX_FALLBACK_MODEL]);
+          const llmResult = await llmSplit(trimmed, orKey, [model, DEFAULT_AUX_FALLBACK_MODEL], onCost);
           if (llmResult && llmResult.length > 1) {
             console.log(`[split] LLM → ${llmResult.length} parte(s)`);
             return llmResult;

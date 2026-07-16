@@ -226,10 +226,21 @@ async function deliverReply(
   phone: string | undefined,
 ): Promise<void> {
   const sb = getSelfhost();
-  const parts = await splitMessage(reply, accountId);
+  // Custo do splitter LLM (quando as regras não dividem e cai no modelo): soma-se
+  // ao cost_usd_estimate do turn. Sem isto ele rodava "de graça" na telemetria —
+  // era uma das lacunas do custo real por conversa.
+  const splitCost = { costUsd: 0, tokensIn: 0, tokensOut: 0 };
+  const parts = await splitMessage(reply, accountId, (c) => {
+    splitCost.costUsd += c.costUsd;
+    splitCost.tokensIn += c.tokensIn;
+    splitCost.tokensOut += c.tokensOut;
+  });
   console.log(
     `[orch] split ${parts.length} parte(s) — ${parts.map((p) => p.length).join("+")} chars (total ${reply.length})`,
   );
+  const metaCostUsd = (Number(meta.cost_usd_estimate) || 0) + splitCost.costUsd;
+  const metaTokensIn = (Number(meta.tokens_in) || 0) + splitCost.tokensIn;
+  const metaTokensOut = (Number(meta.tokens_out) || 0) + splitCost.tokensOut;
 
   const helena = await loadHelenaAccount(accountId);
 
@@ -285,6 +296,12 @@ async function deliverReply(
       split_parts: parts.length,
       split_preview: parts.map((p) => p.slice(0, 80)),
       ...meta,
+      // Sobrescreve os campos de custo de `meta` com o total que inclui o
+      // splitter (o spread acima traz os valores pré-splitter).
+      cost_usd_estimate: metaCostUsd,
+      tokens_in: metaTokensIn,
+      tokens_out: metaTokensOut,
+      split_cost_usd: splitCost.costUsd || undefined,
     },
   });
 
@@ -296,9 +313,9 @@ async function deliverReply(
     provider: "openrouter",
     model: meta.model ?? "unknown",
     latency_ms: meta.latency_ms ?? null,
-    tokens_in: meta.tokens_in ?? null,
-    tokens_out: meta.tokens_out ?? null,
-    cost_usd_estimate: meta.cost_usd_estimate ?? 0,
+    tokens_in: metaTokensIn,
+    tokens_out: metaTokensOut,
+    cost_usd_estimate: metaCostUsd,
   });
 }
 

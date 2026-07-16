@@ -22,7 +22,17 @@ export interface RagGateDecision {
   /** Query reescrita pronta pra busca (vazia se need=false). */
   query: string;
   reasoning?: string;
+  /** Custo/tokens desta chamada do gate. Zero quando resolvido por atalho regex
+   *  (trivial) ou quando o gate falhou sem consumir. O chamador (qualifier/
+   *  scheduler) soma ao total do turn — sem isto o custo do gate, que roda em
+   *  quase todo turn, ficava invisível no cost_usd_estimate. */
+  costUsd: number;
+  tokensIn: number;
+  tokensOut: number;
 }
+
+/** Zeros de custo, para os caminhos que não consomem LLM (atalho/erro). */
+const NO_COST = { costUsd: 0, tokensIn: 0, tokensOut: 0 };
 
 /**
  * Decide se vale fazer RAG na mensagem atual do lead.
@@ -42,13 +52,13 @@ export async function decideRagNeed(
   history: { role: "user" | "assistant"; content: string }[],
   lastUserMsg: string,
 ): Promise<RagGateDecision> {
-  if (!lastUserMsg.trim()) return { need: false, query: "" };
+  if (!lastUserMsg.trim()) return { need: false, query: "", ...NO_COST };
 
   // Atalho mecânico: msgs muito curtas (≤ 10 chars) quase nunca precisam de RAG.
   // Confirmação grosseira por padrão regex — evita até chamar o LLM.
   const trivial = /^(oi|olá|ola|hey|hi|ok|certo|sim|nao|não|blz|beleza|tudo bem|bom dia|boa tarde|boa noite|valeu|obrigado|obrigada|tchau|aham|certinho)[.!?\s]*$/i;
   if (lastUserMsg.trim().length <= 10 || trivial.test(lastUserMsg.trim())) {
-    return { need: false, query: "", reasoning: "trivial" };
+    return { need: false, query: "", reasoning: "trivial", ...NO_COST };
   }
 
   const recentDialogue = history
@@ -91,7 +101,10 @@ Regras:
       },
       model === DEFAULT_AUX_FALLBACK_MODEL ? [] : [DEFAULT_AUX_FALLBACK_MODEL],
     );
-    if (!res.content) return { need: true, query: lastUserMsg, reasoning: "gate_empty_content" };
+    // Custo desta chamada (consumido mesmo quando o parse falha ou o content
+    // vem vazio — o modelo já rodou e cobrou).
+    const cost = { costUsd: res.costUsd, tokensIn: res.tokensIn, tokensOut: res.tokensOut };
+    if (!res.content) return { need: true, query: lastUserMsg, reasoning: "gate_empty_content", ...cost };
 
     try {
       const parsed = JSON.parse(res.content) as {
@@ -103,14 +116,15 @@ Regras:
         need: !!parsed.need,
         query: (parsed.query ?? "").trim() || lastUserMsg,
         reasoning: parsed.reason,
+        ...cost,
       };
     } catch {
-      return { need: true, query: lastUserMsg, reasoning: "gate_parse_error" };
+      return { need: true, query: lastUserMsg, reasoning: "gate_parse_error", ...cost };
     }
   } catch (e) {
     console.warn(
       `[rag-gate] falhou (${e instanceof Error ? e.message : e}) — fallback need=true`,
     );
-    return { need: true, query: lastUserMsg, reasoning: "gate_error" };
+    return { need: true, query: lastUserMsg, reasoning: "gate_error", ...NO_COST };
   }
 }

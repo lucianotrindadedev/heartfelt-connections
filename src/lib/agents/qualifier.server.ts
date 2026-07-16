@@ -673,8 +673,12 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   // no prompt principal em conversas triviais ("ok", "tudo bem", saudações).
   const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
   let ragContext = "";
+  const gateCost = { costUsd: 0, tokensIn: 0, tokensOut: 0 };
   if (lastUserMsg) {
     const gate = await decideRagNeed(ctx.orKey, ctx.ragGateModel, ctx.history, lastUserMsg);
+    gateCost.costUsd = gate.costUsd;
+    gateCost.tokensIn = gate.tokensIn;
+    gateCost.tokensOut = gate.tokensOut;
     if (gate.need) {
       const ragChunks = await searchKnowledge(ctx.agentId, gate.query || lastUserMsg, 5);
       ragContext = formatChunksAsContext(ragChunks);
@@ -701,9 +705,9 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     { initial_tag_applied: initialTagApplied } as LeadData,
     backfillPatch,
   );
-  let totalTokensIn = 0;
-  let totalTokensOut = 0;
-  let totalCostUsd = 0;
+  let totalTokensIn = gateCost.tokensIn;
+  let totalTokensOut = gateCost.tokensOut;
+  let totalCostUsd = gateCost.costUsd;
 
   // Etiquetagem de TURMA determinística (turma_auto): assim que houver data de
   // nascimento válida, o CÓDIGO aplica a tag da turma certa (mantendo N/A). O

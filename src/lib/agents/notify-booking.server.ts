@@ -11,6 +11,7 @@
 //   * notification_summary_instruction — instrução para o LLM do resumo
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { logAuxLlmCost } from "@/lib/cost-telemetry";
 import {
   EvolutionApiError,
   EvolutionConfigMissingError,
@@ -316,7 +317,9 @@ export async function summarizeConversationForNotification(
     }
     const json = (await res.json()) as {
       choices?: { message?: { content?: string | null } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     };
+    logAuxLlmCost("notification_summary", model, json.usage);
     return (json.choices?.[0]?.message?.content ?? "").trim();
   } catch (e) {
     console.warn("[notify-booking] resumo LLM erro:", e);

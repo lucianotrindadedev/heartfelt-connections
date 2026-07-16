@@ -12,6 +12,7 @@
 //  - Instancia + grupo: POR AGENTE (agent_escalation.evolution_instance / grupo_alerta)
 //  - Toggle ativo: POR AGENTE (agent_escalation.ativo)
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { logAuxLlmCost } from "@/lib/cost-telemetry";
 import {
   EvolutionApiError,
   EvolutionConfigMissingError,
@@ -409,7 +410,11 @@ async function summarizeEscalationContext(args: {
     }
     const json = (await res.json()) as {
       choices?: { message?: { content?: string | null } }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
     };
+    // Custo desta chamada auxiliar (fora do ciclo de meta da mensagem — a
+    // escalada roda pós-turn). Vai pra telemetria para não ficar invisível.
+    logAuxLlmCost("escalation_summary", args.model, json.usage);
     const raw = (json.choices?.[0]?.message?.content ?? "").trim();
     if (!raw) return null;
 
