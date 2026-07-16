@@ -643,6 +643,16 @@ describe("requestedPeriodoFromText", () => {
     expect(requestedPeriodoFromText("quinta-feira")).toBeNull();
     expect(requestedPeriodoFromText("")).toBeNull();
   });
+
+  // Dois turnos na frase: o que está em cláusula de TRABALHO/negação é a
+  // indisponibilidade, não o desejo. Caso real (Costa Lima Recreio, Luciano
+  // 32 99160-7088): "trabalho de manhã, só posso de tarde" era lido como manhã.
+  it("desambigua 'trabalho de manhã, só posso de tarde' → tarde", () => {
+    expect(requestedPeriodoFromText("eu trabalho de manha só posso de tarde")).toBe("tarde");
+    expect(requestedPeriodoFromText("trabalho de manhã, só posso à tarde")).toBe("tarde");
+    expect(requestedPeriodoFromText("de manhã não dá, tem que ser de tarde")).toBe("tarde");
+    expect(requestedPeriodoFromText("trabalho a tarde, quero de manha")).toBe("manha");
+  });
 });
 
 // ── requestedHoraFromText (prioridade de hora exata pro corte de 6 vagas) ──

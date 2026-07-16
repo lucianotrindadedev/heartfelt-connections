@@ -1582,13 +1582,48 @@ export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
  * quando o LLM esquece de passar `periodo` — sem isso a busca traz só os
  * horários mais cedo e diz "não tem de manhã/à tarde" mesmo com o turno livre.
  */
+/**
+ * Um turno citado numa cláusula de TRABALHO ou NEGAÇÃO é indisponibilidade, não
+ * o desejo. "trabalho de manhã", "de manhã não dá", "não posso de manhã" → a
+ * manhã está EXCLUÍDA. Usado para desambiguar quando a frase cita dois turnos.
+ */
+function periodoExcluido(t: string, palavra: string): boolean {
+  const p = palavra; // "manh[ãa]" | "tarde" | "noite"
+  return (
+    new RegExp(`(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`).test(t) ||
+    new RegExp(`${p}[^,.;]*\\bn[ãa]o\\b`).test(t) ||
+    new RegExp(`\\bn[ãa]o\\b[^,.;]*(?:posso|consigo|d[áa]|vou|tenho)?[^,.;]*${p}`).test(t)
+  );
+}
+
+/**
+ * Turno ("manha"/"tarde"/"noite") que o lead DESEJA numa mensagem, ou null.
+ *
+ * Quando a frase cita DOIS turnos ("trabalho de manhã, só posso de tarde"), o
+ * detector antigo pegava o PRIMEIRO ("manhã") e ofertava manhã — o oposto do
+ * pedido. Caso real (Costa Lima Recreio, Luciano 32 99160-7088). Agora: se um
+ * turno aparece numa cláusula de trabalho/negação, ele é EXCLUÍDO; sobra o
+ * desejado. Se ainda ambíguo, vale o ÚLTIMO citado (costuma ser o operativo).
+ */
 export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noite" | null {
   const t = (text ?? "").toLowerCase();
   if (!t) return null;
-  if (/\bmanh[aã]/.test(t)) return "manha";
-  if (/\btarde/.test(t)) return "tarde";
-  if (/\bnoite/.test(t)) return "noite";
-  return null;
+  const present: Array<{ key: "manha" | "tarde" | "noite"; re: string; idx: number }> = [];
+  const m = t.search(/\bmanh[aã]/);
+  const ta = t.search(/\btarde/);
+  const n = t.search(/\bnoite/);
+  if (m >= 0) present.push({ key: "manha", re: "manh[ãa]", idx: m });
+  if (ta >= 0) present.push({ key: "tarde", re: "tarde", idx: ta });
+  if (n >= 0) present.push({ key: "noite", re: "noite", idx: n });
+  if (present.length === 0) return null;
+  if (present.length === 1) return present[0]!.key;
+
+  // Dois+ turnos: remove os que estão em cláusula de trabalho/negação.
+  const restantes = present.filter((p) => !periodoExcluido(t, p.re));
+  if (restantes.length === 1) return restantes[0]!.key;
+  const pool = restantes.length > 0 ? restantes : present;
+  // Ainda ambíguo: o último turno citado costuma ser o operativo.
+  return pool.reduce((a, b) => (b.idx > a.idx ? b : a)).key;
 }
 
 /**
@@ -1632,9 +1667,13 @@ function pickSlotByPreference(
   // Turno do dia. \b inicial impede "amanhã" de casar como "manhã": o "m"
   // dentro de "amanhã" é precedido por "a" (sem boundary); em "manhã"/"de
   // manhã" o "m" abre palavra.
-  const wantMorning = /\bmanh[aã]/.test(t);
-  const wantAfternoon = /\btarde/.test(t);
-  const wantEvening = /\bnoite/.test(t);
+  // Turno DESEJADO com desambiguação: "trabalho de manhã, só posso de tarde"
+  // quer TARDE, não manhã (requestedPeriodoFromText remove o turno que está em
+  // cláusula de trabalho/negação). Sem isto, o auto-select filtrava por manhã.
+  const desejado = requestedPeriodoFromText(t);
+  const wantMorning = desejado === "manha";
+  const wantAfternoon = desejado === "tarde";
+  const wantEvening = desejado === "noite";
 
   if (!targetDate && !wantMorning && !wantAfternoon && !wantEvening) return null;
 
