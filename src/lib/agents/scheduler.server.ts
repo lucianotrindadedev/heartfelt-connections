@@ -98,6 +98,8 @@ import {
   requestedDateFromText,
   requestedPeriodoFromText,
   requestedHoraFromText,
+  rankSlotsByRequestedHour,
+  minutesOfDayFromLabel,
   affirmedDatesFromAssistant,
   ddmmInBrt,
   resolveGcalEventTemplates,
@@ -816,6 +818,9 @@ async function execListarHorarios(
           // tarde não cair fora quando a manhã tem vagas. Festas ("uma por dia")
           // não têm turno — não aplica.
           periodoHoras: resolved.umaPorDia ? undefined : periodoParaHoras(resolvedPeriodo) ?? undefined,
+          // Hora exata pedida ("perto das 16h"): prioriza os horários próximos
+          // dela antes do corte de 6. Festas ("uma por dia") não têm hora pedida.
+          horaPreferida: resolved.umaPorDia ? undefined : resolvedHora ?? undefined,
           umaPorDia: resolved.umaPorDia,
           umaPorDiaDias: resolved.diasUmaPorDia,
           bufferMinutos: resolved.bufferMinutos,
@@ -944,7 +949,15 @@ async function execListarHorarios(
         cePeriodoAviso = `Sem vaga no turno pedido (${resolvedPeriodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
       }
     }
-    const ceLimited = ceSlots.slice(0, 6).map(formatCeSlot);
+    // Prioriza a hora pedida ANTES do corte de 6 (senão o slice pega sempre as
+    // vagas mais cedo do turno e "prefiro perto das 16h" nunca é alcançado),
+    // reordenando cronologicamente só na saída — igual ao Clinicorp.
+    const ceLimited = rankSlotsByRequestedHour(ceSlots, resolvedHora, (s) =>
+      minutesOfDayFromLabel(s.fromTime),
+    )
+      .slice(0, 6)
+      .sort((a, b) => a.start.localeCompare(b.start))
+      .map(formatCeSlot);
     if (ceLimited.length === 0) {
       const noProfessionals = ctx.clinicExpertsProfessionals.length === 0;
       const causa = noProfessionals
@@ -1030,14 +1043,9 @@ async function execListarHorarios(
   // PRÓXIMOS dela antes do corte — senão o corte pega sempre os 6 mais cedo
   // do turno (ex: 12:00-14:30) e nunca alcança um horário pedido mais tarde
   // no mesmo turno (ex: 16:00), mesmo com esse horário livre.
-  const ranked =
-    resolvedHora != null
-      ? [...slots].sort((a, b) => {
-          const ha = Number(a.fromTime.slice(0, 2));
-          const hb = Number(b.fromTime.slice(0, 2));
-          return Math.abs(ha - resolvedHora) - Math.abs(hb - resolvedHora);
-        })
-      : slots;
+  const ranked = rankSlotsByRequestedHour(slots, resolvedHora, (s) =>
+    minutesOfDayFromLabel(s.fromTime),
+  );
   const limited = ranked
     .slice(0, 6)
     .sort((a, b) => a.start.localeCompare(b.start))

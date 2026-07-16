@@ -22,6 +22,8 @@ import {
   requestedDateFromText,
   requestedPeriodoFromText,
   requestedHoraFromText,
+  rankSlotsByRequestedHour,
+  minutesOfDayFromLabel,
   affirmedDatesFromAssistant,
   ddmmInBrt,
   tryAutoSelectOfferedSlot,
@@ -696,6 +698,52 @@ describe("requestedHoraFromText", () => {
     expect(requestedHoraFromText("meio-dia, 12 horas")).toBe(12);
     // "12 da noite" = meia-noite, não 24h
     expect(requestedHoraFromText("12 da noite")).toBe(0);
+  });
+});
+
+// ── rankSlotsByRequestedHour (paridade entre provedores) ──────────────────
+
+describe("rankSlotsByRequestedHour", () => {
+  const slots = ["09:00", "09:45", "10:30", "14:30", "16:00", "16:45", "17:15"];
+  const rank = (hora: number | null) =>
+    rankSlotsByRequestedHour(slots, hora, minutesOfDayFromLabel);
+
+  it("prioriza os horários mais próximos da hora pedida antes do corte", () => {
+    // Caso Eliane: pediu depois das 16h. O corte de 6 sem ranking pegava a manhã.
+    expect(rank(16).slice(0, 3)).toEqual(["16:00", "16:45", "17:15"]);
+  });
+
+  it("usa o minuto, não só a hora: pedindo 17h, 16:45 vem antes de 16:00", () => {
+    // Comparando só a hora (como o Clinicorp fazia), 16:45 e 16:00 empatavam em
+    // |16-17|=1 e o desempate caía no mais cedo — 16:00 na frente de 16:45.
+    expect(rank(17).indexOf("16:45")).toBeLessThan(rank(17).indexOf("16:00"));
+    // 16:45 e 17:15 ficam a 15 min dos 17h: empate real, resolvido pelo mais cedo.
+    expect(rank(17).slice(0, 2)).toEqual(["16:45", "17:15"]);
+  });
+
+  it("sem hora pedida devolve a ordem cronológica intacta", () => {
+    expect(rank(null)).toEqual(slots);
+  });
+
+  it("não muta o array de entrada", () => {
+    const orig = [...slots];
+    rank(16);
+    expect(slots).toEqual(orig);
+  });
+});
+
+describe("minutesOfDayFromLabel", () => {
+  it("lê os formatos que os provedores devolvem", () => {
+    expect(minutesOfDayFromLabel("16:45")).toBe(1005);
+    expect(minutesOfDayFromLabel("9:00")).toBe(540);
+    expect(minutesOfDayFromLabel("16h45")).toBe(1005);
+    expect(minutesOfDayFromLabel("16")).toBe(960);
+  });
+
+  it("devolve -1 no que não é hora", () => {
+    expect(minutesOfDayFromLabel("")).toBe(-1);
+    expect(minutesOfDayFromLabel("banana")).toBe(-1);
+    expect(minutesOfDayFromLabel("99:99")).toBe(-1);
   });
 });
 

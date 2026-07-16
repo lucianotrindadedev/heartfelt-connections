@@ -13,6 +13,7 @@
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue, encryptValue } from "@/lib/crypto.server";
 import { normalizeBrazilPhone } from "@/lib/conversation-channel.server";
+import { minutesOfDayFromLabel, rankSlotsByRequestedHour } from "@/lib/booking-template";
 
 const GCAL_BASE = "https://www.googleapis.com/calendar/v3";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -594,6 +595,10 @@ interface ListSlotsParams {
    *  horária ANTES do corte `amostras`, para que "tarde" não seja descartada
    *  quando a manhã já tem vagas. Ex: { min: 12, max: 18 } = 12:00–17:59. */
   periodoHoras?: { min: number; max: number };
+  /** Hora exata pedida pelo lead (0-23, hora local BRT): ordena os candidatos
+   *  pela proximidade dela ANTES do corte `amostras`, senão o corte pega sempre
+   *  os mais cedo e um pedido de "perto das 16h" nunca é alcançado. */
+  horaPreferida?: number;
 }
 
 // Granularidades válidas (passo da grade de horários).
@@ -811,9 +816,26 @@ export async function listGoogleCalendarSlots(
   let resultado = [...semConflito].sort(
     (a, b) => a.inicio.getTime() - b.inicio.getTime(),
   );
+  // Hora pedida pelo lead ("perto das 16h"): ordena por proximidade dela ANTES
+  // do corte, senão o corte pega sempre as vagas mais cedo e o horário pedido
+  // nunca é ofertado mesmo estando livre. Reordena cronologicamente depois, para
+  // o lead receber as opções em ordem natural.
+  if (params.horaPreferida != null) {
+    resultado = rankSlotsByRequestedHour(resultado, params.horaPreferida, (s) =>
+      minutesOfDayFromLabel(
+        new Intl.DateTimeFormat("pt-BR", {
+          timeZone: TZ,
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).format(s.inicio),
+      ),
+    );
+  }
   if (typeof params.amostras === "number" && params.amostras > 0) {
     resultado = resultado.slice(0, params.amostras);
   }
+  resultado.sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
 
   // 6. Formata para output
   return resultado.map((slot) => ({

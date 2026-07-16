@@ -1669,6 +1669,47 @@ export function requestedHoraFromText(text: string): number | null {
   return h >= 1 && h <= 6 ? h + 12 : h;
 }
 
+/**
+ * Ordena os horários pela PROXIMIDADE da hora que o lead pediu, para que o corte
+ * de N seguinte fique com os mais próximos do pedido — e não sempre com os mais
+ * cedo do turno. Sem hora pedida devolve a lista intacta (ordem cronológica).
+ *
+ * `minutosDoDia` extrai o minuto do dia de cada slot (ex.: "16:45" → 1005), o
+ * que desempata dentro da mesma hora: pedindo 17h, 16:45 vem antes de 16:00.
+ *
+ * Vive aqui (e não no ramo de um provedor) porque os três provedores precisam do
+ * MESMO comportamento: o ranking existia só no Clinicorp, então Google Calendar
+ * e Clinic Experts ignoravam a hora pedida e ofertavam sempre o começo do turno.
+ */
+export function rankSlotsByRequestedHour<T>(
+  slots: readonly T[],
+  hora: number | null | undefined,
+  minutosDoDia: (slot: T) => number,
+): T[] {
+  if (hora == null) return [...slots];
+  const alvo = hora * 60;
+  return [...slots].sort(
+    (a, b) => Math.abs(minutosDoDia(a) - alvo) - Math.abs(minutosDoDia(b) - alvo),
+  );
+}
+
+/** "16:45" / "16h45" / "9:00" → minutos do dia (1005, 1005, 540). -1 se inválido. */
+export function minutesOfDayFromLabel(label: string): number {
+  const m = /(\d{1,2})[:h.](\d{2})/.exec(label ?? "");
+  if (m) {
+    const h = Number(m[1]);
+    const mi = Number(m[2]);
+    if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) return h * 60 + mi;
+    return -1;
+  }
+  const onlyHour = /^\s*(\d{1,2})\s*h?\s*$/.exec(label ?? "");
+  if (onlyHour) {
+    const h = Number(onlyHour[1]);
+    if (h >= 0 && h <= 23) return h * 60;
+  }
+  return -1;
+}
+
 function pickSlotByPreference(
   slots: OfferedSlot[],
   text: string,
