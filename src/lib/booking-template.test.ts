@@ -1016,6 +1016,65 @@ describe("tryAutoSelectOfferedSlot — separador de minutos solto (Costa Lima Re
   });
 });
 
+// Caso real (Costa Lima Recreio, Luciano 32 99160-7088, 15/07): o lead aceitou
+// 16:45 e o sistema foi agendar 13:00. Dois defeitos combinados:
+// (1) a PERGUNTA "tem mais tarde?" era lida como escolha de turno e travava o
+//     primeiro slot da tarde (13:00);
+// (2) "fica sim" não era reconhecido como aceite, então o 16:45 nunca
+//     substituía o 13:00 travado.
+describe("tryAutoSelectOfferedSlot — pergunta não escolhe; 'fica sim' aceita a proposta do turno (Luciano)", () => {
+  const SLOTS = [
+    { iso: "2026-07-17T11:15:00-03:00", date_label: "sexta-feira, 17/07", time_label: "11:15" },
+    { iso: "2026-07-17T13:00:00-03:00", date_label: "sexta-feira, 17/07", time_label: "13:00" },
+    { iso: "2026-07-17T13:45:00-03:00", date_label: "sexta-feira, 17/07", time_label: "13:45" },
+    { iso: "2026-07-17T16:45:00-03:00", date_label: "sexta-feira, 17/07", time_label: "16:45" },
+  ];
+
+  it("'eu trabalho até esse horario tem mais tarde?' é PERGUNTA — não seleciona nada", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+      { role: "assistant", content: "tenho sexta 17/07 às 13:00 ou 13:45. Qual prefere?" },
+      { role: "user", content: "eu trabalho até esse horario tem mais tarde?" },
+    ]);
+    expect(patch).toEqual({});
+  });
+
+  it.each(["tem outro horário mais tarde?", "tem mais tarde", "tem algum depois das 16h?"])(
+    "'%s' também não seleciona",
+    (msg) => {
+      const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+        { role: "assistant", content: "tenho sexta às 13:00 ou 13:45." },
+        { role: "user", content: msg },
+      ]);
+      expect(patch).toEqual({});
+    },
+  );
+
+  it("'fica sim' após o agente propor UM horário (16:45) seleciona o 16:45", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+      { role: "assistant", content: "temos um horário mais tarde na sexta-feira, dia 17/07, às 16:45. 😊" },
+      { role: "assistant", content: "Esse horário de 16:45 fica bom para você?" },
+      { role: "user", content: "fica sim" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-17T16:45:00-03:00");
+  });
+
+  it.each(["fica bom", "fica ótimo", "serve"])("'%s' também é aceite da proposta única", (msg) => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+      { role: "assistant", content: "Consigo às 16:45. Fica bom?" },
+      { role: "user", content: msg },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-07-17T16:45:00-03:00");
+  });
+
+  it("'fica sim' com DOIS horários propostos no turno continua ambíguo — não seleciona", () => {
+    const patch = tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: SLOTS }, [
+      { role: "assistant", content: "tenho às 13:00 ou às 13:45. Qual prefere?" },
+      { role: "user", content: "fica sim" },
+    ]);
+    expect(patch).toEqual({});
+  });
+});
+
 // Ordinal ("o primeiro") se refere à ordem em que o AGENTE falou os horários,
 // não à ordem de offered_slots. offered_slots traz até 6 vagas vindas da
 // agenda, mas o agente só menciona 2 por mensagem — o código pegava

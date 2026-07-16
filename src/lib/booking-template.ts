@@ -1660,6 +1660,14 @@ function pickSlotByPreference(
   // Negação/explicação de data NÃO é escolha de horário — não auto-selecionar.
   if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
 
+  // PERGUNTA nunca é escolha. "eu trabalho até esse horário, tem mais tarde?"
+  // é um pedido de OPÇÕES da tarde — o path de turno selecionava o primeiro
+  // slot da tarde (13:00) como se o lead tivesse escolhido, e o booking ia
+  // atrás desse horário mesmo o lead aceitando depois OUTRO (16:45). Caso real
+  // (Costa Lima Recreio, Luciano 32 99160-7088, 15/07). O agente deve
+  // RESPONDER a pergunta (listar as opções), não travar uma escolha.
+  if (/\?\s*$/.test(t) || /\btem\s+(mais|outro|outra|algum|alguma)\b/.test(t)) return null;
+
   // Data relativa ("amanhã", "hoje", "depois de amanhã"). O \b em relativo
   // evita o bug clássico: "amanhã" contém "manhã".
   const targetDate = relativeTargetDateBrt(t);
@@ -1979,7 +1987,7 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   if (looksLikeDecline(text) || mentionsUnavailability(t)) return false;
   if (
     new RegExp(
-      String.raw`^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado)(?:\s+(?:as?|às|o|a|no|na|em)\s+${TIME_IN_TEXT_SRC})?[!.?\s]*$`,
+      String.raw`^(pode ser|sim|ok|blz|beleza|confirmo|confirmado|esse|essa|este|esta|perfeito|funciona|pode|vamos|top|fechado|combinado|fica\s+(?:sim|bom|[óo]timo|perfeito|certo|excelente)|serve)(?:\s+(?:as?|às|o|a|no|na|em)\s+${TIME_IN_TEXT_SRC})?[!.?\s]*$`,
       "i",
     ).test(t)
   ) {
@@ -2082,6 +2090,15 @@ export function tryAutoSelectOfferedSlot(
   }
   if (SECOND_ORDINAL_RE.test(lastUser.toLowerCase()) && ordinalPool[1]) {
     return patchFromSlot(ordinalPool[1]);
+  }
+
+  // Aceite sem hora ("fica sim", "pode ser"): o lead está respondendo à
+  // proposta do ÚLTIMO turno do agente. Se o agente propôs exatamente UM
+  // horário ali ("...às 16:45. Fica bom?"), é ESSE — mesmo que um slot antigo
+  // tenha ficado selecionado antes. Caso real (Costa Lima Recreio, Luciano
+  // 32 99160-7088): "fica sim" ao 16:45 e o booking foi atrás do 13:00 velho.
+  if (spoken.length === 1) {
+    return patchFromSlot(spoken[0]!);
   }
 
   const mentionedInAssistant = slots.filter((s) => slotMentionedInText(s, assistantText));
