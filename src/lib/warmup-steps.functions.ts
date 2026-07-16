@@ -143,12 +143,21 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
     // NÃO têm templates. Se a conta tem múltiplos canais, pegar o channelId de uma
     // sessão de Instagram fazia o CRM retornar 0 templates. Filtramos para SÓ
     // conversas de WhatsApp, garantindo o channelId do canal certo.
+    // ORDENADO POR RECÊNCIA: quando a conta troca o número do WhatsApp, o CRM
+    // cria um canal NOVO e as conversas antigas continuam apontando pro canal
+    // ANTIGO. Sem ordenar, a query pegava um canal arbitrário (às vezes o do
+    // número velho, que não tem os templates) e o app dizia "0 templates" com os
+    // templates existindo no número atual. Caso real (Escudero: 3 números ao
+    // longo do tempo — eb3f8deb → bee2a827 → 30617312; só o atual tinha os WU).
+    // Pegamos os canais do MAIS RECENTE pro mais antigo e usamos o primeiro que
+    // tiver templates — o número atual vence, e ainda funciona durante a troca.
     const { data: convs } = await sb
       .from("conversations")
-      .select("helena_session_id, channel, agents!inner(account_id)")
+      .select("helena_session_id, channel, atualizado_em, agents!inner(account_id)")
       .eq("agents.account_id", data.accountId)
       .eq("channel", "whatsapp")
       .not("helena_session_id", "is", null)
+      .order("atualizado_em", { ascending: false })
       .limit(20);
 
     const helena = await loadHelenaAccount(data.accountId).catch(() => null);
@@ -160,19 +169,19 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
       };
     }
 
-    let channelId: string | null = null;
+    // Canais distintos, do mais recente pro mais antigo (preserva a ordem).
+    const channelIds: string[] = [];
     let sessionsTried = 0;
     for (const c of convs ?? []) {
       const sid = c.helena_session_id as string | null;
       if (!sid) continue;
       sessionsTried++;
       const session = await loadHelenaSession(helena, sid).catch(() => null);
-      if (session?.channelId) {
-        channelId = session.channelId;
-        break;
+      if (session?.channelId && !channelIds.includes(session.channelId)) {
+        channelIds.push(session.channelId);
       }
     }
-    if (!channelId) {
+    if (channelIds.length === 0) {
       return {
         ok: false as const,
         error: `Nenhum canal de WhatsApp com sessão encontrado (testei ${sessionsTried}). Templates são só do WhatsApp Oficial — garanta que pelo menos um lead já falou pelo WhatsApp.`,
@@ -180,14 +189,19 @@ export const listAccountHelenaTemplates = createServerFn({ method: "GET" })
       };
     }
 
-    const templates = await listHelenaTemplates(helena, channelId);
-    if (templates.length === 0) {
-      return {
-        ok: false as const,
-        error: `channelId ${channelId} OK, mas o CRM retornou 0 templates. Verifique se há templates ATTENDANCE aprovados pra esse canal no painel do CRM.`,
-        templates: [] as never[],
-        channelId,
-      };
+    // Primeiro canal (mais recente) que retornar templates. Assim uma troca de
+    // número não esconde os templates do número atual.
+    for (const channelId of channelIds) {
+      const templates = await listHelenaTemplates(helena, channelId);
+      if (templates.length > 0) {
+        return { ok: true as const, channelId, templates };
+      }
     }
-    return { ok: true as const, channelId, templates };
+
+    return {
+      ok: false as const,
+      error: `Testei ${channelIds.length} canal(is) de WhatsApp (${channelIds.join(", ")}) e o CRM retornou 0 templates ATTENDANCE aprovados. Verifique se há templates aprovados pra esse canal no painel do CRM.`,
+      templates: [] as never[],
+      channelId: channelIds[0],
+    };
   });
