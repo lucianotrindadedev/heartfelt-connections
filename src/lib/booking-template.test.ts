@@ -677,6 +677,26 @@ describe("requestedHoraFromText", () => {
     expect(requestedHoraFromText("tenho 23 anos")).toBeNull();
     expect(requestedHoraFromText("")).toBeNull();
   });
+
+  it("converte hora coloquial da TARDE/NOITE para 24h (caso Eliane 21 97256-0633)", () => {
+    // Ela trabalha até as 16h e precisa de horário DEPOIS disso. Lido como 4 da
+    // manhã, o ranking priorizava os slots mais próximos das 4h → ofertava 09:00,
+    // 09:45 e 10:30 (manhã) justamente para quem só pode no fim da tarde.
+    expect(requestedHoraFromText("só saio 4 horas da tarde")).toBe(16);
+    expect(requestedHoraFromText("Sexta-feira eu não vou conseguir sair 4 horas")).toBe(16);
+    expect(requestedHoraFromText("Só depois das 7 da noite")).toBe(19);
+    expect(requestedHoraFromText("pode ser 5 da tarde?")).toBe(17);
+    expect(requestedHoraFromText("umas 8 da noite")).toBe(20);
+  });
+
+  it("não desloca hora já em 24h nem a manhã explícita", () => {
+    expect(requestedHoraFromText("às 16 horas")).toBe(16);
+    expect(requestedHoraFromText("pode ser 9 da manhã")).toBe(9);
+    expect(requestedHoraFromText("tem vaga 9h?")).toBe(9);
+    expect(requestedHoraFromText("meio-dia, 12 horas")).toBe(12);
+    // "12 da noite" = meia-noite, não 24h
+    expect(requestedHoraFromText("12 da noite")).toBe(0);
+  });
 });
 
 // ── sanitizeLeadDataPatch (defesa em profundidade) ────────────────────────

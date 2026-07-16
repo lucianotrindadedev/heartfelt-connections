@@ -1635,18 +1635,38 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
  * nunca alcança um horário pedido mais tarde no mesmo turno (ex: 16:00),
  * mesmo com esse horário livre (caso real: lead pediu 16h repetidas vezes,
  * agenda da semana seguinte vazia, mas o corte só oferecia até 14:30).
+ *
+ * O lead fala como brasileiro, não em 24h: "4 horas da tarde" é 16, não 4. Sem
+ * converter, o ranking priorizava os horários mais próximos das 4h — ou seja, a
+ * MANHÃ — para quem só pode no fim da tarde. Caso real (16/07, Costa Lima
+ * Recreio, Eliane 21 97256-0633): "só saio 4 horas da tarde" → ofertaram 09:00,
+ * 09:45 e 10:30; a clínica teve de resolver por telefone.
  */
 export function requestedHoraFromText(text: string): number | null {
   const t = (text ?? "").toLowerCase();
   if (!t) return null;
   // "às 16", "as 16 horas" (o "às" já indica hora, sufixo opcional) OU
-  // "16h"/"16 horas"/"16:00" (sufixo de hora obrigatório sem "às").
+  // "16h"/"16 horas"/"16:00" (sufixo de hora obrigatório sem "às") OU
+  // "5 da tarde" (o turno logo depois já indica que o número é hora).
   const m = t.match(
-    /\b(?:[àa]s\s*(\d{1,2})(?:\s*h(?:oras?)?)?|(\d{1,2})\s*(?:h(?:oras?)?|:00))\b/,
+    /\b(?:[àa]s\s*(\d{1,2})(?:\s*h(?:oras?)?)?|(\d{1,2})\s*(?:h(?:oras?)?|:00)|(\d{1,2})(?=\s*d[aeo]\s*(?:manh[ãa]|tarde|noite)))\b/,
   );
   if (!m) return null;
-  const h = Number(m[1] ?? m[2]);
-  return h >= 0 && h <= 23 ? h : null;
+  const h = Number(m[1] ?? m[2] ?? m[3]);
+  if (!(h >= 0 && h <= 23)) return null;
+
+  // Turno dito logo APÓS a hora ("4 horas da tarde", "7 da noite").
+  const after = t.slice((m.index ?? 0) + m[0].length);
+  const periodo = after.match(/^\s*d[aeo]\s*(manh[ãa]|tarde|noite)/)?.[1];
+  if (periodo) {
+    if (periodo.startsWith("manh")) return h === 12 ? 0 : h; // "12 da manhã" = meia-noite
+    if (periodo === "noite" && h === 12) return 0; // "12 da noite" = meia-noite
+    return h < 12 ? h + 12 : h; // "5 da tarde" → 17; "16 da tarde" segue 16
+  }
+  // Sem turno explícito, 1h-6h é quase sempre PM na fala ("saio 4 horas"):
+  // nenhuma clínica atende de madrugada, e ler ao pé da letra jogava a oferta
+  // para a manhã. 7h-11h fica como está (7h/9h da manhã são plausíveis).
+  return h >= 1 && h <= 6 ? h + 12 : h;
 }
 
 function pickSlotByPreference(
