@@ -68,11 +68,14 @@ import {
   isValidationOnlyFailure,
   pruneOfferedSlot,
   buildConflictReply,
+  buildReofferReply,
+  claimsBookingConfirmed,
   TECH_RETRY_REPLY,
   TECH_ESCALATE_REPLY,
   TECH_ESCALATION_REASON,
   MAX_BOOKING_TECH_RETRIES,
   type BookingFailureKind,
+  type OfferedSlotLike,
 } from "./booking-failure";
 import {
   buildBookingFieldsPromptBlock,
@@ -2707,6 +2710,32 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const mergedTelemetry: Record<string, unknown> = { ...(autoBooking.telemetry ?? {}) };
   if (doubleBookingBlocked) mergedTelemetry.double_booking_blocked = true;
 
+  // ── Rede de segurança contra CONFIRMAÇÃO FALSA ─────────────────────────────
+  // Se o turn termina SEM appointment_id mas a resposta AFIRMA que agendou
+  // (alucinação — pior em temperatura alta), o texto é substituído por uma
+  // re-oferta dos horários REAIS. Independe de o booking ter sido tentado: o
+  // LLM pode afirmar "ficou agendada" mesmo sem chamar criar_agendamento.
+  // Caso real (18/07, Costa Lima Recreio, Haiku a 0.7): "segunda feira" (dia
+  // nunca ofertado) → "concluído com sucesso" sem nenhum agendamento criado.
+  // Chamado nos DOIS pontos de retorno (validation-only + retorno final).
+  const scrubFalseConfirmation = (): void => {
+    const apptId =
+      ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
+    if (apptId || outStage === "ESCALATED" || !claimsBookingConfirmed(reply)) return;
+    const realSlots = pruneOfferedSlot(
+      ((outPatch as Partial<LeadData>).offered_slots ??
+        ctx.leadData.offered_slots) as OfferedSlotLike[] | undefined,
+      undefined,
+    );
+    reply = buildReofferReply(realSlots);
+    if (outStage === "CONFIRMED") outStage = "SLOT_OFFER";
+    outPatch = { ...outPatch, appointment_id: undefined, selected_slot_iso: CLEARED_SLOT };
+    mergedTelemetry.false_confirmation_scrubbed = true;
+    console.warn(
+      `[scheduler] confirmação falsa sem appointment_id substituída conv=${ctx.conversationId} stage=${outStage}`,
+    );
+  };
+
   // ── Agendamento no MESMO turn em que o último campo obrigatório chega ──────
   // Quando o lead manda o último dado (ex.: CPF) AGORA, o tryDeterministicBooking
   // do início do turn não o viu (só entra em lead_data_patch depois). Sem isto, o
@@ -2863,6 +2892,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         outStage = "NAME_COLLECT";
         outPatch = { ...outPatch, appointment_id: undefined };
       }
+      // Este caminho confia na resposta do LLM (que deveria pedir o dado
+      // faltante). Mas o LLM pode, em vez disso, AFIRMAR que agendou — aí a
+      // rede de segurança troca por uma re-oferta (nunca deixa "agendado" falso).
+      scrubFalseConfirmation();
       return {
         reply,
         next_stage: outStage,
@@ -2983,6 +3016,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     // Resetar para booked_slot_iso (valor "verdadeiro") reabria esse caminho.
     outPatch = { ...outPatch, selected_slot_iso: "" };
   }
+
+  // Rede de segurança final: pega a confirmação falsa mesmo quando NENHUM booking
+  // foi tentado (o LLM afirmou "ficou agendado" sozinho, sem chamar tool).
+  scrubFalseConfirmation();
 
   return {
     reply,

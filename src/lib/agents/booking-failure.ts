@@ -126,6 +126,49 @@ export function buildConflictReply(remaining: OfferedSlotLike[]): string {
     : "Ihh, esse horário acabou de ficar indisponível 😕 Me dá só um instante que já te trago outras opções de horário, tá?";
 }
 
+/**
+ * Mensagem de RE-OFERTA usada quando uma confirmação FALSA é barrada: lista até
+ * 2 horários REAIS já ofertados e pede pro lead escolher. Diferente de
+ * buildConflictReply, NÃO diz "indisponível" — aqui o horário afirmado pelo LLM
+ * nunca foi uma opção real (foi alucinado), não um slot que ficou ocupado.
+ */
+export function buildReofferReply(remaining: OfferedSlotLike[]): string {
+  const opcoes = remaining
+    .slice(0, 2)
+    .map((s) => `${s.date_label} às ${s.time_label}`)
+    .join(" ou ");
+  return opcoes
+    ? `Pra fechar certinho: os horários que consigo são ${opcoes}. Qual deles fica melhor pra você? 😊`
+    : "Deixa eu confirmar a agenda pra te passar os horários certinhos — só um instante. 😊";
+}
+
+/**
+ * Detecta uma AFIRMAÇÃO de que o agendamento foi CONCLUÍDO/confirmado (não uma
+ * oferta nem pergunta). Rede de segurança: se um turn do scheduler termina SEM
+ * appointment_id mas a resposta afirma que agendou, o texto é substituído — o
+ * lead nunca recebe confirmação de uma consulta que não existe.
+ *
+ * Conservador de propósito: casa formas AFIRMATIVAS de conclusão
+ * ("ficou agendada", "agendamento concluído com sucesso", "agendada para
+ * segunda"), NÃO ofertas/perguntas ("posso agendar?", "quer que eu marque?",
+ * "vou confirmar sua reserva"). Só é consultado quando appointment_id está
+ * ausente, então uma confirmação LEGÍTIMA (com appointment_id) nunca é afetada.
+ *
+ * Caso real (18/07, Costa Lima Recreio, Haiku a 0.7): lead disse "segunda feira"
+ * (dia nunca ofertado); o modelo inventou o slot e respondeu "agendamento
+ * concluído com sucesso" sem nada ter sido criado.
+ */
+export function claimsBookingConfirmed(reply: string | undefined | null): boolean {
+  const t = (reply ?? "").toLowerCase();
+  if (!t) return false;
+  return (
+    /\bagendamento\b[^.!?\n]{0,40}\b(conclu[ií]d[oa]|realizad[oa]|efetuad[oa]|feito|registrad[oa]|confirmad[oa])\b/.test(t) ||
+    /\b(ficou|est[áa]|foi|est[aã]o)\s+(agendad[oa]|marcad[oa]|confirmad[oa]|reservad[oa])\b/.test(t) ||
+    /\bagendad[oa]\s+(com\s+sucesso|para\b)/.test(t) ||
+    /\breservad[oa]\s+(com\s+sucesso|para\b)/.test(t)
+  );
+}
+
 /** Falha TÉCNICA (slot segue livre): não mente, avisa que vai tentar de novo. */
 export const TECH_RETRY_REPLY =
   "Puxa, tive um probleminha técnico aqui pra registrar sua reserva agora. 😕 Me dá só um instantinho que já vou tentar de novo e te confirmo, tá?";

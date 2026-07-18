@@ -5,6 +5,8 @@ import {
   isValidationOnlyFailure,
   pruneOfferedSlot,
   buildConflictReply,
+  buildReofferReply,
+  claimsBookingConfirmed,
   type OfferedSlotLike,
 } from "./booking-failure";
 
@@ -179,6 +181,50 @@ describe("buildConflictReply", () => {
   it("sem horários remanescentes, promete trazer opções (não re-oferta nada)", () => {
     const reply = buildConflictReply([]);
     expect(reply).toContain("outras opções");
+    expect(reply).not.toContain("às ");
+  });
+});
+
+describe("claimsBookingConfirmed", () => {
+  it("detecta afirmações de agendamento concluído (casos reais Costa Lima 18/07)", () => {
+    // Confirmações falsas que passaram pro lead no teste real.
+    expect(
+      claimsBookingConfirmed("Perfeito! Sua consulta ficou agendada para segunda-feira, 21 de julho às 10:00."),
+    ).toBe(true);
+    expect(
+      claimsBookingConfirmed("Perfeito, Luciano! Seu agendamento foi concluído com sucesso. Data: segunda-feira"),
+    ).toBe(true);
+    expect(claimsBookingConfirmed("Pronto, seu horário está confirmado!")).toBe(true);
+    expect(claimsBookingConfirmed("Reservado com sucesso para amanhã às 9h.")).toBe(true);
+    expect(claimsBookingConfirmed("Seu agendamento foi registrado 😊")).toBe(true);
+  });
+
+  it("NÃO dispara em ofertas, perguntas ou intenções (evita falso positivo)", () => {
+    expect(claimsBookingConfirmed("Posso já deixar seu horário agendado pra você?")).toBe(false);
+    expect(claimsBookingConfirmed("Quer que eu marque esse horário?")).toBe(false);
+    expect(claimsBookingConfirmed("Vou confirmar sua reserva agora, tá?")).toBe(false);
+    expect(claimsBookingConfirmed("Consigo te encaixar segunda às 10h ou terça às 14h. Qual prefere?")).toBe(false);
+    expect(claimsBookingConfirmed("")).toBe(false);
+    expect(claimsBookingConfirmed(null)).toBe(false);
+  });
+});
+
+describe("buildReofferReply", () => {
+  it("reoferta até 2 horários reais sem dizer 'indisponível'", () => {
+    const reply = buildReofferReply([
+      { iso: "a", date_label: "quarta-feira, 22/07", time_label: "09:00" },
+      { iso: "b", date_label: "quinta-feira, 23/07", time_label: "10:30" },
+      { iso: "c", date_label: "quinta-feira, 23/07", time_label: "11:15" },
+    ]);
+    expect(reply).toContain("09:00");
+    expect(reply).toContain("10:30");
+    expect(reply).not.toContain("11:15");
+    expect(reply.toLowerCase()).not.toContain("indispon");
+  });
+
+  it("sem horários, promete confirmar a agenda (não inventa horário)", () => {
+    const reply = buildReofferReply([]);
+    expect(reply.toLowerCase()).toContain("agenda");
     expect(reply).not.toContain("às ");
   });
 });
