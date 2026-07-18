@@ -40,6 +40,7 @@ import {
   resolveCollectedPhone,
   turmaTagForLead,
   sanitizeLeadDataPatch,
+  scrubInventedTimeOffers,
   tagGateMissingField,
   type BookingFieldDef,
 } from "./booking-template";
@@ -1772,5 +1773,49 @@ describe("CPF no pipeline de booking", () => {
     });
     expect(res.ok).toBe(false);
     expect(res.issues.some((i) => i.key === "cpf" && i.reason === "invalid_cpf")).toBe(true);
+  });
+});
+
+describe("scrubInventedTimeOffers — qualifier oferta horário sem ter agenda (Costa Lima Recreio 18/07)", () => {
+  it("corta a oferta inventada, preserva o pitch e fecha com pergunta neutra", () => {
+    const reply =
+      "Poxa, entendo perfeitamente. Muitos pacientes chegam com essa mesma dificuldade na mastigação, e a boa notícia é que você não precisa enfrentar isso sozinho. A Costa Lima é referência em reabilitação oral, com mais de 11 anos e mais de 1.000 implantes realizados. 😊\n" +
+      "Como um presente nosso pra você dar esse primeiro passo, essa primeira consulta fica por nossa conta. Tenho estes horários disponíveis: segunda-feira às 14h ou terça-feira às 10h.\n" +
+      "Qual desses fica melhor pra você?";
+    const out = scrubInventedTimeOffers(reply);
+    expect(out.scrubbed).toBe(true);
+    expect(out.reply).toContain("presente nosso");
+    expect(out.reply).not.toContain("14h");
+    expect(out.reply).not.toContain("segunda-feira");
+    expect(out.reply).not.toContain("Qual desses");
+    expect(out.reply).toContain("manhã ou à tarde");
+  });
+
+  it("detecta 'amanhã às 10h' e variações com minutos", () => {
+    expect(scrubInventedTimeOffers("Consigo te encaixar amanhã às 10h, pode ser?").scrubbed).toBe(true);
+    expect(scrubInventedTimeOffers("Que tal quinta-feira às 14:30?").scrubbed).toBe(true);
+    expect(scrubInventedTimeOffers("Posso te atender hoje às 16h!").scrubbed).toBe(true);
+  });
+
+  it("quando a oferta abre a resposta, sobra só a pergunta neutra", () => {
+    const out = scrubInventedTimeOffers("Consigo te encaixar amanhã às 10h, pode ser?");
+    expect(out.reply).toContain("manhã ou à tarde");
+    expect(out.reply).not.toContain("10h");
+  });
+
+  it("NÃO dispara em horário de funcionamento (faixa 'das X às Y')", () => {
+    expect(
+      scrubInventedTimeOffers("Atendemos de segunda a sexta, das 08:00 às 18:00. Posso te ajudar em algo mais?")
+        .scrubbed,
+    ).toBe(false);
+    expect(
+      scrubInventedTimeOffers("Funcionamos de segunda a sábado, das 8h às 12h. 😊").scrubbed,
+    ).toBe(false);
+  });
+
+  it("NÃO dispara em respostas normais sem dia+horário", () => {
+    expect(scrubInventedTimeOffers("Que ótimo! Você prefere de manhã ou à tarde?").scrubbed).toBe(false);
+    expect(scrubInventedTimeOffers("Perfeito, vou te mostrar as opções disponíveis. 😊").scrubbed).toBe(false);
+    expect(scrubInventedTimeOffers("").scrubbed).toBe(false);
   });
 });

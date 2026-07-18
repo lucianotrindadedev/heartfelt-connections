@@ -1471,6 +1471,68 @@ export function mentionsTravelReturn(text: string): boolean {
   );
 }
 
+/** Pergunta neutra usada no lugar de uma oferta de horário INVENTADA. */
+export const NEUTRAL_SLOT_PREFERENCE_QUESTION =
+  "Pra eu já te trazer os horários certinhos da agenda: você prefere de manhã ou à tarde?";
+
+/** Faixas de funcionamento ("das 8h às 18h", "de 08:00 até 18:00") — não são
+ *  oferta de horário; removidas antes da detecção pra não gerar falso positivo. */
+const TIME_RANGE_RE =
+  /\bd[ae]s?\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)?\s*(?:[àa]s|at[ée])\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)?/gi;
+
+/** Oferta CONCRETA de dia+horário ("segunda às 14h", "amanhã às 10:30").
+ *  Atenção: \b não funciona antes de acento em JS ("à" ∉ \w) — por isso o
+ *  "às" é ancorado por \s, não \b. */
+const CONCRETE_TIME_OFFER_RE =
+  /\b(?:segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|amanh[ãa]|hoje)(?:-feira)?[^.!?\n]{0,40}?\s[àa]s\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)?\b/i;
+
+/**
+ * Remove de uma resposta do QUALIFIER ofertas de dia+horário concretos.
+ *
+ * O qualifier NÃO tem acesso à agenda (listar_horarios é do scheduler) — logo
+ * qualquer "segunda às 14h" que ele oferte é INVENTADO e pode cair em dia
+ * bloqueado. Caso real (18/07, Costa Lima Recreio, Haiku já a 0.3): na
+ * transição p/ SLOT_OFFER o qualifier ofertou "segunda-feira às 14h ou
+ * terça-feira às 10h" com a segunda bloqueada na agenda e offered_slots vazio.
+ *
+ * Estratégia: mantém tudo ANTES da primeira frase ofensora (o pitch de valor
+ * fica), corta dali em diante (a pergunta "qual desses?" que referencia a
+ * oferta cai junto) e fecha com uma pergunta neutra de preferência — deixando
+ * o scheduler ofertar os horários REAIS no turno seguinte. Menções a horário de
+ * funcionamento ("das 8h às 18h") não disparam o corte.
+ */
+export function scrubInventedTimeOffers(reply: string): { reply: string; scrubbed: boolean } {
+  const original = reply ?? "";
+  if (!original.trim()) return { reply: original, scrubbed: false };
+  if (!CONCRETE_TIME_OFFER_RE.test(original.replace(TIME_RANGE_RE, ""))) {
+    return { reply: original, scrubbed: false };
+  }
+
+  const lines = original.split("\n");
+  let cutLine = -1;
+  let cutCol = -1;
+  outer: for (let i = 0; i < lines.length; i++) {
+    for (const sentence of lines[i]!.split(/(?<=[.!?…])\s+/)) {
+      if (CONCRETE_TIME_OFFER_RE.test(sentence.replace(TIME_RANGE_RE, ""))) {
+        cutLine = i;
+        cutCol = lines[i]!.indexOf(sentence);
+        break outer;
+      }
+    }
+  }
+  // Detectou no texto inteiro mas não numa frase isolada (quebra atípica):
+  // fail-safe corta tudo e fica só a pergunta neutra.
+  if (cutLine === -1) return { reply: NEUTRAL_SLOT_PREFERENCE_QUESTION, scrubbed: true };
+
+  const kept = [...lines.slice(0, cutLine), lines[cutLine]!.slice(0, Math.max(0, cutCol)).trim()]
+    .filter((l) => l.trim())
+    .join("\n");
+  return {
+    reply: kept ? `${kept}\n\n${NEUTRAL_SLOT_PREFERENCE_QUESTION}` : NEUTRAL_SLOT_PREFERENCE_QUESTION,
+    scrubbed: true,
+  };
+}
+
 /**
  * A data relativa está sendo AFIRMADA como fato / explicação, não pedida como
  * horário ("08/07 será amanhã", "amanhã é feriado", "seria amanhã"). Nesse caso

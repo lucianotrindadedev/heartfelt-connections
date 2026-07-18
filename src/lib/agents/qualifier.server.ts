@@ -24,6 +24,7 @@ import {
   backfillBookingFieldsFromHistory,
   buildChannelPhonePromptBlock,
   mergeLeadDataPatch,
+  scrubInventedTimeOffers,
   tagGateMissingField,
   turmaTagsForLead,
   turmaTagCandidates,
@@ -332,6 +333,13 @@ e a conversa morre. Se o lead perguntar disponibilidade de data/horário,
 use next_stage="SLOT_OFFER" e responda confirmando o interesse com uma
 pergunta (ex: "Essa data é para qual tipo de evento?").
 
+🚫 HORÁRIOS: pela MESMA razão (você não tem a agenda), NUNCA cite dias da
+semana, datas ou horários concretos ("segunda às 14h", "amanhã às 10h") —
+seriam INVENTADOS e podem cair em dia bloqueado, criando expectativa falsa.
+Ao sinalizar next_stage="SLOT_OFFER", NÃO liste horários: pergunte uma
+preferência neutra (ex.: "você prefere de manhã ou à tarde?") — o módulo de
+agendamento consulta a agenda REAL e oferta os horários no turno seguinte.
+
 Ferramentas disponíveis (chame quando fizer sentido no fluxo):
 - aplicar_tag_interesse: registra o interesse do lead no CRM. Não use no 1º
   ciclo, exceto se a primeira mensagem já trouxer interesse explícito.
@@ -413,6 +421,7 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 4. NUNCA mencione ferramentas, automações, CRM, tags ou sistemas.
 5. NUNCA invente fatos clínicos ou prometa resultados.
 5b. 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo sob insistência do lead. Só cite um valor se estiver ESCRITO EXPLICITAMENTE no prompt do proprietário. Se não estiver, diga que o valor é definido na avaliação presencial e conduza ao agendamento. NUNCA invente nem estime um número.
+5c. 🚫 **HORÁRIOS:** você NÃO tem acesso à agenda — NUNCA cite dias da semana, datas ou horários concretos ("segunda às 14h") ao ofertar atendimento; seriam inventados e podem cair em dia bloqueado. Ao sinalizar SLOT_OFFER, pergunte uma preferência neutra ("prefere de manhã ou à tarde?") — os horários REAIS vêm da agenda no turno seguinte.
 6. NUNCA tente agendar você mesma — só sinalize next_stage="SLOT_OFFER" quando:
    • O interesse principal estiver identificado com clareza
    • O lead manifestar disposição (explícita ou implícita) de avançar
@@ -872,8 +881,28 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   // Fallback: se LLM nao retornou next_stage, mantem o stage atual da conversa.
   const finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;
 
+  // ── Trava anti-horário-inventado ───────────────────────────────────────────
+  // O qualifier NÃO tem acesso à agenda; qualquer "segunda às 14h" que ele
+  // oferte é inventado (pode cair em dia bloqueado). Corta a oferta e fecha com
+  // pergunta neutra de preferência — o scheduler oferta os horários REAIS no
+  // turno seguinte. Só roda quando NÃO há offered_slots (com slots reais no
+  // lead_data, citar horário pode ser legítimo). Caso real: Costa Lima Recreio
+  // 18/07, "segunda-feira às 14h ou terça-feira às 10h" com a segunda bloqueada.
+  let finalReply = result.reply;
+  let inventedOfferScrubbed = false;
+  if ((ctx.leadData.offered_slots?.length ?? 0) === 0) {
+    const scrub = scrubInventedTimeOffers(finalReply);
+    if (scrub.scrubbed) {
+      finalReply = scrub.reply;
+      inventedOfferScrubbed = true;
+      console.warn(
+        `[qualifier] oferta de horário inventada removida conv=${ctx.conversationId} stage=${ctx.stage}->${finalStage}`,
+      );
+    }
+  }
+
   return {
-    reply: result.reply,
+    reply: finalReply,
     next_stage: finalStage,
     lead_data_patch: mergedPatch,
     reasoning: result.reasoning,
@@ -881,5 +910,6 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     tokens_in: totalTokensIn,
     tokens_out: totalTokensOut,
     cost_usd: totalCostUsd,
+    telemetry: inventedOfferScrubbed ? { invented_time_offer_scrubbed: true } : undefined,
   };
 }
