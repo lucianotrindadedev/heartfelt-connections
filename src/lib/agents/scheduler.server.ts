@@ -1943,12 +1943,11 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
   const appointmentLabel = s.appointment_type_label?.trim() || "Consulta";
   const commitmentQ = defaultCommitmentQuestion(s);
   const commitmentEnabled = isCommitmentRequired(s) && !!commitmentQ;
-  const bookingFields = getBookingFieldsForChannel(s, {
-    channel: ctx.channel,
-    effectivePhone: ctx.effectivePhone,
-  });
-  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
-  const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
+  // NOTA: fieldsBlock (campos já coletados / faltantes) e phoneBlock são VOLÁTEIS
+  // — mudam a cada turno conforme o lead responde. Por isso NÃO entram aqui: este
+  // prompt é o bloco CACHEADO (prefix-match do prompt caching Anthropic) e precisa
+  // ser byte-estável para o cache valer. Esses blocos vão em buildDynamicSystemPrompt
+  // (bloco NÃO cacheado). Ver [[prompt-caching-fieldsblock]].
 
   // Scaffold técnico — SEMPRE presente, mesmo quando o prompt do dono domina.
   // Contém estágios, ferramentas, guardrails inegociáveis (ex: não confirmar
@@ -2001,9 +2000,6 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
   na agenda continua o ANTIGO e o lead aparece num horário que não existe.
 - Nunca diga que cancelou/remarcou sem a tool retornar ok=true.
 
-${fieldsBlock}
-${phoneBlock ? `\n${phoneBlock}\n` : ""}
-
 # GUARDRAILS INEGOCIÁVEIS
 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de", "em torno de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista várias vezes ou pressione dizendo que só decide sabendo o valor. Só cite um valor se ele estiver ESCRITO EXPLICITAMENTE nas instruções acima (prompt do proprietário). Se não estiver, responda que o valor é definido na avaliação presencial (cada caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
 1. NUNCA diga "vou verificar", "estou consultando", "já retorno" — chame a tool de verdade.
@@ -2052,9 +2048,6 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 - **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou. Só diga que o horário "ficou indisponível" quando error_kind="conflict" (horário ocupado) — e ofereça OUTRO horário, nunca o mesmo. Se error_kind="technical", NÃO minta sobre indisponibilidade: peça desculpas por um problema técnico e diga que vai tentar registrar de novo.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre.
-
-${fieldsBlock}
-${phoneBlock ? `\n${phoneBlock}\n` : ""}
 
 # REGRAS ABSOLUTAS
 
@@ -2122,6 +2115,10 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
 
   const channelCtx = { channel: ctx.channel, effectivePhone: ctx.effectivePhone };
   const bookingFields = getBookingFieldsForChannel(ctx.agentSettings, channelCtx);
+  // fieldsBlock e phoneBlock vivem AQUI (bloco dinâmico, não cacheado) porque
+  // mudam a cada turno — mantê-los fora do systemCached preserva o prefix-match
+  // do prompt caching. Ver buildCachedSystemPrompt.
+  const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
   const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
 
   // Bloco de agendas (multi-agenda). Lista os labels + quando usar cada uma,
@@ -2172,7 +2169,7 @@ ${JSON.stringify(
   2,
 )}
 
-${(() => {
+${fieldsBlock ? `${fieldsBlock}\n\n` : ""}${(() => {
   const missing = getMissingBookingFields(bookingFields, ld);
   if (missing.length === 0) return "";
   const f = missing[0]!;
