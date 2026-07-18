@@ -56,7 +56,15 @@ export interface LlmRequest {
   /** Força JSON output (response_format = json_object). */
   jsonMode?: boolean;
   maxTokens?: number;
+  /** Temperatura base — usada quando o modelo em uso não tem entrada em
+   *  `modelTemperatures`. */
   temperature?: number;
+  /** Temperatura POR MODELO (chave = model id). Resolvida contra `model` a
+   *  cada chamada, então cobre o modelo principal E os de fallback: em
+   *  callLlmWithFallback cada iteração roda callLlm com o modelo daquela
+   *  tentativa e a temperatura certa é escolhida aqui. Modelo ausente usa
+   *  `temperature`. */
+  modelTemperatures?: Record<string, number>;
   timeoutMs?: number;
   /** Se true, ativa cache_control no systemCached (Anthropic via OpenRouter). */
   enableCaching?: boolean;
@@ -145,6 +153,19 @@ function buildMessages(req: LlmRequest): LlmMessage[] {
   return out;
 }
 
+/**
+ * Temperatura efetiva de UMA chamada: se o modelo em uso tem entrada em
+ * `modelTemperatures` (config por conta), ela vence; senão usa `temperature`
+ * (base); senão 0.5. Como callLlm recebe `req.model` já apontando para o modelo
+ * da tentativa atual (o fallback troca via {...req, model}), isto resolve a
+ * temperatura certa também para os modelos de fallback.
+ */
+function resolveTemperature(req: LlmRequest): number {
+  const perModel = req.modelTemperatures?.[req.model];
+  if (typeof perModel === "number" && Number.isFinite(perModel)) return perModel;
+  return req.temperature ?? 0.5;
+}
+
 export async function callLlm(
   orKey: string,
   req: LlmRequest,
@@ -156,7 +177,7 @@ export async function callLlm(
     // reasoning). 1024 podia truncar quando o reasoning vinha mais detalhado,
     // fazendo o JSON quebrar no meio do campo lead_data_patch.
     max_tokens: req.maxTokens ?? 2048,
-    temperature: req.temperature ?? 0.5,
+    temperature: resolveTemperature(req),
     // Modelos com reasoning (gemini-flash, gpt-mini) queimam o max_tokens em
     // raciocínio oculto e truncam o reply (vimos tokens_out=2031 com ~150
     // chars de texto). Para agentes operacionais, reasoning curto basta.
@@ -545,7 +566,11 @@ export async function callLlmStructured<T>(
       ...req,
       messages: retryMessages,
       jsonMode: false, // libera o modelo de tentar montar o response_format
-      temperature: Math.max(0.3, (req.temperature ?? 0.5) - 0.2),
+      // Recovery: baixa a temperatura efetiva (do modelo atual) em 0.2. Limpa
+      // modelTemperatures para que este valor de recuperação seja honrado em vez
+      // de reaplicar a temperatura fixa por-modelo.
+      temperature: Math.max(0.3, resolveTemperature(req) - 0.2),
+      modelTemperatures: undefined,
     });
   }
 

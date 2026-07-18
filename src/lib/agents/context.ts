@@ -47,7 +47,14 @@ export interface AgentContext {
   /** Modelo barato usado pelo RAG Gate pra decidir se a msg precisa de busca. */
   ragGateModel: string;
   maxTokens: number;
+  /** Temperatura padrão da conta — usada quando o modelo em uso não tem
+   *  entrada em `modelTemperatures`. */
   temperature: number;
+  /** Temperatura POR MODELO (chave = model id, ex.: "openai/gpt-4.1-mini").
+   *  Vale para o modelo principal E para os de fallback — a resolução é feita
+   *  por modelo em cada chamada. Modelo ausente cai em `temperature`. Vem de
+   *  account_llm_config.model_temperatures. */
+  modelTemperatures: Record<string, number>;
   /** Chave OpenRouter já descriptografada. */
   orKey: string;
 

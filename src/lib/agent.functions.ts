@@ -244,6 +244,10 @@ export const updateLlmConfig = createServerFn({ method: "POST" })
         fallback_models: z.array(z.string().min(1).max(120)).max(5).optional(),
         max_tokens: z.number().int().min(64).max(8192).optional(),
         temperature: z.number().min(0).max(2).optional(),
+        // Temperatura por modelo (chave = model id do OpenRouter). Aplica-se ao
+        // modelo principal e aos de fallback. {} limpa todas as temperaturas por
+        // modelo (voltam a usar a temperatura padrão da conta).
+        model_temperatures: z.record(z.string(), z.number().min(0).max(2)).optional(),
       })
       .parse(d)
   )

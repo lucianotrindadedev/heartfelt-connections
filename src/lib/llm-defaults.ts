@@ -16,6 +16,9 @@ export const DEFAULT_ACCOUNT_LLM_CONFIG = {
   rag_gate_model: "openai/gpt-4.1-mini",
   tool_model: "openai/gpt-4.1-mini",
   fallback_models: ["openai/gpt-4.1-mini"],
+  // Temperatura por modelo (chave = model id). Vazio → cada modelo usa a
+  // temperatura padrão da conta (coluna temperature).
+  model_temperatures: {} as Record<string, number>,
 } as const;
 
 /**

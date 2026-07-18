@@ -102,7 +102,7 @@ export const replayConversation = createServerFn({ method: "POST" })
       sb
         .from("account_llm_config")
         .select(
-          "default_model, max_tokens, temperature, fallback_models, rag_gate_model, tool_model",
+          "default_model, max_tokens, temperature, model_temperatures, fallback_models, rag_gate_model, tool_model",
         )
         .eq("account_id", accountId)
         .single(),
@@ -186,6 +186,8 @@ export const replayConversation = createServerFn({ method: "POST" })
         (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
       maxTokens,
       temperature,
+      modelTemperatures:
+        (llm.data?.model_temperatures as Record<string, number> | undefined) ?? {},
       orKey,
       integrations: {
         clinicorp: !!clinicorpCfg.data?.ativo,

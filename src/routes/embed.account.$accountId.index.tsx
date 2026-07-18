@@ -476,6 +476,7 @@ function EmbedHome() {
         agentSettings={(agent.settings as Record<string, string> | null) ?? {}}
         currentModel={(agent.llm_model_override as string | null) ?? (data.llm?.default_model as string | null) ?? ""}
         currentFallbackModel={((data.llm?.fallback_models as string[] | null) ?? [])[0] ?? ""}
+        currentModelTemperatures={(data.llm?.model_temperatures as Record<string, number> | null) ?? {}}
         currentVoice={(data.voice?.elevenlabs_voice_id as string | null) ?? null}
         debounceSegundos={(agent.debounce_segundos as number | null) ?? 20}
         hasOpenRouter={!!data.secrets?.openrouter_last4}
@@ -5836,6 +5837,7 @@ function AgentSettingsView({
   agentSettings,
   currentModel,
   currentFallbackModel,
+  currentModelTemperatures,
   currentVoice,
   debounceSegundos,
   hasOpenRouter,
@@ -5852,6 +5854,7 @@ function AgentSettingsView({
   agentSettings: Record<string, string>;
   currentModel: string;
   currentFallbackModel: string;
+  currentModelTemperatures: Record<string, number>;
   currentVoice: string | null;
   debounceSegundos: number;
   hasOpenRouter: boolean;
@@ -5872,6 +5875,16 @@ function AgentSettingsView({
 
   const [model, setModel] = useState(currentModel);
   const [fallbackModel, setFallbackModel] = useState(currentFallbackModel);
+  // Temperatura por modelo — input controlado como string ("" = usar a
+  // temperatura padrão da conta). Salvo em account_llm_config.model_temperatures.
+  const [primaryTemp, setPrimaryTemp] = useState<string>(() => {
+    const t = currentModelTemperatures[currentModel];
+    return typeof t === "number" ? String(t) : "";
+  });
+  const [fallbackTemp, setFallbackTemp] = useState<string>(() => {
+    const t = currentFallbackModel ? currentModelTemperatures[currentFallbackModel] : undefined;
+    return typeof t === "number" ? String(t) : "";
+  });
   const [voiceId, setVoiceId] = useState(currentVoice ?? "");
   const [debounce, setDebounce] = useState(debounceSegundos);
   const [settings, setSettings] = useState<Record<string, string>>(agentSettings);
@@ -5936,12 +5949,30 @@ function AgentSettingsView({
 
   const save = useMutation({
     mutationFn: async () => {
+      // Temperatura por modelo: parseia os inputs e mescla com o mapa existente
+      // (preserva temperaturas de outros modelos/papéis já configurados).
+      const parseTemp = (v: string): number | null => {
+        const s = v.trim().replace(",", ".");
+        if (s === "") return null;
+        const n = Number(s);
+        return Number.isFinite(n) ? Math.min(2, Math.max(0, n)) : null;
+      };
+      const modelTemps: Record<string, number> = { ...currentModelTemperatures };
+      const pt = parseTemp(primaryTemp);
+      if (pt === null) delete modelTemps[model];
+      else modelTemps[model] = pt;
+      if (fallbackModel) {
+        const ft = parseTemp(fallbackTemp);
+        if (ft === null) delete modelTemps[fallbackModel];
+        else modelTemps[fallbackModel] = ft;
+      }
       await updateLlm({
         data: {
           accountId,
           default_model: model,
           // [] limpa o fallback; senão envia o modelo escolhido.
           fallback_models: fallbackModel ? [fallbackModel] : [],
+          model_temperatures: modelTemps,
         },
       });
       await updateVoice({ data: { accountId, elevenlabs_voice_id: voiceId || null } });
@@ -6238,6 +6269,26 @@ function AgentSettingsView({
                 )}
               </div>
 
+              {/* Temperatura do modelo principal */}
+              {hasOpenRouter && !models.isLoading && (
+                <div>
+                  <Label className="text-sm font-semibold">Temperatura do modelo principal</Label>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    0 = mais determinístico (recomendado para agendamento), 1 = mais criativo. Vazio = usa a temperatura padrão da conta.
+                  </p>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min={0}
+                    max={2}
+                    value={primaryTemp}
+                    onChange={(e) => setPrimaryTemp(e.target.value)}
+                    placeholder="padrão da conta"
+                    className="w-40 rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  />
+                </div>
+              )}
+
               {/* Modelo de fallback */}
               {hasOpenRouter && !models.isLoading && (
                 <div>
@@ -6308,6 +6359,26 @@ function AgentSettingsView({
                       </>
                     )}
                   </div>
+                </div>
+              )}
+
+              {/* Temperatura do modelo de fallback */}
+              {hasOpenRouter && !models.isLoading && fallbackModel && (
+                <div>
+                  <Label className="text-sm font-semibold">Temperatura do modelo de fallback</Label>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Aplicada quando o fallback é acionado. Vazio = usa a temperatura padrão da conta.
+                  </p>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min={0}
+                    max={2}
+                    value={fallbackTemp}
+                    onChange={(e) => setFallbackTemp(e.target.value)}
+                    placeholder="padrão da conta"
+                    className="w-40 rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  />
                 </div>
               )}
 

@@ -759,6 +759,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       toolChoice: "auto",
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature,
+      modelTemperatures: ctx.modelTemperatures,
       enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
     }, ctx.qualifierFallbackModels);
 
@@ -836,6 +837,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
             ],
       maxTokens: ctx.maxTokens,
       temperature: ctx.temperature,
+      modelTemperatures: ctx.modelTemperatures,
       enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
       toolChoice: "none",
     },

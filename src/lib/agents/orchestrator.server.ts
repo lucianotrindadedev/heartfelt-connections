@@ -372,7 +372,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // 3. LLM config + secret
   const llm = await sb
     .from("account_llm_config")
-    .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model, tool_model")
+    .select("default_model, max_tokens, temperature, model_temperatures, fallback_models, rag_gate_model, tool_model")
     .eq("account_id", accountId)
     .single();
   const secrets = await sb
@@ -642,6 +642,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
       maxTokens: (llm.data?.max_tokens as number | undefined) ?? 1024,
       temperature: (llm.data?.temperature as number | undefined) ?? 0.5,
+      modelTemperatures:
+        (llm.data?.model_temperatures as Record<string, number> | undefined) ?? {},
       orKey,
       integrations: {
         clinicorp: !!clinicorpCfg.data?.ativo,
