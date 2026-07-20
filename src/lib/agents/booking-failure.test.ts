@@ -7,8 +7,44 @@ import {
   buildConflictReply,
   buildReofferReply,
   claimsBookingConfirmed,
+  findChosenRealSlot,
   type OfferedSlotLike,
 } from "./booking-failure";
+
+// ── findChosenRealSlot ────────────────────────────────────────────────────
+//
+// Regressão (Costa Lima Recreio, 18-19/07): a trava de confirmação falsa
+// apagava selected_slot_iso mesmo quando o lead tinha escolhido um horário
+// REAL. Sem o slot, o stage caía de NAME_COLLECT pra SLOT_OFFER e a conversa
+// entrava em loop infinito de "Pra fechar certinho: os horários que consigo
+// são X ou Y". Distinguir escolha real x alucinada é o que quebra o loop.
+describe("findChosenRealSlot", () => {
+  const ofertados: OfferedSlotLike[] = [
+    { iso: "2026-07-22T15:15:00-03:00", date_label: "quarta-feira, 22/07", time_label: "15:15" },
+    { iso: "2026-07-22T16:00:00-03:00", date_label: "quarta-feira, 22/07", time_label: "16:00" },
+  ];
+
+  it("acha o slot quando a escolha do lead é um horário REAL ofertado", () => {
+    const s = findChosenRealSlot(ofertados, "2026-07-22T15:15:00-03:00");
+    expect(s?.time_label).toBe("15:15");
+  });
+
+  it("retorna undefined quando o horário afirmado NÃO foi ofertado (alucinado)", () => {
+    expect(findChosenRealSlot(ofertados, "2026-07-27T09:00:00-03:00")).toBeUndefined();
+  });
+
+  it("retorna undefined pra escolha vazia/ausente (inclusive o '' do clear)", () => {
+    expect(findChosenRealSlot(ofertados, "")).toBeUndefined();
+    expect(findChosenRealSlot(ofertados, "   ")).toBeUndefined();
+    expect(findChosenRealSlot(ofertados, undefined)).toBeUndefined();
+    expect(findChosenRealSlot(ofertados, null)).toBeUndefined();
+  });
+
+  it("retorna undefined quando não há slots ofertados", () => {
+    expect(findChosenRealSlot(undefined, "2026-07-22T15:15:00-03:00")).toBeUndefined();
+    expect(findChosenRealSlot([], "2026-07-22T15:15:00-03:00")).toBeUndefined();
+  });
+});
 
 describe("classifyBookingError", () => {
   it("trata textos de indisponibilidade como conflito", () => {

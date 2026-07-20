@@ -143,6 +143,30 @@ export function buildReofferReply(remaining: OfferedSlotLike[]): string {
 }
 
 /**
+ * O horário escolhido (`chosenIso`) é um slot REAL, que está entre os ofertados?
+ *
+ * Usado pela trava de confirmação falsa para distinguir dois casos que exigem
+ * tratamentos OPOSTOS quando o turn termina sem appointment_id:
+ *  - slot REAL (lead escolheu de verdade) → a escolha é legítima, faltou só
+ *    concluir (ex.: campo obrigatório pendente). NÃO pode apagar a escolha nem
+ *    re-ofertar: apagar derruba o stage de NAME_COLLECT pra SLOT_OFFER
+ *    (name_collect_requires_slot) e a conversa entra em loop infinito de
+ *    re-oferta. Casos reais (Costa Lima Recreio, 18–19/07): 21 98542-7519
+ *    ("Quarta 15:15") e 21 97351-5530 ("16") ficaram presas repetindo a mesma
+ *    re-oferta sem nunca agendar.
+ *  - slot ALUCINADO (não está na lista ofertada) → aí sim re-oferta os reais e
+ *    limpa a escolha.
+ */
+export function findChosenRealSlot<T extends OfferedSlotLike>(
+  offered: T[] | undefined,
+  chosenIso: string | undefined | null,
+): T | undefined {
+  const iso = (chosenIso ?? "").trim();
+  if (!iso) return undefined;
+  return (offered ?? []).find((s) => s.iso === iso);
+}
+
+/**
  * Detecta uma AFIRMAÇÃO de que o agendamento foi CONCLUÍDO/confirmado (não uma
  * oferta nem pergunta). Rede de segurança: se um turn do scheduler termina SEM
  * appointment_id mas a resposta afirma que agendou, o texto é substituído — o

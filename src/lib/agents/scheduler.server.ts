@@ -70,6 +70,7 @@ import {
   buildConflictReply,
   buildReofferReply,
   claimsBookingConfirmed,
+  findChosenRealSlot,
   TECH_RETRY_REPLY,
   TECH_ESCALATE_REPLY,
   TECH_ESCALATION_REASON,
@@ -2727,6 +2728,47 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         ctx.leadData.offered_slots) as OfferedSlotLike[] | undefined,
       undefined,
     );
+
+    // O horário já escolhido é REAL (está entre os ofertados)? Então a escolha
+    // do lead é LEGÍTIMA — o que faltou foi concluir o booking (tipicamente um
+    // campo obrigatório pendente). Nesse caso NÃO apagar selected_slot_iso nem
+    // re-ofertar: apagar joga o lead de volta pra escolher horário, o stage cai
+    // de NAME_COLLECT pra SLOT_OFFER (name_collect_requires_slot) e a conversa
+    // entra em LOOP INFINITO de "Pra fechar certinho: os horários que consigo
+    // são X ou Y" — o lead reescolhe, o scrub apaga de novo, pra sempre.
+    // Casos reais (Costa Lima Recreio, 18–19/07): 21 98542-7519 escolheu
+    // "Quarta 15:15" (slot real) e 21 97351-5530 escolheu "16" — ambas ficaram
+    // presas repetindo a mesma re-oferta, sem nunca agendar.
+    const chosenIso = ((outPatch as Partial<LeadData>).selected_slot_iso ??
+      ctx.leadData.selected_slot_iso ??
+      "") as string;
+    const chosenSlot = findChosenRealSlot(realSlots, chosenIso);
+
+    if (chosenSlot) {
+      const channelCtxFields =
+        ctx.channel != null
+          ? { channel: ctx.channel, effectivePhone: ctx.effectivePhone ?? null }
+          : undefined;
+      const missing = getMissingBookingFields(
+        getBookingFieldsForChannel(ctx.agentSettings, channelCtxFields),
+        ctx.leadData,
+      );
+      reply =
+        missing.length > 0
+          ? `Quase lá! Pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label}, ${missing[0]!.question}`
+          : `Só falta confirmar pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label}. Posso confirmar? 😊`;
+      // Mantém o slot escolhido (não limpa) — o stage segue na coleta.
+      if (outStage === "CONFIRMED") outStage = "NAME_COLLECT";
+      outPatch = { ...outPatch, appointment_id: undefined };
+      mergedTelemetry.false_confirmation_scrubbed = true;
+      mergedTelemetry.chosen_slot_preserved = true;
+      console.warn(
+        `[scheduler] confirmação falsa bloqueada conv=${ctx.conversationId} — slot REAL preservado (${chosenIso}), pedindo campo pendente`,
+      );
+      return;
+    }
+
+    // Slot alucinado (não está entre os ofertados): re-oferta os reais e limpa.
     reply = buildReofferReply(realSlots);
     if (outStage === "CONFIRMED") outStage = "SLOT_OFFER";
     outPatch = { ...outPatch, appointment_id: undefined, selected_slot_iso: CLEARED_SLOT };
