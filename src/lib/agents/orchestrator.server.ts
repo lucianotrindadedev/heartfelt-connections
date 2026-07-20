@@ -1234,6 +1234,14 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             (result.telemetry?.booking_escalated_technical as boolean) || undefined,
           booking_validation_only_blocked:
             (result.telemetry?.booking_validation_only_blocked as boolean) || undefined,
+          // Sem estas duas o scrub de confirmação falsa disparava INVISÍVEL no
+          // meta: a conversa era reescrita (re-oferta) e o selected_slot_iso
+          // apagado sem deixar rastro, e o diagnóstico levava a conclusão errada
+          // ("a trava não rodou"). Caso real (Costa Lima Recreio, 21 98542-7519).
+          false_confirmation_scrubbed:
+            (result.telemetry?.false_confirmation_scrubbed as boolean) || undefined,
+          chosen_slot_preserved:
+            (result.telemetry?.chosen_slot_preserved as boolean) || undefined,
         },
         sessionId,
         effectivePhone ?? conversationPhone,
