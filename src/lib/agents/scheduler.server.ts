@@ -2006,6 +2006,7 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
 
 # GUARDRAILS INEGOCIÁVEIS
 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de", "em torno de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista várias vezes ou pressione dizendo que só decide sabendo o valor. Só cite um valor se ele estiver ESCRITO EXPLICITAMENTE nas instruções acima (prompt do proprietário). Se não estiver, responda que o valor é definido na avaliação presencial (cada caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
+📅 **DIA E HORA EXATOS — COPIE, NÃO CALCULE:** ao ofertar, repetir ou confirmar um horário, copie LITERALMENTE o \`date_label\` e o \`time_label\` como vieram de listar_horarios (ex.: date_label="quarta-feira, 22/07", time_label="10:30" → escreva "quarta-feira, 22/07 às 10:30"). NUNCA deduza o dia da semana a partir da data, nem a data a partir do dia da semana, nem "arredonde" para outro dia. Se você trocar o dia (ex.: dizer "quinta-feira, 23/07" para um slot que na agenda é quarta 22/07), o lead escolhe um horário que NÃO existe na lista e o agendamento TRAVA em loop. Na dúvida sobre qualquer data/hora, chame listar_horarios de novo em vez de escrever de memória.
 1. NUNCA diga "vou verificar", "estou consultando", "já retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores vindos das tools.
 3. **NUNCA diga "agendei", "marquei" ou "confirmado" sem appointment_id** em lead_data (ok=true de criar_agendamento).
@@ -2056,6 +2057,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 # REGRAS ABSOLUTAS
 
 0. 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de", "em torno de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista ou pressione dizendo que só decide sabendo o valor. Só cite um valor se estiver ESCRITO EXPLICITAMENTE no prompt do proprietário. Se não estiver, diga que o valor é definido na avaliação presencial (cada caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
+0b. 📅 **DIA E HORA EXATOS — COPIE, NÃO CALCULE:** ao ofertar, repetir ou confirmar um horário, copie LITERALMENTE o \`date_label\` e o \`time_label\` como vieram de listar_horarios (ex.: date_label="quarta-feira, 22/07", time_label="10:30" → escreva "quarta-feira, 22/07 às 10:30"). NUNCA deduza o dia da semana a partir da data, nem a data a partir do dia da semana, nem troque para outro dia. Se você trocar o dia (ex.: dizer "quinta-feira, 23/07" para um slot que na agenda é quarta 22/07), o lead escolhe um horário que NÃO existe na lista e o agendamento TRAVA em loop. Na dúvida sobre qualquer data/hora, chame listar_horarios de novo em vez de escrever de memória.
 1. NUNCA diga "vou verificar", "estou consultando", "já te retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores das tools.
 3. UMA pergunta por vez. Mensagens curtas. Use \\n\\n no reply para separar bolhas no WhatsApp.
@@ -2405,7 +2407,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     baseDynamic = buildDynamicSystemPrompt(ctx);
   }
   if (slotListing.toolResult) {
-    baseDynamic += `\n\n# RESULTADO listar_horarios (automático)\n${slotListing.toolResult}\nUse os horários acima para oferecer ao lead.`;
+    baseDynamic += `\n\n# RESULTADO listar_horarios (automático)\n${slotListing.toolResult}\nUse os horários acima para oferecer ao lead. 📅 COPIE \`date_label\` e \`time_label\` EXATAMENTE como estão acima (dia da semana + data + hora) — não recalcule o dia da semana nem troque a data. Ofertar um dia diferente do que está aqui trava o agendamento.`;
   }
 
   const slotAuto = await autoSelectSlot(ctx);
