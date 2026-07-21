@@ -103,6 +103,7 @@ import {
   requestedPeriodoFromText,
   isAskingDifferentDay,
   slotDayBrt,
+  extractCompanionAppointmentNote,
   requestedHoraFromText,
   rankSlotsByRequestedHour,
   minutesOfDayFromLabel,
@@ -541,7 +542,18 @@ function buildClinicorpCaseNotesFallback(ld: LeadData): string {
  *  Notes do Clinicorp. Best-effort: se a IA falhar/voltar vazia, cai no resumo
  *  determinístico montado dos dados coletados. */
 async function buildClinicorpCaseNotes(ctx: AgentContext): Promise<string> {
-  const fallback = () => buildClinicorpCaseNotesFallback(ctx.leadData);
+  // Acompanhante (2ª pessoa no mesmo número): não dá pra cadastrar 2 pacientes
+  // com o mesmo telefone, então o agente registra na observação que a consulta
+  // inclui outra pessoa e a EQUIPE cadastra o acompanhante no local. Esse aviso
+  // vai SEMPRE na frente e não passa pelo resumo por IA (que removeria o nome).
+  const companion = extractCompanionAppointmentNote(ctx.leadData.notes);
+  const prefix = companion
+    ? `⚠️ INCLUI OUTRA PESSOA (equipe cadastrar acompanhante no local): ${companion}. `
+    : "";
+  const cap = prefix ? 300 : 150;
+  const withPrefix = (body: string) => (prefix + body).slice(0, cap).trim();
+
+  const fallback = () => withPrefix(buildClinicorpCaseNotesFallback(ctx.leadData));
   if (!ctx.orKey || !ctx.history?.length) return fallback();
   try {
     const summary = await summarizeConversationForNotification(
@@ -551,7 +563,7 @@ async function buildClinicorpCaseNotes(ctx: AgentContext): Promise<string> {
       "Resuma o caso do paciente em UMA frase de no máximo 150 caracteres, para a equipe da clínica ler na agenda. Foque no motivo/queixa e no procedimento de interesse. Sem saudações, sem nome próprio, sem telefone, sem links.",
     );
     const s = (summary ?? "").trim();
-    return s ? s.slice(0, 150) : fallback();
+    return s ? withPrefix(s.slice(0, 150)) : fallback();
   } catch {
     return fallback();
   }
@@ -2021,6 +2033,11 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
   na agenda continua o ANTIGO e o lead aparece num horário que não existe.
 - Nunca diga que cancelou/remarcou sem a tool retornar ok=true.
 
+# ACOMPANHANTE / SEGUNDA PESSOA NO MESMO NÚMERO
+- Não é possível cadastrar duas pessoas com o MESMO número de WhatsApp. Se o lead quiser agendar TAMBÉM para outra pessoa (acompanhante, filho(a), irmã, cônjuge, amigo) que virá junto, NÃO tente criar um segundo cadastro nem um segundo agendamento.
+- O que fazer: mantenha UM agendamento no cadastro deste número e registre em \`lead_data_patch.notes\` uma linha explícita de que a consulta/visita INCLUI OUTRA PESSOA, com o nome dela quando souber (ex.: "Inclui outra pessoa (acompanhante): Iraci — equipe cadastrar no local"). Essa observação entra na agenda pra equipe cadastrar o acompanhante no dia.
+- Ao lead, explique com naturalidade que vai deixar registrado que ela virá acompanhada e que, no dia, a recepção cadastra a outra pessoa rapidinho. NUNCA prometa dois horários/cadastros separados nem invente um segundo agendamento.
+
 # GUARDRAILS INEGOCIÁVEIS
 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de", "em torno de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista várias vezes ou pressione dizendo que só decide sabendo o valor. Só cite um valor se ele estiver ESCRITO EXPLICITAMENTE nas instruções acima (prompt do proprietário). Se não estiver, responda que o valor é definido na avaliação presencial (cada caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
 📅 **DIA E HORA EXATOS — COPIE, NÃO CALCULE:** ao ofertar, repetir ou confirmar um horário, copie LITERALMENTE o \`date_label\` e o \`time_label\` como vieram de listar_horarios (ex.: date_label="quarta-feira, 22/07", time_label="10:30" → escreva "quarta-feira, 22/07 às 10:30"). NUNCA deduza o dia da semana a partir da data, nem a data a partir do dia da semana, nem "arredonde" para outro dia. Se você trocar o dia (ex.: dizer "quinta-feira, 23/07" para um slot que na agenda é quarta 22/07), o lead escolhe um horário que NÃO existe na lista e o agendamento TRAVA em loop. Na dúvida sobre qualquer data/hora, chame listar_horarios de novo em vez de escrever de memória.
@@ -2085,6 +2102,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 7b. **MUDAR data/hora de um agendamento existente SÓ via remarcar_agendamento.** criar_agendamento não move evento já criado. NUNCA diga "atualizei/remarquei/mudei/ajustei o agendamento" antes de remarcar_agendamento retornar ok=true — senão a agenda fica no horário antigo e o lead aparece num horário inexistente.
 8. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
 9. **NUNCA repita pergunta de campo que já consta em LEAD_DATA / "Já coletados".** Telefone do lead já está no sistema — não peça telefone em custom_fields.
+10. **ACOMPANHANTE (2ª pessoa no mesmo número):** não dá pra cadastrar duas pessoas com o mesmo WhatsApp. Se o lead quiser agendar TAMBÉM para outra pessoa que virá junto, NÃO crie segundo cadastro nem segundo agendamento: mantenha UM agendamento neste número e registre em \`lead_data_patch.notes\` que a consulta INCLUI OUTRA PESSOA (com o nome, ex.: "Inclui outra pessoa (acompanhante): Iraci — equipe cadastrar no local"). Ao lead, diga que deixou registrado que virá acompanhada e que a recepção cadastra a outra pessoa no dia. NUNCA prometa dois horários/cadastros separados.
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
 

@@ -23,6 +23,7 @@ import {
   requestedPeriodoFromText,
   isAskingDifferentDay,
   slotDayBrt,
+  extractCompanionAppointmentNote,
   requestedHoraFromText,
   rankSlotsByRequestedHour,
   minutesOfDayFromLabel,
@@ -429,6 +430,26 @@ describe("isAskingDifferentDay", () => {
     expect(slotDayBrt("")).toBe("");
     expect(slotDayBrt(undefined)).toBe("");
     expect(slotDayBrt("lixo")).toBe("");
+  });
+});
+
+// ── extractCompanionAppointmentNote (acompanhante no mesmo número) ─────────
+describe("extractCompanionAppointmentNote", () => {
+  it("acha a linha que marca outra pessoa/acompanhante", () => {
+    expect(
+      extractCompanionAppointmentNote(
+        "Implante superior; Inclui outra pessoa (acompanhante): Iraci — equipe cadastrar no local",
+      ),
+    ).toMatch(/acompanhante.*Iraci/i);
+    expect(
+      extractCompanionAppointmentNote("Quer avaliar\nA irmã vai junto também"),
+    ).toMatch(/junto/i);
+  });
+
+  it("retorna '' quando não há acompanhante", () => {
+    expect(extractCompanionAppointmentNote("Implante superior, dor há 1 semana")).toBe("");
+    expect(extractCompanionAppointmentNote("")).toBe("");
+    expect(extractCompanionAppointmentNote(undefined)).toBe("");
   });
 });
 

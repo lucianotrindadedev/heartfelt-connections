@@ -1667,6 +1667,29 @@ function periodoExcluido(t: string, palavra: string): boolean {
  * turno aparece numa cláusula de trabalho/negação, ele é EXCLUÍDO; sobra o
  * desejado. Se ainda ambíguo, vale o ÚLTIMO citado (costuma ser o operativo).
  */
+/**
+ * Extrai da anotação do caso (lead_data.notes) a marca de que o agendamento
+ * inclui OUTRA pessoa / acompanhante no mesmo número — pra GARANTIR que essa
+ * informação chegue nas observações do agendamento (o resumo por IA remove
+ * nomes próprios e cortaria isso). Não dá pra cadastrar 2 pacientes com o mesmo
+ * número: a equipe cadastra o acompanhante no local, então a observação precisa
+ * avisar. Retorna "" quando não há acompanhante. Requisito do usuário (21/07).
+ */
+export function extractCompanionAppointmentNote(notes: string | undefined | null): string {
+  const raw = (notes ?? "").trim();
+  if (!raw) return "";
+  for (const part of raw.split(/[\n;]+/).map((p) => p.trim())) {
+    if (
+      /\b(outra pessoa|acompanhante)\b/i.test(part) ||
+      /\b(vai|vir[áa]?|vem|ir|indo|leva(?:r|ndo)?)\b[^.;\n]*\bjunto\b/i.test(part) ||
+      /\bjunto\s+(comigo|com\s+ela|com\s+ele)\b/i.test(part)
+    ) {
+      return part.slice(0, 140);
+    }
+  }
+  return "";
+}
+
 /** Data YYYY-MM-DD (fuso de Brasília) de um horário ISO. "" se vazio/inválido. */
 export function slotDayBrt(iso: string | undefined | null): string {
   const s = (iso ?? "").trim();
