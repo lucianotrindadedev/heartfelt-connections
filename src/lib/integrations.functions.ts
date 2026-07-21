@@ -157,7 +157,7 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
     const sb = getSelfhost();
     const { data: cfg } = await sb
       .from("clinicorp_config")
-      .select("subscriber_id, business_id, agenda_id, dentist_person_id, category_id, category_description, category_color, ativo, api_token_enc")
+      .select("subscriber_id, business_id, agenda_id, dentist_person_id, category_id, category_description, category_color, uppercase_patient_name, ativo, api_token_enc")
       .eq("account_id", data.accountId)
       .single();
 
@@ -174,6 +174,7 @@ export const getClinicorpConfig = createServerFn({ method: "GET" })
       category_id: (cfg?.category_id as string | null) ?? "",
       category_description: (cfg?.category_description as string | null) ?? "",
       category_color: (cfg?.category_color as string | null) ?? "",
+      uppercase_patient_name: cfg?.uppercase_patient_name === true,
       token_configured: !!cfg?.api_token_enc,
     };
   });
@@ -190,6 +191,7 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
         category_id: z.string().optional(),
         category_description: z.string().optional(),
         category_color: z.string().optional(),
+        uppercase_patient_name: z.boolean().optional(),
         ativo: z.boolean().optional(),
       })
       .parse(d)

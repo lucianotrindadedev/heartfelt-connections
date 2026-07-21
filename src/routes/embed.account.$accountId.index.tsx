@@ -7682,6 +7682,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   const [categoryColor, setCategoryColor] = useState("");
   const [categories, setCategories] = useState<{ id: string; description: string; color: string }[]>([]);
   const [loadingCats, setLoadingCats] = useState(false);
+  const [uppercaseName, setUppercaseName] = useState(false);
   const [ativo, setAtivo] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
   const [professionals, setProfessionals] = useState<{ id: number; name: string }[]>([]);
@@ -7696,6 +7697,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
       setCategoryId(data.category_id ?? "");
       setCategoryDescription(data.category_description ?? "");
       setCategoryColor(data.category_color ?? "");
+      setUppercaseName(data.uppercase_patient_name ?? false);
       // Config NOVA (sem token salvo) → toggle já começa LIGADO, para que
       // "preencher + salvar" ative a integração sem passo extra (evita o caso
       // "salvei mas não integrou" por esquecer de ligar o toggle). Config já
@@ -7750,6 +7752,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
           category_id: categoryId,
           category_description: categoryDescription,
           category_color: categoryColor,
+          uppercase_patient_name: uppercaseName,
           // Ao inserir um token novo, ativa automaticamente (evita "salvei mas
           // continua inativo" por esquecer de ligar o toggle). Sem token novo,
           // respeita o toggle (permite desativar depois).
@@ -7970,6 +7973,22 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
                 Novos agendamentos usarão a categoria "{categoryDescription}"{categoryColor ? ` (${categoryColor})` : ""}.
               </p>
             )}
+          </div>
+
+          {/* Nome do paciente em MAIÚSCULAS — o título do agendamento no
+              Clinicorp é o nome do paciente; algumas clínicas exigem tudo em
+              maiúscula. Desligado = mantém o nome como o lead informou. */}
+          <div>
+            <ToggleRow
+              label="Cadastrar nome do paciente em MAIÚSCULAS"
+              value={uppercaseName}
+              onChange={setUppercaseName}
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              {uppercaseName
+                ? 'O nome do paciente (título do agendamento) será gravado em MAIÚSCULAS no Clinicorp. Ex.: "MARIA DA SILVA".'
+                : "Padrão: o nome é gravado como o paciente informou. Ligue se a clínica exige o título do agendamento todo em maiúscula."}
+            </p>
           </div>
 
           {testResult && <p className="text-xs">{testResult}</p>}

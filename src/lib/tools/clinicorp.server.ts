@@ -11,6 +11,7 @@ interface ClinicorpConfig {
   duracaoConsulta: number;        // minutos (default 40)
   categoryDescription: string | null; // CategoryDescription enviado no create (categoria escolhida)
   categoryColor: string | null;       // CategoryColor enviado no create (ex.: "#FF5733")
+  uppercaseName: boolean;             // grava o nome do paciente em MAIÚSCULAS no Clinicorp
   baseUrl: string;
 }
 
@@ -28,7 +29,7 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
   const sb = getSelfhost();
   const { data, error } = await sb
     .from("clinicorp_config")
-    .select("api_token_enc, subscriber_id, business_id, agenda_id, dentist_person_id, duracao_consulta, category_description, category_color, ativo")
+    .select("api_token_enc, subscriber_id, business_id, agenda_id, dentist_person_id, duracao_consulta, category_description, category_color, uppercase_patient_name, ativo")
     .eq("account_id", accountId)
     .single();
 
@@ -56,6 +57,7 @@ async function loadConfig(accountId: string): Promise<ClinicorpConfig> {
     duracaoConsulta: (data.duracao_consulta as number | null) ?? 40,
     categoryDescription: (data.category_description as string | null)?.trim() || null,
     categoryColor: (data.category_color as string | null)?.trim() || null,
+    uppercaseName: data.uppercase_patient_name === true,
     baseUrl: DEFAULT_BASE,
   };
 }
@@ -655,12 +657,19 @@ async function createClinicorpPatient(
     params.phone.replace(/\D/g, "").replace(/^55/, ""),
   );
 
+  // Título do agendamento no Clinicorp = Name do paciente. Algumas clínicas
+  // exigem o nome em MAIÚSCULAS (config uppercase_patient_name). Só afeta o que
+  // é GRAVADO no Clinicorp — a confirmação ao lead usa o nome normal.
+  const registerName = config.uppercaseName
+    ? params.name.toLocaleUpperCase("pt-BR")
+    : params.name;
+
   const res = await fetchClinicorp(`${config.baseUrl}/rest/v1/patient/create`, {
     method: "POST",
     headers: authHeaders(config),
     body: JSON.stringify({
       subscriber_id: config.subscriberId,
-      Name: params.name,
+      Name: registerName,
       MobilePhone: mobilePhone,
       IgnoreSameName: "X",
     }),
