@@ -101,6 +101,8 @@ import {
   leadRequestedUnofferedDate,
   requestedDateFromText,
   requestedPeriodoFromText,
+  isAskingDifferentDay,
+  slotDayBrt,
   requestedHoraFromText,
   rankSlotsByRequestedHour,
   minutesOfDayFromLabel,
@@ -718,7 +720,22 @@ async function execListarHorarios(
   periodo?: string,
 ): Promise<ToolOutcome> {
   const selected = ctx.leadData.selected_slot_iso;
-  if (selected) {
+  // Se o lead está pedindo um DIA DIFERENTE do que já escolheu, NÃO short-circuita
+  // — precisa buscar o dia novo. O early-return abaixo devolvia só o slot já
+  // escolhido, e o agente concluía "não temos disponibilidade" no dia pedido
+  // (que na verdade tinha vaga). Caso real (Odonto Carioca Campo Grande,
+  // 21 98725-2074): agendada quarta 22/07, pediu quinta 23/07 pra ir com a irmã;
+  // a quinta tinha 35 vagas e o agente disse que não tinha horário. O dia pedido
+  // vem do data_alvo (LLM) ou é inferido do histórico (ex.: "quinta").
+  const requestedDay =
+    (dataAlvo && dataAlvo.slice(0, 10)) || requestedDateFromHistory(ctx.history) || null;
+  const askingDifferentDay = isAskingDifferentDay(selected, requestedDay);
+  if (selected && askingDifferentDay) {
+    console.log(
+      `[scheduler] listar_horarios conv=${ctx.conversationId}: lead pediu dia diferente (${requestedDay}) do já escolhido (${slotDayBrt(selected)}) — buscando de verdade em vez de repetir o slot atual`,
+    );
+  }
+  if (selected && !askingDifferentDay) {
     const existing = ctx.leadData.offered_slots?.find((s) => s.iso === selected);
     const slots = existing
       ? [existing]

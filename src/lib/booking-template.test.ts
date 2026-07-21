@@ -21,6 +21,8 @@ import {
   relativeDateIsExplanatory,
   requestedDateFromText,
   requestedPeriodoFromText,
+  isAskingDifferentDay,
+  slotDayBrt,
   requestedHoraFromText,
   rankSlotsByRequestedHour,
   minutesOfDayFromLabel,
@@ -394,6 +396,39 @@ describe("tryAutoSelectOfferedSlot — negação/explicação não seleciona", (
       ],
     );
     expect(patch).toEqual({});
+  });
+});
+
+// ── isAskingDifferentDay / slotDayBrt ─────────────────────────────────────
+//
+// Regressão (Odonto Carioca Campo Grande, 21 98725-2074): lead já agendada na
+// quarta 22/07 pediu quinta 23/07 pra ir com a irmã. listar_horarios devolvia
+// só o slot já escolhido (early-return por selected_slot_iso) e nunca buscava a
+// quinta — o agente disse "não temos disponibilidade" sendo que a quinta tinha
+// 35 vagas. Distinguir "pediu outro dia" é o que reabre a busca.
+describe("isAskingDifferentDay", () => {
+  const quarta0915 = "2026-07-22T09:15:00-03:00";
+
+  it("true quando o dia pedido difere do dia do slot escolhido", () => {
+    expect(isAskingDifferentDay(quarta0915, "2026-07-23")).toBe(true);
+  });
+
+  it("false quando o dia pedido é o MESMO do slot escolhido", () => {
+    expect(isAskingDifferentDay(quarta0915, "2026-07-22")).toBe(false);
+  });
+
+  it("false quando não há dia pedido ou não há slot escolhido", () => {
+    expect(isAskingDifferentDay(quarta0915, null)).toBe(false);
+    expect(isAskingDifferentDay(quarta0915, "")).toBe(false);
+    expect(isAskingDifferentDay("", "2026-07-23")).toBe(false);
+    expect(isAskingDifferentDay(undefined, "2026-07-23")).toBe(false);
+  });
+
+  it("slotDayBrt extrai a data no fuso de Brasília", () => {
+    expect(slotDayBrt(quarta0915)).toBe("2026-07-22");
+    expect(slotDayBrt("")).toBe("");
+    expect(slotDayBrt(undefined)).toBe("");
+    expect(slotDayBrt("lixo")).toBe("");
   });
 });
 

@@ -1667,6 +1667,32 @@ function periodoExcluido(t: string, palavra: string): boolean {
  * turno aparece numa cláusula de trabalho/negação, ele é EXCLUÍDO; sobra o
  * desejado. Se ainda ambíguo, vale o ÚLTIMO citado (costuma ser o operativo).
  */
+/** Data YYYY-MM-DD (fuso de Brasília) de um horário ISO. "" se vazio/inválido. */
+export function slotDayBrt(iso: string | undefined | null): string {
+  const s = (iso ?? "").trim();
+  if (!s) return "";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
+}
+
+/**
+ * O lead está pedindo um DIA diferente do horário que já escolheu?
+ * `requestedDay` = YYYY-MM-DD que o lead pediu (do data_alvo ou do histórico).
+ * Usado pra decidir se listar_horarios deve buscar de novo mesmo com
+ * selected_slot_iso setado (ex.: já agendado na quarta, pede "tem quinta?").
+ */
+export function isAskingDifferentDay(
+  selectedSlotIso: string | undefined | null,
+  requestedDay: string | null | undefined,
+): boolean {
+  const req = (requestedDay ?? "").slice(0, 10);
+  if (!req) return false;
+  const sel = slotDayBrt(selectedSlotIso);
+  if (!sel) return false;
+  return req !== sel;
+}
+
 export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noite" | null {
   const t = (text ?? "").toLowerCase();
   if (!t) return null;
