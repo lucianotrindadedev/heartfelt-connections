@@ -36,6 +36,7 @@ import {
   isValidCpf,
   looksLikeBirthDate,
   looksLikeDecline,
+  signalsCannotAttendOrChange,
   looksLikeIntentMessage,
   looksLikeSchedulingPreference,
   preflightBookingFields,
@@ -397,6 +398,37 @@ describe("tryAutoSelectOfferedSlot — negação/explicação não seleciona", (
       ],
     );
     expect(patch).toEqual({});
+  });
+});
+
+// ── signalsCannotAttendOrChange (objeção no CONFIRMED) ────────────────────
+describe("signalsCannotAttendOrChange", () => {
+  it("detecta impossibilidade de comparecer (caso Natalie, Maple Bear Osasco)", () => {
+    expect(signalsCannotAttendOrChange("a logística não vai ficar legal pq eu trabalho na Lapa")).toBe(true);
+    expect(signalsCannotAttendOrChange("não vou conseguir ir amanhã")).toBe(true);
+    expect(signalsCannotAttendOrChange("não vai dar certo esse horário")).toBe(true);
+    expect(signalsCannotAttendOrChange("surgiu um imprevisto")).toBe(true);
+  });
+
+  it("detecta cancelar / remarcar / outro dia", () => {
+    expect(signalsCannotAttendOrChange("quero cancelar")).toBe(true);
+    expect(signalsCannotAttendOrChange("dá pra remarcar?")).toBe(true);
+    expect(signalsCannotAttendOrChange("tem outro dia?")).toBe(true);
+    expect(signalsCannotAttendOrChange("consigo mudar o horário")).toBe(true);
+  });
+
+  it("detecta repensar / ano que vem", () => {
+    expect(signalsCannotAttendOrChange("vou pensar mais um pouquinho")).toBe(true);
+    expect(signalsCannotAttendOrChange("como só vamos colocar ela ano que vem vou pensar")).toBe(true);
+    expect(signalsCannotAttendOrChange("preciso ver com meu marido")).toBe(true);
+  });
+
+  it("NÃO dispara em confirmação/positivo", () => {
+    expect(signalsCannotAttendOrChange("Ok")).toBe(false);
+    expect(signalsCannotAttendOrChange("Perfeito, estarei lá!")).toBe(false);
+    expect(signalsCannotAttendOrChange("pode confirmar sim")).toBe(false);
+    expect(signalsCannotAttendOrChange("obrigada!")).toBe(false);
+    expect(signalsCannotAttendOrChange("")).toBe(false);
   });
 });
 

@@ -768,6 +768,43 @@ export function looksLikeDecline(text: string): boolean {
 }
 
 /**
+ * Lead que JÁ tem visita/consulta confirmada sinalizando que NÃO vai conseguir
+ * vir, quer cancelar, quer remarcar, ou está repensando seriamente. Usado no
+ * estágio CONFIRMED: sem isto, o agente só reafirma "sua visita está
+ * confirmada" e ignora a objeção. Caso real (Maple Bear Osasco, Natalie
+ * 11 99881-5258): "a logística não vai ficar legal pq eu trabalho na Lapa" e
+ * "só vamos colocar ela ano que vem, vou pensar mais um pouquinho" → o agente
+ * respondeu só "Sua visita já está confirmada para 21/07 às 11:00".
+ */
+export function signalsCannotAttendOrChange(text: string): boolean {
+  const t = (text ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+  if (!t.trim()) return false;
+
+  // Impossibilidade de comparecer
+  if (/\bnao\s+(vou\s+conseguir|vou\s+poder|vou|consigo|poderei|posso|da\s+pra|da\s+para)\b/.test(t)) return true;
+  if (/\bnao\s+(vai|da|dara|vou)\s+(dar|ficar|rolar|dar\s+certo)\b/.test(t)) return true;
+  if (/\bnao\s+vai\s+(ficar|dar|rolar)\b/.test(t)) return true;
+  if (/\b(logistica|imprevisto|complicou|apertad[oa]|em\s+cima)\b/.test(t)) return true;
+
+  // Cancelar
+  if (/\bcancel(ar|a|amento|ei|o)?\b/.test(t)) return true;
+
+  // Remarcar / mudar / outro dia-horário
+  if (/\b(remarcar|reagendar|adiar|transferir|mudar|trocar|outro\s+(dia|hor[a]rio)|outra\s+data)\b/.test(t)) return true;
+
+  // Repensar / consultar cônjuge
+  if (/\bvou\s+(pensar|repensar)\b/.test(t)) return true;
+  if (/\b(preciso|deixa\s+eu|melhor\s+eu)\s+(pensar|repensar|ver\s+direitinho|ver\s+com)\b/.test(t)) return true;
+  if (/\bnao\s+sei\s+se\s+(vou|consigo|da|conseguirei)\b/.test(t)) return true;
+  if (/\bano\s+que\s+vem\b/.test(t) && /\b(pensar|ver|so\s+vamos|so\s+vou)\b/.test(t)) return true;
+
+  return false;
+}
+
+/**
  * Agradecimento / bênção / encerramento ("obrigado", "muito obrigado msm",
  * "valeu", "Deus abençoe", "amém"). NÃO é nome de pessoa — caso real: o lead
  * mandou "Obrigado msm Deus abençoe" e o sistema gravou isso como o nome do

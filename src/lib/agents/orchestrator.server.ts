@@ -28,6 +28,7 @@ import {
   normalizeLeadDataForBooking,
   resolveBookingLeadName,
   sanitizeLeadDataPatch,
+  signalsCannotAttendOrChange,
   tryAutoCaptureBookingAnswer,
   tryAutoSelectOfferedSlot,
 } from "@/lib/booking-template";
@@ -962,6 +963,55 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // reconfirmação do lead, dispara o remarcar_agendamento.
     }
 
+    // Guard anti-"reafirmação cega no CONFIRMED": o lead JÁ tem agendamento
+    // confirmado mas sinaliza que NÃO vai conseguir vir / quer cancelar /
+    // remarcar / está repensando — e o agente, em vez de tratar a objeção, só
+    // repete "sua visita já está confirmada", ignorando a pessoa. Caso real
+    // (Maple Bear Osasco, Natalie 11 99881-5258, 21/07): "a logística não vai
+    // ficar legal pq eu trabalho na Lapa" → resposta foi só "Sua visita já está
+    // confirmada para terça, 21/07 às 11:00". Substitui pela oferta de remarcar/
+    // ajudar. Mantém CONFIRMED (não perde o agendamento) — o próximo turn trata
+    // o remarcar/cancelar conforme a escolha do lead.
+    let confirmedObjectionBlocked = false;
+    const replyReaffirmsAppointment =
+      /\b(confirmad[ao]|est[áa]\s+confirmad|j[áa]\s+est[áa]\s+(agendad|confirmad)|continua\s+(agendad|confirmad)|aguardando\s+voc[êe]|te\s+esperando)\b/i.test(
+        reply,
+      );
+    const replyAlreadyHelps =
+      /\b(remarc|reagend|outro\s+(dia|hor[áa]rio)|outra\s+data|mudar|cancel|prefere|posso\s+(ajudar|ver|remarc)|sem\s+problema|entendo|imagina|sem\s+pressa)\b/i.test(
+        reply,
+      );
+    if (
+      hasBookingIntegration &&
+      !!finalLeadData.appointment_id &&
+      !appointmentJustCancelled &&
+      !falseRescheduleClaimBlocked &&
+      signalsCannotAttendOrChange(lastUserMsg) &&
+      replyReaffirmsAppointment &&
+      !replyAlreadyHelps
+    ) {
+      confirmedObjectionBlocked = true;
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "confirmed_objection_blocked",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          route,
+          stage_from: stage,
+          model: ctx.model,
+          user_preview: lastUserMsg.slice(0, 120),
+          reply_preview: reply.slice(0, 120),
+        })}`,
+      );
+      const firstName = (finalLeadData.name ?? "").trim().split(/\s+/)[0] ?? "";
+      reply =
+        `${firstName ? `Ah, entendo, ${firstName}! ` : "Ah, entendo! "}` +
+        "Se esse horário ficou difícil pra você, sem problema nenhum — consigo remarcar sua visita pra um dia ou horário melhor. Quer que eu veja outras opções, ou prefere seguir com o horário atual? 😊";
+      // Mantém CONFIRMED: não cancela nada. O próximo turn, com a resposta do
+      // lead, dispara remarcar/listar_horarios ou mantém a visita.
+    }
+
     // Guard anti-"stall": o agente PROMETE agir ("vou finalizar seu cadastro",
     // "só um instante", "vou criar seu cadastro", "já te confirmo") mas NÃO criou
     // agendamento e não perguntou nada — a conversa morre esperando uma ação que
@@ -1212,6 +1262,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           duplicate_reply_blocked: duplicateReplyBlocked || undefined,
           false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
           false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
+          confirmed_objection_blocked: confirmedObjectionBlocked || undefined,
           stall_reply_blocked: stallReplyBlocked || undefined,
           ghost_escalation_forced: ghostEscalationForced || undefined,
           forced_scheduling_advance: forcedSchedulingAdvance || undefined,
