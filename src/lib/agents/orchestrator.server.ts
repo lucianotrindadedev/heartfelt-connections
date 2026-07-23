@@ -11,6 +11,8 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
+import { buildSlotOfferFallback } from "./slot-offer-fallback";
+import { activeWeekdayKeys } from "@/lib/tools/google-calendar.server";
 import {
   resolveEffectivePhone,
   type ConversationChannel,
@@ -1093,15 +1095,29 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // lead pediu justamente pra ver os horários — não enrola nem devolve
         // vazio. Caso real (Costa Lima Recreio, Luciano): o agente respondeu
         // "vou buscar as opções da tarde... só um instantinho" e não trouxe nada.
-        const offered = finalLeadData.offered_slots ?? [];
-        if (offered.length > 0) {
-          const opcoes = offered
-            .slice(0, 2)
-            .map((s) => `${s.date_label} às ${s.time_label}`)
-            .join(" ou ");
-          reply = `Tenho estes horários disponíveis: ${opcoes}. Qual fica melhor pra você? 😊`;
-        } else {
-          reply = "Pra seguir com seu agendamento, qual horário fica melhor pra você?";
+        //
+        // A resposta considera o DIA que o lead pediu: repetir a mesma oferta
+        // ignorando o pedido era o que virava loop. Caso real (Odonto Carioca
+        // Campo Grande, 21 97558-2703): lead pediu SÁBADO, o guard respondeu
+        // "quinta 13:30 ou 13:45" três vezes idênticas — e nunca disse que a
+        // clínica não abre sábado (o guard corta antes de chamar a agenda).
+        const fallback = buildSlotOfferFallback({
+          lastUserMsg,
+          offeredSlots: finalLeadData.offered_slots ?? [],
+          diasAtivos: activeWeekdayKeys(agentSettings.business_hours_json),
+        });
+        reply = fallback.reply;
+        if (fallback.motivo === "dia_fechado" || fallback.motivo === "dia_pedido_disponivel") {
+          console.warn(
+            `[orch:telemetry] ${JSON.stringify({
+              event: "stall_fallback_dia_pedido",
+              conv: conversationId,
+              account: accountId,
+              agent: agentId,
+              motivo: fallback.motivo,
+              dia_pedido: fallback.diaPedido,
+            })}`,
+          );
         }
         newStage = "SLOT_OFFER";
       }
@@ -1121,9 +1137,27 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const userAlsoRepeated =
       !!lastUserMsg && !!previousUserMsg && isReplyTooSimilar(lastUserMsg, previousUserMsg);
 
+    // …MAS a isenção acima vale UMA vez. Se as DUAS últimas respostas do agente
+    // já foram esse mesmo texto, mandar uma terceira nunca é reação legítima —
+    // é loop. Caso real (Odonto Carioca Campo Grande, 21 97558-2703): o lead
+    // repetiu "penso em ir no sábado" (porque foi ignorado), o userAlsoRepeated
+    // desarmou este guard e a MESMA frase saiu 3x seguidas.
+    const priorAssistantMsgs = history.filter((m) => m.role === "assistant");
+    const assistantMsg1 = priorAssistantMsgs[priorAssistantMsgs.length - 1]?.content ?? "";
+    const assistantMsg2 = priorAssistantMsgs[priorAssistantMsgs.length - 2]?.content ?? "";
+    const jaRepetiuDuasVezes =
+      !!assistantMsg1 &&
+      !!assistantMsg2 &&
+      isReplyTooSimilar(reply, assistantMsg1) &&
+      isReplyTooSimilar(reply, assistantMsg2);
+
     // Guarda anti-loop: se o reply é praticamente idêntico à última msg do assistente,
     // o LLM está alucinando ao repetir conteúdo. Substitui por um avanço de proposta.
-    if (lastAssistantMsg && !userAlsoRepeated && isReplyTooSimilar(reply, lastAssistantMsg)) {
+    if (
+      lastAssistantMsg &&
+      (!userAlsoRepeated || jaRepetiuDuasVezes) &&
+      isReplyTooSimilar(reply, lastAssistantMsg)
+    ) {
       duplicateReplyBlocked = true;
       // Log estruturado (JSON em uma linha) — facil de filtrar em Coolify/Datadog
       // para mapear quais modelos alucinam mais e em quais stages.
