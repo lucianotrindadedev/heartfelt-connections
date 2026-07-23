@@ -25,6 +25,7 @@ import {
   type BookingChannelContext,
   looksLikeSchedulingPreference,
   mergeLeadDataPatch,
+  nameIsAttendantSelfIntroduction,
   normalizeLeadDataForBooking,
   resolveBookingLeadName,
   sanitizeLeadDataPatch,
@@ -740,6 +741,30 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       mergeLeadDataPatch(leadData, patch as Partial<LeadData>),
       { fallbackGuardianName: helenaContact?.name },
     );
+
+    // O nome capturado é da ATENDENTE, não do lead. A atendente humana digita
+    // pelo WhatsApp da clínica e suas mensagens ficam com role="assistant" — no
+    // histórico do LLM são indistinguíveis das falas do agente, então um "me
+    // chamo Val" vira lead_data.name="Val". Caso real (Odonto Carioca Campo
+    // Grande, 21 96932-0210): a conversa inteira chamou a LEAD de Val.
+    if (
+      newLeadData.name &&
+      nameIsAttendantSelfIntroduction(
+        newLeadData.name,
+        history.filter((m) => m.role === "assistant").map((m) => m.content),
+      )
+    ) {
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "nome_da_atendente_descartado",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          nome_descartado: newLeadData.name,
+        })}`,
+      );
+      newLeadData.name = "";
+    }
     const backfillFinal = backfillBookingFieldsFromHistory(
       newLeadData,
       history,

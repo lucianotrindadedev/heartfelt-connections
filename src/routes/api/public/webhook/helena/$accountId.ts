@@ -946,6 +946,8 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // respondia mesmo assim (furava o bloqueio). Tenta resolver de novo via
         // sessão; se ainda não der, NÃO respondemos (na dúvida, silêncio).
         let contactTagsKnown = !isInbound || !!resolvedContact;
+        let recheckMotivo: string | undefined;
+        let recheckErro: string | undefined;
         if (isInbound && !resolvedContact && sessionId) {
           const recheck = await checkContactBlockedBySession({
             accountId,
@@ -953,6 +955,8 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
             blockedTagsRaw: agentSettings.blocked_tags,
           });
           contactTagsKnown = recheck.resolved;
+          recheckMotivo = recheck.motivo;
+          recheckErro = recheck.erro;
           if (recheck.resolved && recheck.blocked) blockingTag = recheck.tag;
         }
         const agentBlockedByTag = !!blockingTag;
@@ -960,8 +964,21 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         if (agentBlockedByTag) {
           console.log(`[webhook] agente bloqueado pela tag "${blockingTag}" — conv ${convId}`);
         } else if (blockUnverifiable) {
+          // Telemetria: este silêncio custa o lead inteiro e antes só existia
+          // como texto solto no log — não dava para contar nem alertar. Casos
+          // reais (Odonto Carioca Campo Grande, 23/07): 21 97061-4408 e
+          // 21 96932-0210 ficaram sem resposta por falha TRANSITÓRIA de leitura
+          // do CRM (a segunda voltou a responder sozinha ~1h depois).
           console.warn(
-            `[webhook] contato não carregou do CRM — NÃO vou responder (fail-safe "IA Desligada") conv ${convId}`,
+            `[webhook:telemetry] ${JSON.stringify({
+              event: "resposta_suprimida_contato_ilegivel",
+              conv: convId,
+              account: accountId,
+              agent: agentRow.data.id,
+              session: sessionId,
+              motivo: recheckMotivo ?? "contato_nao_carregou",
+              erro: recheckErro?.slice(0, 200),
+            })}`,
           );
         }
 
