@@ -20,6 +20,8 @@ import {
   absoluteDdMmFromText,
   relativeDateIsExplanatory,
   requestedDateFromText,
+  attendantSelfIntroducedNames,
+  nameIsAttendantSelfIntroduction,
   requestedPeriodoFromText,
   isAskingDifferentDay,
   slotDayBrt,
@@ -1905,5 +1907,42 @@ describe("scrubInventedTimeOffers — qualifier oferta horário sem ter agenda (
     expect(scrubInventedTimeOffers("Que ótimo! Você prefere de manhã ou à tarde?").scrubbed).toBe(false);
     expect(scrubInventedTimeOffers("Perfeito, vou te mostrar as opções disponíveis. 😊").scrubbed).toBe(false);
     expect(scrubInventedTimeOffers("").scrubbed).toBe(false);
+  });
+});
+
+// ── nome da atendente não pode virar nome do lead ──────────────────────────
+
+describe("nameIsAttendantSelfIntroduction (caso Odonto Carioca 21 96932-0210)", () => {
+  const saudacaoVal = [
+    "Olá, bom dia tudo bem? Me chamo Val. Qual é o seu nome? Estou muito feliz pelo seu interesse na nossa clínica *Odonto Carioca*! ☺️😁",
+  ];
+
+  it("descarta o nome que a clínica apresentou como dela", () => {
+    expect(nameIsAttendantSelfIntroduction("Val", saudacaoVal)).toBe(true);
+  });
+
+  it("descarta também quando vem com sobrenome", () => {
+    expect(nameIsAttendantSelfIntroduction("Val Souza", saudacaoVal)).toBe(true);
+  });
+
+  it("reconhece outras formas de apresentação", () => {
+    expect(nameIsAttendantSelfIntroduction("Ana", ["Oi! Meu nome é Ana, como posso ajudar?"])).toBe(
+      true,
+    );
+    expect(nameIsAttendantSelfIntroduction("Sarah", ["Oi! Sou a Sarah, da Costa Lima."])).toBe(true);
+  });
+
+  it("NÃO descarta o nome real do lead", () => {
+    expect(nameIsAttendantSelfIntroduction("Maria de Fátima", saudacaoVal)).toBe(false);
+    expect(nameIsAttendantSelfIntroduction("Neymar Junior", saudacaoVal)).toBe(false);
+  });
+
+  it("sem apresentação no histórico, nada é descartado", () => {
+    expect(nameIsAttendantSelfIntroduction("Val", ["Bom dia! Como posso ajudar?"])).toBe(false);
+    expect(nameIsAttendantSelfIntroduction("", saudacaoVal)).toBe(false);
+  });
+
+  it("attendantSelfIntroducedNames coleta os nomes em minúsculas", () => {
+    expect([...attendantSelfIntroducedNames(saudacaoVal)]).toEqual(["val"]);
   });
 });

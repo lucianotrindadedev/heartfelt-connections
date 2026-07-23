@@ -57,6 +57,11 @@ export interface BlockCheck {
   tag: string | null;
   /** false = não foi possível carregar o contato do CRM (tags desconhecidas). */
   resolved: boolean;
+  /** Por que não resolveu: sem_session_id | contato_nao_encontrado | erro_crm.
+   *  Sem isto, o silêncio do fail-safe era indistinguível de "tudo certo". */
+  motivo?: "sem_session_id" | "contato_nao_encontrado" | "erro_crm";
+  /** Mensagem do erro do CRM (quando motivo="erro_crm"). */
+  erro?: string;
 }
 
 /**
@@ -86,12 +91,42 @@ export async function checkContactBlockedBySession(params: {
   blockedTagsRaw?: string | null;
   helena?: HelenaAccount | null;
 }): Promise<BlockCheck> {
-  if (!params.sessionId) return { blocked: false, tag: null, resolved: false };
+  if (!params.sessionId) {
+    return { blocked: false, tag: null, resolved: false, motivo: "sem_session_id" };
+  }
   try {
     const helena = params.helena ?? (await loadHelenaAccount(params.accountId));
     const contact = await loadHelenaContactFromSession(helena, params.sessionId);
-    return checkContactBlocked(contact, params.blockedTagsRaw);
-  } catch {
-    return { blocked: false, tag: null, resolved: false };
+    const check = checkContactBlocked(contact, params.blockedTagsRaw);
+    if (!check.resolved) {
+      // Sem exceção, mas o CRM não devolveu o contato (404 / sessão órfã).
+      // Antes isso era indistinguível de erro de rede — e ambos silenciavam a IA.
+      console.warn(
+        `[agent-block:telemetry] ${JSON.stringify({
+          event: "crm_contato_nao_encontrado",
+          account: params.accountId,
+          session: params.sessionId,
+        })}`,
+      );
+      return { ...check, motivo: "contato_nao_encontrado" };
+    }
+    return check;
+  } catch (e) {
+    // ANTES: `catch {}` engolia o erro e devolvia resolved=false. O webhook então
+    // ficava em SILÊNCIO (fail-safe "IA Desligada") sem que ninguém soubesse o
+    // motivo — a falha do CRM era invisível no log e impossível de medir.
+    // Casos reais (Odonto Carioca Campo Grande, 23/07): 21 97061-4408 e
+    // 21 96932-0210 ficaram sem resposta; a segunda voltou a funcionar sozinha
+    // 1h depois, provando falha TRANSITÓRIA de leitura — não desligamento.
+    const erro = e instanceof Error ? e.message : String(e);
+    console.error(
+      `[agent-block:telemetry] ${JSON.stringify({
+        event: "crm_contato_ilegivel",
+        account: params.accountId,
+        session: params.sessionId,
+        erro: erro.slice(0, 300),
+      })}`,
+    );
+    return { blocked: false, tag: null, resolved: false, motivo: "erro_crm", erro };
   }
 }

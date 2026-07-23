@@ -1102,6 +1102,56 @@ export function resolveBookingLeadName(leadData: LeadData): string | undefined {
  * ~15 vezes sem efeito. "" sobrevive ao strip e conta como campo vazio
  * (getMissingBookingFields/resolveBookingLeadName tratam "" como ausente).
  */
+/**
+ * Nomes que o lado da CLÍNICA apresentou como sendo DELE ("me chamo Val", "sou
+ * a Ana") nas mensagens do assistente. Nunca são o nome do lead.
+ *
+ * Por que isso vaza: a atendente humana digita pelo WhatsApp da clínica e suas
+ * mensagens são gravadas com `role: "assistant"` (origem="humano") — no
+ * histórico do LLM ficam INDISTINGUÍVEIS das falas do próprio agente. Caso real
+ * (Odonto Carioca Campo Grande, 21 96932-0210, 23/07): a atendente enviou "Olá,
+ * bom dia tudo bem? Me chamo Val. Qual é o seu nome?"; o agente gravou
+ * lead_data.name = "Val" e passou a conversa inteira chamando a LEAD de Val.
+ */
+export function attendantSelfIntroducedNames(assistantTexts: string[]): Set<string> {
+  const out = new Set<string>();
+  // `i` é obrigatório: a frase real começa com "Me chamo…" (maiúscula). A
+  // inicial maiúscula do NOME é validada depois, para não capturar palavra comum.
+  const patterns = [
+    /\bme\s+chamo\s+([\p{L}]{2,21})/giu,
+    /\bmeu\s+nome\s+[ée]\s+([\p{L}]{2,21})/giu,
+    /\b(?:sou|aqui\s+[ée]|quem\s+fala\s+[ée])\s+(?:a|o)\s+([\p{L}]{2,21})/giu,
+  ];
+  for (const raw of assistantTexts) {
+    const t = raw ?? "";
+    for (const re of patterns) {
+      for (const m of t.matchAll(re)) {
+        const nome = (m[1] ?? "").trim();
+        if (!nome) continue;
+        // Nome próprio começa com maiúscula — filtra "sou a responsável", etc.
+        if (nome[0] !== nome[0]!.toUpperCase()) continue;
+        out.add(nome.toLowerCase());
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * O `name` capturado é, na verdade, o nome de quem ATENDE (agente/atendente) —
+ * não do lead. Compara pelo PRIMEIRO nome: o lead informa "Val" ou "Val Souza",
+ * e ambos devem ser rejeitados quando a clínica se apresentou como Val.
+ */
+export function nameIsAttendantSelfIntroduction(
+  name: string | null | undefined,
+  assistantTexts: string[],
+): boolean {
+  const n = (name ?? "").trim();
+  if (!n) return false;
+  const primeiro = n.split(/\s+/)[0]!.toLowerCase();
+  return attendantSelfIntroducedNames(assistantTexts).has(primeiro);
+}
+
 export function clearRejectedBookingName(leadData: LeadData): Partial<LeadData> {
   if (leadData.name?.trim()) return { name: "" };
   const cf = leadData.custom_fields ?? {};
