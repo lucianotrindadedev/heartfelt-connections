@@ -1091,6 +1091,50 @@ async function execListarHorarios(
   const anchorKey = anchor
     ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
     : null;
+
+  // ZERO vaga: devolve o PORQUÊ, igual ao ramo do Google Calendar. Sem isto o
+  // Clinicorp respondia um `count: 0` mudo e o modelo concluía "está lotado"
+  // quando na verdade o dia NEM ABRE (caso Odonto Carioca Campo Grande,
+  // 21 98817-7687: lead pediu SÁBADO numa agenda Seg–Sex). Também evita o
+  // aviso_data contraditório — ele prometia "os horários abaixo são de OUTRAS
+  // datas" com a lista VAZIA, porque `!limited.some(...)` é true quando não há
+  // nenhum slot.
+  if (limited.length === 0) {
+    const businessHoursJson = ctx.agentSettings.business_hours_json;
+    const hasBusinessHours = !!businessHoursJson?.trim();
+    const diasAtivos = activeWeekdayKeys(businessHoursJson);
+    let dataAlvoDebug: Record<string, unknown> = {};
+    let causa: string;
+    if (!hasBusinessHours) {
+      causa = "Horário de funcionamento não está configurado nas Settings.";
+    } else if (anchor) {
+      const diaAlvo = diaSemanaChave(anchor);
+      const diaAtivo = diasAtivos.includes(diaAlvo);
+      dataAlvoDebug = {
+        data_alvo: anchorKey,
+        dia_semana_alvo: diaAlvo,
+        dia_ativo_no_expediente: diaAtivo,
+      };
+      causa = diaAtivo
+        ? "A data pedida está com todos os horários ocupados nesta agenda. Ofereça a data livre mais próxima (chame de novo SEM data_alvo)."
+        : `A data pedida cai em ${diaAlvo.toUpperCase()}, dia que NÃO está habilitado nos horários desta agenda (dias ativos: ${diasAtivos.join(", ") || "nenhum"}). Diga ao lead que NÃO atendemos nesse dia da semana e ofereça um dia ativo — chame listar_horarios de novo SEM data_alvo. NÃO diga que está "lotado"/"sem vaga": o dia simplesmente não abre.`;
+    } else {
+      causa = `Nenhum horário livre no período consultado${resolvedPeriodo ? ` no turno pedido (${resolvedPeriodo})` : ""}. Tente um período maior OU verifique a disponibilidade real.`;
+    }
+    const diag = {
+      count: 0,
+      slots: [],
+      debug: {
+        tem_horario_funcionamento: hasBusinessHours,
+        dias_ativos: diasAtivos,
+        ...dataAlvoDebug,
+        possivel_causa: causa,
+      },
+    };
+    console.warn("[scheduler] listar_horarios (clinicorp) retornou 0 slots:", diag.debug);
+    return { result: JSON.stringify(diag), patch: { offered_slots: [] } };
+  }
+
   const requestedDateUnavailable =
     !!anchorKey && !limited.some((s) => (s.iso ?? "").slice(0, 10) === anchorKey);
   return {

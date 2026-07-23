@@ -417,6 +417,16 @@ describe("looksLikeStallReply", () => {
     "Deixa eu dar uma olhada na agenda aqui.",
     "Só um instantinho que já te trago as opções.",
     "Vou procurar um horário mais tarde pra você.",
+    // Caso real 23/07 (Odonto Carioca Campo Grande, 21 98817-7687): o fecho
+    // retórico "tá bem?" no fim fazia o "?" desarmar o guard — a promessa saiu
+    // sem chamar listar_horarios e a conversa morreu.
+    "Entendo perfeitamente! Sábado pode ser mais tranquilo para você. Deixa eu verificar a disponibilidade de sábado e já te mostro os horários que temos, tá bem?",
+    "Deixa eu verificar a agenda e já te retorno, ok?",
+    "Vou consultar os horários pra você, tudo bem?",
+    "Só um instantinho, certo?",
+    "Vou buscar as opções da tarde, combinado?",
+    "Já te confirmo o horário, beleza?",
+    "Vou dar uma olhada na agenda, pode ser?",
   ];
   for (const r of stalls) {
     it(`detecta stall: ${JSON.stringify(r.slice(0, 40))}`, () => {
@@ -432,6 +442,13 @@ describe("looksLikeStallReply", () => {
     "Temos horários terça às 14h ou quinta às 10h. Qual prefere?",
     "Claro! O endereço é Rua das Flores, 123.",
     "",
+    // Pergunta REAL continua sendo progresso mesmo com fecho retórico junto:
+    // o "?" que importa é o da pergunta, não o do "tá bem?".
+    "Tenho terça às 14h ou quinta às 10h. Qual prefere, tá bem?",
+    "Vou precisar do seu nome completo. Pode me informar, por favor?",
+    // Só o fecho retórico, sem promessa nenhuma → não é stall.
+    "Tá bem?",
+    "Ok?",
   ];
   for (const r of naoStall) {
     it(`NAO marca: ${JSON.stringify(r.slice(0, 40))}`, () => {

@@ -284,14 +284,40 @@ const STALL_REPLY_REGEX =
   /(s[óo]\s+um\s+(instant(?:e|inho)|minut(?:o|inho)|moment(?:o|inho)|segund(?:o|inho))|um\s+(instant(?:e|inho)|moment(?:o|inho)|minutinho)|aguard[ae]\b|aguardar\b|(?:j[áa]|logo|em\s+seguida)\s+(?:te\s+|lhe\s+)?(retorno|volto|confirmo|aviso|respondo|envio|mando|passo|finalizo|verifico|checo|consulto|busco|procuro)|vou\s+(finalizar|criar|fazer|registrar|organizar|gerar|preparar|montar|cadastrar|verificar|checar|consultar|buscar|procurar|pesquisar|ver|olhar|levantar|separar|localizar|dar\s+uma\s+olhada)\b|vou\s+deixar\s+(?:tudo\s+|isso\s+|j[áa]\s+)?(reservad|agendad|marcad|pronto|prontinho|certinh|garantid|organizad)|te\s+(envio|mando|passo)\s+(?:a\s+|o\s+)?(confirma[çc]|agendament)|estou\s+(finalizando|criando|organizando|registrando|preparando|gerando|cadastrando|verificando|checando|consultando|buscando|procurando|pesquisando)|t[ôo]\s+(finalizando|criando|organizando|registrando|cadastrando|verificando|checando|consultando|buscando|procurando)|deixa?\s+eu\s+(finalizar|criar|organizar|registrar|cadastrar|verificar|checar|consultar|buscar|procurar|ver|dar\s+uma\s+olhada)|pe[çc]o\s+que\s+aguarde|me\s+d[êe]\s+um\s+(instante|instantinho|momento|minutinho)|rapidinho\s+(aqui|aí|pra))/i;
 
 /**
+ * Fechos retóricos no FIM da frase ("…já te mostro, tá bem?", "…, ok?"). Não
+ * pedem nada acionável ao lead — são só cortesia fechando uma promessa. Sem
+ * removê-los, o "?" deles fazia o reply passar por "pergunta = progresso" e
+ * DESARMAVA o guard anti-stall. Caso real (Odonto Carioca Campo Grande,
+ * 21 98817-7687): "Deixa eu verificar a disponibilidade de sábado e já te mostro
+ * os horários que temos, tá bem?" — nenhuma tool foi chamada, a promessa saiu e
+ * a conversa morreu (nada re-aciona o agente depois).
+ */
+const RHETORICAL_TAG_REGEX =
+  /[,;\s]*\b(t[áa]\s*(bem|bom|certo|ok)?|ok|okay|tudo\s+(bem|certo)|certo|combinado|beleza|blz|pode\s+ser|sim|n[ée])\s*\?+\s*$/i;
+
+/** Remove os fechos retóricos do fim (até 3, p/ "…, tá bem? ok?"). */
+function stripRhetoricalTags(text: string): string {
+  let out = text.trim();
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(RHETORICAL_TAG_REGEX, "").trim();
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
+/**
  * True quando o `reply` do agente é só "enrolação" (promessa de agir / pedido
- * para aguardar) sem fazer pergunta. Um reply que faz pergunta ("Qual seu nome
- * completo?") é progresso, não stall — por isso a presença de "?" desqualifica.
+ * para aguardar) sem fazer pergunta. Um reply que faz pergunta REAL ("Qual seu
+ * nome completo?") é progresso, não stall — por isso a presença de "?" ainda
+ * desqualifica, mas só depois de descartar os fechos retóricos ("tá bem?").
  * PURA: o orquestrador decide o que fazer (perguntar campo, ofertar slot, etc.).
  */
 export function looksLikeStallReply(reply: string): boolean {
   const r = (reply ?? "").trim();
   if (!r) return false;
-  if (r.includes("?")) return false; // perguntar é avançar, não enrolar
-  return STALL_REPLY_REGEX.test(r);
+  const semTags = stripRhetoricalTags(r);
+  if (!semTags) return false; // era só o fecho retórico, não há promessa
+  if (semTags.includes("?")) return false; // pergunta REAL é avançar, não enrolar
+  return STALL_REPLY_REGEX.test(semTags);
 }
