@@ -1,13 +1,16 @@
 /**
- * Monitor de DIVERGÊNCIA de agendamento.
+ * Monitor de agendamento — dois sinais, ambos SOMENTE LEITURA:
  *
- * Varre as conversas com agendamento e compara a data que o AGENTE afirmou ao
- * lead no texto (DD/MM) com a data que foi de fato AGENDADA (booked_slot_iso).
- * Quando a data agendada nunca apareceu no texto → agendamento fantasma: o lead
- * acha que vai num dia, o CRM tem outro (caso Costa Lima Recreio, Melissa).
+ *  1) DIVERGÊNCIA — a data que o AGENTE afirmou ao lead no texto (DD/MM) não bate
+ *     com a data de fato AGENDADA (booked_slot_iso). Fantasma: o lead acha um
+ *     dia, o CRM tem outro (caso Costa Lima Recreio, Melissa).
  *
- * NÃO altera nada — só lê e reporta. Espelha a lógica de mitigação já embutida
- * no scheduler (affirmedDatesFromAssistant + ddmmInBrt em booking-template.ts).
+ *  2) SLOT PRESO — selected_slot_iso ∉ offered_slots E sem appointment_id: a
+ *     seleção ficou presa numa oferta anterior, o create falha e a conversa
+ *     trava/escala (caso Costa Lima Recreio, Neymar Junior).
+ *
+ * Espelha a lógica dos guards do scheduler (affirmedDatesFromAssistant +
+ * ddmmInBrt em booking-template.ts; isSlotNotOffered no scheduler).
  *
  * Uso:
  *   node scripts/monitor-divergencia-agenda.mjs            # todas
@@ -70,6 +73,15 @@ function labelBrt(iso) {
     hour12: false,
   }).format(d);
   return `${wd} ${ddmmInBrt(iso)} ${hm}`;
+}
+
+/** selected_slot_iso NÃO está entre os horários da oferta corrente (espelha
+ *  isSlotNotOffered no scheduler). Fail-open quando offered vazio. */
+function selectedSlotIsStale(selectedIso, offeredSlots) {
+  const sel = (selectedIso ?? "").trim();
+  const offered = offeredSlots ?? [];
+  if (!sel || offered.length === 0) return false;
+  return !offered.some((s) => s.iso === sel);
 }
 
 /** Datas DD/MM (zero-padded) afirmadas pelo agente nos textos dados. */
@@ -221,21 +233,106 @@ if (buckets.DIVERGENTE.length) {
   }
 }
 
+// ── sinal 2: slot preso (selected ∉ offered, sem agendamento) ──────────────
+
+console.log("\n\nBuscando conversas com seleção mas SEM agendamento…");
+let staleBuilder = db
+  .from("conversations")
+  .select("id, agent_id, phone, lead_phone, meta, atualizado_em")
+  .not("meta->lead_data->>selected_slot_iso", "is", null)
+  .is("meta->lead_data->>appointment_id", null)
+  .order("atualizado_em", { ascending: false });
+if (diasArg) {
+  const since = new Date(Date.now() - diasArg * 86_400_000).toISOString();
+  staleBuilder = staleBuilder.gte("atualizado_em", since);
+}
+const staleConvs = await fetchAll(staleBuilder);
+
+// resolve contas ainda não mapeadas (população diferente da varredura acima)
+const staleAgentIds = [
+  ...new Set(staleConvs.map((c) => c.agent_id).filter((id) => id && !(id in agentToAccount))),
+];
+for (let i = 0; i < staleAgentIds.length; i += 200) {
+  const { data } = await db.from("agents").select("id, account_id").in("id", staleAgentIds.slice(i, i + 200));
+  for (const a of data ?? []) agentToAccount[a.id] = a.account_id;
+}
+const missingAcc = [
+  ...new Set(Object.values(agentToAccount).filter((aid) => aid && !(aid in accountName))),
+];
+for (let i = 0; i < missingAcc.length; i += 200) {
+  const { data } = await db.from("accounts").select("id, nome").in("id", missingAcc.slice(i, i + 200));
+  for (const a of data ?? []) accountName[a.id] = a.nome;
+}
+
+const staleItens = [];
+for (const c of staleConvs) {
+  const ld = c.meta?.lead_data ?? {};
+  if (!selectedSlotIsStale(ld.selected_slot_iso, ld.offered_slots)) continue;
+  staleItens.push({
+    conv: c.id,
+    conta: accountName[agentToAccount[c.agent_id]] ?? "(conta?)",
+    fone: c.lead_phone || c.phone || "(sem fone)",
+    atualizado: c.atualizado_em,
+    stage: c.meta?.stage ?? "(?)",
+    escal: ld.escalation_reason ?? null,
+    selected: labelBrt((ld.selected_slot_iso ?? "").trim()),
+    offered: (ld.offered_slots ?? []).map((s) => labelBrt(s.iso)),
+  });
+}
+
+console.log("\n══════════════ SLOT PRESO (selected ∉ offered, sem agendamento) ══════════════");
+console.log(`  Conversas com seleção e sem agendamento: ${staleConvs.length}`);
+console.log(`  🔴 Slot preso: ${staleItens.length}`);
+if (staleItens.length) {
+  const porContaStale = {};
+  for (const s of staleItens) porContaStale[s.conta] = (porContaStale[s.conta] ?? 0) + 1;
+  console.log("\n── por conta ──");
+  for (const [k, v] of Object.entries(porContaStale).sort((a, b) => b[1] - a[1]))
+    console.log(`  ${String(v).padStart(3)}  ${k}`);
+  for (const s of staleItens) {
+    const escTag = s.escal ? ` escal=${s.escal}` : "";
+    console.log(`\n🔴 ${s.conta} — ${s.fone}  [stage=${s.stage}${escTag}]`);
+    console.log(`   selected (∉): ${s.selected}`);
+    console.log(`   offered     : ${s.offered.join(" | ") || "(vazio)"}`);
+    console.log(`   conv=${s.conv}  (${s.atualizado})`);
+  }
+}
+
 if (csvArg) {
   const esc = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
   const lines = [
-    "categoria,conta,fone,agendado,afirmado,conv,atualizado_em,evidencia",
+    "categoria,conta,fone,ref,detalhe,conv,atualizado_em,evidencia",
     ...buckets.DIVERGENTE.map((d) =>
-      ["DIVERGENTE", d.conta, d.fone, d.agendado, d.afirmado, d.conv, d.atualizado, d.evidencia]
+      [
+        "DIVERGENTE",
+        d.conta,
+        d.fone,
+        d.agendado,
+        `afirmado: ${d.afirmado}`,
+        d.conv,
+        d.atualizado,
+        d.evidencia,
+      ]
         .map(esc)
         .join(","),
     ),
-    ...buckets.SEM_DATA_NO_TEXTO.map((d) =>
-      ["SEM_DATA_NO_TEXTO", d.conta, d.fone, d.agendado ?? "", "", d.conv, d.atualizado, ""]
+    ...staleItens.map((s) =>
+      [
+        "SLOT_PRESO",
+        s.conta,
+        s.fone,
+        `selected ${s.selected}`,
+        `offered: ${s.offered.join(" | ")}${s.escal ? ` | escal=${s.escal}` : ""} | stage=${s.stage}`,
+        s.conv,
+        s.atualizado,
+        "",
+      ]
         .map(esc)
         .join(","),
     ),
   ];
   writeFileSync(resolve(root, csvArg), lines.join("\n"), "utf8");
-  console.log(`\nCSV salvo em ${csvArg} (${buckets.DIVERGENTE.length} divergências).`);
+  console.log(
+    `\nCSV salvo em ${csvArg} (${buckets.DIVERGENTE.length} divergências + ${staleItens.length} slots presos).`,
+  );
 }
