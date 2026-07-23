@@ -321,3 +321,25 @@ export function looksLikeStallReply(reply: string): boolean {
   if (semTags.includes("?")) return false; // pergunta REAL é avançar, não enrolar
   return STALL_REPLY_REGEX.test(semTags);
 }
+
+/**
+ * O texto faz uma pergunta REAL — ou seja, algo que o lead precisa responder.
+ * Um fecho retórico ("…, tá bem?") NÃO conta. Usado para saber "de quem é a
+ * vez": com pergunta real, a bola está com o LEAD; sem pergunta, quem deve agir
+ * é o AGENTE (e, se ele não agir, a conversa morre — ver retomada-slot-offer).
+ */
+export function hasRealQuestion(text: string): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+  const semTags = stripRhetoricalTags(t);
+  if (semTags.includes("?")) return true;
+  // O ÚNICO "?" pode ter sido consumido pelo fecho retórico ("Qual prefere, tá
+  // bem?") — aí a pergunta real fica invisível. Só nesse caso (houve strip)
+  // uma palavra interrogativa no texto restante ainda conta como pergunta.
+  // Restrito a marcadores FORTES: "como"/"onde" são comuns em frase afirmativa
+  // ("como você trabalha de manhã, vou buscar…") e dariam falso positivo.
+  if (semTags === t) return false;
+  return /\b(qual|quais|quando|que\s+horas|quantos?|quantas?|prefere|prefer[ei]ria|consegue|topa|aceita|pode(?:ria)?\s+(?:me|nos)\b|me\s+(?:informa|diz|manda|envia|passa))\b/i.test(
+    semTags,
+  );
+}
