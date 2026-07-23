@@ -33,6 +33,7 @@ import { Route as ApiPublicDiagGcalSlotsRouteImport } from './routes/api/public/
 import { Route as ApiPublicDiagFollowupRouteImport } from './routes/api/public/diag/followup'
 import { Route as ApiPublicCronWarmupSequenceRouteImport } from './routes/api/public/cron/warmup-sequence'
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
+import { Route as ApiPublicCronRetomarSlotOfferRouteImport } from './routes/api/public/cron/retomar-slot-offer'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
 import { Route as ApiPublicCronMonitorIntegracoesRouteImport } from './routes/api/public/cron/monitor-integracoes'
 import { Route as ApiPublicCronMonitorDivergenciaRouteImport } from './routes/api/public/cron/monitor-divergencia'
@@ -173,6 +174,12 @@ const ApiPublicCronWarmupRoute = ApiPublicCronWarmupRouteImport.update({
   path: '/api/public/cron/warmup',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicCronRetomarSlotOfferRoute =
+  ApiPublicCronRetomarSlotOfferRouteImport.update({
+    id: '/api/public/cron/retomar-slot-offer',
+    path: '/api/public/cron/retomar-slot-offer',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicCronQueueRoute = ApiPublicCronQueueRouteImport.update({
   id: '/api/public/cron/queue',
   path: '/api/public/cron/queue',
@@ -273,6 +280,7 @@ export interface FileRoutesByFullPath {
   '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/monitor-integracoes': typeof ApiPublicCronMonitorIntegracoesRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
+  '/api/public/cron/retomar-slot-offer': typeof ApiPublicCronRetomarSlotOfferRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
@@ -308,6 +316,7 @@ export interface FileRoutesByTo {
   '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/monitor-integracoes': typeof ApiPublicCronMonitorIntegracoesRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
+  '/api/public/cron/retomar-slot-offer': typeof ApiPublicCronRetomarSlotOfferRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
@@ -348,6 +357,7 @@ export interface FileRoutesById {
   '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/monitor-integracoes': typeof ApiPublicCronMonitorIntegracoesRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
+  '/api/public/cron/retomar-slot-offer': typeof ApiPublicCronRetomarSlotOfferRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
   '/api/public/cron/warmup-sequence': typeof ApiPublicCronWarmupSequenceRoute
   '/api/public/diag/followup': typeof ApiPublicDiagFollowupRoute
@@ -388,6 +398,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/monitor-integracoes'
     | '/api/public/cron/queue'
+    | '/api/public/cron/retomar-slot-offer'
     | '/api/public/cron/warmup'
     | '/api/public/cron/warmup-sequence'
     | '/api/public/diag/followup'
@@ -423,6 +434,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/monitor-integracoes'
     | '/api/public/cron/queue'
+    | '/api/public/cron/retomar-slot-offer'
     | '/api/public/cron/warmup'
     | '/api/public/cron/warmup-sequence'
     | '/api/public/diag/followup'
@@ -462,6 +474,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/monitor-integracoes'
     | '/api/public/cron/queue'
+    | '/api/public/cron/retomar-slot-offer'
     | '/api/public/cron/warmup'
     | '/api/public/cron/warmup-sequence'
     | '/api/public/diag/followup'
@@ -491,6 +504,7 @@ export interface RootRouteChildren {
   ApiPublicCronMonitorDivergenciaRoute: typeof ApiPublicCronMonitorDivergenciaRoute
   ApiPublicCronMonitorIntegracoesRoute: typeof ApiPublicCronMonitorIntegracoesRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
+  ApiPublicCronRetomarSlotOfferRoute: typeof ApiPublicCronRetomarSlotOfferRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
   ApiPublicCronWarmupSequenceRoute: typeof ApiPublicCronWarmupSequenceRoute
   ApiPublicDiagFollowupRoute: typeof ApiPublicDiagFollowupRoute
@@ -676,6 +690,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicCronWarmupRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/cron/retomar-slot-offer': {
+      id: '/api/public/cron/retomar-slot-offer'
+      path: '/api/public/cron/retomar-slot-offer'
+      fullPath: '/api/public/cron/retomar-slot-offer'
+      preLoaderRoute: typeof ApiPublicCronRetomarSlotOfferRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron/queue': {
       id: '/api/public/cron/queue'
       path: '/api/public/cron/queue'
@@ -846,6 +867,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicCronMonitorDivergenciaRoute: ApiPublicCronMonitorDivergenciaRoute,
   ApiPublicCronMonitorIntegracoesRoute: ApiPublicCronMonitorIntegracoesRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
+  ApiPublicCronRetomarSlotOfferRoute: ApiPublicCronRetomarSlotOfferRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,
   ApiPublicCronWarmupSequenceRoute: ApiPublicCronWarmupSequenceRoute,
   ApiPublicDiagFollowupRoute: ApiPublicDiagFollowupRoute,
