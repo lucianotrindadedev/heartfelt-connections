@@ -14,7 +14,7 @@
 // dono da conta.
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-export type ProvedorAgenda = "google_calendar" | "clinicorp" | "clinic_experts";
+export type ProvedorAgenda = "google_calendar" | "clinicorp" | "clinic_experts" | "clinup";
 
 export interface IntegracaoStatus {
   conta: string;
@@ -31,13 +31,14 @@ export interface IntegracoesResumo {
   status: IntegracaoStatus[];
 }
 
-/** Tabela de config + provedor correspondente. Clinup fica de fora de propósito:
- *  `hasBookingIntegration` até o reconhece, mas nenhum caminho de execução do
- *  scheduler despacha para ele — monitorá-lo sugeriria um suporte que não existe. */
+/** Tabela de config + provedor correspondente. O Clinup entrou aqui quando o
+ *  despacho do scheduler passou a existir de fato — antes ficava de fora porque
+ *  monitorá-lo sugeriria um suporte que não havia. */
 const FONTES: { tabela: string; provedor: ProvedorAgenda }[] = [
   { tabela: "google_calendar_tokens", provedor: "google_calendar" },
   { tabela: "clinicorp_config", provedor: "clinicorp" },
   { tabela: "clinic_experts_config", provedor: "clinic_experts" },
+  { tabela: "clinup_config", provedor: "clinup" },
 ];
 
 /** Chamada de leitura mais barata que valida credencial de verdade, por provedor.
@@ -53,6 +54,11 @@ async function checarProvedor(provedor: ProvedorAgenda, accountId: string): Prom
   if (provedor === "clinicorp") {
     const { listClinicorpProfessionals } = await import("@/lib/tools/clinicorp.server");
     await listClinicorpProfessionals(accountId);
+    return;
+  }
+  if (provedor === "clinup") {
+    const { listClinupProfessionals } = await import("@/lib/tools/clinup.server");
+    await listClinupProfessionals(accountId);
     return;
   }
   const { listClinicExpertsProfessionals } = await import("@/lib/tools/clinic-experts.server");

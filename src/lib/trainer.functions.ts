@@ -121,7 +121,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         .single(),
       sb
         .from("account_llm_config")
-        .select("default_model, max_tokens, temperature, fallback_models, rag_gate_model, tool_model")
+        .select("default_model, max_tokens, temperature, model_temperatures, fallback_models, rag_gate_model, tool_model")
         .eq("account_id", data.accountId)
         .single(),
       sb.from("clinicorp_config").select("ativo").eq("account_id", data.accountId).maybeSingle(),
@@ -182,6 +182,11 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       },
       googleAgendas: [],
       clinicExpertsProfessionals: [],
+      clinupProfessionals: [],
+      // Faltava desde a introdução de temperatura por modelo — o treinador
+      // rodava com o mapa indefinido, resolvendo sempre a temperatura base.
+      modelTemperatures:
+        (llm.data?.model_temperatures as Record<string, number> | undefined) ?? {},
       history: data.history.map((m) => ({ role: m.role, content: m.content })),
       dryRun: true, // NÃO tocar Helena/Calendar/Clinicorp
     };

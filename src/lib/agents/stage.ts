@@ -45,13 +45,19 @@ export interface LeadData {
    *  Campo próprio (não reusa dentist_person_id, que é number e só do Clinicorp,
    *  para evitar qualquer Number() acidental num uuid). */
   professional_uuid?: string;
+  /** profissionalId do slot escolhido no Clinup. Campo próprio pelo mesmo
+   *  motivo dos outros dois: o id do Clinup é um INTEIRO, mas trafega como
+   *  string aqui (o adapter converte só na hora de montar o body). Sem ele, uma
+   *  conta com vários profissionais agendaria sempre no primeiro da lista — que
+   *  pode nem atender no horário escolhido. */
+  clinup_profissional_id?: string;
   /** Label da agenda Google escolhida (multi-agenda). Definido ao listar/oferecer
    *  horários e reusado no booking/cancelamento para agir na agenda certa. */
   selected_agenda?: string;
   /** Lista atual de horários oferecidos (para validar escolha do lead).
    *  end_iso = fim real do slot conforme a grade da agenda (Clinicorp), usado
    *  no booking para não estourar a grade com a duração padrão. */
-  offered_slots?: { iso: string; end_iso?: string; date_label: string; time_label: string; dentist_person_id?: number; professional_uuid?: string }[];
+  offered_slots?: { iso: string; end_iso?: string; date_label: string; time_label: string; dentist_person_id?: number; professional_uuid?: string; clinup_profissional_id?: string }[];
   /** ID do agendamento criado (BOOKING → CONFIRMED). */
   appointment_id?: number | string;
   /** ISO do horário EFETIVAMENTE agendado (gravado na criação). Usado para

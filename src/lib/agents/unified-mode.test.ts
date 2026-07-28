@@ -48,6 +48,7 @@ const ctx = (settings: Record<string, string> = {}): AgentContext =>
     },
     googleAgendas: [],
     clinicExpertsProfessionals: [],
+    clinupProfessionals: [],
     history: [],
   }) as AgentContext;
 

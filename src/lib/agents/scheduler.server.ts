@@ -34,6 +34,13 @@ import {
   findClinicExpertsPatient,
   type ClinicExpertsSlot,
 } from "@/lib/tools/clinic-experts.server";
+import {
+  listClinupSlotsDetailed,
+  createClinupAppointment,
+  manageClinupAppointment,
+  findClinupPatient,
+  type ClinupRangeSlot,
+} from "@/lib/tools/clinup.server";
 import { loadHelenaAccount, removeContactFromAllSequences } from "@/lib/helena.server";
 import { summarizeConversationForNotification } from "@/lib/agents/notify-booking.server";
 import {
@@ -558,6 +565,28 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
     }
   }
 
+  // Clinup
+  if (ctx.integrations.clinup) {
+    try {
+      const patient = await findClinupPatient(ctx.accountId, ctx.effectivePhone);
+      if (!patient?.id) {
+        return { result: JSON.stringify({ found: false }) };
+      }
+      return {
+        result: JSON.stringify({ found: true, patient_id: patient.id, name: patient.name }),
+        patch: {
+          // patient_id do lead_data é `number` (herança do Clinicorp) e o id do
+          // Clinup é inteiro — converte, mas só se for realmente numérico.
+          ...(Number.isFinite(Number(patient.id)) ? { patient_id: Number(patient.id) } : {}),
+          ...(ctx.leadData.name ? {} : { name: patient.name }),
+        },
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { result: JSON.stringify({ found: false, error: msg.slice(0, 200) }) };
+    }
+  }
+
   // Clinic Experts
   if (ctx.integrations.clinicExperts) {
     try {
@@ -702,6 +731,30 @@ function formatCeSlot(s: ClinicExpertsSlot): {
     date_label,
     time_label: s.fromTime,
     professional_uuid: s.professionalUuid,
+  };
+}
+
+function formatClinupSlot(s: ClinupRangeSlot): {
+  iso: string;
+  end_iso: string;
+  date_label: string;
+  time_label: string;
+  clinup_profissional_id: string;
+} {
+  const d = new Date(s.start);
+  const date_label = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+  }).format(d);
+  return {
+    iso: s.start,
+    end_iso: s.end,
+    date_label,
+    // A API devolve "HH:MM:SS"; o lead vê "HH:MM".
+    time_label: s.time.slice(0, 5),
+    clinup_profissional_id: s.profissionalId,
   };
 }
 
@@ -1030,6 +1083,85 @@ export async function execListarHorarios(
           : {}),
       }),
       patch: { offered_slots: formatted, ...agendaPatch },
+    };
+  }
+
+  // Clinup — mesma estrutura do Clinic Experts logo abaixo: a busca por
+  // profissional (e o filtro de expediente, quando configurado) já acontece
+  // dentro de listClinupSlotsDetailed; aqui cuidamos da janela de busca
+  // (auto-ampliação), do filtro de turno e da prioridade pela hora pedida.
+  if (ctx.integrations.clinup) {
+    const fmtCl = (d: Date) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
+
+    let clSlots = await listClinupSlotsDetailed(ctx.accountId, fmtCl(today), fmtCl(end));
+    if (clSlots.length === 0 && !anchor && diasAFrente == null) {
+      const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+      console.log(
+        `[scheduler] listar_horarios (clinup) conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+      );
+      clSlots = await listClinupSlotsDetailed(ctx.accountId, fmtCl(today), fmtCl(wideEnd));
+    }
+
+    const clBounds = periodoParaHoras(resolvedPeriodo);
+    let clPeriodoAviso: string | undefined;
+    if (clBounds) {
+      const noPeriodo = clSlots.filter((s) => {
+        const h = Number(s.time.slice(0, 2));
+        return Number.isFinite(h) && h >= clBounds.min && h < clBounds.max;
+      });
+      if (noPeriodo.length > 0) {
+        clSlots = noPeriodo;
+      } else if (clSlots.length > 0) {
+        clPeriodoAviso = `Sem vaga no turno pedido (${resolvedPeriodo}). Os horários abaixo são de OUTRO turno — diga ao lead que o turno pedido não tem vaga e ofereça estes.`;
+      }
+    }
+
+    const clLimited = rankSlotsByRequestedHour(clSlots, resolvedHora, (s) =>
+      minutesOfDayFromLabel(s.time.slice(0, 5)),
+    )
+      .slice(0, 6)
+      .sort((a, b) => a.start.localeCompare(b.start))
+      .map(formatClinupSlot);
+
+    if (clLimited.length === 0) {
+      const semProfissionais = ctx.clinupProfessionals.length === 0;
+      const causa = semProfissionais
+        ? "Nenhum profissional está habilitado no Clinup desta conta (painel de Integrações → Clinup). Não é possível buscar horários até marcar pelo menos um — não prometa horário ao lead; ofereça escalar para um humano."
+        : "Nenhum horário livre encontrado no período consultado para os profissionais habilitados. Tente um período maior ou verifique se o expediente configurado está correto.";
+      console.warn(
+        `[scheduler] listar_horarios (clinup) retornou 0 slots conv=${ctx.conversationId} — ${semProfissionais ? "0 profissionais habilitados" : "agenda sem vaga na janela"}`,
+      );
+      return {
+        result: JSON.stringify({
+          count: 0,
+          slots: [],
+          debug: {
+            profissionais_habilitados: ctx.clinupProfessionals.length,
+            possivel_causa: causa,
+          },
+        }),
+        patch: { offered_slots: [] },
+      };
+    }
+
+    const clAnchorKey = anchor
+      ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
+      : null;
+    const clRequestedDateUnavailable =
+      !!clAnchorKey && !clLimited.some((s) => (s.iso ?? "").slice(0, 10) === clAnchorKey);
+    return {
+      result: JSON.stringify({
+        count: clLimited.length,
+        slots: clLimited,
+        ...(clPeriodoAviso ? { aviso_periodo: clPeriodoAviso } : {}),
+        ...(clRequestedDateUnavailable
+          ? {
+              aviso_data: `SEM VAGA em ${clAnchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${clAnchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${clAnchorKey}).`,
+            }
+          : {}),
+      }),
+      patch: { offered_slots: clLimited },
     };
   }
 
@@ -1675,6 +1807,12 @@ async function execCriarAgendamento(
             String(ld.appointment_id),
             resolved.calendarId,
           );
+        } else if (ctx.integrations.clinup) {
+          await manageClinupAppointment(ctx.accountId, {
+            consultaId: ld.appointment_id,
+            confirmada: false,
+            motivo: "Remarcação solicitada pelo paciente",
+          });
         } else if (ctx.integrations.clinicExperts) {
           await cancelClinicExpertsAppointment(ctx.accountId, String(ld.appointment_id));
         } else {
@@ -1902,6 +2040,41 @@ async function execCriarAgendamento(
     }
   }
 
+  // Clinup
+  if (ctx.integrations.clinup) {
+    try {
+      const chosenSlot = ld.offered_slots?.find((s) => s.iso === ld.selected_slot_iso);
+      const appt = await createClinupAppointment(ctx.accountId, {
+        phone: bookingPhone,
+        name: leadName,
+        datetime: ld.selected_slot_iso,
+        // O id vem do SLOT escolhido — é o único jeito de garantir que a
+        // consulta cai no profissional que realmente tinha aquele horário.
+        profissionalId: ld.clinup_profissional_id ?? chosenSlot?.clinup_profissional_id,
+        notes: await buildClinicorpCaseNotes(ctx),
+      });
+      await applyBookedTagSwap(ctx);
+      await removeLeadFromSequences(ctx);
+      return {
+        result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
+        patch: {
+          appointment_id: appt.id,
+          name: leadName,
+          booked_tag_applied: true,
+          booked_slot_iso: ld.selected_slot_iso,
+          clinup_profissional_id: appt.profissionalId,
+        },
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const kind = classifyBookingError(msg);
+      console.error(
+        `[scheduler] criar_agendamento Clinup falhou conv=${ctx.conversationId} kind=${kind}: ${msg}`,
+      );
+      return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300), error_kind: kind }) };
+    }
+  }
+
   // Clinic Experts
   if (ctx.integrations.clinicExperts) {
     try {
@@ -2025,6 +2198,7 @@ async function execCancelarAgendamento(
     clearPatch.offered_slots = undefined;
     clearPatch.dentist_person_id = undefined;
     clearPatch.professional_uuid = undefined;
+    clearPatch.clinup_profissional_id = undefined;
     clearPatch.reoffer_after_cancel = true;
   }
 
@@ -2045,6 +2219,17 @@ async function execCancelarAgendamento(
         String(ld.appointment_id),
         resolved.calendarId,
       );
+    } else if (ctx.integrations.clinup) {
+      // O Clinup não tem endpoint de cancelamento próprio: é o mesmo PUT
+      // /consultas com confirmada=false (é assim que o fluxo n8n de referência
+      // cancela). Retorno false = a API recusou; tratamos como falha explícita
+      // em vez de seguir como se tivesse cancelado.
+      const ok = await manageClinupAppointment(ctx.accountId, {
+        consultaId: ld.appointment_id,
+        confirmada: false,
+        motivo: opts?.reoffer ? "Remarcação solicitada pelo paciente" : "Cancelado pelo paciente",
+      });
+      if (!ok) throw new Error("Clinup recusou o cancelamento da consulta");
     } else if (ctx.integrations.clinicExperts) {
       await cancelClinicExpertsAppointment(ctx.accountId, String(ld.appointment_id));
     } else {
@@ -2775,6 +2960,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "cancelar_agendamento":
           case "cancelar_clinicorp":
           case "cancelar_google_calendar":
+          case "cancelar_clinup":
           case "cancelar_clinic_experts":
             outcome = await execCancelarAgendamento(ctx);
             break;

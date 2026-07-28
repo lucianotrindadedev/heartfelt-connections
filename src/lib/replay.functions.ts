@@ -198,6 +198,7 @@ export const replayConversation = createServerFn({ method: "POST" })
       },
       googleAgendas: [],
       clinicExpertsProfessionals: [],
+    clinupProfessionals: [],
       history,
       dryRun: true,
     });

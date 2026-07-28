@@ -97,6 +97,18 @@ export interface AgentContext {
     businessHoursJson?: string;
   }[];
 
+  /** Profissionais habilitados no Clinup. Diferente do Clinic Experts, a API do
+   *  Clinup JÁ devolve os horários livres reais de cada um — o expediente aqui
+   *  é restrição opcional. Usado só para diagnosticar "0 horários" (0
+   *  profissionais configurados vs agenda realmente cheia); o LLM nunca escolhe
+   *  profissional, o slot escolhido já carrega o id certo. */
+  clinupProfessionals: {
+    id: string;
+    name: string;
+    duracaoMinutos?: number;
+    businessHoursJson?: string;
+  }[];
+
   /** Histórico de mensagens já filtrado (sem fallbacks determinísticos). */
   history: { role: "user" | "assistant"; content: string }[];
 

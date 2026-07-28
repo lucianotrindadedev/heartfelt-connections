@@ -497,7 +497,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Integracoes precisam ser carregadas para os signals (hasBookingIntegration).
     const [clinicorpCfg, clinupCfg, gcalCfg, clinicExpertsCfg, escCfg] = await Promise.all([
       sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
-      sb.from("clinup_config").select("ativo").eq("account_id", accountId).maybeSingle(),
+      sb.from("clinup_config").select("ativo, professionals").eq("account_id", accountId).maybeSingle(),
       sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
       sb.from("clinic_experts_config").select("ativo, professionals").eq("account_id", accountId).maybeSingle(),
       sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
@@ -528,6 +528,26 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
                 typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
             }))
             .filter((p) => p.uuid)
+        )
+      : [];
+
+    // Profissionais habilitados no Clinup. Só é usado para diagnosticar
+    // "0 horários" (nenhum habilitado vs agenda cheia) — o id do profissional
+    // viaja no próprio slot ofertado, o LLM nunca escolhe.
+    const clinupProfessionals = clinupCfg.data?.ativo
+      ? (
+          (Array.isArray((clinupCfg.data as { professionals?: unknown }).professionals)
+            ? ((clinupCfg.data as { professionals: Record<string, unknown>[] }).professionals)
+            : []
+          )
+            .map((p) => ({
+              id: String(p.id ?? ""),
+              name: String(p.name ?? ""),
+              duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+              businessHoursJson:
+                typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
+            }))
+            .filter((p) => p.id)
         )
       : [];
 
@@ -659,6 +679,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       },
       googleAgendas,
       clinicExpertsProfessionals,
+      clinupProfessionals,
       // Modo teste: não escreve tags no CRM (tools seguem vivas).
       disableTags: agentSettings.test_mode === "true",
       history,
