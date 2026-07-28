@@ -172,32 +172,125 @@ export interface ClinupPatient {
   email: string | null;
 }
 
+interface ClinupPacienteRaw {
+  id?: string | number;
+  nome?: string;
+  /** A API usa `celular1` (não `celular`, que é o nome do parâmetro de BUSCA). */
+  celular1?: string;
+  celular?: string;
+  cpf?: string;
+  email?: string;
+}
+
+/**
+ * Extrai o paciente de qualquer formato de resposta.
+ *
+ * A API do Clinup ENVELOPA tudo, e cada endpoint com uma chave diferente:
+ * {datas:[…]}, {horas:[…]}, {consultas:[…]} e — medido em 28/07 —
+ * {"paciente":{…}} aqui. Lendo `json.id` direto no envelope, o id vinha
+ * sempre undefined: findClinupPatient devolvia null para TODO mundo, o
+ * agendamento partia para criar um paciente que já existia, e a criação
+ * também não achava o id → "Não foi possível obter ID do paciente Clinup".
+ * Caso real: Implanto Master Venda Nova, 32991607088, 28/07.
+ */
+function extrairPaciente(json: unknown): ClinupPacienteRaw | null {
+  if (!json || typeof json !== "object") return null;
+  if (Array.isArray(json)) return (json[0] as ClinupPacienteRaw) ?? null;
+  const o = json as Record<string, unknown>;
+  const candidato = (o.paciente ?? o.Paciente ?? o.data ?? o) as ClinupPacienteRaw | null;
+  if (!candidato || typeof candidato !== "object") return null;
+  return candidato.id != null ? candidato : null;
+}
+
+/** Nome comparável: sem acento, sem pontuação, minúsculo, espaços colapsados. */
+function normalizarNome(n: string): string {
+  return (n ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * TODOS os pacientes de um telefone. GET /pacientes (plural) devolve
+ * {"pacientes":[…]}; o singular devolve só o PRIMEIRO — e o primeiro pode ser
+ * outra pessoa da mesma casa. Medido em 28/07: o telefone 32991607088 tinha 7
+ * cadastros, e o singular devolvia "Maria do Carmo" para um lead chamado
+ * Luciano.
+ */
+async function listarPacientesPorTelefone(
+  config: ClinupConfig,
+  celular: string,
+): Promise<ClinupPacienteRaw[]> {
+  const url = `${CLINUP_BASE}/pacientes?celular=${encodeURIComponent(celular)}`;
+  const res = await fetch(url, { headers: authHeaders(config) });
+  if (!res.ok) return [];
+  const json = (await res.json()) as
+    | ClinupPacienteRaw[]
+    | { pacientes?: ClinupPacienteRaw[] }
+    | null;
+  const lista = Array.isArray(json)
+    ? json
+    : ((json as { pacientes?: ClinupPacienteRaw[] })?.pacientes ?? []);
+  return lista.filter((p) => p?.id != null);
+}
+
+/**
+ * Paciente do lead. Quando o `name` é informado, o cadastro com o MESMO nome
+ * vence — um telefone de família tem vários cadastros e agendar no primeiro
+ * marcaria a consulta para a pessoa errada.
+ *
+ * Reaproveitar o cadastro certo também é o que impede a enxurrada de
+ * duplicatas: quando a criação falhava por parsing, cada retentativa criava
+ * outro paciente (6 "Luciano Trindade" no mesmo telefone, 28/07). Achando o
+ * recém-criado, a retentativa reusa em vez de multiplicar.
+ */
 export async function findClinupPatient(
   accountId: string,
   phone: string,
+  name?: string,
 ): Promise<ClinupPatient | null> {
   const config = await loadConfig(accountId);
   const celular = sanitizePhone(phone);
 
-  const url = `${CLINUP_BASE}/paciente?celular=${encodeURIComponent(celular)}`;
-  const res = await fetch(url, { headers: authHeaders(config) });
-  if (!res.ok) return null;
+  const lista = await listarPacientesPorTelefone(config, celular);
 
-  const json = (await res.json()) as
-    | { id?: string | number; nome?: string; celular?: string; email?: string }
-    | { id?: string | number; nome?: string; celular?: string; email?: string }[]
-    | null;
+  let p: ClinupPacienteRaw | null = null;
+  const alvo = normalizarNome(name ?? "");
+  if (alvo) {
+    p =
+      lista.find((c) => normalizarNome(c.nome ?? "") === alvo) ??
+      // Cadastro abreviado ("Luciano T.") ou o lead informando o nome completo
+      // depois: aceita quando um contém o outro, desde que não seja trivial.
+      lista.find((c) => {
+        const n = normalizarNome(c.nome ?? "");
+        return n.length >= 5 && (n.startsWith(alvo) || alvo.startsWith(n));
+      }) ??
+      null;
+    // Sem nenhum cadastro com esse nome, NÃO reutiliza o de outra pessoa:
+    // devolve null para o chamador criar o cadastro correto.
+    if (!p) return null;
+  } else {
+    // Sem nome coletado ainda (ex.: buscar_paciente no início da conversa):
+    // devolve o primeiro, só para informar o agente. O agendamento sempre
+    // acontece com o nome já em mãos.
+    p = lista[0] ?? null;
+  }
 
-  if (!json) return null;
-
-  // Pode retornar objeto ou array
-  const p = Array.isArray(json) ? json[0] : json;
   if (!p?.id) return null;
+
+  if (lista.length > 1) {
+    console.warn(
+      `[clinup] telefone ${celular} tem ${lista.length} cadastros — usando id=${p.id} (${p.nome ?? "?"})`,
+    );
+  }
 
   return {
     id: String(p.id),
     name: p.nome ?? "",
-    phone: p.celular ?? phone,
+    phone: p.celular1 ?? p.celular ?? phone,
     email: p.email ?? null,
   };
 }
@@ -222,11 +315,21 @@ export async function createClinupPatient(
     throw new Error(`Clinup criar paciente failed: ${res.status} ${err.slice(0, 200)}`);
   }
 
-  const json = (await res.json()) as { id?: string | number; nome?: string; celular?: string };
+  // Mesmo envelope da busca. Se o id não vier, NÃO devolvemos id:null: quem
+  // chama só sabe dizer "não foi possível obter ID", uma mensagem que não
+  // ajuda ninguém a descobrir o porquê. Falha aqui, com o corpo real.
+  const bruto = await res.json();
+  const p = extrairPaciente(bruto);
+  if (!p?.id) {
+    throw new Error(
+      `Clinup: paciente criado mas a resposta não trouxe id (${JSON.stringify(bruto).slice(0, 250)})`,
+    );
+  }
+
   return {
-    id: json.id ? String(json.id) : null,
-    name: json.nome ?? params.name,
-    phone: json.celular ?? params.phone,
+    id: String(p.id),
+    name: p.nome ?? params.name,
+    phone: p.celular1 ?? p.celular ?? params.phone,
     email: null,
   };
 }
@@ -445,8 +548,10 @@ export async function createClinupAppointment(
     );
   }
 
-  // Resolve/cria paciente
-  let patient = await findClinupPatient(accountId, params.phone);
+  // Resolve/cria paciente. O NOME entra na busca de propósito: sem ele, um
+  // telefone com vários cadastros devolveria o primeiro e a consulta seria
+  // marcada para outra pessoa da mesma casa.
+  let patient = await findClinupPatient(accountId, params.phone, params.name);
   if (!patient) {
     patient = await createClinupPatient(accountId, { name: params.name, phone: params.phone });
   }

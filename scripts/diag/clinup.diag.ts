@@ -79,6 +79,42 @@ d("Clinup — contrato dos endpoints", () => {
     expect(Array.isArray((json as { consultas?: unknown[] }).consultas)).toBe(true);
   }, 60_000);
 
+  it("GET /paciente ENVELOPA em {paciente} e usa celular1", async () => {
+    // Caso real (Implanto Master, 32991607088, 28/07): o adapter lia `json.id`
+    // no envelope, achava undefined, concluía "paciente não existe" para TODO
+    // mundo e partia para criar — 6 duplicatas do mesmo lead.
+    const tel = process.env.CLINUP_TEL_TESTE;
+    if (!tel) {
+      log("\n  (defina CLINUP_TEL_TESTE com um telefone que TEM paciente para checar o envelope)");
+      return;
+    }
+    const { status, json } = await get(`/paciente?celular=${tel}`);
+    log(`\n  /paciente?celular=${tel} → ${status} ${JSON.stringify(json).slice(0, 200)}`);
+    expect(status).toBe(200);
+    const env = json as { paciente?: { id?: number; nome?: string; celular1?: string } };
+    expect(env.paciente, "resposta é envelopada em {paciente}").toBeTruthy();
+    expect(env.paciente!.id, "id vem DENTRO do envelope, não na raiz").toBeTruthy();
+    expect(
+      (json as { id?: unknown }).id,
+      "se `id` aparecer na raiz, o envelope mudou — revisar extrairPaciente",
+    ).toBeUndefined();
+    expect(env.paciente!.celular1, "o campo é celular1, não celular").toBeTruthy();
+  }, 60_000);
+
+  it("GET /pacientes (plural) lista TODOS os cadastros do telefone", async () => {
+    const tel = process.env.CLINUP_TEL_TESTE;
+    if (!tel) return;
+    const { status, json } = await get(`/pacientes?celular=${tel}`);
+    expect(status).toBe(200);
+    const lista = (json as { pacientes?: { id: number; nome: string }[] }).pacientes;
+    expect(Array.isArray(lista), "envelope {pacientes:[…]}").toBe(true);
+    log(`  /pacientes?celular=${tel} → ${lista!.length} cadastro(s)`);
+    for (const p of lista!.slice(0, 10)) log(`     id=${p.id}  ${p.nome}`);
+    // É por isto que o singular não serve: o mesmo telefone pode ter cadastros
+    // de pessoas DIFERENTES, e o singular devolve só o primeiro.
+    expect(lista!.length).toBeGreaterThan(0);
+  }, 60_000);
+
   it("GET /paciente inexistente devolve objeto vazio", async () => {
     const { status, json } = await get(`/paciente?celular=21999999999`);
     log(`  /paciente (inexistente) → ${status} ${JSON.stringify(json).slice(0, 120)}`);

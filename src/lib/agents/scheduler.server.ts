@@ -568,7 +568,14 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
   // Clinup
   if (ctx.integrations.clinup) {
     try {
-      const patient = await findClinupPatient(ctx.accountId, ctx.effectivePhone);
+      // Passa o nome já coletado: um telefone de família tem vários cadastros
+      // no Clinup, e sem o nome a busca devolve o primeiro — que pode ser outra
+      // pessoa (ver findClinupPatient).
+      const patient = await findClinupPatient(
+        ctx.accountId,
+        ctx.effectivePhone,
+        ctx.leadData.name ?? undefined,
+      );
       if (!patient?.id) {
         return { result: JSON.stringify({ found: false }) };
       }
