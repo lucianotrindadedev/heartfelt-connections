@@ -548,12 +548,27 @@ export async function createClinupAppointment(
     );
   }
 
-  // Resolve/cria paciente. O NOME entra na busca de propósito: sem ele, um
-  // telefone com vários cadastros devolveria o primeiro e a consulta seria
-  // marcada para outra pessoa da mesma casa.
+  // ── PACIENTE: buscar → criar se não houver → usar o id ───────────────────
+  //
+  // Nesta ordem, e SEMPRE dentro da criação da consulta — não como um passo
+  // separado que dependa do LLM lembrar de chamar `buscar_paciente` antes. Foi
+  // o que aconteceu no caso real de 28/07: o agente chamou só criar_agendamento
+  // e a sequência precisou se sustentar sozinha aqui dentro.
+  //
+  // O NOME entra na busca de propósito: sem ele, um telefone com vários
+  // cadastros devolveria o primeiro, e a consulta seria marcada para outra
+  // pessoa da mesma casa.
   let patient = await findClinupPatient(accountId, params.phone, params.name);
-  if (!patient) {
+  if (patient) {
+    console.log(
+      `[clinup] paciente ENCONTRADO conta=${accountId} id=${patient.id} nome="${patient.name}"`,
+    );
+  } else {
+    console.log(
+      `[clinup] paciente NÃO encontrado conta=${accountId} nome="${params.name}" — criando cadastro`,
+    );
     patient = await createClinupPatient(accountId, { name: params.name, phone: params.phone });
+    console.log(`[clinup] paciente CRIADO conta=${accountId} id=${patient.id}`);
   }
 
   if (!patient.id) throw new Error("Não foi possível obter ID do paciente Clinup");
