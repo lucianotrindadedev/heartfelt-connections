@@ -385,13 +385,23 @@ export const listClinicExpertsProceduresFn = createServerFn({ method: "GET" })
 // CLINUP
 // ============================================================
 
+// Mesmo esquema do Clinic Experts, com UMA diferença: o identificador do
+// profissional no Clinup é um INTEIRO (id), não um uuid. Guardado como string
+// porque é o que trafega no formulário; o adapter converte na hora de agendar.
+const clinupProfessionalSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).max(200),
+  duracao_minutos: z.number().int().positive().max(1440).optional(),
+  business_hours_json: z.string().max(4000).optional(),
+});
+
 export const getClinupConfig = createServerFn({ method: "GET" })
   .inputValidator((d) => accountIdInput.parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
     const { data: cfg } = await sb
       .from("clinup_config")
-      .select("base_url, clinic_id, agenda_id, duracao_consulta, ativo, api_token_enc")
+      .select("base_url, clinic_id, agenda_id, duracao_consulta, professionals, ativo, api_token_enc")
       .eq("account_id", data.accountId)
       .single();
 
@@ -401,8 +411,30 @@ export const getClinupConfig = createServerFn({ method: "GET" })
       clinic_id: (cfg?.clinic_id as string | null) ?? "",
       agenda_id: (cfg?.agenda_id as string | null) ?? "",
       duracao_consulta: (cfg?.duracao_consulta as number | null) ?? 40,
+      professionals: Array.isArray(cfg?.professionals)
+        ? (cfg.professionals as Record<string, unknown>[]).map((p) => ({
+            id: String(p.id ?? ""),
+            name: String(p.name ?? ""),
+            duracao_minutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+            business_hours_json:
+              typeof p.business_hours_json === "string" ? p.business_hours_json : "",
+          }))
+        : [],
+      token_configured: !!cfg?.api_token_enc,
       token_last4: cfg?.api_token_enc ? "****" : null,
     };
+  });
+
+export const listClinupProfessionalsFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const { listClinupProfessionals } = await import("@/lib/tools/clinup.server");
+    try {
+      const list = await listClinupProfessionals(data.accountId);
+      return { ok: true, professionals: list };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), professionals: [] };
+    }
   });
 
 export const saveClinupConfig = createServerFn({ method: "POST" })
@@ -414,15 +446,17 @@ export const saveClinupConfig = createServerFn({ method: "POST" })
         clinic_id: z.string().optional(),
         agenda_id: z.string().optional(),
         duracao_consulta: z.number().int().min(5).max(480).optional(),
+        professionals: z.array(clinupProfessionalSchema).optional(),
         ativo: z.boolean().optional(),
       })
       .parse(d)
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { accountId, api_token, ...rest } = data;
+    const { accountId, api_token, professionals, ...rest } = data;
 
     const patch: Record<string, unknown> = { ...rest };
+    if (professionals !== undefined) patch.professionals = professionals;
     if (api_token) {
       patch.api_token_enc = await encryptValue(api_token);
     }
@@ -438,12 +472,14 @@ export const saveClinupConfig = createServerFn({ method: "POST" })
 export const testClinupConnection = createServerFn({ method: "POST" })
   .inputValidator((d) => accountIdInput.parse(d))
   .handler(async ({ data }) => {
-    const { listClinupSlotsRange } = await import("@/lib/tools/clinup.server");
-    const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    // Valida a CREDENCIAL (chamada mais barata que exige auth real), igual ao
+    // "testar conexão" do Clinic Experts. Antes isto chamava a busca de
+    // horários, que engolia toda exceção e devolvia [] — o painel dizia
+    // "Conexão OK" com a integração completamente quebrada.
+    const { listClinupProfessionals } = await import("@/lib/tools/clinup.server");
     try {
-      await listClinupSlotsRange(data.accountId, today, tomorrow);
-      return { ok: true };
+      const profs = await listClinupProfessionals(data.accountId);
+      return { ok: true, professionals: profs.length };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
     }

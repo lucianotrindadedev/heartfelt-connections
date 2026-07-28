@@ -90,6 +90,7 @@ import {
   getClinupConfig,
   saveClinupConfig,
   testClinupConnection,
+  listClinupProfessionalsFn,
   getClinicExpertsConfig,
   saveClinicExpertsConfig,
   testClinicExpertsConnection,
@@ -4699,6 +4700,7 @@ function TemplatesModal({
   const listClinCatsFn = useServerFn(listClinicorpCategoriesFn);
   const saveClinupFn = useServerFn(saveClinupConfig);
   const testClinupFn = useServerFn(testClinupConnection);
+  const listClinupProfsFn = useServerFn(listClinupProfessionalsFn);
   const saveCeFn = useServerFn(saveClinicExpertsConfig);
   const testCeFn = useServerFn(testClinicExpertsConnection);
   const listCeProfsFn = useServerFn(listClinicExpertsProfessionalsFn);
@@ -5146,6 +5148,7 @@ function TemplatesModal({
             accountId={accountId}
             saveFn={saveClinupFn}
             testFn={testClinupFn}
+            listProfsFn={listClinupProfsFn}
             onSuccess={handleApply}
             onSkip={handleApply}
           />
@@ -5606,38 +5609,68 @@ function TemplateClinupSetup({
   accountId,
   saveFn,
   testFn,
+  listProfsFn,
   onSuccess,
   onSkip,
 }: {
   accountId: string;
   saveFn: ReturnType<typeof useServerFn<typeof saveClinupConfig>>;
   testFn: ReturnType<typeof useServerFn<typeof testClinupConnection>>;
+  listProfsFn: ReturnType<typeof useServerFn<typeof listClinupProfessionalsFn>>;
   onSuccess: () => void;
   onSkip: () => void;
 }) {
   const [token, setToken] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [clinicId, setClinicId] = useState("");
-  const [agendaId, setAgendaId] = useState("");
-  const [duracao, setDuracao] = useState("40");
+  const [duracao, setDuracao] = useState("30");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [availableProfs, setAvailableProfs] = useState<{ id: string; name: string }[]>([]);
+  const [loadingProfs, setLoadingProfs] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
 
+  function toggleProf(id: string) {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  // Salvar só o token primeiro: /profissionais exige credencial, e o token só
+  // fica disponível ao adapter depois de gravado.
+  async function doLoadProfs() {
+    setLoadingProfs(true);
+    setAvailableProfs([]);
+    try {
+      if (token) {
+        await saveFn({ data: { accountId, api_token: token, ativo: true } });
+      }
+      const r = await listProfsFn({ data: { accountId } });
+      if (r.ok) setAvailableProfs(r.professionals);
+      else toast.error(r.error ?? "Erro ao carregar profissionais.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Erro ao carregar profissionais.");
+    } finally {
+      setLoadingProfs(false);
+    }
+  }
+
   async function handleSave() {
+    if (selectedIds.length === 0) {
+      toast.error("Selecione pelo menos um profissional — sem isso o agente não consegue buscar horários.");
+      return;
+    }
     setSaving(true);
     try {
       await saveFn({
         data: {
           accountId,
           ...(token ? { api_token: token } : {}),
-          base_url: baseUrl || undefined,
-          clinic_id: clinicId || undefined,
-          agenda_id: agendaId || undefined,
-          duracao_consulta: Number(duracao),
+          duracao_consulta: Number(duracao) || 30,
+          professionals: selectedIds.map((id) => ({
+            id,
+            name: availableProfs.find((p) => p.id === id)?.name ?? "",
+          })),
           ativo: true,
         },
       });
-      toast.success("Clinup configurado!");
+      toast.success("Clinup configurado! Se quiser restringir dias/horários por profissional, ajuste em Integrações.");
       onSuccess();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Erro ao salvar.");
@@ -5649,7 +5682,9 @@ function TemplateClinupSetup({
   async function handleTest() {
     setTestResult(null);
     const r = await testFn({ data: { accountId } });
-    setTestResult(r.ok ? "✅ Conexão OK" : `❌ ${r.error}`);
+    setTestResult(
+      r.ok ? `✅ Conexão OK — ${r.professionals ?? 0} profissional(is)` : `❌ ${r.error}`,
+    );
   }
 
   return (
@@ -5657,31 +5692,55 @@ function TemplateClinupSetup({
       <div className="rounded-xl border border-violet-200 bg-violet-50 p-4">
         <p className="text-sm font-semibold text-violet-800">Este template requer o Clinup</p>
         <p className="mt-1 text-xs text-violet-700">
-          Configure as credenciais para que o agente possa agendar no Clinup.
+          Cole o token, carregue a equipe e marque quem o agente pode agendar. O Clinup já
+          informa os horários livres de cada profissional — restringir dias e horários é
+          opcional e fica no painel de Integrações.
         </p>
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="col-span-2">
-          <Label className="text-xs">URL base (ex: https://app.clinup.com.br)</Label>
-          <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className="mt-1" />
-        </div>
-        <div className="col-span-2">
-          <Label className="text-xs">Token API</Label>
-          <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="mt-1" />
-        </div>
-        <div>
-          <Label className="text-xs">Clinic ID</Label>
-          <Input value={clinicId} onChange={(e) => setClinicId(e.target.value)} className="mt-1" />
-        </div>
-        <div>
-          <Label className="text-xs">Agenda ID</Label>
-          <Input value={agendaId} onChange={(e) => setAgendaId(e.target.value)} className="mt-1" />
-        </div>
-        <div>
-          <Label className="text-xs">Duração (min)</Label>
-          <Input type="number" value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1" />
-        </div>
+
+      <div>
+        <Label className="text-xs">Token API</Label>
+        <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} className="mt-1" />
       </div>
+      <div>
+        <Label className="text-xs">Duração padrão (min)</Label>
+        <Input type="number" value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1 w-32" />
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label className="text-xs">Profissionais</Label>
+          <button
+            type="button"
+            onClick={doLoadProfs}
+            disabled={loadingProfs || !token}
+            className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+          >
+            {loadingProfs ? "Carregando..." : "↻ Carregar"}
+          </button>
+        </div>
+        {availableProfs.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">
+            Cole o token acima e clique em "Carregar" para listar a equipe do Clinup.
+          </p>
+        ) : (
+          <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-40 overflow-y-auto">
+            {availableProfs.map((p) => (
+              <label key={p.id} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(p.id)}
+                  onChange={() => toggleProf(p.id)}
+                  className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                />
+                <span className="text-sm flex-1">{p.name}</span>
+                <span className="text-[10px] text-muted-foreground font-mono">#{p.id}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+
       {testResult && <p className="text-xs">{testResult}</p>}
       <div className="flex gap-2">
         <Button onClick={handleSave} disabled={saving} className="flex-1 bg-violet-600 hover:bg-violet-700">
@@ -5696,7 +5755,6 @@ function TemplateClinupSetup({
     </div>
   );
 }
-
 function TemplateClinicExpertsSetup({
   accountId,
   saveFn,
@@ -8413,11 +8471,18 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
 
 // ── Clinup Panel ────────────────────────────────────────────────────
 
+interface ClinupProfessionalState {
+  name: string;
+  duracaoMinutos: string; // string p/ vincular ao <Input type="number">; "" = usa a duração padrão da conta
+  businessHoursJson: string;
+}
+
 function ClinupPanel({ accountId }: { accountId: string }) {
   const qc = useQueryClient();
   const getCfg = useServerFn(getClinupConfig);
   const saveCfg = useServerFn(saveClinupConfig);
   const testConn = useServerFn(testClinupConnection);
+  const listProfs = useServerFn(listClinupProfessionalsFn);
 
   const { data } = useQuery({
     queryKey: ["clinup-config", accountId],
@@ -8426,29 +8491,91 @@ function ClinupPanel({ accountId }: { accountId: string }) {
 
   const [expanded, setExpanded] = useState(false);
   const [token, setToken] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [clinicId, setClinicId] = useState("");
-  const [agendaId, setAgendaId] = useState("");
-  const [duracao, setDuracao] = useState("40");
+  const [duracao, setDuracao] = useState("30");
   const [ativo, setAtivo] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [availableProfs, setAvailableProfs] = useState<{ id: string; name: string }[]>([]);
+  const [loadingProfs, setLoadingProfs] = useState(false);
+  // Profissionais SELECIONADOS. Diferente do Clinic Experts, aqui a API JÁ
+  // devolve os horários livres reais de cada profissional — o expediente
+  // preenchido abaixo é RESTRIÇÃO opcional em cima disso, não a fonte.
+  const [selectedProfs, setSelectedProfs] = useState<Record<string, ClinupProfessionalState>>({});
 
   useEffect(() => {
-    if (data) {
-      setBaseUrl(data.base_url ?? "");
-      setClinicId(data.clinic_id ?? "");
-      setAgendaId(data.agenda_id ?? "");
-      setDuracao(String(data.duracao_consulta ?? 40));
-      setAtivo(data.ativo ?? false);
-    }
+    if (!data) return;
+    setDuracao(String(data.duracao_consulta ?? 30));
+    setSelectedProfs(
+      Object.fromEntries(
+        (data.professionals ?? []).map((p) => [
+          p.id,
+          {
+            name: p.name,
+            duracaoMinutos: p.duracao_minutos != null ? String(p.duracao_minutos) : "",
+            businessHoursJson: p.business_hours_json ?? "",
+          },
+        ]),
+      ),
+    );
+    setAtivo(data.token_configured ? (data.ativo ?? false) : true);
   }, [data]);
+
+  useEffect(() => {
+    if (!data?.token_configured) return;
+    setLoadingProfs(true);
+    listProfs({ data: { accountId } })
+      .then((r) => { if (r.ok) setAvailableProfs(r.professionals); })
+      .finally(() => setLoadingProfs(false));
+  }, [data?.token_configured, accountId]);
+
+  function toggleProf(p: { id: string; name: string }) {
+    setSelectedProfs((prev) => {
+      const next = { ...prev };
+      if (next[p.id]) delete next[p.id];
+      else next[p.id] = { name: p.name, duracaoMinutos: "", businessHoursJson: "" };
+      return next;
+    });
+  }
+
+  function updateProfHours(id: string, _human: string, json: string) {
+    setSelectedProfs((prev) => ({ ...prev, [id]: { ...prev[id], businessHoursJson: json } }));
+  }
+
+  function updateProfDuracao(id: string, value: string) {
+    setSelectedProfs((prev) => ({ ...prev, [id]: { ...prev[id], duracaoMinutos: value } }));
+  }
+
+  async function doLoadProfs() {
+    setLoadingProfs(true);
+    setAvailableProfs([]);
+    const r = await listProfs({ data: { accountId } });
+    if (r.ok) setAvailableProfs(r.professionals);
+    else toast.error(r.error ?? "Erro ao carregar profissionais.");
+    setLoadingProfs(false);
+  }
 
   const save = useMutation({
     mutationFn: () =>
-      saveCfg({ data: { accountId, ...(token ? { api_token: token } : {}), base_url: baseUrl || undefined, clinic_id: clinicId || undefined, agenda_id: agendaId || undefined, duracao_consulta: Number(duracao), ativo } }),
+      saveCfg({
+        data: {
+          accountId,
+          ...(token ? { api_token: token } : {}),
+          duracao_consulta: Number(duracao) || 30,
+          professionals: Object.entries(selectedProfs).map(([id, p]) => ({
+            id,
+            name: p.name,
+            ...(p.duracaoMinutos ? { duracao_minutos: Number(p.duracaoMinutos) } : {}),
+            ...(p.businessHoursJson ? { business_hours_json: p.businessHoursJson } : {}),
+          })),
+          // Ao inserir um token novo, ativa automaticamente (evita "salvei mas
+          // continua inativo" por esquecer de ligar o toggle).
+          ativo: token ? true : ativo,
+        },
+      }),
     onSuccess: () => {
-      toast.success("Clinup salvo.");
+      const hadToken = !!token;
+      toast.success(hadToken ? "Clinup salvo e ativado." : "Clinup salvo.");
       setToken("");
+      if (hadToken) setAtivo(true);
       qc.invalidateQueries({ queryKey: ["clinup-config", accountId] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar."),
@@ -8457,8 +8584,14 @@ function ClinupPanel({ accountId }: { accountId: string }) {
   async function doTest() {
     setTestResult(null);
     const r = await testConn({ data: { accountId } });
-    setTestResult(r.ok ? "✅ Conexão OK" : `❌ ${r.error}`);
+    setTestResult(
+      r.ok
+        ? `✅ Conexão OK — ${r.professionals ?? 0} profissional(is) na clínica`
+        : `❌ ${r.error}`,
+    );
   }
+
+  const selectedIds = Object.keys(selectedProfs);
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
@@ -8479,29 +8612,134 @@ function ClinupPanel({ accountId }: { accountId: string }) {
       {expanded && (
         <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
           <ToggleRow label="Ativar integração Clinup" value={ativo} onChange={setAtivo} />
-          <div>
-            <Label className="text-xs font-semibold">URL base da instância Clinup</Label>
-            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://app.clinup.com.br" className="mt-1" />
-          </div>
+
+          {/* Token */}
           <div>
             <Label className="text-xs font-semibold">Token API</Label>
-            {data?.token_last4 && !token && <p className="text-xs text-muted-foreground mb-1">Atual: ••••{data.token_last4}</p>}
-            <Input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="cole o token aqui" className="mt-1" />
+            {data?.token_configured && !token && (
+              <p className="text-xs text-muted-foreground mb-1">Token configurado ✓</p>
+            )}
+            <Input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="cole o token aqui"
+              className="mt-1"
+            />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              Gerado no painel do Clinup. Enviado como header <code>Authorization</code>.
+            </p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs font-semibold">Clinic ID</Label>
-              <Input value={clinicId} onChange={(e) => setClinicId(e.target.value)} className="mt-1" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold">Agenda ID</Label>
-              <Input value={agendaId} onChange={(e) => setAgendaId(e.target.value)} className="mt-1" />
-            </div>
-            <div>
-              <Label className="text-xs font-semibold">Duração (min)</Label>
-              <Input type="number" min={5} max={480} value={duracao} onChange={(e) => setDuracao(e.target.value)} className="mt-1" />
-            </div>
+
+          {/* Duração padrão */}
+          <div>
+            <Label className="text-xs font-semibold">
+              Duração padrão (min){" "}
+              <span className="font-normal text-muted-foreground">(usada quando o profissional não tem duração própria)</span>
+            </Label>
+            <Input
+              type="number"
+              min={5}
+              max={480}
+              value={duracao}
+              onChange={(e) => setDuracao(e.target.value)}
+              className="mt-1 w-32"
+            />
           </div>
+
+          {/* Profissionais + expediente de cada um */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <Label className="text-xs font-semibold">
+                Profissionais{" "}
+                <span className="font-normal text-muted-foreground">(marque quem o agente pode agendar)</span>
+              </Label>
+              {data?.token_configured && (
+                <button
+                  type="button"
+                  onClick={doLoadProfs}
+                  disabled={loadingProfs}
+                  className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+                >
+                  {loadingProfs ? "Carregando..." : "↻ Recarregar"}
+                </button>
+              )}
+            </div>
+
+            {!data?.token_configured ? (
+              <p className="text-[10px] text-muted-foreground">
+                Salve o token primeiro para carregar os profissionais.
+              </p>
+            ) : loadingProfs ? (
+              <p className="text-[10px] text-muted-foreground">Carregando profissionais...</p>
+            ) : availableProfs.length === 0 ? (
+              <p className="text-[10px] text-muted-foreground">
+                Nenhum profissional encontrado. Clique em ↻ Recarregar.
+              </p>
+            ) : (
+              <div className="rounded-lg border border-slate-200 divide-y divide-slate-100 max-h-48 overflow-y-auto">
+                {availableProfs.map((p) => (
+                  <label
+                    key={p.id}
+                    className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-slate-50 transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!selectedProfs[p.id]}
+                      onChange={() => toggleProf(p)}
+                      className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                    />
+                    <span className="text-sm flex-1">{p.name}</span>
+                    <span className="text-[10px] text-muted-foreground font-mono">#{p.id}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {selectedIds.length > 0 && (
+              <>
+                <p className="mt-2 text-[10px] text-muted-foreground">
+                  O Clinup já devolve os horários livres reais de cada profissional. O expediente
+                  abaixo é <strong>opcional</strong> e serve para <strong>restringir</strong> ainda
+                  mais (ex.: só oferecer a Dra. nas terças de manhã). Deixe em branco para usar a
+                  agenda do Clinup como está.
+                </p>
+                <div className="mt-3 space-y-3">
+                  {selectedIds.map((id) => {
+                    const prof = selectedProfs[id];
+                    return (
+                      <div key={id} className="rounded-xl border border-slate-200 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-semibold text-slate-700">
+                            {prof.name}{" "}
+                            <span className="font-mono font-normal text-muted-foreground">#{id}</span>
+                          </p>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-muted-foreground">Duração (min)</span>
+                            <Input
+                              type="number"
+                              min={5}
+                              max={480}
+                              value={prof.duracaoMinutos}
+                              onChange={(e) => updateProfDuracao(id, e.target.value)}
+                              placeholder={duracao}
+                              className="h-7 w-20 text-xs"
+                            />
+                          </div>
+                        </div>
+                        <BusinessHoursEditor
+                          jsonValue={prof.businessHoursJson}
+                          onChange={(human, json) => updateProfHours(id, human, json)}
+                          syncOnMount={false}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
           {testResult && <p className="text-xs">{testResult}</p>}
           <div className="flex gap-2">
             <Button onClick={() => save.mutate()} disabled={save.isPending} className="flex-1">
@@ -8515,10 +8753,6 @@ function ClinupPanel({ accountId }: { accountId: string }) {
     </div>
   );
 }
-
-// =================================================================
-// Sheet: Secrets
-// =================================================================
 
 function SecretsSheet({
   open,
