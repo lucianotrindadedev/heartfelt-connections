@@ -18,6 +18,8 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
+import { execListarHorarios } from "./scheduler.server";
+import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
   agentUsesTurmaClassifier,
@@ -89,27 +91,7 @@ type QualifierJsonResult = z.infer<typeof ResultSchema>;
 // ── Tools do qualifier (apenas helena_tags) ────────────────────────────────
 
 const QUALIFIER_TOOLS: LlmTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "aplicar_tag_interesse",
-      description:
-        "Aplica UMA tag de qualificação ao contato no Helena, refletindo o interesse identificado. " +
-        "Use APENAS quando o interesse estiver claramente identificado E não estivermos no 1º ciclo. " +
-        "Use apenas tags relacionadas a interesse/qualificação (ex: 'INTERESSE EM IMPLANTE'). " +
-        "NUNCA use tags operacionais como 'IA Agendou' ou 'N/A Não Agendado'.",
-      parameters: {
-        type: "object",
-        properties: {
-          tag: {
-            type: "string",
-            description: "Nome exato da tag a aplicar (ex.: 'INTERESSE EM PRÓTESE PROTOCOLO').",
-          },
-        },
-        required: ["tag"],
-      },
-    },
-  },
+  APLICAR_TAG_TOOL,
   {
     type: "function",
     function: {
@@ -137,17 +119,73 @@ const QUALIFIER_TOOLS: LlmTool[] = [
   },
 ];
 
+/** Alguma agenda ativa na conta? (mesma regra do scheduler). */
+function hasBookingIntegration(ctx: AgentContext): boolean {
+  return (
+    ctx.integrations.googleCalendar ||
+    ctx.integrations.clinicorp ||
+    ctx.integrations.clinup ||
+    ctx.integrations.clinicExperts
+  );
+}
+
+/**
+ * Consulta de agenda no qualifier — SOMENTE LEITURA.
+ *
+ * Por que o qualifier passou a ver a agenda: o repasse qualifier → scheduler é
+ * decidido por heurística de texto em português (stage-signals) e erra sempre
+ * que uma conta escreve o CTA de um jeito novo. Quando errava, quem respondia
+ * era o qualifier — que não tinha NENHUMA tool de agenda e só sabia prometer
+ * "vou verificar". Já foram 5 correções no mesmo ponto (c01a675, 8832ccc,
+ * 96f9fda, e41baeb, 9a28fad) e o caso da MF Beauty Magé (28/07) foi a 6ª.
+ *
+ * Com a consulta disponível, um repasse perdido degrada pra "horário REAL, um
+ * turno antes do previsto" em vez de "lead sem resposta útil". Criar/cancelar
+ * continuam exclusivos do scheduler — o qualifier não escreve na agenda.
+ */
+const QUALIFIER_AGENDA_TOOL: LlmTool = {
+  type: "function",
+  function: {
+    name: "listar_horarios",
+    description:
+      "Consulta os horários REAIS disponíveis na agenda da clínica (somente leitura). " +
+      "Chame SEMPRE que o lead aceitar ver horários, perguntar disponibilidade ou citar uma data — " +
+      "NUNCA responda 'vou verificar' sem chamar esta tool. " +
+      "Você NÃO agenda: depois de ofertar, sinalize next_stage='SLOT_OFFER' e o módulo de agendamento finaliza. " +
+      "Ofereça no máximo 2 horários, copiando date_label e time_label LITERALMENTE como vieram.",
+    parameters: {
+      type: "object",
+      properties: {
+        data_alvo: {
+          type: "string",
+          description:
+            "Data específica pedida pelo lead no formato YYYY-MM-DD. A busca começa nessa data. Omita se o lead não citou uma data.",
+        },
+        periodo: {
+          type: "string",
+          enum: ["manha", "tarde", "noite"],
+          description:
+            "Turno pedido pelo lead: 'manha' (antes do meio-dia), 'tarde' (12:00–18:00) ou 'noite' (a partir das 18:00). SEMPRE informe quando o lead disser um período.",
+        },
+      },
+      required: [],
+    },
+  },
+};
+
 /** Ferramentas do qualifier para este agente. Em agentes com classificação
  *  determinística de turma (turma_auto), removemos aplicar_tag_interesse — a
  *  tag de turma é aplicada pelo código, nunca pelo LLM (evita etiqueta no chute
- *  ou turma errada). Os demais agentes seguem com a tool normal. */
+ *  ou turma errada). Com agenda ativa, ganha a consulta de horários (read-only). */
 function buildQualifierTools(ctx: AgentContext): LlmTool[] {
+  let tools = QUALIFIER_TOOLS;
   if (agentUsesTurmaClassifier(ctx.agentSettings)) {
-    return QUALIFIER_TOOLS.filter(
-      (t) => t.function.name !== "aplicar_tag_interesse",
-    );
+    tools = tools.filter((t) => t.function.name !== "aplicar_tag_interesse");
   }
-  return QUALIFIER_TOOLS;
+  if (hasBookingIntegration(ctx)) {
+    tools = [...tools, QUALIFIER_AGENDA_TOOL];
+  }
+  return tools;
 }
 
 interface ToolOutcome {
@@ -216,66 +254,6 @@ async function applyTurmaTagDeterministic(ctx: AgentContext): Promise<string | n
   return joined;
 }
 
-async function execAplicarTag(
-  ctx: AgentContext,
-  tag: string,
-): Promise<ToolOutcome> {
-  // Trava: não etiquetar antes de ter o dado que define a tag (ex.: data de
-  // nascimento → turma). Roda ANTES do test_mode para o LLM receber o feedback
-  // certo ("colete o dado") mesmo durante testes.
-  const missingField = tagGateMissing(ctx);
-  if (missingField) {
-    console.log(
-      `[qualifier] aplicar_tag bloqueada — falta '${missingField}' (tag_gate_field) tag pedida='${tag}'`,
-    );
-    return {
-      result: JSON.stringify({
-        ok: false,
-        reason: "missing_required_data",
-        required_field: missingField,
-        note: `Não aplique nenhuma tag de interesse antes de coletar '${missingField}'. Pergunte esse dado ao lead primeiro.`,
-      }),
-    };
-  }
-
-  if (ctx.dryRun || ctx.disableTags) {
-    return {
-      result: JSON.stringify({
-        ok: true,
-        tag,
-        skipped: ctx.disableTags ? "test_mode" : "dry_run",
-      }),
-    };
-  }
-  if (!ctx.helenaContact?.id) {
-    return { result: JSON.stringify({ ok: false, error: "no_contact_id" }) };
-  }
-  try {
-    const helena = await loadHelenaAccount(ctx.accountId);
-    // Resolve o nome aproximado para o nome EXATO já existente no CRM.
-    // Não cria tags novas — se não achar, retorna erro para o LLM tentar outra.
-    const result = await applyTagByApproxName(
-      helena,
-      ctx.helenaContact.id,
-      tag,
-      "InsertIfNotExists",
-      { currentTags: ctx.helenaContact.tagNames },
-    );
-    if (!result.ok) {
-      return {
-        result: JSON.stringify({
-          ok: false,
-          reason: result.reason ?? "unknown",
-          requested: tag,
-        }),
-      };
-    }
-    return { result: JSON.stringify({ ok: true, tag: result.tag }) };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return { result: JSON.stringify({ ok: false, error: msg.slice(0, 200) }) };
-  }
-}
 
 /**
  * Aplica a tag inicial de "lead recebido / não agendado" no primeiro contato.
@@ -313,21 +291,12 @@ async function ensureInitialNotScheduledTag(ctx: AgentContext): Promise<void> {
 // Scaffold técnico — SEMPRE anexado quando o prompt do proprietário domina.
 // Contém só o que o parser e a máquina de estados precisam (módulo, estágios
 // válidos, ferramentas e formato JSON). O comportamento/persona vem do prompt.
-const QUALIFIER_TECHNICAL_SCAFFOLD = `# ⚙️ REGRAS TÉCNICAS DO SISTEMA (não exibir ao lead)
-
-Você opera no MÓDULO DE QUALIFICAÇÃO (estágios RECEPTION e QUALIFICATION).
-Você NÃO agenda — quando o interesse estiver claro e o lead demonstrar
-disposição de avançar, sinalize next_stage="SLOT_OFFER" e o módulo de
-agendamento assume a partir daí.
-
-🚫 PREÇO/VALOR: NUNCA informe preço, valor, "a partir de" ou "investimento
-de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista ou
-pressione dizendo que só decide sabendo o valor. Só cite um valor se ele
-estiver ESCRITO EXPLICITAMENTE nas instruções acima (prompt do proprietário).
-Se não estiver, responda que o valor é definido na avaliação presencial (cada
-caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
-
-Você NÃO tem acesso à agenda/calendário. NUNCA diga "vou verificar",
+/** O bloco de agenda muda conforme a conta TER ou NÃO integração ativa:
+ *  com agenda o qualifier consulta horários reais (listar_horarios); sem
+ *  agenda continua proibido de citar qualquer horário, que seria inventado. */
+function buildAgendaScaffoldBlock(hasAgenda: boolean): string {
+  if (!hasAgenda) {
+    return `Você NÃO tem acesso à agenda/calendário. NUNCA diga "vou verificar",
 "deixa eu dar uma olhadinha", "já te retorno" — você não consegue cumprir
 e a conversa morre. Se o lead perguntar disponibilidade de data/horário,
 use next_stage="SLOT_OFFER" e responda confirmando o interesse com uma
@@ -343,7 +312,50 @@ agendamento consulta a agenda REAL e oferta os horários no turno seguinte.
 Ferramentas disponíveis (chame quando fizer sentido no fluxo):
 - aplicar_tag_interesse: registra o interesse do lead no CRM. Não use no 1º
   ciclo, exceto se a primeira mensagem já trouxer interesse explícito.
-- enviar_midia: envia uma mídia cadastrada (ver seção "MÍDIAS DISPONÍVEIS").
+- enviar_midia: envia uma mídia cadastrada (ver seção "MÍDIAS DISPONÍVEIS").`;
+  }
+
+  return `📅 AGENDA: você TEM consulta de agenda (listar_horarios), somente leitura.
+NUNCA diga "vou verificar", "deixa eu dar uma olhadinha", "já te retorno" —
+CHAME a tool na hora. Chame listar_horarios sempre que o lead:
+- aceitar ver horários ("quero sim", "pode ser", "manda"),
+- perguntar disponibilidade ("tem vaga?", "tem horário essa semana?"),
+- citar uma data ou turno ("dia 25", "quinta", "de manhã") — passe \`data_alvo\`
+  (YYYY-MM-DD) e/ou \`periodo\` ("manha"/"tarde"/"noite").
+
+🚫 HORÁRIOS: NUNCA cite dia, data ou hora que não tenha vindo de listar_horarios
+nesta conversa — seriam inventados e podem cair em dia bloqueado. Ao ofertar,
+copie \`date_label\` e \`time_label\` LITERALMENTE como vieram da tool e ofereça
+no MÁXIMO 2 opções. Se a tool voltar vazia, diga que vai verificar as próximas
+datas e sinalize next_stage="SLOT_OFFER" — nunca invente um horário.
+
+Você NÃO agenda: criar, cancelar e remarcar são do módulo de agendamento. Assim
+que o lead escolher (ou você ofertar) um horário, use next_stage="SLOT_OFFER" —
+o módulo de agendamento confirma o horário e coleta os dados restantes.
+
+Ferramentas disponíveis (chame quando fizer sentido no fluxo):
+- listar_horarios: consulta os horários REAIS da agenda (somente leitura).
+- aplicar_tag_interesse: registra o interesse do lead no CRM. Não use no 1º
+  ciclo, exceto se a primeira mensagem já trouxer interesse explícito.
+- enviar_midia: envia uma mídia cadastrada (ver seção "MÍDIAS DISPONÍVEIS").`;
+}
+
+function buildQualifierTechnicalScaffold(hasAgenda: boolean): string {
+  return `# ⚙️ REGRAS TÉCNICAS DO SISTEMA (não exibir ao lead)
+
+Você opera no MÓDULO DE QUALIFICAÇÃO (estágios RECEPTION e QUALIFICATION).
+Você NÃO agenda — quando o interesse estiver claro e o lead demonstrar
+disposição de avançar, sinalize next_stage="SLOT_OFFER" e o módulo de
+agendamento assume a partir daí.
+
+🚫 PREÇO/VALOR: NUNCA informe preço, valor, "a partir de" ou "investimento
+de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista ou
+pressione dizendo que só decide sabendo o valor. Só cite um valor se ele
+estiver ESCRITO EXPLICITAMENTE nas instruções acima (prompt do proprietário).
+Se não estiver, responda que o valor é definido na avaliação presencial (cada
+caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
+
+${buildAgendaScaffoldBlock(hasAgenda)}
 
 Valores válidos de next_stage:
 - "RECEPTION" → primeira mensagem, só saudação
@@ -367,6 +379,7 @@ Responda APENAS em JSON válido:
   },
   "reasoning": "1 frase do raciocínio"
 }`;
+}
 
 function buildCachedSystemPrompt(ctx: AgentContext): string {
   const s = ctx.agentSettings;
@@ -380,7 +393,7 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
 
 ${buildOwnerStylePromptBlock()}
 
-${QUALIFIER_TECHNICAL_SCAFFOLD}`;
+${buildQualifierTechnicalScaffold(hasBookingIntegration(ctx))}`;
   }
 
   return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "atendente virtual"} de ${s.company_name || "(nome da empresa)"}.
@@ -421,11 +434,19 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 4. NUNCA mencione ferramentas, automações, CRM, tags ou sistemas.
 5. NUNCA invente fatos clínicos ou prometa resultados.
 5b. 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo sob insistência do lead. Só cite um valor se estiver ESCRITO EXPLICITAMENTE no prompt do proprietário. Se não estiver, diga que o valor é definido na avaliação presencial e conduza ao agendamento. NUNCA invente nem estime um número.
-5c. 🚫 **HORÁRIOS:** você NÃO tem acesso à agenda — NUNCA cite dias da semana, datas ou horários concretos ("segunda às 14h") ao ofertar atendimento; seriam inventados e podem cair em dia bloqueado. Ao sinalizar SLOT_OFFER, pergunte uma preferência neutra ("prefere de manhã ou à tarde?") — os horários REAIS vêm da agenda no turno seguinte.
+${
+  hasBookingIntegration(ctx)
+    ? `5c. 🚫 **HORÁRIOS:** só cite dia, data ou hora que tenha vindo de \`listar_horarios\` NESTA conversa — qualquer outro seria inventado e pode cair em dia bloqueado. Ao ofertar, copie \`date_label\` e \`time_label\` LITERALMENTE e ofereça no MÁXIMO 2 opções.
+6. NUNCA tente agendar você mesma (criar/cancelar/remarcar são do módulo de agendamento). Chame \`listar_horarios\` e sinalize next_stage="SLOT_OFFER" quando:
+   • O interesse principal estiver identificado com clareza
+   • O lead manifestar disposição (explícita ou implícita) de avançar
+   • OU o lead perguntar disponibilidade de data/horário ("tem data livre dia 25/07?") — nesse caso CHAME \`listar_horarios\` com \`data_alvo\` no MESMO turno. NUNCA diga "vou verificar", "deixa eu olhar", "já te retorno" sem chamar a tool.`
+    : `5c. 🚫 **HORÁRIOS:** você NÃO tem acesso à agenda — NUNCA cite dias da semana, datas ou horários concretos ("segunda às 14h") ao ofertar atendimento; seriam inventados e podem cair em dia bloqueado. Ao sinalizar SLOT_OFFER, pergunte uma preferência neutra ("prefere de manhã ou à tarde?") — os horários REAIS vêm da agenda no turno seguinte.
 6. NUNCA tente agendar você mesma — só sinalize next_stage="SLOT_OFFER" quando:
    • O interesse principal estiver identificado com clareza
    • O lead manifestar disposição (explícita ou implícita) de avançar
-   • OU o lead perguntar disponibilidade de data/horário ("tem data livre dia 25/07?") — nesse caso sinalize SLOT_OFFER IMEDIATAMENTE. Você NÃO tem acesso à agenda: NUNCA diga "vou verificar", "deixa eu olhar", "já te retorno".
+   • OU o lead perguntar disponibilidade de data/horário ("tem data livre dia 25/07?") — nesse caso sinalize SLOT_OFFER IMEDIATAMENTE. Você NÃO tem acesso à agenda: NUNCA diga "vou verificar", "deixa eu olhar", "já te retorno".`
+}
 7. Se o lead pedir explicitamente humano, atendente, "falar com a doutora", reclamação delicada → next_stage="ESCALATED" + lead_data_patch.escalation_reason
 8. Tags de interesse:
    • Se a M1 do lead JÁ contém interesse claro (caso B do RECEPTION) → APLIQUE a tag de interesse JÁ no 1º ciclo.
@@ -794,7 +815,23 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
 
       let outcome: ToolOutcome = { result: JSON.stringify({ error: "tool desconhecida" }) };
       if (tc.function.name === "aplicar_tag_interesse" && typeof args.tag === "string") {
-        outcome = await execAplicarTag(ctx, args.tag);
+        outcome = await execAplicarTagInteresse(ctx, args.tag, "qualifier");
+      } else if (tc.function.name === "listar_horarios") {
+        // Reusa o MESMO executor do scheduler — nada de segunda implementação
+        // de busca de horário (filtro de turno, prioridade por hora pedida,
+        // auto-ampliação da janela e checagem de expediente vivem lá dentro).
+        try {
+          outcome = await execListarHorarios(
+            ctx,
+            undefined,
+            undefined,
+            typeof args.data_alvo === "string" ? args.data_alvo : undefined,
+            typeof args.periodo === "string" ? args.periodo : undefined,
+          );
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          outcome = { result: JSON.stringify({ count: 0, slots: [], error: msg.slice(0, 200) }) };
+        }
       } else if (tc.function.name === "enviar_midia" && typeof args.slug === "string") {
         const res = await sendMediaBySlug(
           ctx,

@@ -36,10 +36,66 @@ pulos ilegais são bloqueados silenciosamente.
 
 | Agente | Stages | Tools | Prompt |
 |---|---|---|---|
-| **Qualifier** (`qualifier.server.ts`) | RECEPTION, QUALIFICATION | `aplicar_tag_interesse` | SPIN + UTM + persona |
-| **Scheduler** (`scheduler.server.ts`) | SLOT_OFFER, NAME_COLLECT, BOOKING, CONFIRMED | `buscar_paciente`, `listar_horarios`, `criar_agendamento` | Booking determinístico |
+| **Qualifier** (`qualifier.server.ts`) | RECEPTION, QUALIFICATION | `aplicar_tag_interesse`, `enviar_midia`, `listar_horarios`¹ | SPIN + UTM + persona |
+| **Scheduler** (`scheduler.server.ts`) | SLOT_OFFER, NAME_COLLECT, BOOKING, CONFIRMED | `buscar_paciente`, `listar_horarios`, `criar_agendamento`, `cancelar_agendamento`, `remarcar_agendamento` | Booking determinístico |
+
+¹ Só quando a conta tem agenda ativa, e **somente leitura** — ver "O ponto de costura" abaixo.
 
 Roteamento em `routeForStage(stage)`.
+
+## O ponto de costura (qualifier ↔ scheduler)
+
+A troca entre os dois agentes é decidida por **heurística de texto em
+português** (`stage-signals.ts`), que erra sempre que uma conta escreve o CTA de
+um jeito novo. Quando errava, quem respondia era um agente **sem a ferramenta
+necessária** — o qualifier prometia "vou verificar a agenda" e nunca voltava.
+Custou 6 correções no mesmo ponto (`c01a675`, `8832ccc`, `96f9fda`, `e41baeb`,
+`9a28fad` e o caso MF Beauty Magé de 28/07).
+
+Duas defesas estruturais, além das heurísticas:
+
+1. **Qualifier enxerga a agenda** (`listar_horarios`, read-only). Um repasse
+   perdido degrada para "horário real um turno antes do previsto" em vez de
+   "lead sem resposta útil". Criar/cancelar/remarcar seguem exclusivos do
+   scheduler.
+2. **Repasse no mesmo turn** (`orchestrator.server.ts`). Quando o qualifier
+   decide que é hora de agendar — ou enrola prometendo agenda — o scheduler roda
+   **em cascata no mesmo turn** e é a resposta dele que vai ao lead. Antes o
+   turn acabava ali e o lead perdia uma rodada inteira. Não dispara quando o
+   qualifier já trouxe horário real (evita a segunda chamada de LLM).
+   Telemetria: `messages.meta.same_turn_handoff` (`"next_stage"` ou `"stall"`).
+
+## Modo unificado (`agent_mode = "unified"`)
+
+Flag **por conta** em `agents.settings.agent_mode` (jsonb livre — sem migration),
+com toggle no painel do agente. Padrão: `staged` (fluxo dividido acima).
+
+Em `unified`, **um só agente conduz da saudação ao agendamento**: o orquestrador
+roteia todos os stages para o `scheduler`, que ganha os estágios de qualificação
+(`UNIFIED_VALID_STAGES`), o campo `interest` no patch e a tool
+`aplicar_tag_interesse`. Some a classe inteira de bug de transição — não há para
+quem repassar.
+
+Implementado **dentro do scheduler**, não num arquivo novo, de propósito: toda a
+máquina de agendamento (auto-seleção de slot, agendamento determinístico, travas
+de confirmação falsa, classificação de falha, telemetria) vive lá. Um segundo
+agente seria uma cópia que divergiria na primeira correção feita só de um lado.
+
+Duas condições, verificadas no orquestrador (a flag é ignorada com log se
+falharem):
+
+- **Exige agenda ativa** — sem tools de agendamento o prompt unificado recairia
+  no mesmo "agente sem agenda inventando fluxo de agendamento" que
+  `clampStageForBooking` existe para evitar.
+- **Não vale para contas com classificador de turma** (`turma_auto`) — lá a tag
+  de turma é aplicada deterministicamente dentro do qualifier
+  (`applyTurmaTagDeterministic`, calculada da data de nascimento). Em modo
+  unificado o qualifier não roda e a turma nunca seria etiquetada. Portar essa
+  lógica é pré-requisito para migrar essas contas.
+
+**O que o modo unificado NÃO resolve:** alucinação de agendamento ("marquei" sem
+ter marcado), horário fora do expediente, paciente duplicado. Essas travas são
+determinísticas, vivem no executor da tool e continuam valendo nos dois modos.
 
 ## LeadData
 

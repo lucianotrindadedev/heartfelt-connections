@@ -18,6 +18,7 @@ import {
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
 import {
+  agentUsesTurmaClassifier,
   backfillBookingFieldsFromHistory,
   defaultCommitmentQuestion,
   getBookingFieldsForChannel,
@@ -671,15 +672,141 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     if (route === "scheduler" && !hasBookingIntegration) {
       route = "qualifier";
     }
+    // ── MODO UNIFICADO (Fase 2) ────────────────────────────────────────────
+    // `agents.settings.agent_mode = "unified"`: um agente só conduz tudo. Não
+    // há repasse porque não há para quem repassar — a classe inteira de bug de
+    // transição desaparece. Exige agenda ativa: sem tools de agendamento o
+    // prompt unificado viraria o mesmo "agente sem agenda inventando fluxo de
+    // agendamento" que o clampStageForBooking existe para evitar.
+    //
+    // Contas com classificador de turma ficam de FORA: a tag de turma é
+    // aplicada de forma determinística dentro do qualifier
+    // (applyTurmaTagDeterministic, calculada a partir da data de nascimento).
+    // Em modo unificado o qualifier nunca roda e a turma jamais seria
+    // etiquetada — o lead entraria no CRM sem turma e o guard de idempotência
+    // reaplicaria tag errada. Portar isso para o modo unificado é trabalho
+    // próprio; até lá, essas contas seguem no fluxo dividido.
+    const unifiedRequested =
+      (agentSettings.agent_mode ?? "").trim().toLowerCase() === "unified";
+    const unifiedBlockedByTurma =
+      unifiedRequested && agentUsesTurmaClassifier(agentSettings);
+    const unifiedMode = unifiedRequested && hasBookingIntegration && !unifiedBlockedByTurma;
+    if (unifiedRequested && !unifiedMode) {
+      console.warn(
+        `[orch] agent_mode=unified IGNORADO conv=${conversationId} — ${
+          unifiedBlockedByTurma ? "conta usa classificador de turma" : "conta sem agenda ativa"
+        }`,
+      );
+    }
+    if (unifiedMode && route === "qualifier") {
+      route = "scheduler";
+    }
     console.log(
-      `[orch] conv=${conversationId} stage=${stage}${effectiveStage !== stage ? ` (effective=${effectiveStage})` : ""} route=${route}`,
+      `[orch] conv=${conversationId} stage=${stage}${effectiveStage !== stage ? ` (effective=${effectiveStage})` : ""} route=${route}${unifiedMode ? " mode=unified" : ""}`,
     );
 
     let result: AgentResult;
+    let sameTurnHandoff = false;
+    // Stage sob o qual o SCHEDULER rodou no repasse em cascata. A tabela de
+    // transições é validada a partir dele, não do stage persistido: com
+    // stage=QUALIFICATION, um next_stage="NAME_COLLECT" vindo do scheduler
+    // seria barrado como pulo ilegal e a conversa voltaria pro qualifier no
+    // turno seguinte — desfazendo o repasse que acabou de acontecer.
+    let handoffStage: Stage | null = null;
     const t0 = Date.now();
     try {
       if (route === "qualifier") {
         result = await runQualifierAgent(ctx);
+
+        // ── REPASSE NO MESMO TURN (qualifier → scheduler) ──────────────────
+        // Antes, quando o qualifier decidia "hora de agendar", o turn ACABAVA
+        // ali: o lead recebia a resposta do qualifier (sem horário) e só via
+        // horário na mensagem SEGUINTE — quando via. Todo o custo dessa espera
+        // caía no lead, e se ele desistisse no meio, a conversa morria na
+        // promessa. Aqui o scheduler roda em cascata NO MESMO turn e a resposta
+        // dele é a que vai pro lead.
+        //
+        // Só dispara quando o qualifier NÃO trouxe horário real: se ele já
+        // chamou listar_horarios e ofertou (caminho comum agora que ele tem a
+        // tool), a resposta dele já serve e não gastamos uma segunda chamada.
+        const proposedStage = isStage(result.next_stage) ? result.next_stage : ctx.stage;
+        const handsOffToScheduler =
+          routeForStage(clampStageForBooking(proposedStage, hasBookingIntegration)) ===
+          "scheduler";
+        const qualifierOfferedRealSlots =
+          (result.tools_called ?? []).includes("listar_horarios") &&
+          ((result.lead_data_patch?.offered_slots?.length ?? 0) > 0);
+        // Enrolação ("vou verificar a agenda") sem repasse proposto: o guard
+        // anti-stall lá embaixo salvaria com um texto genérico. Melhor deixar o
+        // scheduler responder de verdade.
+        const stalledOnAgenda = !handsOffToScheduler && looksLikeStallReply(result.reply);
+
+        if (
+          hasBookingIntegration &&
+          (handsOffToScheduler || stalledOnAgenda) &&
+          !qualifierOfferedRealSlots &&
+          proposedStage !== "ESCALATED"
+        ) {
+          handoffStage = handsOffToScheduler ? proposedStage : "SLOT_OFFER";
+          const qualifierPatch = sanitizeLeadDataPatch(
+            (result.lead_data_patch ?? {}) as Partial<LeadData>,
+          );
+          const schedulerCtx: AgentContext = {
+            ...ctx,
+            stage: handoffStage,
+            leadData: normalizeLeadDataForBooking(
+              mergeLeadDataPatch(leadData, qualifierPatch as Partial<LeadData>),
+              { fallbackGuardianName: helenaContact?.name },
+            ),
+          };
+          console.log(
+            `[orch] repasse no mesmo turn conv=${conversationId} qualifier → scheduler (stage=${handoffStage}, motivo=${handsOffToScheduler ? "next_stage" : "stall"})`,
+          );
+          // Try PRÓPRIO: a cascata é um BÔNUS (responder melhor no mesmo turn).
+          // Se ela falhar — API de agenda fora do ar, token revogado, timeout do
+          // LLM —, o certo é entregar a resposta que o qualifier JÁ produziu, não
+          // deixar o erro subir para o catch externo e trocar tudo por "tive uma
+          // instabilidade técnica". Sem isto, uma falha transitória da agenda
+          // (vista de verdade no diagnóstico de 28/07: um 400 isolado do Google)
+          // apagaria uma resposta perfeitamente boa.
+          let schedulerResult: AgentResult | null = null;
+          try {
+            schedulerResult = await runSchedulerAgent(schedulerCtx);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            console.error(
+              `[orch] repasse no mesmo turn FALHOU conv=${conversationId} — mantendo a resposta do qualifier: ${msg.slice(0, 200)}`,
+            );
+            handoffStage = null; // a transição volta a partir do stage original
+          }
+
+          if (schedulerResult) {
+            sameTurnHandoff = true;
+            route = "scheduler";
+            // A reply do qualifier é DESCARTADA de propósito — quem fala com o
+            // lead é o scheduler, que tem os horários reais. O que o qualifier
+            // APRENDEU (nome, interesse, notes, tags) é preservado no patch.
+            result = {
+              ...schedulerResult,
+              lead_data_patch: {
+                ...qualifierPatch,
+                ...(schedulerResult.lead_data_patch ?? {}),
+              },
+              tools_called: [
+                ...(result.tools_called ?? []),
+                ...(schedulerResult.tools_called ?? []),
+              ],
+              tokens_in: (result.tokens_in ?? 0) + (schedulerResult.tokens_in ?? 0),
+              tokens_out: (result.tokens_out ?? 0) + (schedulerResult.tokens_out ?? 0),
+              cost_usd: (result.cost_usd ?? 0) + (schedulerResult.cost_usd ?? 0),
+              telemetry: {
+                ...(result.telemetry ?? {}),
+                ...(schedulerResult.telemetry ?? {}),
+                same_turn_handoff: handsOffToScheduler ? "next_stage" : "stall",
+              },
+            };
+          }
+        }
       } else if (route === "scheduler") {
         result = await runSchedulerAgent(ctx);
       } else {
@@ -824,7 +951,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const appointmentJustCancelled =
       hadAppointmentBefore && !finalLeadData.appointment_id;
 
-    const resolvedStage = resolveNextStage(stage, result.next_stage, {
+    // No repasse em cascata quem "estava rodando" era o scheduler no
+    // handoffStage — é dele que a transição parte.
+    const stageForTransition: Stage = handoffStage ?? stage;
+    const resolvedStage = resolveNextStage(stageForTransition, result.next_stage, {
       requireAppointmentForConfirmed: hasBookingIntegration,
       hasAppointmentId: !!finalLeadData.appointment_id,
       leadData: finalLeadData,
@@ -833,8 +963,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Overrides deterministicos pos-LLM (stage-signals).
     const overrideOut = applyDeterministicStageOverrides({
       proposedNextStage: resolvedStage,
-      originalStage: stage,
-      effectiveStage,
+      originalStage: stageForTransition,
+      effectiveStage: handoffStage ?? effectiveStage,
       leadData: finalLeadData,
       hasBookingIntegration,
       signals,
@@ -1067,7 +1197,14 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // Beauty BSB, 11/07): lead confirmou "quarta-feira às 14h" duas vezes
       // e o qualifier respondeu "Vou encaminhar você agora mesmo... Só um
       // minutinho!" sem nunca sair de RECEPTION.
-      (route === "qualifier" && hasBookingIntegration);
+      (route === "qualifier" && hasBookingIntegration) ||
+      // MODO UNIFICADO: aqui route é sempre "scheduler", inclusive em
+      // RECEPTION/QUALIFICATION — estágios que NÃO estavam no gate. Sem esta
+      // cláusula o guard nunca rodava nesses estágios e a enrolação passava
+      // direto. Medido no diagnóstico de fluxo (28/07): em QUALIFICATION o
+      // agente unificado respondeu "Deixa eu verificar os horários disponíveis"
+      // sem chamar a tool em 2 de 3 provedores.
+      unifiedMode;
     if (
       !falseBookingClaimBlocked &&
       hasBookingIntegration &&
@@ -1132,6 +1269,14 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           diasAtivos: activeWeekdayKeys(agentSettings.business_hours_json),
         });
         reply = fallback.reply;
+        // "sem_slots" cai numa pergunta genérica de horário. Se ainda faltam
+        // dados obrigatórios, pedir o dado é o próximo passo REAL: perguntar
+        // "qual horário fica melhor?" sem ter horário nenhum em mãos é mandar o
+        // lead adivinhar a agenda E ainda deixa o cadastro incompleto. Caso real
+        // (MF Beauty Magé, Instagram, 28/07): faltavam nome completo E WhatsApp.
+        if (fallback.motivo === "sem_slots" && missingFields.length > 0) {
+          reply = missingFields[0]!.question;
+        }
         if (fallback.motivo === "dia_fechado" || fallback.motivo === "dia_pedido_disponivel") {
           console.warn(
             `[orch:telemetry] ${JSON.stringify({
@@ -1323,6 +1468,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
           confirmed_objection_blocked: confirmedObjectionBlocked || undefined,
           stall_reply_blocked: stallReplyBlocked || undefined,
+          // Repasse qualifier → scheduler dentro do MESMO turn (Fase 1). Valor
+          // = motivo ("next_stage" ou "stall"). Serve pra medir quantas vezes a
+          // heurística de roteamento teria custado um turno ao lead.
+          same_turn_handoff: sameTurnHandoff
+            ? ((result.telemetry?.same_turn_handoff as string) ?? true)
+            : undefined,
           ghost_escalation_forced: ghostEscalationForced || undefined,
           forced_scheduling_advance: forcedSchedulingAdvance || undefined,
           preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,

@@ -20,7 +20,7 @@ import {
 import { splitMessage } from "@/lib/message-splitter.server";
 import type { AgentContext } from "@/lib/agents/context";
 import { runQualifierAgent } from "@/lib/agents/qualifier.server";
-import { runSchedulerAgent } from "@/lib/agents/scheduler.server";
+import { isUnifiedMode, runSchedulerAgent } from "@/lib/agents/scheduler.server";
 import { routeForStage, type Stage, type LeadData } from "@/lib/agents/stage";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -189,8 +189,14 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
     // Adiciona a mensagem do user ao history (qualifier lê cycleCount, M1, etc)
     ctx.history.push({ role: "user", content: data.userMessage });
 
-    // 4. Roteia pelo stage atual — usa o MESMO comportamento de produção
-    const route = routeForStage(ctx.stage);
+    // 4. Roteia pelo stage atual — usa o MESMO comportamento de produção,
+    // inclusive o modo unificado (agent_mode="unified"), em que TODOS os
+    // estágios são conduzidos pelo scheduler. Sem isto o treinador simularia
+    // o fluxo dividido numa conta que roda unificada — testando um agente que
+    // não é o que atende os leads dela.
+    const route = isUnifiedMode(ctx) && ctx.stage !== "ESCALATED"
+      ? "scheduler"
+      : routeForStage(ctx.stage);
     const t0 = Date.now();
 
     try {

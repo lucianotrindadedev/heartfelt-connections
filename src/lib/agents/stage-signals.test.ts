@@ -9,6 +9,7 @@ import {
   applyDeterministicStageOverrides,
   detectSignals,
   inferEffectiveStage,
+  isShortAffirmative,
   looksLikeStallReply,
   type StageSignalsContext,
 } from "./stage-signals";
@@ -449,10 +450,174 @@ describe("looksLikeStallReply", () => {
     // Só o fecho retórico, sem promessa nenhuma → não é stall.
     "Tá bem?",
     "Ok?",
+    // PEDIDO IMPERATIVO sem "?" — progresso, nao enrolacao. Varias clinicas
+    // escrevem assim no proprio prompt. Caso real (MF Beauty Mage, 28/07): o
+    // guard trocava esta resposta CERTA por um texto generico que ignorava o
+    // dado faltante e mandava o lead adivinhar a agenda.
+    "Me passa seu nome completo, por favor, que eu já consulto os horários disponíveis pra você.",
+    "Perfeito ✨ Me passa seu nome completo e seu WhatsApp com DDD, por favor, que eu já consulto os horários.",
+    "Anotei, Maria. Só me confirma seu WhatsApp com DDD, por favor, pra eu deixar seu horário registrado certinho.",
+    "Me manda seu nome completo que eu já vou verificar a agenda.",
+    "Pode me passar seu WhatsApp com DDD, por favor.",
   ];
   for (const r of naoStall) {
     it(`NAO marca: ${JSON.stringify(r.slice(0, 40))}`, () => {
       expect(looksLikeStallReply(r)).toBe(false);
     });
   }
+});
+
+// ── isShortAffirmative ────────────────────────────────────────────────────
+
+describe("isShortAffirmative", () => {
+  // A versao antiga era ancorada em UMA palavra: "quero sim" (a forma mais
+  // natural em pt-BR) nao casava e o repasse pro scheduler morria.
+  // Caso real: MF Beauty Mage, ig:olucianodev, 28/07.
+  const afirmativas = [
+    "sim",
+    "Sim!",
+    "quero sim",
+    "Quero sim",
+    "pode sim",
+    "sim, quero",
+    "claro que sim",
+    "quero ver",
+    "pode ser",
+    "com certeza",
+    "por favor",
+    "ok",
+    "beleza",
+    "perfeito",
+    "vamos",
+    "isso",
+    "uhum",
+    "sim 😊",
+    "quero sim!!",
+  ];
+  for (const m of afirmativas) {
+    it(`aceita: ${JSON.stringify(m)}`, () => {
+      expect(isShortAffirmative(m)).toBe(true);
+    });
+  }
+
+  // Conservador: um falso positivo empurra o lead pro agendamento cedo demais.
+  const naoAfirmativas = [
+    "",
+    "nao",
+    "não",
+    "claro que não",
+    "quero saber o preço",
+    "quero cancelar",
+    "quanto custa",
+    "sim, mas quanto custa antes de eu decidir",
+    "pode me explicar melhor",
+    "ok mas preciso pensar",
+    "quero remarcar",
+    "amanhã",
+    "de manhã",
+  ];
+  for (const m of naoAfirmativas) {
+    it(`recusa: ${JSON.stringify(m)}`, () => {
+      expect(isShortAffirmative(m)).toBe(false);
+    });
+  }
+});
+
+// ── Repasse qualifier → scheduler (regressao MF Beauty Mage 28/07) ────────
+
+describe("proposta de CONSULTAR a agenda (nao so 'posso agendar?')", () => {
+  // O CTA padrao do prompt da MF Beauty ("Quer que eu veja os horarios
+  // disponiveis?") nao casava com NENHUMA alternativa do regex antigo, entao
+  // userAcceptedSchedulingProposal era sempre false e o lead ficava preso no
+  // qualifier, que nao tinha tool de agenda.
+  const propostas = [
+    "Quer que eu veja os horários disponíveis?",
+    "Quer que eu veja os horários disponíveis para você?",
+    "Quer que eu consulte os horários?",
+    "Posso verificar aqui os próximos horários com voucher liberado.",
+    "Se quiser, eu já posso consultar os 2 próximos horários.",
+    "Quer que eu veja um bom horário pra você?",
+    "Quer que eu consulte a agenda?",
+    "Posso ver a disponibilidade pra você?",
+  ];
+  for (const p of propostas) {
+    it(`reconhece proposta: ${JSON.stringify(p.slice(0, 45))}`, () => {
+      const s = detectSignals(
+        baseCtx({
+          history: [
+            { role: "assistant", content: p },
+            { role: "user", content: "Quero sim" },
+          ],
+        }),
+      );
+      expect(s.lastAssistantProposedScheduling).toBe(true);
+      expect(s.isShortYes).toBe(true);
+      expect(s.userAcceptedSchedulingProposal).toBe(true);
+    });
+  }
+
+  it("promove para SLOT_OFFER (o cenario exato do bug)", () => {
+    const ctx = baseCtx({
+      history: [
+        {
+          role: "assistant",
+          content:
+            "Estamos liberando alguns vouchers para avaliação gratuita. Quer que eu veja os horários disponíveis?",
+        },
+        { role: "user", content: "Quero sim" },
+      ],
+    });
+    const signals = detectSignals(ctx);
+    const out = inferEffectiveStage(ctx, signals, false);
+    expect(out.effectiveStage).toBe("SLOT_OFFER");
+    expect(out.reason).toBe("lead_accepted_scheduling_proposal");
+  });
+
+  it("tambem promove a partir de RECEPTION (proposta na saudacao)", () => {
+    const ctx = baseCtx({
+      stage: "RECEPTION",
+      history: [
+        { role: "assistant", content: "Oi! Quer que eu veja os horários disponíveis?" },
+        { role: "user", content: "pode sim" },
+      ],
+    });
+    const signals = detectSignals(ctx);
+    expect(signals.userAcceptedSchedulingProposal).toBe(true);
+    expect(inferEffectiveStage(ctx, signals, false).effectiveStage).toBe("SLOT_OFFER");
+    // E o override persiste o avanco (RECEPTION → SLOT_OFFER e bloqueado na
+    // tabela de transicoes, entao resolveNextStage devolve RECEPTION).
+    const override = applyDeterministicStageOverrides({
+      proposedNextStage: "RECEPTION",
+      originalStage: "RECEPTION",
+      effectiveStage: "SLOT_OFFER",
+      leadData: {},
+      hasBookingIntegration: true,
+      signals,
+    });
+    expect(override.stage).toBe("SLOT_OFFER");
+    expect(override.reason).toBe("force_slot_offer_after_accept");
+  });
+
+  it("NAO promove quando o lead so pediu preco", () => {
+    const ctx = baseCtx({
+      history: [
+        { role: "assistant", content: "Quer que eu veja os horários disponíveis?" },
+        { role: "user", content: "quanto custa" },
+      ],
+    });
+    expect(detectSignals(ctx).userAcceptedSchedulingProposal).toBe(false);
+  });
+
+  it("NAO promove sem integracao de agenda", () => {
+    const ctx = baseCtx({
+      hasBookingIntegration: false,
+      history: [
+        { role: "assistant", content: "Quer que eu veja os horários disponíveis?" },
+        { role: "user", content: "quero sim" },
+      ],
+    });
+    const signals = detectSignals(ctx);
+    expect(signals.userAcceptedSchedulingProposal).toBe(true);
+    expect(inferEffectiveStage(ctx, signals, false).effectiveStage).toBe("QUALIFICATION");
+  });
 });

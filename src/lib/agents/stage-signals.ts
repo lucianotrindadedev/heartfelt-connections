@@ -50,8 +50,73 @@ export interface DetectedSignals {
 const SCHEDULING_PROPOSAL_REGEX =
   /\b(posso (?:te )?agendar|vamos (?:agendar|marcar)|podemos (?:agendar|marcar)|que tal (?:agendar|marcar)|posso (?:te )?(?:reservar|propor) (?:um )?(?:hor[áa]rio|visita)|topa (?:agendar|marcar)|aceita (?:agendar|marcar)|gostaria de agendar|deseja (?:agendar|marcar)|posso te ofer)/i;
 
-const SHORT_YES_REGEX =
-  /^(sim|ok|claro|topo|topa|pode|aceito|aceita|quero|isso|vamos|bora|blz|beleza|combinado|fechado|perfeito|com certeza|por favor)[!.?\s]*$/i;
+/**
+ * Proposta de CONSULTAR a agenda: "Quer que eu veja os horários disponíveis?",
+ * "Posso consultar a agenda?", "Se quiser, já posso ver os próximos horários".
+ *
+ * Família DISTINTA de "posso agendar?" e muito mais comum nos prompts reais —
+ * era o CTA padrão da MF Beauty (aparecia 8x no prompt) e nenhuma alternativa
+ * do SCHEDULING_PROPOSAL_REGEX o reconhecia. Resultado: o lead respondia "quero
+ * sim", o repasse pro scheduler nunca disparava, o qualifier (sem tool de
+ * agenda) prometia "vou consultar" e o guard anti-stall devolvia uma pergunta
+ * genérica. Caso real: MF Beauty Magé, ig:olucianodev, 28/07.
+ */
+const SCHEDULING_LOOKUP_PROPOSAL_REGEX =
+  /\b(?:quer|quero|queres|queria|quiser|quisesse|gostaria|deseja|posso|podemos)\b[^.!?\n]{0,30}\b(?:ver|veja|vejo|olhar|olhe|consultar|consulte|verificar|verifique|buscar|busque|mostrar|mostre|trazer|traga|checar|cheque|separar|separe)\b[^.!?\n]{0,30}\b(?:hor[áa]rio|agenda|vaga|disponibilidade|op[çc][õo]es de hor[áa]rio)/i;
+
+/**
+ * Confirmações curtas. A versão antiga era ancorada em UMA palavra
+ * (`^(sim|ok|quero|…)$`), então "quero sim", "pode sim", "sim, quero" e "claro
+ * que sim" — as formas mais naturais em português — NÃO casavam e o repasse
+ * morria. Aqui aceitamos até 4 tokens, exigindo que TODOS pertençam ao
+ * vocabulário afirmativo//filler e ao menos um seja um núcleo afirmativo.
+ *
+ * Conservador de propósito: qualquer palavra fora das listas (inclusive "não",
+ * "saber", "cancelar", "quanto") reprova a frase inteira. Um falso positivo aqui
+ * empurra o lead pro agendamento cedo demais — pior que um falso negativo.
+ */
+const AFFIRMATIVE_CORE = new Set([
+  "sim", "ok", "okay", "claro", "topo", "topa", "pode", "podemos", "aceito",
+  "aceita", "quero", "queria", "gostaria", "adoraria", "isso", "vamos", "vamo",
+  "bora", "blz", "beleza", "combinado", "fechado", "fechou", "perfeito", "otimo",
+  "show", "certo", "uhum", "aham", "positivo", "manda", "mande", "simm", "ss",
+  // "com certeza" / "por favor" / "por gentileza": afirmativas inteiras cujos
+  // dois tokens seriam filler. O núcleo fica no substantivo — as frases que o
+  // usariam em sentido oposto ("não tenho certeza", "faça o favor de parar")
+  // trazem palavras fora das listas e são reprovadas antes.
+  "certeza", "favor", "gentileza",
+]);
+
+const AFFIRMATIVE_FILLER = new Set([
+  "por", "com", "que", "eu", "a", "o", "os",
+  "as", "um", "uma", "de", "do", "da", "pra", "para", "me", "te", "ver", "ser",
+  "sim", "obrigado", "obrigada", "entao", "agora", "ja", "e",
+]);
+
+/** Normaliza para comparação: minúsculas, sem acento, sem pontuação/emoji. */
+function normalizeForTokens(text: string): string[] {
+  return (text ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "") // marcas de acento
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+export function isShortAffirmative(text: string): boolean {
+  const tokens = normalizeForTokens(text);
+  if (tokens.length === 0 || tokens.length > 4) return false;
+  let hasCore = false;
+  for (const t of tokens) {
+    if (AFFIRMATIVE_CORE.has(t)) {
+      hasCore = true;
+      continue;
+    }
+    if (!AFFIRMATIVE_FILLER.has(t)) return false;
+  }
+  return hasCore;
+}
 
 // Lead perguntando disponibilidade ou citando data especifica (dd/mm ou
 // "25 de julho"). Mantido conservador para evitar falso positivo em
@@ -68,10 +133,17 @@ export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
   const slotSelectionTurn =
     isSlotAcceptanceMessage(lastUserMsg) || looksLikeSchedulingPreference(lastUserMsg);
 
-  const lastAssistantProposedScheduling = SCHEDULING_PROPOSAL_REGEX.test(lastAssistantMsg);
-  const isShortYes = SHORT_YES_REGEX.test(lastUserMsg.toLowerCase());
+  const lastAssistantProposedScheduling =
+    SCHEDULING_PROPOSAL_REGEX.test(lastAssistantMsg) ||
+    SCHEDULING_LOOKUP_PROPOSAL_REGEX.test(lastAssistantMsg);
+  const isShortYes = isShortAffirmative(lastUserMsg);
+  // RECEPTION entrou junto com QUALIFICATION: o qualifier às vezes propõe ver
+  // horários já na saudação (prompt com voucher/oferta) e o lead aceita no 2º
+  // turno — com o stage ainda em RECEPTION o repasse não disparava.
   const userAcceptedSchedulingProposal =
-    ctx.stage === "QUALIFICATION" && lastAssistantProposedScheduling && isShortYes;
+    (ctx.stage === "QUALIFICATION" || ctx.stage === "RECEPTION") &&
+    lastAssistantProposedScheduling &&
+    isShortYes;
 
   // Data de nascimento (resposta de campo) nunca conta como pedido de
   // disponibilidade — evita roteamento errado quando o lead responde "15/03/2019".
@@ -207,12 +279,15 @@ export function applyDeterministicStageOverrides(input: ApplyOverridesInput): Ov
     !!leadData.booked_slot_iso &&
     leadData.selected_slot_iso !== leadData.booked_slot_iso;
 
+  // RECEPTION entra junto com QUALIFICATION porque a tabela de transições
+  // bloqueia RECEPTION → SLOT_OFFER: sem este override o avanço era descartado
+  // e o lead que aceitou ver horários na saudação ficava preso na recepção.
   if (
     signals.userAcceptedSchedulingProposal &&
     hasBookingIntegration &&
     effectiveStage === "SLOT_OFFER" &&
-    originalStage === "QUALIFICATION" &&
-    result === "QUALIFICATION"
+    (originalStage === "QUALIFICATION" || originalStage === "RECEPTION") &&
+    (result === "QUALIFICATION" || result === "RECEPTION")
   ) {
     result = "SLOT_OFFER";
     reason = "force_slot_offer_after_accept";
@@ -307,10 +382,31 @@ function stripRhetoricalTags(text: string): string {
 }
 
 /**
+ * PEDIDO DIRETO de um dado ao lead, na forma imperativa e SEM "?" — "Me passa
+ * seu nome completo, por favor", "Me confirma seu WhatsApp com DDD".
+ *
+ * Isso é PROGRESSO, não enrolação: a bola volta pro lead com uma ação clara.
+ * Sem esta exceção o guard anti-stall destruía a resposta certa sempre que ela
+ * vinha acompanhada de uma promessa ("...que eu já consulto os horários") — e
+ * várias clínicas escrevem exatamente assim no próprio prompt. Caso real (MF
+ * Beauty Magé, 28/07): a resposta "Me passa seu nome completo, por favor, que eu
+ * já consulto os horários disponíveis pra você" era substituída pelo texto
+ * genérico "Pra seguir com seu agendamento, qual horário fica melhor pra você?",
+ * que ignorava o dado que faltava e pedia ao lead que adivinhasse a agenda.
+ *
+ * Complementar ao strip de fechos retóricos: lá o problema era um "?" FALSO
+ * desarmando o guard; aqui é um pedido REAL sem "?" nenhum sendo confundido com
+ * enrolação. Por isso o teste roda sobre o texto JÁ limpo dos fechos.
+ */
+const DIRECT_ASK_REGEX =
+  /\b(?:me\s+(?:passa|passe|manda|mande|envia|envie|informa|informe|confirma|confirme|diz|diga|fala|fale|d[áa]|d[êe])|pode\s+me\s+(?:passar|mandar|enviar|informar|confirmar|dizer|falar)|preciso\s+(?:do|da|de)\s+seu|s[óo]\s+preciso\s+(?:do|da|de)\s+seu|qual\s+(?:é\s+)?(?:o|a)\s+seu)\b/i;
+
+/**
  * True quando o `reply` do agente é só "enrolação" (promessa de agir / pedido
- * para aguardar) sem fazer pergunta. Um reply que faz pergunta REAL ("Qual seu
- * nome completo?") é progresso, não stall — por isso a presença de "?" ainda
- * desqualifica, mas só depois de descartar os fechos retóricos ("tá bem?").
+ * para aguardar) sem fazer pergunta REAL nem pedir nada concreto. Um reply que
+ * faz pergunta ("Qual seu nome completo?") é progresso — por isso o "?"
+ * desqualifica, mas só depois de descartar os fechos retóricos ("tá bem?") — e
+ * um pedido imperativo ("Me passa seu nome completo") também é, mesmo sem "?".
  * PURA: o orquestrador decide o que fazer (perguntar campo, ofertar slot, etc.).
  */
 export function looksLikeStallReply(reply: string): boolean {
@@ -319,6 +415,7 @@ export function looksLikeStallReply(reply: string): boolean {
   const semTags = stripRhetoricalTags(r);
   if (!semTags) return false; // era só o fecho retórico, não há promessa
   if (semTags.includes("?")) return false; // pergunta REAL é avançar, não enrolar
+  if (DIRECT_ASK_REGEX.test(semTags)) return false; // pedir um dado também é avançar
   return STALL_REPLY_REGEX.test(semTags);
 }
 

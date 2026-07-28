@@ -37,6 +37,7 @@ import {
   Search,
   FileText,
   FlaskConical,
+  Sparkles,
   Mic,
   Square,
   ImagePlus,
@@ -386,6 +387,22 @@ function EmbedHome() {
     onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao alterar modo teste"),
   });
 
+  // Agente único (agent_mode). Padrão = "staged" (dois sub-agentes: um conversa,
+  // outro mexe na agenda). Em "unified" um só agente conduz tudo, com todas as
+  // ferramentas sempre disponíveis — acaba com a classe de falha em que a troca
+  // entre eles não acontecia e o lead ficava sem os horários.
+  const toggleAgentMode = useMutation({
+    mutationFn: (next: boolean) =>
+      mergeSettingsFn({
+        data: { accountId, settings: { agent_mode: next ? "unified" : "staged" } },
+      }),
+    onSuccess: (_r, next) => {
+      toast.success(next ? "Agente único ATIVADO." : "Voltou para o modo dividido.");
+      qc.invalidateQueries({ queryKey: ["agent", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao alterar modo do agente"),
+  });
+
   // Conta não cadastrada → mas pode ser alias do helena_account_id.
   // Se o servidor retornou siblings, redireciona/mostra seletor em vez do blocker.
   if (data && data.registered === false) {
@@ -448,6 +465,7 @@ function EmbedHome() {
   const agentId = agent.id as string;
   const agentSettings = (agent.settings as Record<string, string> | null) ?? {};
   const testMode = agentSettings.test_mode === "true";
+  const unifiedAgent = (agentSettings.agent_mode ?? "").toLowerCase() === "unified";
   const testTag = agentSettings.test_tag?.trim() || "Testando";
   const testEnableCmd = agentSettings.test_enable_command?.trim() || "#teste";
   const testDisableCmd = agentSettings.test_disable_command?.trim() || "#sair";
@@ -595,8 +613,41 @@ function EmbedHome() {
               {toggleTestMode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FlaskConical className="h-4 w-4" />}
               {testMode ? "Modo teste ativo" : "Modo teste"}
             </button>
+            <button
+              onClick={() => toggleAgentMode.mutate(!unifiedAgent)}
+              disabled={toggleAgentMode.isPending}
+              title={
+                unifiedAgent
+                  ? "Um único agente conduz da saudação ao agendamento, com todas as ferramentas sempre disponíveis."
+                  : "Hoje o atendimento é dividido em dois agentes (conversa e agenda). Ative para usar um agente único."
+              }
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold backdrop-blur transition-all active:scale-95 disabled:opacity-60 ${
+                unifiedAgent
+                  ? "bg-violet-400 text-violet-950 ring-1 ring-violet-300 hover:bg-violet-300"
+                  : "bg-white/10 text-white ring-1 ring-white/20 hover:bg-white/20"
+              }`}
+            >
+              {toggleAgentMode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              {unifiedAgent ? "Agente único ativo" : "Agente único"}
+            </button>
           </div>
         </div>
+
+        {/* ── Banner do agente único ── */}
+        {unifiedAgent && (
+          <div className="flex items-start gap-3 rounded-2xl border border-violet-300 bg-violet-50 p-4">
+            <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-violet-600" />
+            <div className="text-sm text-violet-900">
+              <p className="font-semibold">Agente único ativo</p>
+              <p className="mt-0.5 text-[13px] text-violet-800">
+                Um só agente conduz da primeira mensagem até o agendamento confirmado, com a
+                agenda sempre à mão. No modo normal o atendimento é dividido em dois — um conversa
+                e outro mexe na agenda — e a troca entre eles pode falhar, deixando o lead sem os
+                horários. Todas as travas de segurança do agendamento continuam valendo.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* ── Banner do modo teste ── */}
         {testMode && (

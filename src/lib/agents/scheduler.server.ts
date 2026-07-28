@@ -49,6 +49,7 @@ import {
   sendMediaBySlug,
   getAvailableMediaForPrompt,
 } from "./send-media.server";
+import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
 import type { AgentContext, AgentResult } from "./context";
 import type { LeadData, Stage } from "./stage";
 import {
@@ -110,6 +111,7 @@ import {
   affirmedDatesFromAssistant,
   ddmmInBrt,
   resolveGcalEventTemplates,
+  agentUsesTurmaClassifier,
 } from "@/lib/booking-template";
 
 /**
@@ -183,6 +185,36 @@ async function removeLeadFromSequences(ctx: AgentContext): Promise<void> {
 
 const VALID_STAGES = ["SLOT_OFFER", "NAME_COLLECT", "BOOKING", "CONFIRMED", "ESCALATED"] as const;
 
+/**
+ * MODO UNIFICADO (Fase 2) — `agents.settings.agent_mode = "unified"`.
+ *
+ * Um único agente conduz a conversa inteira (recepção → qualificação →
+ * agendamento), com TODAS as tools disponíveis o tempo todo. Acaba com a classe
+ * de bug do repasse qualifier → scheduler, que já custou 6 correções no mesmo
+ * ponto: quando a heurística de roteamento errava, quem respondia era um agente
+ * sem a ferramenta necessária.
+ *
+ * Por que dentro do scheduler e não num arquivo novo: toda a máquina de
+ * agendamento (auto-seleção de slot, agendamento determinístico, travas de
+ * confirmação falsa, classificação de falha, telemetria) vive aqui. Um segundo
+ * arquivo seria uma cópia que divergiria na primeira correção feita só de um
+ * lado. Em modo unificado o scheduler ganha os estágios e as tools do
+ * qualifier; o qualifier vira código morto quando todas as contas migrarem.
+ */
+export function isUnifiedMode(ctx: AgentContext): boolean {
+  return (ctx.agentSettings.agent_mode ?? "").trim().toLowerCase() === "unified";
+}
+
+const UNIFIED_VALID_STAGES = [
+  "RECEPTION",
+  "QUALIFICATION",
+  "SLOT_OFFER",
+  "NAME_COLLECT",
+  "BOOKING",
+  "CONFIRMED",
+  "ESCALATED",
+] as const;
+
 // custom_fields é Record<string,string>, mas o LLM às vezes manda número
 // (ex: convidados: 150) ou boolean. Coage para string em vez de quebrar o
 // turn; descarta null/objeto/array.
@@ -195,6 +227,32 @@ const coercibleStringRecord = z.preprocess((val) => {
   }
   return out;
 }, z.record(z.string()));
+
+const leadDataPatchShape = {
+  name: z.string().nullish(),
+  selected_slot_iso: z.string().nullish(),
+  selected_agenda: z.string().nullish(),
+  dentist_person_id: z.number().nullish(),
+  commitment_confirmed: z.boolean().nullish(),
+  patient_id: z.number().nullish(),
+  appointment_id: z.union([z.number(), z.string()]).nullish(),
+  notes: z.string().nullish(),
+  escalation_reason: z.string().nullish(),
+  retomar_em: z.string().nullish(),
+  retorno_motivo: z.string().nullish(),
+  custom_fields: coercibleStringRecord.nullish(),
+};
+
+/** Schema do modo unificado: estágios de qualificação + campo `interest`
+ *  (que no modo dividido só o qualifier preenchia). */
+const UnifiedResultSchema = z.object({
+  reply: z.string().min(1, "Reply não pode ser vazio"),
+  next_stage: z.enum(UNIFIED_VALID_STAGES).optional(),
+  lead_data_patch: z
+    .object({ ...leadDataPatchShape, interest: z.string().nullish() })
+    .nullish(),
+  reasoning: z.string().optional(),
+});
 
 const ResultSchema = z.object({
   reply: z.string().min(1, "Reply não pode ser vazio"),
@@ -221,7 +279,16 @@ const ResultSchema = z.object({
   reasoning: z.string().optional(),
 });
 
-type SchedulerJsonResult = z.infer<typeof ResultSchema>;
+// O schema UNIFICADO é o superconjunto (estágios de qualificação + `interest`),
+// então é dele que sai o tipo — o resultado do schema dividido é atribuível a
+// ele. Assim os dois modos passam pelo mesmo caminho de código depois do parse.
+type SchedulerJsonResult = z.infer<typeof UnifiedResultSchema>;
+
+/** Valida o JSON do turn com o schema do modo em uso. */
+function parseAgentJson(ctx: AgentContext, raw: unknown): SchedulerJsonResult {
+  const schema = isUnifiedMode(ctx) ? UnifiedResultSchema : ResultSchema;
+  return schema.parse(sanitizeStructuredAgentJson(raw)) as SchedulerJsonResult;
+}
 
 // ── Ferramentas que o scheduler pode chamar ────────────────────────────────
 
@@ -352,8 +419,17 @@ function isMultiAgenda(ctx: AgentContext): boolean {
  * agente escolher conforme as regras do prompt. Em agenda única, retorna o
  * conjunto base inalterado (comportamento idêntico ao atual).
  */
-function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
-  if (!isMultiAgenda(ctx)) return SCHEDULER_TOOLS;
+export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
+  // Modo unificado: o agente também qualifica, então herda a tool de
+  // etiquetagem do qualifier. Agentes com classificador de turma
+  // (turma_auto) etiquetam de forma determinística — a tool sairia sobrando
+  // e o LLM sobrescreveria o valor canônico.
+  const base =
+    isUnifiedMode(ctx) && !agentUsesTurmaClassifier(ctx.agentSettings)
+      ? [...SCHEDULER_TOOLS, APLICAR_TAG_TOOL]
+      : SCHEDULER_TOOLS;
+
+  if (!isMultiAgenda(ctx)) return base;
 
   const labels = ctx.googleAgendas.map((a) => a.label);
   const agendaProp = {
@@ -366,7 +442,7 @@ function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
         .join("\n"),
   };
 
-  return SCHEDULER_TOOLS.map((t) => {
+  return base.map((t) => {
     if (t.function.name !== "listar_horarios" && t.function.name !== "criar_agendamento") {
       return t;
     }
@@ -724,7 +800,11 @@ function periodoParaHoras(periodo?: string): { min: number; max: number } | null
   }
 }
 
-async function execListarHorarios(
+/** Exportada porque o QUALIFIER também a usa (read-only). Ver
+ *  buildQualifierTools: dar a consulta de agenda ao qualifier faz o repasse
+ *  perdido degradar pra "horário real com 1 turno de atraso" em vez de
+ *  "enrolação sem horário nenhum". Nada aqui escreve na agenda. */
+export async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
   agendaLabel?: string,
@@ -2030,9 +2110,51 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
   // Contém estágios, ferramentas, guardrails inegociáveis (ex: não confirmar
   // sem appointment_id) e o formato JSON — tudo que o parser e a máquina de
   // estados precisam para funcionar, independente do comportamento escrito.
+  // Modo unificado: o mesmo agente conduz recepção e qualificação. O bloco
+  // abaixo substitui a frase "Você opera no MÓDULO DE AGENDAMENTO" por um
+  // enquadramento de ESTADO — o estágio deixa de ser identidade e vira contexto.
+  const unifiedIntro = isUnifiedMode(ctx)
+    ? `Você conduz o atendimento INTEIRO — da primeira mensagem até o agendamento
+confirmado. Todas as ferramentas estão sempre disponíveis; use a que o momento
+pede. O "estágio" abaixo é só o ponto em que a conversa está AGORA, não um
+personagem diferente: nunca diga ao lead que vai "transferir", "encaminhar" ou
+"passar para o setor de agendamento" — quem faz tudo é você.
+
+- **RECEPTION**: primeira mensagem. Cumprimente, identifique-se e pergunte o
+  primeiro nome. Se a mensagem do lead JÁ trouxer o interesse ("quero botox",
+  "tô com dor"), NÃO pergunte "como posso ajudar?" — reconheça o interesse e já
+  faça a primeira pergunta de descoberta. next_stage="QUALIFICATION".
+- **QUALIFICATION**: descubra o interesse principal com perguntas CURTAS, uma por
+  vez (situação atual → problema → impacto → o que procura). Registre o interesse
+  com aplicar_tag_interesse quando ficar claro (nunca no 1º ciclo, exceto se a 1ª
+  mensagem já trouxer interesse explícito).
+
+📅 **A AGENDA ESTÁ NA SUA MÃO — EM QUALQUER ESTÁGIO.** listar_horarios funciona
+sempre, inclusive em RECEPTION e QUALIFICATION. É PROIBIDO escrever "deixa eu
+verificar", "vou consultar a agenda", "vou dar uma olhadinha", "já te retorno" ou
+"só um instante": ou você CHAMA listar_horarios neste mesmo turno, ou você não
+menciona consultar agenda nenhuma. Uma promessa dessas encerra o turno e o lead
+fica esperando uma resposta que nunca chega — foi assim que conversas morreram.
+
+CHAME listar_horarios IMEDIATAMENTE quando o lead:
+- aceitar ver horários ("quero sim", "pode sim", "manda", "quero ver"),
+- perguntar disponibilidade ("tem vaga?", "tem horário essa semana?"),
+- citar dia, data ou turno ("dia 25", "quinta", "de manhã") — passe \`data_alvo\`
+  (YYYY-MM-DD) e/ou \`periodo\` ("manha"/"tarde"/"noite").
+Depois de ofertar (no MÁXIMO 2 opções, copiando date_label e time_label
+LITERALMENTE), use next_stage="SLOT_OFFER".
+
+⚠️ Se o prompt do proprietário mandar coletar algum dado ANTES de mostrar
+horários (ex.: nome completo, WhatsApp), respeite: peça o dado e NÃO prometa
+consultar a agenda na mesma frase — apenas faça a pergunta. Você consulta assim
+que tiver o dado.
+
+O que fazer em cada estágio de agendamento:`
+    : `Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:`;
+
   const technicalScaffold = `# ⚙️ REGRAS TÉCNICAS DO SISTEMA (não exibir ao lead)
 
-Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
+${unifiedIntro}
 - **SLOT_OFFER**: ofereça no máx 2 horários. SEMPRE chame listar_horarios
   primeiro (se selected_slot_iso vazio). Nunca invente horários. Se o lead
   pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em
@@ -2097,12 +2219,21 @@ Você opera no MÓDULO DE AGENDAMENTO. O que fazer em cada estágio:
 Responda APENAS em JSON válido:
 {
   "reply": "mensagem a enviar ao lead",
-  "next_stage": "SLOT_OFFER" | "NAME_COLLECT" | "BOOKING" | "CONFIRMED" | "ESCALATED",
+  "next_stage": ${
+    isUnifiedMode(ctx)
+      ? `"RECEPTION" | "QUALIFICATION" | "SLOT_OFFER" | "NAME_COLLECT" | "BOOKING" | "CONFIRMED" | "ESCALATED"`
+      : `"SLOT_OFFER" | "NAME_COLLECT" | "BOOKING" | "CONFIRMED" | "ESCALATED"`
+  },
   "lead_data_patch": { ...campos aprendidos neste turn... },
   "reasoning": "1 frase explicando sua decisão (não vai para o lead)"
 }
 
-Campos válidos em lead_data_patch:
+Campos válidos em lead_data_patch:${
+    isUnifiedMode(ctx)
+      ? `
+- interest (string): interesse principal identificado (ex.: "IMPLANTE", "BOTOX")`
+      : ""
+  }
 - name (string): nome COMPLETO do responsável / lead (nome + sobrenome) — guarde sempre o nome inteiro informado, nunca só o primeiro nome (vai para a agenda e cadastro do paciente)
 - custom_fields (object): { "child_name": "...", "child_birth_date": "...", "guardians": "..." }
 - selected_slot_iso (string): ISO do slot escolhido (copie de offered_slots)
@@ -2652,6 +2783,14 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "reagendar_agendamento":
             outcome = await execCancelarAgendamento(ctx, { reoffer: true });
             break;
+          case "aplicar_tag_interesse": {
+            // Só existe em modo unificado (ver buildSchedulerTools).
+            const tag = typeof args.tag === "string" ? args.tag : "";
+            outcome = tag
+              ? await execAplicarTagInteresse(ctx, tag, "unified")
+              : { result: JSON.stringify({ ok: false, error: "tag ausente" }) };
+            break;
+          }
           case "enviar_midia": {
             const slug = typeof args.slug === "string" ? args.slug : "";
             const caption = typeof args.caption === "string" ? args.caption : undefined;
@@ -2765,7 +2904,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       enableCaching: ctx.model.startsWith("anthropic/"),
       toolChoice: "none",
     },
-    (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
+    (raw) => parseAgentJson(ctx, raw),
     ctx.fallbackModels,
   );
 
@@ -2921,7 +3060,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
             enableCaching: ctx.model.startsWith("anthropic/"),
             toolChoice: "none",
           },
-          (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
+          (raw) => parseAgentJson(ctx, raw),
           ctx.fallbackModels,
         );
       totalTokensIn += cResp.tokensIn;
