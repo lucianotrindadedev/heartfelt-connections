@@ -18,6 +18,7 @@ import {
   DEFAULT_TOOL_MODEL,
 } from "@/lib/llm-defaults";
 import { splitMessage } from "@/lib/message-splitter.server";
+import { listAccountSheets } from "@/lib/tools/google-sheets.server";
 import type { AgentContext } from "@/lib/agents/context";
 import { runQualifierAgent } from "@/lib/agents/qualifier.server";
 import { isUnifiedMode, runSchedulerAgent } from "@/lib/agents/scheduler.server";
@@ -132,6 +133,8 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
     ]);
     if (agent.error || !agent.data) throw new Error("Agente não encontrado.");
 
+    const planilhas = await listAccountSheets(data.accountId);
+
     const model =
       (agent.data.llm_model_override as string | null) ||
       (llm.data?.default_model as string | undefined) ||
@@ -179,7 +182,11 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
         googleCalendar: !!gcalCfg.data?.ativo,
         clinicExperts: !!clinicExpertsCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
+        googleSheets: planilhas.length > 0,
       },
+      // Planilha entra no treinador (leitura pura, sem efeito colateral) — é
+      // justamente onde se testa se o agente responde preço com o dado real.
+      googleSheets: planilhas,
       googleAgendas: [],
       clinicExpertsProfessionals: [],
       clinupProfessionals: [],

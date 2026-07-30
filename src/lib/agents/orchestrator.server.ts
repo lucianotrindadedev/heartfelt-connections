@@ -497,13 +497,27 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     // Integracoes precisam ser carregadas para os signals (hasBookingIntegration).
-    const [clinicorpCfg, clinupCfg, gcalCfg, clinicExpertsCfg, escCfg] = await Promise.all([
-      sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
-      sb.from("clinup_config").select("ativo, professionals").eq("account_id", accountId).maybeSingle(),
-      sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
-      sb.from("clinic_experts_config").select("ativo, professionals").eq("account_id", accountId).maybeSingle(),
-      sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
-    ]);
+    const [clinicorpCfg, clinupCfg, gcalCfg, clinicExpertsCfg, escCfg, gsheetsCfg] =
+      await Promise.all([
+        sb.from("clinicorp_config").select("ativo").eq("account_id", accountId).maybeSingle(),
+        sb
+          .from("clinup_config")
+          .select("ativo, professionals")
+          .eq("account_id", accountId)
+          .maybeSingle(),
+        sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
+        sb
+          .from("clinic_experts_config")
+          .select("ativo, professionals")
+          .eq("account_id", accountId)
+          .maybeSingle(),
+        sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
+        sb
+          .from("google_sheets_config")
+          .select("ativo, planilhas")
+          .eq("account_id", accountId)
+          .maybeSingle(),
+      ]);
     const hasBookingIntegration =
       !!clinicorpCfg.data?.ativo ||
       !!clinupCfg.data?.ativo ||
@@ -551,6 +565,22 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             }))
             .filter((p) => p.id)
         )
+      : [];
+
+    // Planilhas Google consultáveis. Conectar sem cadastrar planilha não vale
+    // como integração ativa — a tool ficaria sem fonte de dado.
+    const googleSheets = gsheetsCfg.data?.ativo
+      ? (Array.isArray((gsheetsCfg.data as { planilhas?: unknown }).planilhas)
+          ? (gsheetsCfg.data as { planilhas: Record<string, unknown>[] }).planilhas
+          : []
+        )
+          .map((p) => ({
+            label: String(p.label ?? ""),
+            spreadsheetId: String(p.spreadsheet_id ?? ""),
+            aba: typeof p.aba === "string" ? p.aba : undefined,
+            descricao: typeof p.descricao === "string" ? p.descricao : undefined,
+          }))
+          .filter((p) => p.label && p.spreadsheetId)
       : [];
 
     // Sinais deterministicos extraidos do historico + lead_data.
@@ -678,8 +708,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         googleCalendar: !!gcalCfg.data?.ativo,
         clinicExperts: !!clinicExpertsCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
+        googleSheets: googleSheets.length > 0,
       },
       googleAgendas,
+      googleSheets,
       clinicExpertsProfessionals,
       clinupProfessionals,
       // Modo teste: não escreve tags no CRM (tools seguem vivas).

@@ -57,6 +57,12 @@ import {
   getAvailableMediaForPrompt,
 } from "./send-media.server";
 import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
+import {
+  buildConsultarPlanilhaTool,
+  buildPriceGuardrail,
+  buildSheetsPromptBlock,
+  execConsultarPlanilha,
+} from "./sheets.server";
 import type { AgentContext, AgentResult } from "./context";
 import type { LeadData, Stage } from "./stage";
 import {
@@ -431,10 +437,15 @@ export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
   // etiquetagem do qualifier. Agentes com classificador de turma
   // (turma_auto) etiquetam de forma determinística — a tool sairia sobrando
   // e o LLM sobrescreveria o valor canônico.
-  const base =
+  let base =
     isUnifiedMode(ctx) && !agentUsesTurmaClassifier(ctx.agentSettings)
       ? [...SCHEDULER_TOOLS, APLICAR_TAG_TOOL]
       : SCHEDULER_TOOLS;
+
+  // Planilha (tabela de preços etc.). Independe de agenda: o lead pergunta
+  // valor no meio do agendamento com a mesma frequência que na qualificação.
+  const sheetTool = buildConsultarPlanilhaTool(ctx);
+  if (sheetTool) base = [...base, sheetTool];
 
   if (!isMultiAgenda(ctx)) return base;
 
@@ -2397,7 +2408,7 @@ ${unifiedIntro}
 - Ao lead, explique com naturalidade que vai deixar registrado que ela virá acompanhada e que, no dia, a recepção cadastra a outra pessoa rapidinho. NUNCA prometa dois horários/cadastros separados nem invente um segundo agendamento.
 
 # GUARDRAILS INEGOCIÁVEIS
-🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de", "em torno de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista várias vezes ou pressione dizendo que só decide sabendo o valor. Só cite um valor se ele estiver ESCRITO EXPLICITAMENTE nas instruções acima (prompt do proprietário). Se não estiver, responda que o valor é definido na avaliação presencial (cada caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
+${buildPriceGuardrail(ctx)}${buildSheetsPromptBlock(ctx)}
 📅 **DIA E HORA EXATOS — COPIE, NÃO CALCULE:** ao ofertar, repetir ou confirmar um horário, copie LITERALMENTE o \`date_label\` e o \`time_label\` como vieram de listar_horarios (ex.: date_label="quarta-feira, 22/07", time_label="10:30" → escreva "quarta-feira, 22/07 às 10:30"). NUNCA deduza o dia da semana a partir da data, nem a data a partir do dia da semana, nem "arredonde" para outro dia. Se você trocar o dia (ex.: dizer "quinta-feira, 23/07" para um slot que na agenda é quarta 22/07), o lead escolhe um horário que NÃO existe na lista e o agendamento TRAVA em loop. Na dúvida sobre qualquer data/hora, chame listar_horarios de novo em vez de escrever de memória.
 1. NUNCA diga "vou verificar", "estou consultando", "já retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores vindos das tools.
@@ -2457,7 +2468,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 
 # REGRAS ABSOLUTAS
 
-0. 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de", "em torno de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista ou pressione dizendo que só decide sabendo o valor. Só cite um valor se estiver ESCRITO EXPLICITAMENTE no prompt do proprietário. Se não estiver, diga que o valor é definido na avaliação presencial (cada caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
+0. ${buildPriceGuardrail(ctx)}${buildSheetsPromptBlock(ctx)}
 0b. 📅 **DIA E HORA EXATOS — COPIE, NÃO CALCULE:** ao ofertar, repetir ou confirmar um horário, copie LITERALMENTE o \`date_label\` e o \`time_label\` como vieram de listar_horarios (ex.: date_label="quarta-feira, 22/07", time_label="10:30" → escreva "quarta-feira, 22/07 às 10:30"). NUNCA deduza o dia da semana a partir da data, nem a data a partir do dia da semana, nem troque para outro dia. Se você trocar o dia (ex.: dizer "quinta-feira, 23/07" para um slot que na agenda é quarta 22/07), o lead escolhe um horário que NÃO existe na lista e o agendamento TRAVA em loop. Na dúvida sobre qualquer data/hora, chame listar_horarios de novo em vez de escrever de memória.
 1. NUNCA diga "vou verificar", "estou consultando", "já te retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores das tools.
@@ -2984,6 +2995,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
               : { result: JSON.stringify({ ok: false, error: "tag ausente" }) };
             break;
           }
+          case "consultar_planilha":
+            outcome = { result: await execConsultarPlanilha(ctx, args) };
+            break;
           case "enviar_midia": {
             const slug = typeof args.slug === "string" ? args.slug : "";
             const caption = typeof args.caption === "string" ? args.caption : undefined;

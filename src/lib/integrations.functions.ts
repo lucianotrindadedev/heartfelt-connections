@@ -10,6 +10,15 @@ import {
   listAccountAgendas,
   saveAccountAgendas,
 } from "@/lib/tools/google-calendar.server";
+import {
+  SHEETS_SCOPES,
+  getGoogleSheetsStatus,
+  invalidateSheetCache,
+  listAccountSheets,
+  listSheetTabs,
+  querySheet,
+  saveAccountSheets,
+} from "@/lib/tools/google-sheets.server";
 
 const accountIdInput = z.object({ accountId: z.string().min(1) });
 const agentIdInput = z.object({ agentId: z.string().uuid() });
@@ -145,6 +154,146 @@ export const saveGoogleAgendasFn = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     await saveAccountAgendas(data.accountId, data.agendas);
     return { ok: true };
+  });
+
+// ============================================================
+// GOOGLE SHEETS
+// ============================================================
+
+export const getGoogleSheetsStatusFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    return getGoogleSheetsStatus(data.accountId);
+  });
+
+/**
+ * URL de consentimento do Google Sheets. Usa o MESMO app (client_id/secret) do
+ * Google Calendar, mas com escopo de planilha e callback próprio — o token do
+ * Calendar já emitido não ganha escopo novo, e uma conta pode querer só a
+ * planilha (sem agenda Google).
+ */
+export const getGoogleSheetsAuthUrl = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+    if (!clientId) {
+      throw new Error(
+        "GOOGLE_CLIENT_ID não configurado no servidor. Configure GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e APP_BASE_URL no Coolify.",
+      );
+    }
+    if (!clientSecret) {
+      throw new Error("GOOGLE_CLIENT_SECRET não configurado no servidor.");
+    }
+
+    const baseUrl = process.env.APP_BASE_URL;
+    const redirectUri =
+      process.env.GOOGLE_SHEETS_REDIRECT_URI
+      || (baseUrl
+        ? `${baseUrl.replace(/\/$/, "")}/api/public/auth/google-sheets/callback`
+        : null);
+
+    if (!redirectUri) {
+      throw new Error(
+        "Nem GOOGLE_SHEETS_REDIRECT_URI nem APP_BASE_URL estão configurados no servidor.",
+      );
+    }
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: SHEETS_SCOPES.join(" "),
+      access_type: "offline",
+      prompt: "consent",
+      state: data.accountId,
+    });
+
+    return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` };
+  });
+
+export const disconnectGoogleSheets = createServerFn({ method: "POST" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    await sb
+      .from("google_sheets_config")
+      .update({ ativo: false })
+      .eq("account_id", data.accountId);
+    invalidateSheetCache(data.accountId);
+    return { ok: true };
+  });
+
+/** Lista as abas de uma planilha — valida o ID/URL colado antes de salvar. */
+export const listGoogleSheetTabsFn = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput.extend({ spreadsheetId: z.string().min(1).max(300) }).parse(d),
+  )
+  .handler(async ({ data }) => {
+    try {
+      const info = await listSheetTabs(data.accountId, data.spreadsheetId);
+      return { ok: true as const, ...info };
+    } catch (e) {
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
+    }
+  });
+
+/** Salva as planilhas consultáveis. Vazio = agente sem tool de planilha. */
+export const saveGoogleSheetsFn = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput
+      .extend({
+        planilhas: z
+          .array(
+            z.object({
+              label: z.string().min(1).max(80),
+              spreadsheetId: z.string().min(1).max(300),
+              aba: z.string().max(200).optional(),
+              descricao: z.string().max(500).optional(),
+            }),
+          )
+          .max(10),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    await saveAccountSheets(data.accountId, data.planilhas);
+    return { ok: true };
+  });
+
+/**
+ * Prévia da planilha no painel — mesma leitura que o agente faz.
+ * Com `spreadsheetId`, testa a planilha AVULSA (antes de salvar); sem ele, usa
+ * a lista já gravada e resolve pelo `label`.
+ */
+export const previewGoogleSheetFn = createServerFn({ method: "POST" })
+  .inputValidator((d) =>
+    accountIdInput
+      .extend({
+        label: z.string().max(80).optional(),
+        busca: z.string().max(200).optional(),
+        spreadsheetId: z.string().max(300).optional(),
+        aba: z.string().max(200).optional(),
+      })
+      .parse(d),
+  )
+  .handler(async ({ data }) => {
+    if (data.spreadsheetId?.trim()) {
+      return querySheet(
+        data.accountId,
+        [
+          {
+            label: data.label?.trim() || "(teste)",
+            spreadsheetId: data.spreadsheetId,
+            aba: data.aba?.trim() || undefined,
+          },
+        ],
+        { busca: data.busca },
+      );
+    }
+    const planilhas = await listAccountSheets(data.accountId);
+    return querySheet(data.accountId, planilhas, { label: data.label, busca: data.busca });
   });
 
 // ============================================================

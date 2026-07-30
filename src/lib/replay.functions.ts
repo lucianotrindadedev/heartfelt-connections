@@ -32,6 +32,7 @@ import { runQualifierAgent } from "@/lib/agents/qualifier.server";
 import { runSchedulerAgent } from "@/lib/agents/scheduler.server";
 import { routeForStage, type LeadData, type Stage } from "@/lib/agents/stage";
 import { mergeLeadDataPatch } from "@/lib/booking-template";
+import { listAccountSheets } from "@/lib/tools/google-sheets.server";
 
 interface ReplayMessage {
   role: "user" | "assistant";
@@ -123,6 +124,8 @@ export const replayConversation = createServerFn({ method: "POST" })
     const orKey = await decryptValue(secrets.data.openrouter_api_key_enc as unknown as string);
     if (!orKey) throw new Error("Falha ao descriptografar OpenRouter key");
 
+    const planilhas = await listAccountSheets(accountId);
+
     const msgs = await sb
       .from("messages")
       .select("role, content, meta, criado_em")
@@ -195,7 +198,9 @@ export const replayConversation = createServerFn({ method: "POST" })
         googleCalendar: !!gcalCfg.data?.ativo,
         clinicExperts: !!clinicExpertsCfg.data?.ativo,
         escalation: !!escCfg.data?.ativo,
+        googleSheets: planilhas.length > 0,
       },
+      googleSheets: planilhas,
       googleAgendas: [],
       clinicExpertsProfessionals: [],
     clinupProfessionals: [],

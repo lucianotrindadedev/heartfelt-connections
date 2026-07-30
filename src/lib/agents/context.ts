@@ -65,7 +65,20 @@ export interface AgentContext {
     googleCalendar: boolean;
     clinicExperts: boolean;
     escalation: boolean;
+    /** Planilha Google conectada E com ao menos uma planilha cadastrada.
+     *  Conexão sem planilha configurada não gera tool (não há o que consultar). */
+    googleSheets: boolean;
   };
+
+  /** Planilhas Google consultáveis pelo agente (tabela de preços, procedimentos,
+   *  convênios...). Com 2+ entradas, a tool ganha o parâmetro `planilha` (enum
+   *  dos labels) e o agente escolhe pela `descricao`. */
+  googleSheets: {
+    label: string;
+    spreadsheetId: string;
+    aba?: string;
+    descricao?: string;
+  }[];
 
   /** Agendas Google selecionadas (vazio = agenda única via calendar_id padrão).
    *  Com 2+ entradas, o scheduler injeta o parâmetro `agenda` (enum dos labels)

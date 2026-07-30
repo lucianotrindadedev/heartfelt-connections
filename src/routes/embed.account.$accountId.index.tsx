@@ -45,6 +45,7 @@ import {
   Tags,
   Trash2,
   Copy,
+  Table,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -82,6 +83,12 @@ import {
   selectGoogleCalendarFn,
   getGoogleAgendasFn,
   saveGoogleAgendasFn,
+  getGoogleSheetsStatusFn,
+  getGoogleSheetsAuthUrl,
+  disconnectGoogleSheets,
+  saveGoogleSheetsFn,
+  listGoogleSheetTabsFn,
+  previewGoogleSheetFn,
   getClinicorpConfig,
   saveClinicorpConfig,
   testClinicorpConnection,
@@ -6719,6 +6726,352 @@ function IntegrationsTab({
       <ClinicExpertsPanel accountId={accountId} />
       <ClinupPanel accountId={accountId} />
       <GoogleCalendarPanel accountId={accountId} agentSettings={agentSettings} />
+
+      {/* Fontes de dados que o agente consulta durante o atendimento. */}
+      <SectionTitle>Dados</SectionTitle>
+      <p className="-mt-2 px-1 text-[11px] text-muted-foreground">
+        Planilhas do Google que o agente pode consultar — ex.: tabela de preços.
+        Ele responde só o que estiver escrito na planilha.
+      </p>
+      <GoogleSheetsPanel accountId={accountId} />
+    </div>
+  );
+}
+
+// ── Google Sheets Panel ─────────────────────────────────────────────
+
+interface SheetItemDraft {
+  label: string;
+  spreadsheetId: string;
+  aba: string;
+  descricao: string;
+}
+
+function GoogleSheetsPanel({ accountId }: { accountId: string }) {
+  const qc = useQueryClient();
+  const getStatus = useServerFn(getGoogleSheetsStatusFn);
+  const getAuthUrl = useServerFn(getGoogleSheetsAuthUrl);
+  const disconnect = useServerFn(disconnectGoogleSheets);
+  const saveSheets = useServerFn(saveGoogleSheetsFn);
+  const listTabs = useServerFn(listGoogleSheetTabsFn);
+  const preview = useServerFn(previewGoogleSheetFn);
+
+  const [expanded, setExpanded] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [items, setItems] = useState<SheetItemDraft[]>([]);
+  const [testIdx, setTestIdx] = useState<number | null>(null);
+  const [testOut, setTestOut] = useState<string | null>(null);
+
+  const { data } = useQuery({
+    queryKey: ["gsheets-status", accountId],
+    queryFn: () => getStatus({ data: { accountId } }),
+  });
+
+  useEffect(() => {
+    if (!data) return;
+    setItems(
+      (data.planilhas ?? []).map((p) => ({
+        label: p.label,
+        spreadsheetId: p.spreadsheetId,
+        aba: p.aba ?? "",
+        descricao: p.descricao ?? "",
+      })),
+    );
+  }, [data]);
+
+  async function connect() {
+    setConnecting(true);
+    try {
+      const { url } = await getAuthUrl({ data: { accountId } });
+      const popup = window.open(url, "gsheets-oauth", "width=500,height=650,popup=true");
+      if (!popup) {
+        toast.error("Pop-up bloqueado.");
+        setConnecting(false);
+        return;
+      }
+      const check = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(check);
+          setConnecting(false);
+          qc.invalidateQueries({ queryKey: ["gsheets-status", accountId] });
+        }
+      }, 500);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Erro ao gerar URL: ${msg.slice(0, 200)}`);
+      setConnecting(false);
+    }
+  }
+
+  const disconnectM = useMutation({
+    mutationFn: () => disconnect({ data: { accountId } }),
+    onSuccess: () => {
+      toast.success("Google Sheets desconectado.");
+      qc.invalidateQueries({ queryKey: ["gsheets-status", accountId] });
+    },
+  });
+
+  const saveM = useMutation({
+    mutationFn: () =>
+      saveSheets({
+        data: {
+          accountId,
+          planilhas: items
+            .filter((i) => i.label.trim() && i.spreadsheetId.trim())
+            .map((i) => ({
+              label: i.label.trim(),
+              spreadsheetId: i.spreadsheetId.trim(),
+              aba: i.aba.trim() || undefined,
+              descricao: i.descricao.trim() || undefined,
+            })),
+        },
+      }),
+    onSuccess: () => {
+      toast.success("Planilhas salvas.");
+      qc.invalidateQueries({ queryKey: ["gsheets-status", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar"),
+  });
+
+  /** Testa a planilha SEM precisar salvar antes: lê as abas e mostra as
+   *  primeiras linhas exatamente como o agente vai receber. */
+  async function testItem(idx: number) {
+    const item = items[idx];
+    if (!item?.spreadsheetId.trim()) {
+      toast.error("Cole o link (ou o ID) da planilha primeiro.");
+      return;
+    }
+    setTestIdx(idx);
+    setTestOut(null);
+    try {
+      const tabs = await listTabs({
+        data: { accountId, spreadsheetId: item.spreadsheetId.trim() },
+      });
+      const res = await preview({
+        data: {
+          accountId,
+          label: item.label.trim() || undefined,
+          spreadsheetId: item.spreadsheetId.trim(),
+          aba: item.aba.trim() || undefined,
+        },
+      });
+      const header = tabs.ok
+        ? `Planilha: ${tabs.title || "(sem título)"}\nAbas: ${tabs.tabs.join(", ") || "(nenhuma)"}\n\n`
+        : `⚠️ ${tabs.error}\n\n`;
+      setTestOut(
+        header +
+          (res.ok
+            ? `Colunas: ${(res.colunas ?? []).join(" | ")}\nLinhas lidas: ${res.total_encontrado ?? 0}\n\n` +
+              JSON.stringify((res.linhas ?? []).slice(0, 5), null, 2)
+            : `❌ ${res.error}`),
+      );
+    } catch (e) {
+      setTestOut(`❌ ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  const connected = !!data?.connected;
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex w-full items-center gap-3 p-5 text-left"
+      >
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-green-600 text-white shadow-sm shadow-emerald-500/30">
+          <Table className="h-5 w-5" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold">Google Sheets</p>
+          <p className="text-xs text-muted-foreground">
+            Tabela de preços e outras consultas
+          </p>
+        </div>
+        <span
+          className={`mr-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${connected ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-500" : "bg-zinc-400"}`}
+          />
+          {connected ? "Conectado" : "Desconectado"}
+        </span>
+        <svg
+          className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
+          {connected ? (
+            <>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                <div className="flex items-center gap-2">
+                  <Check className="h-4 w-4 text-emerald-600" />
+                  <p className="text-sm font-medium text-emerald-800">
+                    Conta conectada
+                  </p>
+                </div>
+                {data?.email && (
+                  <p className="mt-1 pl-6 text-xs text-emerald-700">{data.email}</p>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+                A planilha precisa estar acessível para <strong>{data?.email || "a conta conectada"}</strong>.
+                Se ela é de outra conta Google, compartilhe com esse e-mail (pode ser
+                somente leitura).
+              </div>
+
+              {items.map((item, idx) => (
+                <div
+                  key={idx}
+                  className="rounded-xl border border-slate-200 p-3 space-y-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={item.label}
+                      placeholder="Rótulo (ex: Preços)"
+                      onChange={(e) =>
+                        setItems((p) =>
+                          p.map((it, i) => (i === idx ? { ...it, label: e.target.value } : it)),
+                        )
+                      }
+                      className="h-8 text-xs"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 shrink-0 text-red-500"
+                      onClick={() => setItems((p) => p.filter((_, i) => i !== idx))}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <Input
+                    value={item.spreadsheetId}
+                    placeholder="Link da planilha (cole a URL do navegador) ou o ID"
+                    onChange={(e) =>
+                      setItems((p) =>
+                        p.map((it, i) =>
+                          i === idx ? { ...it, spreadsheetId: e.target.value } : it,
+                        ),
+                      )
+                    }
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    value={item.aba}
+                    placeholder="Aba / intervalo (ex: Tabela!A1:F500) — vazio = primeira aba"
+                    onChange={(e) =>
+                      setItems((p) =>
+                        p.map((it, i) => (i === idx ? { ...it, aba: e.target.value } : it)),
+                      )
+                    }
+                    className="h-8 text-xs"
+                  />
+                  <Textarea
+                    value={item.descricao}
+                    placeholder="O que tem nesta planilha (o agente lê isto para decidir quando consultar). Ex: tabela de preços dos procedimentos estéticos"
+                    onChange={(e) =>
+                      setItems((p) =>
+                        p.map((it, i) =>
+                          i === idx ? { ...it, descricao: e.target.value } : it,
+                        ),
+                      )
+                    }
+                    className="min-h-[52px] text-xs"
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-[11px]"
+                    onClick={() => testItem(idx)}
+                  >
+                    <FlaskConical className="mr-1 h-3 w-3" />
+                    Testar leitura
+                  </Button>
+                  {testIdx === idx && (
+                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-900 p-2 text-[10px] text-slate-100">
+                      {testOut ?? "Lendo..."}
+                    </pre>
+                  )}
+                </div>
+              ))}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() =>
+                    setItems((p) => [
+                      ...p,
+                      { label: "", spreadsheetId: "", aba: "", descricao: "" },
+                    ])
+                  }
+                >
+                  <Plus className="mr-1 h-3.5 w-3.5" />
+                  Adicionar planilha
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-8 text-xs"
+                  disabled={saveM.isPending}
+                  onClick={() => saveM.mutate()}
+                >
+                  {saveM.isPending ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : null}
+                  Salvar planilhas
+                </Button>
+              </div>
+
+              <p className="text-[11px] text-muted-foreground">
+                A primeira linha do intervalo é usada como cabeçalho das colunas. Sem
+                nenhuma planilha cadastrada, o agente não recebe a ferramenta de
+                consulta.
+              </p>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-full text-xs text-red-500"
+                disabled={disconnectM.isPending}
+                onClick={() => disconnectM.mutate()}
+              >
+                Desconectar Google Sheets
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Conecte a conta Google que tem as planilhas. É uma autorização
+                separada da agenda (só leitura de planilhas) — conectar aqui não
+                mexe no Google Calendar já conectado.
+              </p>
+              <Button
+                size="sm"
+                className="h-9 w-full text-xs"
+                disabled={connecting}
+                onClick={connect}
+              >
+                {connecting ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                )}
+                Conectar Google Sheets
+              </Button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

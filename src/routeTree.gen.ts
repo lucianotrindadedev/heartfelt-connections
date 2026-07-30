@@ -48,6 +48,7 @@ import { Route as ApiPublicWebhookHelenaAutomationAccountIdRouteImport } from '.
 import { Route as ApiPublicWebhookAutomacoesFufFinanceiroRouteImport } from './routes/api/public/webhook/automacoes/fuf-financeiro'
 import { Route as ApiPublicWebhookAutomacoesFaltososRouteImport } from './routes/api/public/webhook/automacoes/faltosos'
 import { Route as ApiPublicAuthGoogleCallbackRouteImport } from './routes/api/public/auth/google/callback'
+import { Route as ApiPublicAuthGoogleSheetsCallbackRouteImport } from './routes/api/public/auth/google-sheets/callback'
 
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
@@ -263,6 +264,12 @@ const ApiPublicAuthGoogleCallbackRoute =
     path: '/api/public/auth/google/callback',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicAuthGoogleSheetsCallbackRoute =
+  ApiPublicAuthGoogleSheetsCallbackRouteImport.update({
+    id: '/api/public/auth/google-sheets/callback',
+    path: '/api/public/auth/google-sheets/callback',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -298,6 +305,7 @@ export interface FileRoutesByFullPath {
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/auth/google-sheets/callback': typeof ApiPublicAuthGoogleSheetsCallbackRoute
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
   '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
@@ -335,6 +343,7 @@ export interface FileRoutesByTo {
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/auth/google-sheets/callback': typeof ApiPublicAuthGoogleSheetsCallbackRoute
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
   '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
@@ -377,6 +386,7 @@ export interface FileRoutesById {
   '/api/public/diag/queue': typeof ApiPublicDiagQueueRoute
   '/api/public/diag/run-turn': typeof ApiPublicDiagRunTurnRoute
   '/embed/account/$accountId/': typeof EmbedAccountAccountIdIndexRoute
+  '/api/public/auth/google-sheets/callback': typeof ApiPublicAuthGoogleSheetsCallbackRoute
   '/api/public/auth/google/callback': typeof ApiPublicAuthGoogleCallbackRoute
   '/api/public/webhook/automacoes/faltosos': typeof ApiPublicWebhookAutomacoesFaltososRoute
   '/api/public/webhook/automacoes/fuf-financeiro': typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
@@ -419,6 +429,7 @@ export interface FileRouteTypes {
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
     | '/embed/account/$accountId/'
+    | '/api/public/auth/google-sheets/callback'
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
     | '/api/public/webhook/automacoes/fuf-financeiro'
@@ -456,6 +467,7 @@ export interface FileRouteTypes {
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
     | '/embed/account/$accountId'
+    | '/api/public/auth/google-sheets/callback'
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
     | '/api/public/webhook/automacoes/fuf-financeiro'
@@ -497,6 +509,7 @@ export interface FileRouteTypes {
     | '/api/public/diag/queue'
     | '/api/public/diag/run-turn'
     | '/embed/account/$accountId/'
+    | '/api/public/auth/google-sheets/callback'
     | '/api/public/auth/google/callback'
     | '/api/public/webhook/automacoes/faltosos'
     | '/api/public/webhook/automacoes/fuf-financeiro'
@@ -527,6 +540,7 @@ export interface RootRouteChildren {
   ApiPublicDiagKnowledgeRoute: typeof ApiPublicDiagKnowledgeRoute
   ApiPublicDiagQueueRoute: typeof ApiPublicDiagQueueRoute
   ApiPublicDiagRunTurnRoute: typeof ApiPublicDiagRunTurnRoute
+  ApiPublicAuthGoogleSheetsCallbackRoute: typeof ApiPublicAuthGoogleSheetsCallbackRoute
   ApiPublicAuthGoogleCallbackRoute: typeof ApiPublicAuthGoogleCallbackRoute
   ApiPublicWebhookAutomacoesFaltososRoute: typeof ApiPublicWebhookAutomacoesFaltososRoute
   ApiPublicWebhookAutomacoesFufFinanceiroRoute: typeof ApiPublicWebhookAutomacoesFufFinanceiroRoute
@@ -809,6 +823,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicAuthGoogleCallbackRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/auth/google-sheets/callback': {
+      id: '/api/public/auth/google-sheets/callback'
+      path: '/api/public/auth/google-sheets/callback'
+      fullPath: '/api/public/auth/google-sheets/callback'
+      preLoaderRoute: typeof ApiPublicAuthGoogleSheetsCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -898,6 +919,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicDiagKnowledgeRoute: ApiPublicDiagKnowledgeRoute,
   ApiPublicDiagQueueRoute: ApiPublicDiagQueueRoute,
   ApiPublicDiagRunTurnRoute: ApiPublicDiagRunTurnRoute,
+  ApiPublicAuthGoogleSheetsCallbackRoute:
+    ApiPublicAuthGoogleSheetsCallbackRoute,
   ApiPublicAuthGoogleCallbackRoute: ApiPublicAuthGoogleCallbackRoute,
   ApiPublicWebhookAutomacoesFaltososRoute:
     ApiPublicWebhookAutomacoesFaltososRoute,

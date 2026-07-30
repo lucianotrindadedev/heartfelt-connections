@@ -20,6 +20,11 @@ import {
 import { decideRagNeed } from "./rag-gate.server";
 import { execListarHorarios } from "./scheduler.server";
 import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
+import {
+  buildConsultarPlanilhaTool,
+  buildSheetsPromptBlock,
+  execConsultarPlanilha,
+} from "./sheets.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import {
   agentUsesTurmaClassifier,
@@ -185,6 +190,10 @@ function buildQualifierTools(ctx: AgentContext): LlmTool[] {
   if (hasBookingIntegration(ctx)) {
     tools = [...tools, QUALIFIER_AGENDA_TOOL];
   }
+  // Planilha (tabela de preços etc.): pergunta de valor chega quase sempre na
+  // qualificação, então a consulta precisa existir aqui — não só no scheduler.
+  const sheetTool = buildConsultarPlanilhaTool(ctx);
+  if (sheetTool) tools = [...tools, sheetTool];
   return tools;
 }
 
@@ -340,7 +349,8 @@ Ferramentas disponíveis (chame quando fizer sentido no fluxo):
 - enviar_midia: envia uma mídia cadastrada (ver seção "MÍDIAS DISPONÍVEIS").`;
 }
 
-function buildQualifierTechnicalScaffold(hasAgenda: boolean): string {
+function buildQualifierTechnicalScaffold(ctx: AgentContext): string {
+  const hasAgenda = hasBookingIntegration(ctx);
   return `# ⚙️ REGRAS TÉCNICAS DO SISTEMA (não exibir ao lead)
 
 Você opera no MÓDULO DE QUALIFICAÇÃO (estágios RECEPTION e QUALIFICATION).
@@ -348,12 +358,22 @@ Você NÃO agenda — quando o interesse estiver claro e o lead demonstrar
 disposição de avançar, sinalize next_stage="SLOT_OFFER" e o módulo de
 agendamento assume a partir daí.
 
-🚫 PREÇO/VALOR: NUNCA informe preço, valor, "a partir de" ou "investimento
+${
+  ctx.integrations.googleSheets
+    ? `🚫 PREÇO/VALOR: só existe UMA fonte de valor — a tool \`consultar_planilha\`.
+Perguntou preço? CHAME a tool e copie o valor LITERALMENTE como veio (mesmo
+número, mesma unidade). Se a tool não achou a linha, ou se o dado não está na
+planilha, diga que vai confirmar com a equipe e conduza ao agendamento.
+NUNCA invente, estime, arredonde, converta, parcele nem calcule total —
+mesmo que o lead insista ou pressione dizendo que só decide sabendo o valor.`
+    : `🚫 PREÇO/VALOR: NUNCA informe preço, valor, "a partir de" ou "investimento
 de R$" de consulta, avaliação ou procedimento — mesmo que o lead insista ou
 pressione dizendo que só decide sabendo o valor. Só cite um valor se ele
 estiver ESCRITO EXPLICITAMENTE nas instruções acima (prompt do proprietário).
 Se não estiver, responda que o valor é definido na avaliação presencial (cada
-caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.
+caso é único) e conduza ao agendamento. NUNCA invente nem estime um número.`
+}
+${buildSheetsPromptBlock(ctx)}
 
 ${buildAgendaScaffoldBlock(hasAgenda)}
 
@@ -393,7 +413,7 @@ function buildCachedSystemPrompt(ctx: AgentContext): string {
 
 ${buildOwnerStylePromptBlock()}
 
-${buildQualifierTechnicalScaffold(hasBookingIntegration(ctx))}`;
+${buildQualifierTechnicalScaffold(ctx)}`;
   }
 
   return `Você é ${s.assistant_name || "a assistente"}, ${s.assistant_role || "atendente virtual"} de ${s.company_name || "(nome da empresa)"}.
@@ -433,7 +453,12 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 3. Para enviar 2 bolhas no WhatsApp, separe blocos com linha em branco no campo reply (use \\n\\n entre saudação e pergunta, ou entre contexto e pergunta).
 4. NUNCA mencione ferramentas, automações, CRM, tags ou sistemas.
 5. NUNCA invente fatos clínicos ou prometa resultados.
-5b. 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo sob insistência do lead. Só cite um valor se estiver ESCRITO EXPLICITAMENTE no prompt do proprietário. Se não estiver, diga que o valor é definido na avaliação presencial e conduza ao agendamento. NUNCA invente nem estime um número.
+${
+  ctx.integrations.googleSheets
+    ? `5b. 🚫 **PREÇO/VALOR:** a ÚNICA fonte de valor é a tool \`consultar_planilha\`. Perguntou preço → CHAME a tool e copie o valor LITERALMENTE. Não achou na planilha → diga que vai confirmar com a equipe. NUNCA invente, estime, arredonde nem calcule total, mesmo sob insistência.`
+    : `5b. 🚫 **PREÇO/VALOR:** NUNCA informe preço, valor, "a partir de" ou "investimento de R$" de consulta, avaliação ou procedimento — mesmo sob insistência do lead. Só cite um valor se estiver ESCRITO EXPLICITAMENTE no prompt do proprietário. Se não estiver, diga que o valor é definido na avaliação presencial e conduza ao agendamento. NUNCA invente nem estime um número.`
+}
+${buildSheetsPromptBlock(ctx)}
 ${
   hasBookingIntegration(ctx)
     ? `5c. 🚫 **HORÁRIOS:** só cite dia, data ou hora que tenha vindo de \`listar_horarios\` NESTA conversa — qualquer outro seria inventado e pode cair em dia bloqueado. Ao ofertar, copie \`date_label\` e \`time_label\` LITERALMENTE e ofereça no MÁXIMO 2 opções.
@@ -777,7 +802,15 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   const hasExplicitInterestInM1 =
     !!ctx.helenaContact?.utm?.content ||
     (m1Lower.length >= 20 && !isGreetingOnly && hasIntentWords);
-  const allowTools = cycleCount > 1 || hasExplicitInterestInM1;
+  // Pergunta de preço logo na M1 ("quanto custa o botox?") não bate em
+  // hasIntentWords ("custa" não está na lista) nem no piso de 20 caracteres —
+  // e ficaria sem consultar a planilha justo no turno em que o lead perguntou.
+  // Só vale para conta COM planilha: sem ela, não há o que consultar e a trava
+  // do 1º ciclo continua valendo inteira.
+  const priceQuestionInM1 =
+    ctx.integrations.googleSheets &&
+    /pre[çc]o|valor(es)?|quanto\s+(custa|fica|sai)|custa\s+quanto|or[çc]amento|tabela/i.test(m1Lower);
+  const allowTools = cycleCount > 1 || hasExplicitInterestInM1 || priceQuestionInM1;
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS && allowTools; loop++) {
     const turn = await callLlmWithFallback(ctx.orKey, {
@@ -832,6 +865,8 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
           const msg = e instanceof Error ? e.message : String(e);
           outcome = { result: JSON.stringify({ count: 0, slots: [], error: msg.slice(0, 200) }) };
         }
+      } else if (tc.function.name === "consultar_planilha") {
+        outcome = { result: await execConsultarPlanilha(ctx, args) };
       } else if (tc.function.name === "enviar_midia" && typeof args.slug === "string") {
         const res = await sendMediaBySlug(
           ctx,
