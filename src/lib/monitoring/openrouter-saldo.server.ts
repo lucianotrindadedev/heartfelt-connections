@@ -4,7 +4,7 @@
 // ele age quando o dinheiro JÁ acabou e algum lead já ficou sem resposta
 // automática. Este monitor existe para que esse momento não chegue de surpresa:
 // 2x/dia lê o saldo de cada conta e avisa o grupo de notificações quando ele
-// cruza o limite (padrão US$ 5, configurável em OPENROUTER_LOW_BALANCE_USD).
+// cruza o limite (padrão US$ 2, configurável em OPENROUTER_LOW_BALANCE_USD).
 //
 // Somente LEITURA: não desliga IA, não etiqueta contato, não fala com lead. A
 // ação — recarregar — é do dono da conta.
@@ -20,7 +20,7 @@ import {
 /** Limite de aviso em USD. Abaixo disso o grupo é notificado. */
 export function lowBalanceThresholdUsd(): number {
   const raw = Number(process.env.OPENROUTER_LOW_BALANCE_USD);
-  return Number.isFinite(raw) && raw > 0 ? raw : 5;
+  return Number.isFinite(raw) && raw > 0 ? raw : 2;
 }
 
 export interface SaldoStatus {

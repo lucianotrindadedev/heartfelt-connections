@@ -1,5 +1,5 @@
 // POST /api/public/cron/monitor-saldo — lê o saldo da OpenRouter de cada conta
-// e avisa o grupo de notificações quando está abaixo do limite (padrão US$ 5).
+// e avisa o grupo de notificações quando está abaixo do limite (padrão US$ 2).
 // Chamado pelo pg_cron (ver migrations/0051_monitor_saldo_cron.sql).
 //
 // Preventivo: o corte por saldo zerado (credits.server.ts) só age depois que
