@@ -44,6 +44,10 @@ export interface RunResult {
   executed: number;
   skipped: number;
   details: Array<{ automationId: string; tag: string; action: string; status: string; note?: string }>;
+  /** Preenchido quando a execução parou antes de avaliar as regras
+   *  (agente/regras/conta Helena/contato). Sem isto o webhook devolvia um
+   *  resultado zerado indistinguível de "nada a fazer". */
+  motivo?: string;
 }
 
 /**
@@ -108,8 +112,23 @@ export async function runTagAutomationsForContact(
 
   const sb = getSelfhost();
 
+  // Cada saída antecipada abaixo devolvia `empty` em SILÊNCIO — o webhook
+  // respondia 200 e nada indicava onde a automação parou. Agora todas dizem por
+  // quê (motivo + log), senão continua impossível diagnosticar em produção.
+  const abort = (motivo: string, extra: Record<string, unknown> = {}): RunResult => {
+    console.warn(
+      `[tag-automation:telemetry] ${JSON.stringify({
+        event: "abortou",
+        account: accountId,
+        motivo,
+        ...extra,
+      })}`,
+    );
+    return { ...empty, motivo };
+  };
+
   const agentId = await resolveAgentId(accountId);
-  if (!agentId) return empty;
+  if (!agentId) return abort("agente_nao_resolvido");
 
   const { data: rules } = await sb
     .from("agent_tag_automations")
@@ -118,15 +137,32 @@ export async function runTagAutomationsForContact(
     .eq("enabled", true);
 
   const automations = (rules ?? []) as TagAutomationRow[];
-  if (automations.length === 0) return empty;
+  if (automations.length === 0) return abort("sem_regras_ativas", { agent: agentId });
 
-  const account = await loadHelenaAccount(accountId).catch(() => null);
-  if (!account) return empty;
+  const account = await loadHelenaAccount(accountId).catch((e) => {
+    console.error(
+      `[tag-automation] falha ao carregar conta Helena ${accountId}: ${e instanceof Error ? e.message : e}`,
+    );
+    return null;
+  });
+  if (!account) return abort("conta_helena_indisponivel");
 
   const contact = await resolveContact(account, ids);
-  if (!contact) return empty;
+  if (!contact) {
+    return abort("contato_nao_resolvido", {
+      tinha_contact_id: !!ids.contactId,
+      tinha_session_id: !!ids.sessionId,
+      tinha_phone: !!ids.phone,
+    });
+  }
 
   const contactTags = new Set(contact.tagNames.map(normalizeTag));
+  // Regra configurada mas tag ausente é o descasamento mais provável (acento,
+  // grafia, maiúsculas). Sem este log, "avaliou 1, casou 0" não dizia qual era
+  // a diferença entre o gatilho e as etiquetas reais do contato.
+  console.log(
+    `[tag-automation] contato ${contact.id}: tags=${JSON.stringify(contact.tagNames)} gatilhos=${JSON.stringify(automations.map((a) => a.trigger_tag))}`,
+  );
   const result: RunResult = { ...empty, resolvedContactId: contact.id, details: [] };
 
   for (const rule of automations) {

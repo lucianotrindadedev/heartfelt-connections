@@ -8,15 +8,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { runTagAutomationsForContact } from "@/lib/tag-automations.server";
-
-/** Procura recursivamente (raso) por um campo de identificação no payload. */
-function pick(obj: Record<string, unknown>, keys: string[]): string | null {
-  for (const k of keys) {
-    const v = obj[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v);
-  }
-  return null;
-}
+import { extractTagEventIds, payloadShape } from "@/lib/tag-automation-payload";
 
 export const Route = createFileRoute("/api/public/webhook/helena-automation/$accountId")({
   server: {
@@ -41,29 +33,24 @@ export const Route = createFileRoute("/api/public/webhook/helena-automation/$acc
           return new Response("Invalid JSON", { status: 400 });
         }
 
-        // A Helena varia o envelope: { content: {...} }, { changeMetadata: {...} }
-        // ou os campos na raiz. Procuramos identificadores em todos eles.
-        const content = (body.content as Record<string, unknown> | undefined) ?? {};
-        const meta = (body.changeMetadata as Record<string, unknown> | undefined) ?? {};
-        const details = (content.details as Record<string, unknown> | undefined) ?? {};
-
-        const contactId =
-          pick(body, ["contactId", "contact_id"]) ??
-          pick(content, ["contactId", "contact_id"]) ??
-          pick(meta, ["contactId", "contact_id", "entityId", "id"]);
-
-        const sessionId =
-          pick(body, ["sessionId", "session_id"]) ??
-          pick(content, ["sessionId", "session_id"]);
-
-        const phone =
-          pick(body, ["phoneNumber", "phone", "telefone"]) ??
-          pick(content, ["phoneNumber", "phone"]) ??
-          pick(details, ["to", "from"]);
+        // Busca PROFUNDA e agnóstica ao envelope. A versão anterior olhava só o
+        // primeiro nível e, no ramo `content`, nem aceitava `id` — então o
+        // evento "Contato etiqueta alterada" (que manda o contato aninhado)
+        // caía em `no-identifier`, respondia 200 e a automação morria calada.
+        const { contactId, sessionId, phone } = extractTagEventIds(body);
 
         if (!contactId && !sessionId && !phone) {
           // Sem identificador não há o que processar — responde 200 para a Helena
-          // não reentregar indefinidamente.
+          // não reentregar indefinidamente. MAS agora registra o ESQUELETO do
+          // payload (só chaves e tipos, sem dado pessoal) para descobrir o
+          // formato real do evento em vez de falhar em silêncio.
+          console.warn(
+            `[webhook-automation:telemetry] ${JSON.stringify({
+              event: "tag_event_sem_identificador",
+              account: accountId,
+              shape: payloadShape(body),
+            })}`,
+          );
           return Response.json({ ok: true, skipped: "no-identifier" });
         }
 
@@ -73,6 +60,21 @@ export const Route = createFileRoute("/api/public/webhook/helena-automation/$acc
             sessionId,
             phone,
           });
+          // Telemetria do resultado: sem isso, "avaliou 1 regra e não casou
+          // nenhuma" era indistinguível de "executou" — ambos 200 silenciosos.
+          console.warn(
+            `[webhook-automation:telemetry] ${JSON.stringify({
+              event: "tag_event_processado",
+              account: accountId,
+              via: contactId ? "contactId" : sessionId ? "sessionId" : "phone",
+              contato_resolvido: !!result.resolvedContactId,
+              avaliadas: result.evaluated,
+              casaram: result.matched,
+              executadas: result.executed,
+              ignoradas: result.skipped,
+              detalhes: result.details,
+            })}`,
+          );
           return Response.json({ ok: true, ...result });
         } catch (e) {
           console.error("[webhook-automation] erro:", e instanceof Error ? e.message : e);
