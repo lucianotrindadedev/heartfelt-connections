@@ -386,6 +386,42 @@ function recoverTruncatedJson(raw: string): unknown {
 }
 
 /**
+ * Marcadores de "acabou o saldo da chave" nas respostas da OpenRouter. O status
+ * canônico é 402, mas a mensagem também aparece em 400/403 dependendo do
+ * provider ("This request requires more credits...").
+ */
+const NO_CREDITS_MARKERS = [
+  "insufficient credits",
+  "insufficient_quota",
+  "requires more credits",
+  "more credits are required",
+  "not enough credits",
+  "negative credit",
+  "negative balance",
+  "add more credits",
+  "credit balance is too low",
+  "payment required",
+];
+
+/**
+ * A chamada falhou porque a conta ficou SEM SALDO na OpenRouter — não é
+ * instabilidade, não adianta tentar outro modelo e o lead não pode receber
+ * desculpa técnica por isso (ver credits.server.ts / orchestrator).
+ */
+export function isInsufficientCreditsError(err: unknown): boolean {
+  if (err instanceof LlmError) {
+    if (err.status === 402) return true;
+    const haystack = `${err.message} ${err.body ?? ""}`.toLowerCase();
+    return NO_CREDITS_MARKERS.some((m) => haystack.includes(m));
+  }
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    return NO_CREDITS_MARKERS.some((m) => msg.includes(m));
+  }
+  return false;
+}
+
+/**
  * Identifica erros que justificam tentar o próximo modelo da cadeia.
  * - 5xx: provider down / model temporariamente indisponível
  * - 429: rate limited → talvez outro provider tenha quota
@@ -393,6 +429,9 @@ function recoverTruncatedJson(raw: string): unknown {
  * - content vazio com finish_reason !== 'stop': modelo travou
  */
 function isFallbackWorthy(err: unknown): boolean {
+  // Saldo zerado é da CHAVE, não do modelo: percorrer a cadeia de fallback só
+  // repete o mesmo 402 (e atrasa o corte que silencia a IA e avisa o grupo).
+  if (isInsufficientCreditsError(err)) return false;
   if (err instanceof LlmError) {
     if (err.status >= 500) return true;
     if (err.status === 429) return true;

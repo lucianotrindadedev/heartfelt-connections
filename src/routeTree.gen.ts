@@ -35,6 +35,7 @@ import { Route as ApiPublicCronWarmupSequenceRouteImport } from './routes/api/pu
 import { Route as ApiPublicCronWarmupRouteImport } from './routes/api/public/cron/warmup'
 import { Route as ApiPublicCronRetomarSlotOfferRouteImport } from './routes/api/public/cron/retomar-slot-offer'
 import { Route as ApiPublicCronQueueRouteImport } from './routes/api/public/cron/queue'
+import { Route as ApiPublicCronMonitorSaldoRouteImport } from './routes/api/public/cron/monitor-saldo'
 import { Route as ApiPublicCronMonitorIntegracoesRouteImport } from './routes/api/public/cron/monitor-integracoes'
 import { Route as ApiPublicCronMonitorDivergenciaRouteImport } from './routes/api/public/cron/monitor-divergencia'
 import { Route as ApiPublicCronKnowledgeDistillerRouteImport } from './routes/api/public/cron/knowledge-distiller'
@@ -185,6 +186,12 @@ const ApiPublicCronQueueRoute = ApiPublicCronQueueRouteImport.update({
   path: '/api/public/cron/queue',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicCronMonitorSaldoRoute =
+  ApiPublicCronMonitorSaldoRouteImport.update({
+    id: '/api/public/cron/monitor-saldo',
+    path: '/api/public/cron/monitor-saldo',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicCronMonitorIntegracoesRoute =
   ApiPublicCronMonitorIntegracoesRouteImport.update({
     id: '/api/public/cron/monitor-integracoes',
@@ -279,6 +286,7 @@ export interface FileRoutesByFullPath {
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/monitor-integracoes': typeof ApiPublicCronMonitorIntegracoesRoute
+  '/api/public/cron/monitor-saldo': typeof ApiPublicCronMonitorSaldoRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/retomar-slot-offer': typeof ApiPublicCronRetomarSlotOfferRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
@@ -315,6 +323,7 @@ export interface FileRoutesByTo {
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/monitor-integracoes': typeof ApiPublicCronMonitorIntegracoesRoute
+  '/api/public/cron/monitor-saldo': typeof ApiPublicCronMonitorSaldoRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/retomar-slot-offer': typeof ApiPublicCronRetomarSlotOfferRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
@@ -356,6 +365,7 @@ export interface FileRoutesById {
   '/api/public/cron/knowledge-distiller': typeof ApiPublicCronKnowledgeDistillerRoute
   '/api/public/cron/monitor-divergencia': typeof ApiPublicCronMonitorDivergenciaRoute
   '/api/public/cron/monitor-integracoes': typeof ApiPublicCronMonitorIntegracoesRoute
+  '/api/public/cron/monitor-saldo': typeof ApiPublicCronMonitorSaldoRoute
   '/api/public/cron/queue': typeof ApiPublicCronQueueRoute
   '/api/public/cron/retomar-slot-offer': typeof ApiPublicCronRetomarSlotOfferRoute
   '/api/public/cron/warmup': typeof ApiPublicCronWarmupRoute
@@ -397,6 +407,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/monitor-integracoes'
+    | '/api/public/cron/monitor-saldo'
     | '/api/public/cron/queue'
     | '/api/public/cron/retomar-slot-offer'
     | '/api/public/cron/warmup'
@@ -433,6 +444,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/monitor-integracoes'
+    | '/api/public/cron/monitor-saldo'
     | '/api/public/cron/queue'
     | '/api/public/cron/retomar-slot-offer'
     | '/api/public/cron/warmup'
@@ -473,6 +485,7 @@ export interface FileRouteTypes {
     | '/api/public/cron/knowledge-distiller'
     | '/api/public/cron/monitor-divergencia'
     | '/api/public/cron/monitor-integracoes'
+    | '/api/public/cron/monitor-saldo'
     | '/api/public/cron/queue'
     | '/api/public/cron/retomar-slot-offer'
     | '/api/public/cron/warmup'
@@ -503,6 +516,7 @@ export interface RootRouteChildren {
   ApiPublicCronKnowledgeDistillerRoute: typeof ApiPublicCronKnowledgeDistillerRoute
   ApiPublicCronMonitorDivergenciaRoute: typeof ApiPublicCronMonitorDivergenciaRoute
   ApiPublicCronMonitorIntegracoesRoute: typeof ApiPublicCronMonitorIntegracoesRoute
+  ApiPublicCronMonitorSaldoRoute: typeof ApiPublicCronMonitorSaldoRoute
   ApiPublicCronQueueRoute: typeof ApiPublicCronQueueRoute
   ApiPublicCronRetomarSlotOfferRoute: typeof ApiPublicCronRetomarSlotOfferRoute
   ApiPublicCronWarmupRoute: typeof ApiPublicCronWarmupRoute
@@ -704,6 +718,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicCronQueueRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/cron/monitor-saldo': {
+      id: '/api/public/cron/monitor-saldo'
+      path: '/api/public/cron/monitor-saldo'
+      fullPath: '/api/public/cron/monitor-saldo'
+      preLoaderRoute: typeof ApiPublicCronMonitorSaldoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/cron/monitor-integracoes': {
       id: '/api/public/cron/monitor-integracoes'
       path: '/api/public/cron/monitor-integracoes'
@@ -866,6 +887,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicCronKnowledgeDistillerRoute: ApiPublicCronKnowledgeDistillerRoute,
   ApiPublicCronMonitorDivergenciaRoute: ApiPublicCronMonitorDivergenciaRoute,
   ApiPublicCronMonitorIntegracoesRoute: ApiPublicCronMonitorIntegracoesRoute,
+  ApiPublicCronMonitorSaldoRoute: ApiPublicCronMonitorSaldoRoute,
   ApiPublicCronQueueRoute: ApiPublicCronQueueRoute,
   ApiPublicCronRetomarSlotOfferRoute: ApiPublicCronRetomarSlotOfferRoute,
   ApiPublicCronWarmupRoute: ApiPublicCronWarmupRoute,

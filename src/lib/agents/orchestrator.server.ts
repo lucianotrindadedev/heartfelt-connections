@@ -68,6 +68,8 @@ import {
   stripProtectedMarkers,
   typingDelayMs,
 } from "@/lib/message-splitter.server";
+import { haltConversationForNoCredits } from "@/lib/credits.server";
+import { isInsufficientCreditsError } from "@/lib/agents/llm.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { notifyBooking } from "@/lib/agents/notify-booking.server";
@@ -837,6 +839,31 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       console.error(`[orch] sub-agente ${route} falhou: ${errMsg}`);
+
+      // SALDO ZERADO NA OPENROUTER — não é instabilidade e o lead não pode
+      // pagar por isso. Antes, o 402 caía no fallback educado abaixo: o lead
+      // recebia "tive uma instabilidade técnica, manda de novo", reenviava,
+      // falhava de novo — e ninguém era avisado de que o problema era saldo.
+      // Agora a IA fica em SILÊNCIO neste contato (etiqueta "IA Desligada", que
+      // o webhook/follow-up/warm-up já respeitam) e o grupo de notificações
+      // recebe o alerta de saldo. A atendente humana assume o atendimento até a
+      // recarga; ao remover a etiqueta, a IA volta.
+      if (isInsufficientCreditsError(e)) {
+        await haltConversationForNoCredits({
+          accountId,
+          agentId,
+          conversationId,
+          agentName: (agent.data.nome as string | undefined) ?? undefined,
+          helenaContactId: helenaContact?.id,
+          currentTags: helenaContact?.tagNames,
+          leadName: (leadData.name as string | undefined) || helenaContact?.name,
+          phone: effectivePhone ?? conversationPhone,
+          erro: errMsg,
+          disableTags: ctx.disableTags,
+        });
+        return;
+      }
+
       // Fallback educado, marcado como fallback para não poluir histórico
       const fallbackReply =
         "Desculpe, tive uma instabilidade técnica. Pode me enviar a mensagem de novo em alguns segundos?";
