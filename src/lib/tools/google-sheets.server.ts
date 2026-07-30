@@ -12,11 +12,25 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue, encryptValue } from "@/lib/crypto.server";
 
 const SHEETS_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
+const DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 
-/** Escopos do consentimento de planilha. Leitura apenas. */
+/**
+ * Escopos do consentimento de planilha. Leitura apenas.
+ *
+ * `drive.metadata.readonly` existe só para LISTAR as planilhas da conta no
+ * painel (o escopo do Sheets lê uma planilha pelo ID, mas não enumera nada —
+ * quem lista arquivos é o Drive). É o escopo mais estreito que enumera:
+ * metadados, sem acesso ao conteúdo dos arquivos.
+ *
+ * ⚠️ Ele é RESTRITO na classificação do Google: app publicado com esse escopo
+ * passa por verificação de escopo restrito + avaliação de segurança CASA, com
+ * revalidação anual. Decisão consciente do Luciano (30/07/2026) — a alternativa
+ * sem escopo restrito seria o Google Picker com `drive.file`.
+ */
 export const SHEETS_SCOPES = [
   "https://www.googleapis.com/auth/spreadsheets.readonly",
+  "https://www.googleapis.com/auth/drive.metadata.readonly",
   "https://www.googleapis.com/auth/userinfo.email",
 ];
 
@@ -231,6 +245,59 @@ export function invalidateSheetCache(accountId?: string): void {
   }
 }
 
+export interface DriveSpreadsheet {
+  id: string;
+  name: string;
+  /** Dono/origem em texto curto — separa "minhas" de "compartilhadas comigo". */
+  owner?: string;
+  modifiedTime?: string;
+}
+
+/**
+ * Lista as planilhas visíveis para a conta conectada (as próprias e as
+ * compartilhadas com ela), mais recentes primeiro. Usado só pelo painel.
+ *
+ * Se o token foi emitido ANTES do escopo do Drive entrar, o Google devolve 403
+ * de escopo — a mensagem de describeSheetsError já manda reconectar.
+ */
+export async function listAvailableSpreadsheets(accountId: string): Promise<DriveSpreadsheet[]> {
+  const token = await accessTokenFor(accountId);
+  if (!token) throw new Error("Google Sheets não conectado nesta conta.");
+
+  const params = new URLSearchParams({
+    q: "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+    fields: "files(id,name,modifiedTime,owners(displayName,emailAddress))",
+    orderBy: "modifiedTime desc",
+    pageSize: "200",
+    supportsAllDrives: "true",
+    includeItemsFromAllDrives: "true",
+    corpora: "allDrives",
+  });
+
+  const res = await fetch(`${DRIVE_FILES_URL}?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(await describeSheetsError(res));
+
+  const json = (await res.json()) as {
+    files?: {
+      id?: string;
+      name?: string;
+      modifiedTime?: string;
+      owners?: { displayName?: string; emailAddress?: string }[];
+    }[];
+  };
+
+  return (json.files ?? [])
+    .filter((f) => f.id && f.name)
+    .map((f) => ({
+      id: f.id as string,
+      name: f.name as string,
+      owner: f.owners?.[0]?.displayName || f.owners?.[0]?.emailAddress || undefined,
+      modifiedTime: f.modifiedTime,
+    }));
+}
+
 /** Lista os nomes das abas de uma planilha (validação na UI). */
 export async function listSheetTabs(
   accountId: string,
@@ -275,7 +342,7 @@ async function describeSheetsError(res: Response): Promise<string> {
   if (res.status === 404) {
     return "Planilha não encontrada — confira o ID/URL e se a conta Google conectada tem acesso a ela.";
   }
-  return `Falha na API do Google Sheets (${res.status}). ${detail.slice(0, 160)}`;
+  return `Falha na API do Google (${res.status}). ${detail.slice(0, 160)}`;
 }
 
 /** Lê um intervalo e devolve as linhas cruas (com header, se houver). */

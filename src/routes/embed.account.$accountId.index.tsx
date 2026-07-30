@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate, Navigate } from "@tanstack/react-router";
 import { helenaWebhookUrl, helenaAutomationWebhookUrl } from "@/lib/app-base-url";
+import { joinAba, splitAba } from "@/lib/sheets-range";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -88,6 +89,7 @@ import {
   disconnectGoogleSheets,
   saveGoogleSheetsFn,
   listGoogleSheetTabsFn,
+  listGoogleSpreadsheetsFn,
   previewGoogleSheetFn,
   getClinicorpConfig,
   saveClinicorpConfig,
@@ -6747,6 +6749,164 @@ interface SheetItemDraft {
   descricao: string;
 }
 
+function SheetItemEditor({
+  accountId,
+  item,
+  spreadsheets,
+  loadingSpreadsheets,
+  onChange,
+  onRemove,
+  onTest,
+  testOutput,
+}: {
+  accountId: string;
+  item: SheetItemDraft;
+  spreadsheets: { id: string; name: string; owner?: string }[];
+  loadingSpreadsheets: boolean;
+  onChange: (patch: Partial<SheetItemDraft>) => void;
+  onRemove: () => void;
+  onTest: () => void;
+  testOutput: string | null;
+}) {
+  const listTabs = useServerFn(listGoogleSheetTabsFn);
+  const { tab, range } = splitAba(item.aba);
+
+  // Planilha fora da lista (link colado à mão, ou lista indisponível por falta
+  // de escopo) → mantém o campo manual visível em vez de "sumir" com o valor.
+  const knownInList = spreadsheets.some((s) => s.id === item.spreadsheetId);
+  const [manual, setManual] = useState(false);
+  const showManual = manual || (!!item.spreadsheetId && !knownInList && !loadingSpreadsheets);
+
+  const tabsQ = useQuery({
+    queryKey: ["gsheets-tabs", accountId, item.spreadsheetId],
+    queryFn: () => listTabs({ data: { accountId, spreadsheetId: item.spreadsheetId } }),
+    enabled: !!item.spreadsheetId.trim(),
+    staleTime: 60_000,
+  });
+  const tabs = tabsQ.data?.ok ? tabsQ.data.tabs : [];
+
+  return (
+    <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <Input
+          value={item.label}
+          placeholder="Rótulo (ex: Preços)"
+          onChange={(e) => onChange({ label: e.target.value })}
+          className="h-8 text-xs"
+        />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 shrink-0 text-red-500"
+          onClick={onRemove}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+
+      {/* Planilha */}
+      {showManual ? (
+        <div className="flex items-center gap-2">
+          <Input
+            value={item.spreadsheetId}
+            placeholder="Link da planilha (cole a URL do navegador) ou o ID"
+            onChange={(e) => onChange({ spreadsheetId: e.target.value })}
+            className="h-8 text-xs"
+          />
+          {spreadsheets.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 shrink-0 text-[11px]"
+              onClick={() => setManual(false)}
+            >
+              Ver lista
+            </Button>
+          )}
+        </div>
+      ) : loadingSpreadsheets ? (
+        <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Carregando suas planilhas…
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <select
+            value={item.spreadsheetId}
+            onChange={(e) => onChange({ spreadsheetId: e.target.value, aba: "" })}
+            className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+          >
+            <option value="">Selecione uma planilha...</option>
+            {spreadsheets.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+                {s.owner ? ` — ${s.owner}` : ""}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 shrink-0 text-[11px]"
+            onClick={() => setManual(true)}
+          >
+            Colar link
+          </Button>
+        </div>
+      )}
+
+      {/* Aba + intervalo */}
+      <div className="flex items-center gap-2">
+        <select
+          value={tab}
+          onChange={(e) => onChange({ aba: joinAba(e.target.value, range) })}
+          disabled={!item.spreadsheetId.trim() || tabsQ.isLoading}
+          className="h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-60"
+        >
+          <option value="">
+            {tabsQ.isLoading ? "Carregando abas…" : "Primeira aba (padrão)"}
+          </option>
+          {tabs.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+          {/* Aba salva que não existe mais na planilha: mantém visível para o
+              dono perceber, em vez de voltar em silêncio para a primeira. */}
+          {tab && !tabs.includes(tab) && (
+            <option value={tab}>{tab} (não encontrada)</option>
+          )}
+        </select>
+        <Input
+          value={range}
+          placeholder="Intervalo (opcional): A1:F500"
+          onChange={(e) => onChange({ aba: joinAba(tab, e.target.value) })}
+          disabled={!tab}
+          className="h-8 w-44 shrink-0 text-xs"
+        />
+      </div>
+      {tabsQ.data && tabsQ.data.ok === false && (
+        <p className="text-[11px] text-destructive">{tabsQ.data.error}</p>
+      )}
+
+      <Textarea
+        value={item.descricao}
+        placeholder="O que tem nesta planilha (o agente lê isto para decidir quando consultar). Ex: tabela de preços dos procedimentos estéticos"
+        onChange={(e) => onChange({ descricao: e.target.value })}
+        className="min-h-[52px] text-xs"
+      />
+      <Button variant="outline" size="sm" className="h-7 text-[11px]" onClick={onTest}>
+        <FlaskConical className="mr-1 h-3 w-3" />
+        Testar leitura
+      </Button>
+      {testOutput !== null && (
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-900 p-2 text-[10px] text-slate-100">
+          {testOutput}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function GoogleSheetsPanel({ accountId }: { accountId: string }) {
   const qc = useQueryClient();
   const getStatus = useServerFn(getGoogleSheetsStatusFn);
@@ -6754,6 +6914,7 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
   const disconnect = useServerFn(disconnectGoogleSheets);
   const saveSheets = useServerFn(saveGoogleSheetsFn);
   const listTabs = useServerFn(listGoogleSheetTabsFn);
+  const listSpreadsheets = useServerFn(listGoogleSpreadsheetsFn);
   const preview = useServerFn(previewGoogleSheetFn);
 
   const [expanded, setExpanded] = useState(false);
@@ -6765,6 +6926,16 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
   const { data } = useQuery({
     queryKey: ["gsheets-status", accountId],
     queryFn: () => getStatus({ data: { accountId } }),
+  });
+
+  // Planilhas da conta Google (próprias + compartilhadas). Só busca quando
+  // conectado; devolve ok:false (em vez de erro) se o token não tiver o escopo
+  // do Drive — nesse caso o painel cai no campo manual.
+  const spreadsheetsQ = useQuery({
+    queryKey: ["gsheets-list", accountId],
+    queryFn: () => listSpreadsheets({ data: { accountId } }),
+    enabled: !!data?.connected,
+    staleTime: 60_000,
   });
 
   useEffect(() => {
@@ -6794,6 +6965,7 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
           clearInterval(check);
           setConnecting(false);
           qc.invalidateQueries({ queryKey: ["gsheets-status", accountId] });
+          qc.invalidateQueries({ queryKey: ["gsheets-list", accountId] });
         }
       }, 500);
     } catch (e) {
@@ -6838,7 +7010,7 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
   async function testItem(idx: number) {
     const item = items[idx];
     if (!item?.spreadsheetId.trim()) {
-      toast.error("Cole o link (ou o ID) da planilha primeiro.");
+      toast.error("Selecione uma planilha primeiro.");
       return;
     }
     setTestIdx(idx);
@@ -6928,80 +7100,31 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
                 somente leitura).
               </div>
 
-              {items.map((item, idx) => (
-                <div
-                  key={idx}
-                  className="rounded-xl border border-slate-200 p-3 space-y-2"
-                >
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={item.label}
-                      placeholder="Rótulo (ex: Preços)"
-                      onChange={(e) =>
-                        setItems((p) =>
-                          p.map((it, i) => (i === idx ? { ...it, label: e.target.value } : it)),
-                        )
-                      }
-                      className="h-8 text-xs"
-                    />
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 shrink-0 text-red-500"
-                      onClick={() => setItems((p) => p.filter((_, i) => i !== idx))}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                  <Input
-                    value={item.spreadsheetId}
-                    placeholder="Link da planilha (cole a URL do navegador) ou o ID"
-                    onChange={(e) =>
-                      setItems((p) =>
-                        p.map((it, i) =>
-                          i === idx ? { ...it, spreadsheetId: e.target.value } : it,
-                        ),
-                      )
-                    }
-                    className="h-8 text-xs"
-                  />
-                  <Input
-                    value={item.aba}
-                    placeholder="Aba / intervalo (ex: Tabela!A1:F500) — vazio = primeira aba"
-                    onChange={(e) =>
-                      setItems((p) =>
-                        p.map((it, i) => (i === idx ? { ...it, aba: e.target.value } : it)),
-                      )
-                    }
-                    className="h-8 text-xs"
-                  />
-                  <Textarea
-                    value={item.descricao}
-                    placeholder="O que tem nesta planilha (o agente lê isto para decidir quando consultar). Ex: tabela de preços dos procedimentos estéticos"
-                    onChange={(e) =>
-                      setItems((p) =>
-                        p.map((it, i) =>
-                          i === idx ? { ...it, descricao: e.target.value } : it,
-                        ),
-                      )
-                    }
-                    className="min-h-[52px] text-xs"
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-[11px]"
-                    onClick={() => testItem(idx)}
-                  >
-                    <FlaskConical className="mr-1 h-3 w-3" />
-                    Testar leitura
-                  </Button>
-                  {testIdx === idx && (
-                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-900 p-2 text-[10px] text-slate-100">
-                      {testOut ?? "Lendo..."}
-                    </pre>
-                  )}
+              {spreadsheetsQ.data && spreadsheetsQ.data.ok === false && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
+                  Não consegui listar suas planilhas: {spreadsheetsQ.data.error}
+                  <br />
+                  Se a conexão é anterior a esta versão, clique em{" "}
+                  <strong>Reconectar</strong> abaixo — o acesso à lista de planilhas
+                  é novo e precisa ser autorizado. Enquanto isso, dá para colar o
+                  link da planilha manualmente.
                 </div>
+              )}
+
+              {items.map((item, idx) => (
+                <SheetItemEditor
+                  key={idx}
+                  accountId={accountId}
+                  item={item}
+                  spreadsheets={spreadsheetsQ.data?.spreadsheets ?? []}
+                  loadingSpreadsheets={spreadsheetsQ.isLoading}
+                  onChange={(patch) =>
+                    setItems((p) => p.map((it, i) => (i === idx ? { ...it, ...patch } : it)))
+                  }
+                  onRemove={() => setItems((p) => p.filter((_, i) => i !== idx))}
+                  onTest={() => testItem(idx)}
+                  testOutput={testIdx === idx ? (testOut ?? "Lendo...") : null}
+                />
               ))}
 
               <div className="flex flex-wrap gap-2">
@@ -7038,15 +7161,31 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
                 consulta.
               </p>
 
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 w-full text-xs text-red-500"
-                disabled={disconnectM.isPending}
-                onClick={() => disconnectM.mutate()}
-              >
-                Desconectar Google Sheets
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 flex-1 text-xs"
+                  disabled={connecting}
+                  onClick={connect}
+                >
+                  {connecting ? (
+                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RotateCcw className="mr-1 h-3.5 w-3.5" />
+                  )}
+                  Reconectar
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 flex-1 text-xs text-red-500"
+                  disabled={disconnectM.isPending}
+                  onClick={() => disconnectM.mutate()}
+                >
+                  Desconectar
+                </Button>
+              </div>
             </>
           ) : (
             <>

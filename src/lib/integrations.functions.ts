@@ -15,6 +15,7 @@ import {
   getGoogleSheetsStatus,
   invalidateSheetCache,
   listAccountSheets,
+  listAvailableSpreadsheets,
   listSheetTabs,
   querySheet,
   saveAccountSheets,
@@ -223,6 +224,24 @@ export const disconnectGoogleSheets = createServerFn({ method: "POST" })
       .eq("account_id", data.accountId);
     invalidateSheetCache(data.accountId);
     return { ok: true };
+  });
+
+/** Lista as planilhas da conta Google conectada (próprias + compartilhadas). */
+export const listGoogleSpreadsheetsFn = createServerFn({ method: "GET" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    try {
+      const spreadsheets = await listAvailableSpreadsheets(data.accountId);
+      return { ok: true as const, spreadsheets };
+    } catch (e) {
+      // Token emitido antes do escopo do Drive → 403. O painel cai no campo
+      // manual (colar link) em vez de ficar sem saída.
+      return {
+        ok: false as const,
+        error: e instanceof Error ? e.message : String(e),
+        spreadsheets: [],
+      };
+    }
   });
 
 /** Lista as abas de uma planilha — valida o ID/URL colado antes de salvar. */

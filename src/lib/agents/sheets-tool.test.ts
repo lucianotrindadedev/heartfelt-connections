@@ -13,7 +13,8 @@ import {
   buildPriceGuardrail,
   buildSheetsPromptBlock,
 } from "./sheets.server";
-import { querySheet } from "@/lib/tools/google-sheets.server";
+import { querySheet, extractSpreadsheetId } from "@/lib/tools/google-sheets.server";
+import { joinAba, splitAba } from "@/lib/sheets-range";
 
 const ctx = (planilhas: { label: string; spreadsheetId: string; descricao?: string }[]) =>
   ({
@@ -90,6 +91,53 @@ describe("buildSheetsPromptBlock", () => {
     );
     expect(block).toContain('"Preços"');
     expect(block).toContain("valores dos procedimentos");
+  });
+});
+
+describe("aba ↔ intervalo A1 (painel)", () => {
+  it("aba simples faz round-trip sem aspas", () => {
+    expect(joinAba("Tabela", "")).toBe("Tabela");
+    expect(splitAba("Tabela")).toEqual({ tab: "Tabela", range: "" });
+  });
+
+  it("aba + intervalo faz round-trip", () => {
+    const a = joinAba("Tabela", "A1:F500");
+    expect(a).toBe("Tabela!A1:F500");
+    expect(splitAba(a)).toEqual({ tab: "Tabela", range: "A1:F500" });
+  });
+
+  it("aba com espaço/acento é citada e volta sem as aspas", () => {
+    const a = joinAba("Tabela de Preços", "");
+    expect(a).toBe("'Tabela de Preços'");
+    // Sem o unquote, o dropdown não casaria com o nome vindo da API e a aba
+    // salva apareceria como "não encontrada".
+    expect(splitAba(a)).toEqual({ tab: "Tabela de Preços", range: "" });
+    expect(splitAba(joinAba("Tabela de Preços", "A1:C9"))).toEqual({
+      tab: "Tabela de Preços",
+      range: "A1:C9",
+    });
+  });
+
+  it("aspa no nome da aba não quebra o round-trip", () => {
+    const a = joinAba("Preço d'Água", "A1:B2");
+    expect(splitAba(a)).toEqual({ tab: "Preço d'Água", range: "A1:B2" });
+  });
+
+  it("sem aba, devolve vazio (agente lê a primeira aba)", () => {
+    expect(joinAba("", "A1:F9")).toBe("");
+    expect(splitAba("")).toEqual({ tab: "", range: "" });
+  });
+});
+
+describe("extractSpreadsheetId", () => {
+  it("aceita a URL colada do navegador", () => {
+    expect(
+      extractSpreadsheetId("https://docs.google.com/spreadsheets/d/1AbC-_9xyz/edit#gid=0"),
+    ).toBe("1AbC-_9xyz");
+  });
+
+  it("aceita o ID puro (valor vindo do dropdown)", () => {
+    expect(extractSpreadsheetId("1AbC-_9xyz")).toBe("1AbC-_9xyz");
   });
 });
 
