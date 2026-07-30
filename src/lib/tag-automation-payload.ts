@@ -54,6 +54,17 @@ function asId(v: unknown): string | null {
 }
 
 /**
+ * A Helena manda o telefone como "+55|32991607088" (DDI, pipe, número). Cru,
+ * esse formato não casa em nenhuma busca de contato. Normaliza para dígitos.
+ * Só usado no fallback — o caminho normal resolve pelo contactId.
+ */
+function normalizePhone(raw: string | null): string | null {
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, "");
+  return digits === "" ? null : digits;
+}
+
+/**
  * Varre o payload em profundidade procurando a primeira chave da lista.
  * `containerKeys`: nomes de objeto cujo `id` interno também vale como resposta
  * (ex.: `content.contact.id` → id do contato).
@@ -116,7 +127,7 @@ export function extractTagEventIds(body: unknown): ExtractedIds {
     // 2º: só então os ambíguos (content.id pode ser id de mensagem)
     deepFind(body, [], AMBIGUOUS_CONTAINER_KEYS);
   const sessionId = deepFind(body, SESSION_ID_KEYS);
-  const phone = deepFind(body, PHONE_KEYS);
+  const phone = normalizePhone(deepFind(body, PHONE_KEYS));
   return { contactId, sessionId, phone };
 }
 

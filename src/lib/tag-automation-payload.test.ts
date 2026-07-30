@@ -111,3 +111,65 @@ describe("prioridade entre identificadores inequívocos e ambíguos", () => {
     expect(r.contactId).toBe(CID);
   });
 });
+
+// ── payload REAL capturado em produção (30/07/2026 20:52 UTC) ─────────────
+// Evento "Contato etiqueta alterada" da Helena = eventType CONTACT_TAG_UPDATE.
+// O id do contato vem em `content.id` e `changeMetadata` é null — exatamente o
+// formato que a extração rasa anterior não reconhecia (respondia
+// {"ok":true,"skipped":"no-identifier"} e a automação morria).
+const PAYLOAD_REAL = {
+  eventType: "CONTACT_TAG_UPDATE",
+  date: "2026-07-30T20:52:56.7729699Z",
+  content: {
+    id: "bab00406-e47a-4541-a9d6-3c6aa544413f",
+    createdAt: "2026-01-28T12:58:40.013096Z",
+    updatedAt: "2026-07-30T20:52:56.7126992Z",
+    companyId: "379341ec-6385-48c0-af27-a174ceb26f82",
+    name: "Luciano Trindade",
+    nameWhatsapp: "Luciano Trindade",
+    nameInstagram: null,
+    nameMessenger: null,
+    phonenumber: "+55|32991607088",
+    phonenumberFormatted: "(32) 99160-7088",
+    email: null,
+    instagram: null,
+    messengerId: null,
+    usernameWhatsapp: null,
+    pictureFileId: null,
+    pictureUrl: null,
+    active: true,
+    annotation: null,
+    tagsId: ["2ddc4c4a-00f1-416a-ad18-4f042630ac99", "dc641f08-e3d6-4ac7-adb2-ff2b9eefb494"],
+    tags: ["FUF FINANCEIRO", "IA AGENDOU"],
+    status: "ACTIVE",
+    origin: "CREATED_FROM_HUB",
+    utm: null,
+    customFieldValues: {},
+    metadata: null,
+  },
+  changeMetadata: null,
+};
+
+describe("CONTACT_TAG_UPDATE — payload real de produção", () => {
+  it("extrai o contactId de content.id (o caso que falhava)", () => {
+    expect(extractTagEventIds(PAYLOAD_REAL).contactId).toBe(
+      "bab00406-e47a-4541-a9d6-3c6aa544413f",
+    );
+  });
+
+  it("normaliza o telefone do formato '+55|DDDNUMERO' da Helena", () => {
+    expect(extractTagEventIds(PAYLOAD_REAL).phone).toBe("5532991607088");
+  });
+
+  it("changeMetadata null não quebra a varredura", () => {
+    expect(() => extractTagEventIds(PAYLOAD_REAL)).not.toThrow();
+  });
+
+  it("o esqueleto para log não expõe nome nem telefone do contato", () => {
+    const json = JSON.stringify(payloadShape(PAYLOAD_REAL));
+    expect(json).not.toContain("Luciano");
+    expect(json).not.toContain("32991607088");
+    expect(json).not.toContain("bab00406");
+    expect(json).toContain("CONTACT_TAG_UPDATE".slice(0, 0) + "eventType");
+  });
+});
