@@ -47,10 +47,24 @@ export const Route = createFileRoute("/api/public/webhook/helena-automation/$acc
         const meta = (body.changeMetadata as Record<string, unknown> | undefined) ?? {};
         const details = (content.details as Record<string, unknown> | undefined) ?? {};
 
+        // No CONTACT_TAG_UPDATE real, `content` É o próprio contato: o id do
+        // contato vem em content.id e o telefone em content.phonenumber
+        // (minúsculo, formato "+55|32991607088"). Payload real validado em
+        // 30/07/2026 — sem estas chaves o webhook respondia "no-identifier" e
+        // nenhuma automação rodava. Só usamos content.id quando o content
+        // aparenta ser um contato (tem telefone/tags), para não confundir com
+        // id de mensagem em outros formatos de envelope.
+        const contentLooksLikeContact =
+          content.phonenumber !== undefined ||
+          content.phonenumberFormatted !== undefined ||
+          Array.isArray(content.tagsId) ||
+          Array.isArray(content.tags);
+
         const contactId =
           pick(body, ["contactId", "contact_id"]) ??
           pick(content, ["contactId", "contact_id"]) ??
-          pick(meta, ["contactId", "contact_id", "entityId", "id"]);
+          pick(meta, ["contactId", "contact_id", "entityId", "id"]) ??
+          (contentLooksLikeContact ? pick(content, ["id"]) : null);
 
         const sessionId =
           pick(body, ["sessionId", "session_id"]) ??
@@ -58,7 +72,7 @@ export const Route = createFileRoute("/api/public/webhook/helena-automation/$acc
 
         const phone =
           pick(body, ["phoneNumber", "phone", "telefone"]) ??
-          pick(content, ["phoneNumber", "phone"]) ??
+          pick(content, ["phoneNumber", "phone", "phonenumber", "phonenumberFormatted"]) ??
           pick(details, ["to", "from"]);
 
         if (!contactId && !sessionId && !phone) {
