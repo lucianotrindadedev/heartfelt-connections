@@ -108,8 +108,13 @@ export async function runTagAutomationsForContact(
 
   const sb = getSelfhost();
 
+  // Cada saída antecipada é logada com o motivo: todas devolvem o mesmo objeto
+  // vazio e HTTP 200, então sem log não há como saber ONDE parou.
   const agentId = await resolveAgentId(accountId);
-  if (!agentId) return empty;
+  if (!agentId) {
+    console.warn(`[tag-automations] conta ${accountId} sem agente — nada a executar`);
+    return empty;
+  }
 
   const { data: rules } = await sb
     .from("agent_tag_automations")
@@ -118,15 +123,31 @@ export async function runTagAutomationsForContact(
     .eq("enabled", true);
 
   const automations = (rules ?? []) as TagAutomationRow[];
-  if (automations.length === 0) return empty;
+  if (automations.length === 0) {
+    console.log(`[tag-automations] agente ${agentId} sem regras ativas`);
+    return empty;
+  }
 
   const account = await loadHelenaAccount(accountId).catch(() => null);
-  if (!account) return empty;
+  if (!account) {
+    console.error(`[tag-automations] conta Helena ${accountId} não carregou (token/base_url)`);
+    return empty;
+  }
 
   const contact = await resolveContact(account, ids);
-  if (!contact) return empty;
+  if (!contact) {
+    console.warn(
+      `[tag-automations] contato não resolvido — contactId=${ids.contactId ?? "-"} ` +
+        `sessionId=${ids.sessionId ?? "-"} phone=${ids.phone ?? "-"}`,
+    );
+    return empty;
+  }
 
   const contactTags = new Set(contact.tagNames.map(normalizeTag));
+  console.log(
+    `[tag-automations] contato ${contact.id} etiquetas=[${contact.tagNames.join(", ")}] ` +
+      `regras=${automations.length}`,
+  );
   const result: RunResult = { ...empty, resolvedContactId: contact.id, details: [] };
 
   for (const rule of automations) {

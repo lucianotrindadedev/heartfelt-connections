@@ -504,12 +504,28 @@ export async function resolveHelenaContactId(
       if (!res.ok) continue;
       const json = (await res.json()) as
         | { id?: string | number }
-        | { data?: { id?: string | number }[] }
+        | { items?: { id?: string | number; phoneNumber?: string }[] }
+        | { data?: { id?: string | number; phoneNumber?: string }[] }
         | null;
-      const id =
-        (json as { id?: string | number })?.id ??
-        (json as { data?: { id?: string | number }[] })?.data?.[0]?.id;
-      if (id) return String(id);
+
+      // A resposta direta ({id}) é confiável. A resposta em lista NÃO: validado
+      // em 01/08/2026 que GET /core/v1/contact IGNORA os filtros de query
+      // (phone, phoneNumber, search, name, tagId) e devolve sempre a primeira
+      // página da conta inteira. Aceitar items[0] cegamente resolveria um
+      // contato ALEATÓRIO — na Odonto Carioca, o primeiro da lista — e, nas
+      // automações de etiqueta, jogaria a pessoa errada dentro da cadência.
+      // Por isso só aceitamos um item cujo telefone realmente bate.
+      const direct = (json as { id?: string | number })?.id;
+      if (direct) return String(direct);
+
+      const list =
+        (json as { items?: { id?: string | number; phoneNumber?: string }[] })?.items ??
+        (json as { data?: { id?: string | number; phoneNumber?: string }[] })?.data ??
+        [];
+      const hit = list.find(
+        (c) => c?.id && normalizeBrazilPhone(c.phoneNumber ?? "") === phone,
+      );
+      if (hit?.id) return String(hit.id);
     } catch {
       /* tenta próxima variante */
     }

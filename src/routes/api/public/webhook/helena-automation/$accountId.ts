@@ -60,11 +60,16 @@ export const Route = createFileRoute("/api/public/webhook/helena-automation/$acc
           Array.isArray(content.tagsId) ||
           Array.isArray(content.tags);
 
+        // content.id vem ANTES de changeMetadata.id: quando o content é o
+        // próprio contato, ele é a fonte certa. O `id` do changeMetadata é
+        // genérico (pode ser o id da etiqueta ou do evento de alteração) e, se
+        // ganhasse a precedência, buscaríamos um contato inexistente, o load
+        // devolveria null e a automação morreria em silêncio com HTTP 200.
         const contactId =
           pick(body, ["contactId", "contact_id"]) ??
           pick(content, ["contactId", "contact_id"]) ??
-          pick(meta, ["contactId", "contact_id", "entityId", "id"]) ??
-          (contentLooksLikeContact ? pick(content, ["id"]) : null);
+          (contentLooksLikeContact ? pick(content, ["id"]) : null) ??
+          pick(meta, ["contactId", "contact_id", "entityId", "id"]);
 
         const sessionId =
           pick(body, ["sessionId", "session_id"]) ??
@@ -75,9 +80,23 @@ export const Route = createFileRoute("/api/public/webhook/helena-automation/$acc
           pick(content, ["phoneNumber", "phone", "phonenumber", "phonenumberFormatted"]) ??
           pick(details, ["to", "from"]);
 
+        // Toda entrega é logada. Sem isto o webhook é uma caixa-preta: responde
+        // 200 em qualquer cenário e não dá para distinguir "a Helena não
+        // entregou o evento" de "entregou e o runner não resolveu o contato" —
+        // foi exatamente o que travou o diagnóstico de 01/08/2026.
+        const eventType = String(body.eventType ?? body.evento ?? "?");
+        console.log(
+          `[webhook-automation] recebido acct=${accountId} event=${eventType} ` +
+            `keys=[${Object.keys(body).join(",")}] contactId=${contactId ?? "-"} ` +
+            `sessionId=${sessionId ?? "-"} phone=${phone ?? "-"}`,
+        );
+
         if (!contactId && !sessionId && !phone) {
           // Sem identificador não há o que processar — responde 200 para a Helena
           // não reentregar indefinidamente.
+          console.warn(
+            `[webhook-automation] sem identificador — payload=${JSON.stringify(body).slice(0, 600)}`,
+          );
           return Response.json({ ok: true, skipped: "no-identifier" });
         }
 
@@ -87,6 +106,10 @@ export const Route = createFileRoute("/api/public/webhook/helena-automation/$acc
             sessionId,
             phone,
           });
+          console.log(
+            `[webhook-automation] resultado acct=${accountId} contato=${result.resolvedContactId ?? "NAO-RESOLVIDO"} ` +
+              `avaliadas=${result.evaluated} casaram=${result.matched} executadas=${result.executed} puladas=${result.skipped}`,
+          );
           return Response.json({ ok: true, ...result });
         } catch (e) {
           console.error("[webhook-automation] erro:", e instanceof Error ? e.message : e);
