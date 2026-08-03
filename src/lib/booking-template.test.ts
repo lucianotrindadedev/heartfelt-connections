@@ -39,6 +39,8 @@ import {
   slotsOfferedInLastTurn,
   isReadyForBooking,
   isSlotAcceptanceMessage,
+  isPointingGesture,
+  pointingConfirmationReply,
   isValidCpf,
   looksLikeBirthDate,
   looksLikeDecline,
@@ -2288,5 +2290,84 @@ describe("looksLikeSentenceNotName — fronteira ciente de acento", () => {
   it("mas a palavra inteira continua sendo pega", () => {
     expect(looksLikeSentenceNotName("só de manhã")).toBe(true);
     expect(looksLikeSentenceNotName("amanhã não dá")).toBe(true);
+  });
+});
+
+// ── gesto de apontar: AMBÍGUO, nunca escolhe sozinho ──────────────────────
+// Caso real (Odonto Carioca Campo Grande, 21 97558-2703, 03/08): o lead pediu
+// "amanhã às 09:15", ouviu que não tinha, e respondeu "👆👆" querendo dizer
+// "eu pedi AMANHÃ". A IA leu como "a primeira opção que você ofereceu",
+// travou quinta 06/08 09:00 e seguiu para o nome.
+
+describe("isPointingGesture", () => {
+  it("reconhece as formas do gesto", () => {
+    for (const m of ["☝🏼", "👆👆", "☝️", "☝", "👆", "👆🏼", "🔝", "esse ☝🏼", "☝🏼 sim", "isso ☝️"]) {
+      expect(isPointingGesture(m), m).toBe(true);
+    }
+  });
+  it("NÃO confunde com mensagem que tem conteúdo próprio", () => {
+    for (const m of ["o primeiro ☝🏼", "☝🏼 mas às 14h", "quero o de terça ☝🏼", "amanhã às 09:15"]) {
+      expect(isPointingGesture(m), m).toBe(false);
+    }
+  });
+  it("texto sem emoji nunca é gesto", () => {
+    expect(isPointingGesture("esse")).toBe(false);
+    expect(isPointingGesture("")).toBe(false);
+  });
+  it("é idempotente (regex /g não vaza lastIndex)", () => {
+    for (let i = 0; i < 5; i++) expect(isPointingGesture("☝🏼")).toBe(true);
+  });
+});
+
+describe("tryAutoSelectOfferedSlot — gesto NUNCA seleciona", () => {
+  const slot = (iso: string, dl: string, tl: string) => ({ iso, end_iso: iso, date_label: dl, time_label: tl });
+  const A = slot("2026-08-06T09:00:00-03:00", "quinta-feira, 06/08", "09:00");
+  const B = slot("2026-08-06T10:15:00-03:00", "quinta-feira, 06/08", "10:15");
+  const escolher = (msg: string, oferta: string, slots = [A, B]) =>
+    tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slots as never }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: msg },
+    ]).selected_slot_iso;
+
+  it("com DOIS horários não seleciona", () => {
+    const of = "Consegui na quinta-feira, 06/08: às 09:00 ou às 10:15. Qual fica melhor?";
+    expect(escolher("👆👆", of)).toBeUndefined();
+  });
+
+  // A diferença para a 1ª versão deste PR: antes, com UM horário, o gesto era
+  // aceito. O caso real mostrou que ele pode apontar para o pedido do LEAD.
+  it("com UM horário TAMBÉM não seleciona (ambíguo mesmo assim)", () => {
+    const of = "Tenho quinta-feira, 06/08 às 09:00. Fica bom?";
+    expect(escolher("☝🏼", of, [A])).toBeUndefined();
+  });
+
+  it("ordinal junto do emoji continua resolvendo pela palavra", () => {
+    const of = "Consegui na quinta-feira, 06/08: às 09:00 ou às 10:15. Qual fica melhor?";
+    expect(escolher("o primeiro ☝🏼", of)).toBe("2026-08-06T09:00:00-03:00");
+  });
+});
+
+describe("pointingConfirmationReply", () => {
+  const slot = (dl: string, tl: string) => ({ iso: "x", end_iso: "x", date_label: dl, time_label: tl });
+  it("UM horário vira confirmação fechada", () => {
+    const r = pointingConfirmationReply([slot("quinta-feira, 06/08", "09:00")] as never)!;
+    expect(r).toContain("quinta-feira, 06/08 às 09:00");
+    expect(r).toContain("?");
+  });
+  it("DOIS viram escolha entre eles", () => {
+    const r = pointingConfirmationReply([
+      slot("quinta-feira, 06/08", "09:00"),
+      slot("quinta-feira, 06/08", "10:15"),
+    ] as never)!;
+    expect(r).toContain("09:00");
+    expect(r).toContain("10:15");
+    expect(r).toContain(" ou ");
+  });
+  it("sem horário para nomear devolve null", () => {
+    expect(pointingConfirmationReply([])).toBeNull();
+  });
+  it("nunca é a pergunta genérica que travou o atendimento", () => {
+    const r = pointingConfirmationReply([slot("quinta-feira, 06/08", "09:00")] as never)!;
+    expect(r).not.toContain("seguir com o agendamento agora");
   });
 });
