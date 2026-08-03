@@ -45,6 +45,7 @@ import {
   signalsCannotAttendOrChange,
   looksLikeIntentMessage,
   looksLikeSchedulingPreference,
+  looksLikeSentenceNotName,
   preflightBookingFields,
   renderBookingTemplate,
   resolveCollectedPhone,
@@ -2213,5 +2214,79 @@ describe("tryAutoSelectOfferedSlot — pergunta educada que cita horário oferta
 
   it("'tem outro/mais' barra mesmo citando horário ofertado", () => {
     expect(escolher("tem outro horário além das 13:00?", TARDE, OFERTA_TARDE)).toBeUndefined();
+  });
+});
+
+// ── frase de correção não pode virar nome do paciente ──────────────────────
+// Caso real (Odonto Carioca Campo Grande, 21 97558-2703, 03/08): o lead
+// corrigiu "Pedi pra amanhã" e isso virou lead_data.name. O validador rejeitava
+// na hora de agendar, o agente repetia "me envia seu nome completo" e a conversa
+// entrou em loop — inclusive depois de ele mandar "Antonio Fagundes".
+
+describe("looksLikeSentenceNotName", () => {
+  const FRASES = [
+    "Pedi pra amanhã",
+    "não quinta feira",
+    "Quero saber qual dia ta agendado?",
+    "Mas eu quero saber pra qual dia ?",
+    "porque eu pedi pra agendar amanhã",
+    "e você ta falando quinta feira",
+    "Não consigo hoje não",
+    "Hoje não consigo",
+    "Só na próxima  semana",
+    "Tá bem",
+  ];
+  for (const f of FRASES) {
+    it(`rejeita: ${JSON.stringify(f.slice(0, 34))}`, () => {
+      expect(looksLikeSentenceNotName(f) || mentionsUnavailability(f) || looksLikeSchedulingPreference(f) || looksLikeIntentMessage(f)).toBe(true);
+    });
+  }
+
+  const NOMES = [
+    "Antonio Fagundes",
+    "Marco Antônio Silva da cruz",
+    "Solange",
+    "Sophia Vicente",
+    "Sonha Maria Ribeiro de Lima",
+    "Solineide",
+    "Maria de Fátima",
+    "Ana Beatriz do Nascimento",
+    "José Carlos",
+    "Neymar Junior",
+  ];
+  for (const n of NOMES) {
+    it(`aceita nome real: ${JSON.stringify(n)}`, () => {
+      expect(looksLikeSentenceNotName(n)).toBe(false);
+    });
+  }
+});
+
+describe("sanitizeLeadDataPatch — nome contaminado", () => {
+  it("descarta a frase de correção do caso real", () => {
+    expect(sanitizeLeadDataPatch({ name: "Pedi pra amanhã" }).name).toBeUndefined();
+  });
+  it("descarta indisponibilidade (mentionsUnavailability já existia, faltava usar)", () => {
+    expect(sanitizeLeadDataPatch({ name: "Hoje não consigo" }).name).toBeUndefined();
+    expect(sanitizeLeadDataPatch({ name: "Não consigo hoje não" }).name).toBeUndefined();
+  });
+  it("preserva o nome verdadeiro", () => {
+    expect(sanitizeLeadDataPatch({ name: "Antonio Fagundes" }).name).toBe("Antonio Fagundes");
+    expect(sanitizeLeadDataPatch({ name: "Marco Antônio Silva da cruz" }).name).toBe(
+      "Marco Antônio Silva da cruz",
+    );
+  });
+});
+
+describe("looksLikeSentenceNotName — fronteira ciente de acento", () => {
+  // O \b do JS é ASCII: em "Manhães" ele vê limite depois do "ã" e `\bmanhã\b`
+  // casaria DENTRO do sobrenome. Descoberto varrendo os 2.684 nomes reais de
+  // produção — "Silvia Manhães" era reprovado como se fosse frase.
+  it("sobrenome com acento não vira frase", () => {
+    expect(looksLikeSentenceNotName("Silvia Manhães")).toBe(false);
+    expect(looksLikeSentenceNotName("Manhães")).toBe(false);
+  });
+  it("mas a palavra inteira continua sendo pega", () => {
+    expect(looksLikeSentenceNotName("só de manhã")).toBe(true);
+    expect(looksLikeSentenceNotName("amanhã não dá")).toBe(true);
   });
 });

@@ -1253,6 +1253,58 @@ export function nameIsAttendantSelfIntroduction(
   return attendantSelfIntroducedNames(assistantTexts).has(primeiro);
 }
 
+// Fronteira de palavra ciente de ACENTO. O \b do JS é ASCII: em "Manhães" ele
+// enxerga um limite logo depois do "ã" (não-\w) e `\bmanhã\b` casaria dentro do
+// SOBRENOME. Descobrimos isso varrendo os 2.684 nomes reais de produção —
+// "Silvia Manhães" era reprovado como se fosse frase. Com lookaround de letra
+// Unicode o casamento exige palavra inteira de verdade.
+const B = (fonte: string) => new RegExp(`(?<!\\p{L})(?:${fonte})(?!\\p{L})`, "iu");
+
+// Palavras de TEMPO/AGENDA. Nenhum nome de pessoa as contém — mas frases de
+// correção do lead vivem delas ("pedi pra amanhã", "só na próxima semana").
+const TEMPO_NA_FRASE_RE = B(
+  "amanh[ãa]|hoje|ontem|semana|m[eê]s|manh[ãa]|tarde|noite|hor[áa]rios?|horas?|agendar?|agendad[oa]|marcar|marcad[oa]|consulta|avalia[çc][ãa]o|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|cedo",
+);
+
+// Verbos conjugados em 1ª/2ª pessoa típicos de correção/pergunta do lead. Um
+// nome próprio nunca traz forma verbal conjugada.
+const VERBO_CONJUGADO_RE = B(
+  "pedi|pedir|quero|queria|consigo|consegue|posso|preciso|prefiro|falando|falou|disse|mandei|marquei|agendei|tava|estava|vou|vai|trabalho",
+);
+
+/**
+ * O texto é uma FRASE (correção, pergunta, comentário) e não um nome de pessoa.
+ *
+ * Caso real (Odonto Carioca Campo Grande, 21 97558-2703, 03/08): o lead corrigiu
+ * "Pedi pra amanhã" / "não quinta feira"; a captura automática gravou
+ * lead_data.name = "Pedi pra amanhã". O validador de nome (corretamente)
+ * rejeitava na hora de agendar, o agente repetia "me envia seu nome completo" e
+ * a conversa entrou em loop — inclusive DEPOIS de o lead mandar o nome de
+ * verdade ("Antonio Fagundes").
+ *
+ * Assimetria deliberada: rejeitar um nome verdadeiro só custa uma repergunta;
+ * aceitar uma frase como nome grava lixo no cadastro do paciente e trava o
+ * agendamento. Na dúvida, rejeita.
+ */
+export function looksLikeSentenceNotName(text: string): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+  if (TEMPO_NA_FRASE_RE.test(t)) return true;
+  if (VERBO_CONJUGADO_RE.test(t)) return true;
+  // Negação/adversativa iniciando a frase: "não quinta", "mas eu queria...".
+  if (/^(n[ãa]o|nem|mas|porque|por que|s[óo]|hj|j[áa])(?!\p{L})/iu.test(t)) return true;
+  // Afirmação curta ("tá bem", "ok", "beleza") — ANCORADA na mensagem inteira,
+  // para não reprovar um nome que por acaso contenha a palavra.
+  if (
+    /^(t[áa]\s*(bem|bom|certo|ok)?|ok|okay|beleza|blz|combinado|fechado|uhum|aham|isso mesmo|pode ser)[.!]*$/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export function clearRejectedBookingName(leadData: LeadData): Partial<LeadData> {
   if (leadData.name?.trim()) return { name: "" };
   const cf = leadData.custom_fields ?? {};
@@ -2176,7 +2228,11 @@ export function sanitizeLeadDataPatch(
       looksLikeSchedulingPreference(next.name) ||
       looksLikeIntentMessage(next.name) ||
       looksLikeDecline(next.name) ||
-      looksLikeGratitudeOrClosing(next.name)
+      looksLikeGratitudeOrClosing(next.name) ||
+      // mentionsUnavailability já existia e acerta ("hoje não consigo"), mas não
+      // era consultado aqui — nomes assim entravam no cadastro do paciente.
+      mentionsUnavailability(next.name) ||
+      looksLikeSentenceNotName(next.name)
     ) {
       delete next.name;
     }

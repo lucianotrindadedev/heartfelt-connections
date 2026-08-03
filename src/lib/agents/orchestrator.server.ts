@@ -412,6 +412,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     const ordered = (msgs.data ?? []).slice().reverse() as MsgRow[];
     const history: { role: "user" | "assistant"; content: string }[] = [];
+    // Respostas que ESTE agente de fato gerou (origem="agente"), em ordem.
+    //
+    // O guard anti-loop comparava com a última mensagem `assistant` do
+    // histórico — mas a Helena reentrega cada envio quebrado em partes, e essas
+    // partes chegam como assistant/origem="humano" SEM is_echo. Resultado: a
+    // referência de comparação virava um fragmento ("Como devo registrar?") em
+    // vez da resposta inteira, a similaridade não batia e o guard NUNCA
+    // disparava. Caso real (Odonto Carioca Campo Grande, 21 97558-2703, 03/08):
+    // a mesma pergunta de nome saiu 4x seguidas, ignorando 3 perguntas diretas
+    // do lead, sem nenhum duplicate_reply_blocked no meta.
+    const agentReplies: string[] = [];
     for (const m of ordered) {
       if (m.meta && (m.meta as Record<string, unknown>).fallback === true) continue;
       // Eco/loopback da Helena (mensagem que a própria plataforma enviou e voltou
@@ -421,7 +432,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // Eventos vazios (TRACK/status, mídia sem legenda) só confundem o LLM.
       if (!(m.content ?? "").trim()) continue;
       if (m.role === "user") history.push({ role: "user", content: m.content ?? "" });
-      else if (m.role === "assistant") history.push({ role: "assistant", content: m.content ?? "" });
+      else if (m.role === "assistant") {
+        history.push({ role: "assistant", content: m.content ?? "" });
+        if ((m.meta as Record<string, unknown> | null)?.origem === "agente") {
+          agentReplies.push(m.content ?? "");
+        }
+      }
     }
 
     // Última fala do agente — é a ela que o lead está respondendo. Usada para
@@ -1400,9 +1416,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // é loop. Caso real (Odonto Carioca Campo Grande, 21 97558-2703): o lead
     // repetiu "penso em ir no sábado" (porque foi ignorado), o userAlsoRepeated
     // desarmou este guard e a MESMA frase saiu 3x seguidas.
-    const priorAssistantMsgs = history.filter((m) => m.role === "assistant");
-    const assistantMsg1 = priorAssistantMsgs[priorAssistantMsgs.length - 1]?.content ?? "";
-    const assistantMsg2 = priorAssistantMsgs[priorAssistantMsgs.length - 2]?.content ?? "";
+    // Compara com as respostas que o AGENTE gerou, não com a última mensagem
+    // `assistant` qualquer — os ecos fragmentados da Helena entram como
+    // assistant e mascaravam a repetição (ver agentReplies).
+    const assistantMsg1 = agentReplies[agentReplies.length - 1] ?? "";
+    const assistantMsg2 = agentReplies[agentReplies.length - 2] ?? "";
     const jaRepetiuDuasVezes =
       !!assistantMsg1 &&
       !!assistantMsg2 &&
@@ -1411,10 +1429,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     // Guarda anti-loop: se o reply é praticamente idêntico à última msg do assistente,
     // o LLM está alucinando ao repetir conteúdo. Substitui por um avanço de proposta.
+    // Baseline da comparação: a última resposta REAL do agente. Cai para
+    // lastAssistantMsg quando ainda não há nenhuma (primeiro turno).
+    const baselineAnterior = assistantMsg1 || lastAssistantMsg;
     if (
-      lastAssistantMsg &&
+      baselineAnterior &&
       (!userAlsoRepeated || jaRepetiuDuasVezes) &&
-      isReplyTooSimilar(reply, lastAssistantMsg)
+      isReplyTooSimilar(reply, baselineAnterior)
     ) {
       duplicateReplyBlocked = true;
       // Log estruturado (JSON em uma linha) — facil de filtrar em Coolify/Datadog
@@ -1430,7 +1451,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           stage_effective: effectiveStage,
           model: route === "qualifier" ? ctx.qualifierModel : ctx.model,
           reply_preview: reply.slice(0, 120),
-          prev_preview: lastAssistantMsg.slice(0, 120),
+          prev_preview: baselineAnterior.slice(0, 120),
         })}`,
       );
       if (finalLeadData.appointment_id) {
