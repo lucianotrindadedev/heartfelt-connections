@@ -49,11 +49,36 @@ export function chaveDoDiaBrt(dataIso: string): string | null {
   return ABBR_PARA_CHAVE[abbr] ?? null;
 }
 
+/**
+ * Canoniza a chave de dia para comparação. As duas pontas falam vocabulários
+ * DIFERENTES: activeWeekdayKeys() devolve nome por extenso sem acento
+ * ("segunda","terca","quinta"), enquanto chaveDoDiaBrt() devolve a abreviação
+ * do business_hours_json ("seg","ter","qui").
+ *
+ * Comparar os dois cru fazia `diasAtivos.includes("qui")` ser SEMPRE falso — e
+ * o fallback afirmava "a gente não atende nesse dia" para TODOS os dias da
+ * semana. Regressão real introduzida em 23/07 e detectada em 03/08 (Odonto
+ * Carioca Campo Grande, 21 97558-2703): "sobre quinta-feira: a gente não atende
+ * nesse dia" numa clínica que atende Seg–Sex — 26 mensagens erradas em produção.
+ */
+export function canonizaDia(chave: string): string {
+  const base = (chave ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[-\s]*feira$/, "")
+    .trim();
+  return base.slice(0, 3);
+}
+
 export interface SlotOfferFallbackInput {
   /** Última mensagem do lead. */
   lastUserMsg: string;
-  /** Horários já ofertados (lead_data.offered_slots). */
-  offeredSlots: { date_label?: string | null; time_label?: string | null }[];
+  /** Horários já ofertados (lead_data.offered_slots). O `iso` é obrigatório
+   *  para saber se alguma vaga cai no dia pedido — sem ele não dá para impedir
+   *  a contradição "não atendo nesse dia, mas tenho vaga nesse dia". */
+  offeredSlots: { iso?: string | null; date_label?: string | null; time_label?: string | null }[];
   /** Dias ativos do expediente ("seg","ter",…) — de activeWeekdayKeys().
    *  Vazio = expediente não configurado; aí não afirmamos nada sobre o dia. */
   diasAtivos: string[];
@@ -81,18 +106,36 @@ export function buildSlotOfferFallback(
 ): SlotOfferFallbackResult {
   const slots = input.offeredSlots ?? [];
   const temOpcoes = slots.length > 0;
-  const opcoes = slots
+  const dataPedida = requestedDateFromText(input.lastUserMsg);
+
+  // Se há vaga no dia que o lead pediu, ela vem PRIMEIRO — ele pediu quinta,
+  // não faz sentido citar terça tendo quinta em mãos.
+  const noDiaPedido = dataPedida
+    ? slots.filter((s) => (s.iso ?? "").slice(0, 10) === dataPedida)
+    : [];
+  const paraCitar = noDiaPedido.length > 0 ? noDiaPedido : slots;
+  const opcoes = paraCitar
     .slice(0, 2)
     .map((s) => `${s.date_label ?? ""} às ${s.time_label ?? ""}`.trim())
     .join(" ou ");
 
-  const dataPedida = requestedDateFromText(input.lastUserMsg);
   const chave = dataPedida ? chaveDoDiaBrt(dataPedida) : null;
+
+  // INVARIANTE: se a AGENDA já tem vaga no dia pedido, esse dia NÃO está
+  // fechado — ponto final, independente do que o expediente configurado diga.
+  // Sem isto o texto se contradizia na mesma frase: "a gente não atende
+  // quinta-feira... mas consigo te encaixar quinta-feira 06/08 às 12:00".
+  // A agenda é a fonte de verdade sobre disponibilidade real; o expediente é
+  // só uma configuração que pode estar errada, desatualizada — ou comparada
+  // com o vocabulário errado, que foi o bug de origem.
+  const temVagaNoDiaPedido = noDiaPedido.length > 0;
 
   // Só afirmamos "não atendemos nesse dia" com expediente configurado.
   if (chave && input.diasAtivos.length > 0) {
     const nome = NOME_DIA[chave] ?? "esse dia";
-    if (!input.diasAtivos.includes(chave)) {
+    const ativos = new Set(input.diasAtivos.map(canonizaDia));
+    const diaAtivo = ativos.has(canonizaDia(chave));
+    if (!diaAtivo && !temVagaNoDiaPedido) {
       return {
         motivo: "dia_fechado",
         diaPedido: chave,
