@@ -20,6 +20,7 @@ import {
 import {
   agentUsesTurmaClassifier,
   backfillBookingFieldsFromHistory,
+  bookingFieldQuestion,
   defaultCommitmentQuestion,
   getBookingFieldsForChannel,
   getMissingBookingFields,
@@ -423,6 +424,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       else if (m.role === "assistant") history.push({ role: "assistant", content: m.content ?? "" });
     }
 
+    // Última fala do agente — é a ela que o lead está respondendo. Usada para
+    // saber se ACABAMOS de pedir o sobrenome: nesse caso a resposta ("Souza")
+    // completa o nome que já temos em vez de substituí-lo.
+    const lastAssistantText =
+      [...history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+
     // 6. Carrega contato Helena (uma vez — reaproveita em qualifier/scheduler)
     let helenaContact: HelenaContact | null = null;
     if (sessionId) {
@@ -805,6 +812,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           handoffStage = handsOffToScheduler ? proposedStage : "SLOT_OFFER";
           const qualifierPatch = sanitizeLeadDataPatch(
             (result.lead_data_patch ?? {}) as Partial<LeadData>,
+            { current: leadData, lastAssistantText },
           );
           const schedulerCtx: AgentContext = {
             ...ctx,
@@ -919,7 +927,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     // 11. Aplica transição validada + merge de lead_data
     const rawPatch = (result.lead_data_patch ?? {}) as Partial<LeadData>;
-    const sanitized = sanitizeLeadDataPatch(rawPatch);
+    const sanitized = sanitizeLeadDataPatch(rawPatch, { current: leadData, lastAssistantText });
     // Telemetria: detecta quando o LLM tentou gravar campo invalido (lixo)
     // que o sanitizer rejeitou. Util para mapear quais modelos alucinam mais.
     const rejectedCustomFields: string[] = [];
@@ -1126,7 +1134,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
       if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
         const nextField = missingFields[0]!;
-        reply = `Perfeito! Anotei esse horário para você.\n\n${nextField.question}`;
+        reply = `Perfeito! Anotei esse horário para você.\n\n${bookingFieldQuestion(nextField, finalLeadData)}`;
         newStage = "NAME_COLLECT";
       } else if (finalLeadData.selected_slot_iso) {
         reply =
@@ -1313,7 +1321,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
       if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
         const nextField = missingFields[0]!;
-        reply = `Perfeito, já anotei o horário aqui! 😊\n\n${nextField.question}`;
+        reply = `Perfeito, já anotei o horário aqui! 😊\n\n${bookingFieldQuestion(nextField, finalLeadData)}`;
         newStage = "NAME_COLLECT";
       } else if (
         finalLeadData.selected_slot_iso &&
@@ -1355,7 +1363,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // lead adivinhar a agenda E ainda deixa o cadastro incompleto. Caso real
         // (MF Beauty Magé, Instagram, 28/07): faltavam nome completo E WhatsApp.
         if (fallback.motivo === "sem_slots" && missingFields.length > 0) {
-          reply = missingFields[0]!.question;
+          reply = bookingFieldQuestion(missingFields[0]!, finalLeadData);
         }
         if (fallback.motivo === "dia_fechado" || fallback.motivo === "dia_pedido_disponivel") {
           console.warn(

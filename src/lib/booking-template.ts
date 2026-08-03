@@ -14,6 +14,11 @@ export interface BookingFieldDef {
   required?: boolean;
   /** Se "name", grava em lead_data.name em vez de custom_fields. */
   maps_to?: "name";
+  /**
+   * Campo de nome exige NOME + SOBRENOME (default para campos de nome).
+   * Só desligue (`false` explícito) se a operação aceitar primeiro nome sozinho.
+   */
+  require_full_name?: boolean;
 }
 
 export const GCAL_TEMPLATE_VARS = [
@@ -78,6 +83,9 @@ export function parseBookingFieldsJson(raw: string | undefined): BookingFieldDef
           question: String(o.question ?? "").trim(),
           required: o.required !== false,
           maps_to: o.maps_to === "name" ? ("name" as const) : undefined,
+          // undefined = default (exige sobrenome em campo de nome); só `false`
+          // explícito no JSON do proprietário libera primeiro nome sozinho.
+          require_full_name: o.require_full_name === false ? false : undefined,
         };
       })
       .filter((f) => f.key && f.question);
@@ -427,6 +435,57 @@ function getFieldValue(
   return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
+// ── Nome COMPLETO (nome + sobrenome) ────────────────────────────────────────
+//
+// Partículas de nome composto ("Ana DE Souza", "João DOS Santos"): sozinhas não
+// são sobrenome. Sem esta lista, "Ana de" passaria como nome completo.
+const NAME_PARTICLES = new Set([
+  "de", "da", "do", "das", "dos", "e", "di", "del", "della", "du", "van", "von",
+  "la", "le", "los", "san", "santa", "y", "bin", "el",
+]);
+
+function stripAccentsLower(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+}
+
+/**
+ * O texto tem NOME + SOBRENOME? Barreira DETERMINÍSTICA — o prompt sozinho não
+ * garante: o proprietário escrevia "peça o nome completo" e o modelo agendava com
+ * "Ana", criando cadastro de paciente incompleto na clínica (impossível de achar
+ * depois e duplicando pacientes).
+ *
+ * Conta só tokens que são de fato palavras de nome: descarta partículas ("de",
+ * "dos"), iniciais abreviadas ("Luciano T.") e qualquer coisa não-alfabética.
+ * Exige 2+ → "Ana" false, "Ana Souza" true, "Ana de Souza" true, "Ana S." false.
+ */
+export function hasSurname(value: string | null | undefined): boolean {
+  return nameWordCount(value) >= 2;
+}
+
+function nameWordCount(value: string | null | undefined): number {
+  const t = (value ?? "").trim();
+  if (!t) return 0;
+  return t
+    .split(/\s+/)
+    .map((w) => w.replace(/[.,;:!?]+$/g, "").trim())
+    .filter((w) => w.length >= 2 && /^[\p{L}][\p{L}'’-]*$/u.test(w))
+    .filter((w) => !NAME_PARTICLES.has(stripAccentsLower(w))).length;
+}
+
+/**
+ * Campo de nome que exige sobrenome. Data de nascimento e CPF ficam de fora
+ * mesmo quando a chave contém "child"/"nome" (ex.: "child_birth_date"), senão
+ * uma data nunca teria "sobrenome" e o campo ficaria eternamente pendente.
+ */
+function requiresFullName(field: BookingFieldDef): boolean {
+  if (field.require_full_name === false) return false;
+  if (isDateFieldKey(field) || isCpfField(field)) return false;
+  return isNameFieldKey(field);
+}
+
 export function getMissingBookingFields(
   fields: BookingFieldDef[],
   ld: LeadData,
@@ -449,6 +508,11 @@ export function getMissingBookingFields(
       f.maps_to === "name" ||
       f.key === "name";
     if (isNameField && looksLikeIntentMessage(v)) return true;
+    // Nome sem SOBRENOME conta como MISSING — o agente pergunta o resto do nome
+    // antes de agendar, em vez de criar o cadastro do paciente só com "Ana".
+    // Com o agendamento JÁ criado não reabrimos o assunto: cobrar sobrenome de
+    // quem já está confirmado só atrapalha (o cadastro já foi feito).
+    if (!ld.appointment_id && requiresFullName(f) && !hasSurname(v)) return true;
     return false;
   });
 }
@@ -459,6 +523,25 @@ export function getNextBookingFieldQuestion(
 ): BookingFieldDef | null {
   const missing = getMissingBookingFields(fields, ld);
   return missing[0] ?? null;
+}
+
+/**
+ * Pergunta a fazer ao lead pelo campo pendente. Quando o campo de nome já tem o
+ * PRIMEIRO nome e só falta o sobrenome, pede o SOBRENOME citando o que já temos
+ * ("Ana, me confirma seu sobrenome?") em vez de repetir "me envia seu nome
+ * completo" — repetir a pergunta inteira depois de o lead já ter respondido soa
+ * como se ninguém tivesse lido a resposta dele.
+ */
+export function bookingFieldQuestion(field: BookingFieldDef, ld: LeadData): string {
+  const current = getFieldValue(field.key, field.maps_to, ld);
+  if (!current || !requiresFullName(field) || hasSurname(current)) return field.question;
+  if (looksLikeIntentMessage(current)) return field.question;
+  const first = current.trim().split(/\s+/)[0] ?? "";
+  if (!first) return field.question;
+  const isSelfName = field.maps_to === "name" || field.key === "name";
+  return isSelfName
+    ? `${first}, me confirma seu sobrenome? Preciso do nome completo pro cadastro.`
+    : `Qual é o sobrenome de ${first}? Preciso do nome completo pro cadastro.`;
 }
 
 // ── Preflight pre-criar_agendamento ─────────────────────────────────────────
@@ -598,24 +681,35 @@ export function buildBookingFieldsPromptBlock(fields: BookingFieldDef[], ld: Lea
   const collected = fields
     .map((f) => {
       const v = getFieldValue(f.key, f.maps_to, ld);
-      return v ? `- ${f.label} (${f.key}): ${v}` : null;
+      if (!v) return null;
+      // Nome só com o primeiro nome NÃO está pronto — marcamos explicitamente,
+      // senão o modelo lê "já coletado" e agenda com o cadastro incompleto.
+      const incomplete = !ld.appointment_id && requiresFullName(f) && !hasSurname(v);
+      return `- ${f.label} (${f.key}): ${v}${incomplete ? " ⚠️ INCOMPLETO — falta o SOBRENOME" : ""}`;
     })
     .filter(Boolean)
     .join("\n");
 
   const missing = getMissingBookingFields(fields, ld);
-  const missingLines = missing.map((f) => `- ${f.key}: "${f.question}"`).join("\n");
+  const missingLines = missing.map((f) => `- ${f.key}: "${bookingFieldQuestion(f, ld)}"`).join("\n");
+  const fullNameFields = fields.filter(requiresFullName);
 
   return `# CAMPOS OBRIGATÓRIOS ANTES DO AGENDAMENTO
 
 ${collected ? `Já coletados:\n${collected}\n` : ""}
 ${missing.length > 0 ? `Ainda faltam (pergunte UM por vez, use lead_data_patch.custom_fields ou name):\n${missingLines}` : "Todos os campos obrigatórios já foram coletados — pode avançar para BOOKING após confirmação de compromisso (se configurada)."}
-
+${
+  fullNameFields.length > 0
+    ? `
+⚠️ NOME COMPLETO (obrigatório): ${fullNameFields.map((f) => f.key).join(", ")} só contam como preenchidos com NOME + SOBRENOME. Se o lead mandar só o primeiro nome ("Ana"), NÃO agende e NÃO avance: agradeça e peça o sobrenome ("Ana, me confirma seu sobrenome?"). O cadastro do paciente e a agenda ficam com esse nome — primeiro nome sozinho não identifica ninguém. Guarde o nome inteiro (primeiro + sobrenome) no mesmo campo.
+`
+    : ""
+}
 Regra: salve respostas em lead_data_patch:
 - name → lead_data_patch.name
 - demais campos → lead_data_patch.custom_fields.{key}
 
-Regra CRÍTICA: se um campo já aparece em "Já coletados" abaixo, NUNCA pergunte de novo.
+Regra CRÍTICA: se um campo já aparece em "Já coletados" abaixo (e sem ⚠️), NUNCA pergunte de novo.
 Telefone do WhatsApp já está disponível (# LEAD_DATA / effectivePhone) — não peça telefone salvo em custom_fields.`;
 }
 
@@ -869,6 +963,13 @@ function matchFieldFromAssistantQuestion(
   fields: BookingFieldDef[],
 ): BookingFieldDef | null {
   const t = assistantText.toLowerCase();
+  // "Ana, me confirma seu sobrenome?" / "Qual é o sobrenome de Pedro?" — pedido
+  // de sobrenome pertence ao campo de nome pendente. Sem isto a resposta
+  // ("Souza") não era capturada e o agente repetia a pergunta em loop.
+  if (/sobrenome/i.test(t)) {
+    const nameField = fields.find(requiresFullName);
+    if (nameField) return nameField;
+  }
   for (const f of fields) {
     const q = f.question.toLowerCase().slice(0, 24);
     if (q.length >= 8 && t.includes(q)) return f;
@@ -2035,8 +2136,13 @@ function pickSlotByPreference(
   };
 }
 
-export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadData> {
+export function sanitizeLeadDataPatch(
+  patch: Partial<LeadData>,
+  opts?: { current?: LeadData; lastAssistantText?: string },
+): Partial<LeadData> {
   const next: Partial<LeadData> = { ...patch };
+  const current = opts?.current;
+  const lastAssistantAskedForSurname = /sobrenome/i.test(opts?.lastAssistantText ?? "");
   if (next.custom_fields) {
     const cleaned: Record<string, string> = {};
     for (const [k, v] of Object.entries(next.custom_fields)) {
@@ -2074,6 +2180,19 @@ export function sanitizeLeadDataPatch(patch: Partial<LeadData>): Partial<LeadDat
     ) {
       delete next.name;
     }
+  }
+  // Pedimos o SOBRENOME e o modelo devolveu name="Souza", jogando fora o "Ana"
+  // que já tínhamos. Junta os dois — sem isto o campo nunca fica completo e o
+  // agente repete a pergunta. Só quando o assistente ACABOU de pedir o sobrenome:
+  // fora desse caso um nome novo é correção do lead ("na verdade é Bia") e deve
+  // substituir, não grudar.
+  if (
+    typeof next.name === "string" &&
+    next.name.trim() &&
+    current?.name?.trim() &&
+    lastAssistantAskedForSurname
+  ) {
+    next.name = mergePartialName(current.name, next.name);
   }
   return next;
 }
@@ -2477,13 +2596,18 @@ function captureBookingAnswer(
 
   if (field.maps_to === "name" || field.key === "name") {
     if (!looksLikePersonName(lastUser)) return {};
-    return { name: lastUser };
+    return { name: mergePartialName(leadData.name, lastUser, field) };
   }
 
   // Campos de nome (crianca / responsaveis) exigem que o conteudo
   // pareca nome de pessoa — nao texto livre.
   if (isChildNameField(field) || isGuardiansField(field)) {
     if (!looksLikePersonName(lastUser)) return {};
+    return {
+      custom_fields: {
+        [field.key]: mergePartialName(leadData.custom_fields?.[field.key], lastUser, field),
+      },
+    };
   }
 
   return {
@@ -2491,6 +2615,30 @@ function captureBookingAnswer(
       [field.key]: lastUser,
     },
   };
+}
+
+/**
+ * O lead respondeu o primeiro nome ("Ana") e, quando pedimos o sobrenome,
+ * respondeu só "Souza". Sem juntar, a captura sobrescreveria "Ana" por "Souza",
+ * o campo continuaria sem sobrenome e o agente perguntaria PARA SEMPRE — o
+ * mesmo loop do nome rejeitado (21 97859-4196). Só junta quando o valor guardado
+ * ainda está incompleto e a nova resposta não repete o que já temos.
+ */
+export function mergePartialName(
+  existing: string | null | undefined,
+  answer: string,
+  field?: BookingFieldDef,
+): string {
+  const prev = (existing ?? "").trim();
+  const next = answer.trim();
+  if (!prev) return next;
+  if (field && !requiresFullName(field)) return next;
+  // Já estava completo, ou o lead repetiu o nome inteiro → a resposta nova manda.
+  if (hasSurname(prev) || hasSurname(next)) return next;
+  const p = stripAccentsLower(prev);
+  const n = stripAccentsLower(next);
+  if (p === n || n.includes(p) || p.includes(n)) return next;
+  return `${prev} ${next}`;
 }
 
 /**

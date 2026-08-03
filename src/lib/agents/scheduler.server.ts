@@ -94,8 +94,10 @@ import {
 } from "./booking-failure";
 import {
   buildBookingFieldsPromptBlock,
+  bookingFieldQuestion,
   clearBookingFields,
   defaultCommitmentQuestion,
+  hasSurname,
   getBookingFields,
   getBookingFieldsForChannel,
   resolveCollectedPhone,
@@ -1950,6 +1952,23 @@ async function execCriarAgendamento(
   if (!leadName) {
     return { result: JSON.stringify({ ok: false, error: "name ausente" }) };
   }
+  // BARREIRA DETERMINÍSTICA: NOME + SOBRENOME. O prompt do proprietário pede
+  // "nome completo", mas o modelo agendava com "Ana" mesmo assim — cadastro de
+  // paciente incompleto na clínica, impossível de localizar depois e fonte de
+  // duplicidade. Regra fixa, não sujeita à interpretação do modelo.
+  if (!hasSurname(leadName)) {
+    console.warn(
+      `[scheduler] nome sem sobrenome — agendamento bloqueado conv=${ctx.conversationId} name="${leadName.slice(0, 60)}"`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error: "NOME_INCOMPLETO",
+        need_full_name: true,
+        motivo: `"${leadName}" tem só o primeiro nome — o cadastro do paciente exige nome e sobrenome.`,
+      }),
+    };
+  }
   // BARREIRA FINAL: valida via LLM que o nome é de fato um nome de pessoa real
   // (não agradecimento/recusa/apelido/frase). Nenhum evento é criado sem isso.
   const nameVerdict = await validatePatientNameLLM(ctx, leadName);
@@ -2437,7 +2456,7 @@ Campos válidos em lead_data_patch:${
 - interest (string): interesse principal identificado (ex.: "IMPLANTE", "BOTOX")`
       : ""
   }
-- name (string): nome COMPLETO do responsável / lead (nome + sobrenome) — guarde sempre o nome inteiro informado, nunca só o primeiro nome (vai para a agenda e cadastro do paciente)
+- name (string): nome COMPLETO do responsável / lead (nome + sobrenome) — guarde sempre o nome inteiro informado, nunca só o primeiro nome (vai para a agenda e cadastro do paciente). Se o lead mandou só o primeiro nome, PEÇA o sobrenome antes de agendar; quando ele responder só o sobrenome, grave aqui o nome INTEIRO (primeiro + sobrenome), nunca só o sobrenome
 - custom_fields (object): { "child_name": "...", "child_birth_date": "...", "guardians": "..." }
 - selected_slot_iso (string): ISO do slot escolhido (copie de offered_slots)
 - dentist_person_id (number): copie de offered_slots (Clinicorp)
@@ -2462,7 +2481,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 # ESTÁGIOS QUE VOCÊ OPERA
 
 - **SLOT_OFFER**: ofereça no máximo 2 horários ao lead. SEMPRE use a tool listar_horarios primeiro (só se selected_slot_iso ainda estiver vazio). Nunca invente horários. Se o lead pedir uma DATA específica (ex: "25 de julho", "20/07"), passe-a em \`data_alvo\` (YYYY-MM-DD) ao chamar listar_horarios — sem isso a busca não alcança datas distantes. **Se o lead perguntar por OUTRO dia/data, inclusive relativo ("tem amanhã?", "e sexta?", "semana que vem", "outro dia", "de manhã"), NÃO responda com pergunta de confirmação nem repita os horários antigos: chame listar_horarios com \`data_alvo\` daquele dia (calcule "amanhã"/"sexta" a partir de HOJE) e ofereça os horários reais. Consultar a agenda é obrigatório. ⛔ UMA pergunta de esclarecimento no MÁXIMO: assim que o lead indicar QUALQUER preferência (período "manhã"/"tarde" OU um dia), PARE de perguntar e chame listar_horarios IMEDIATAMENTE — nunca faça uma segunda pergunta tipo "amanhã de manhã ou outro dia?", traga os horários reais. Se o lead disser um TURNO ("de manhã", "à tarde", "de noite"), passe \`periodo\` ("manha"/"tarde"/"noite") — sem isso a busca traz só os horários mais cedo e pode dizer que a tarde não tem vaga mesmo tendo. 🚫 Numa pergunta de esclarecimento, NUNCA cite dias/datas específicos que você não confirmou na agenda ("segunda ou terça?", "que tal sexta?") — a agenda pode estar FECHADA nesses dias e você criaria uma expectativa falsa. Esclareça de forma NEUTRA ("prefere manhã ou tarde?", "algum dia específico?") e só CITE um dia/horário DEPOIS que listar_horarios o retornar; se o lead recusar sem dar preferência (ex.: "hoje não dá"), prefira já chamar listar_horarios e ofertar os dias REAIS.** Só avance para NAME_COLLECT quando selected_slot_iso estiver preenchido (lead escolheu horário ou turno manhã/tarde).
-- **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem).${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
+- **NAME_COLLECT**: só opere aqui se selected_slot_iso existir. Confirme o slot escolhido. NÃO chame listar_horarios. Colete os campos obrigatórios abaixo (UM por mensagem). ⚠️ O nome precisa vir COMPLETO (nome + sobrenome): se o lead mandar só o primeiro nome, peça o sobrenome antes de avançar.${commitmentEnabled ? ` Depois de todos os campos, pergunte compromisso: "${commitmentQ}"` : " Não pergunte sobre dentista/médico — use linguagem do negócio (visita, reunião, etc.)."}
 - **BOOKING**: o sistema tenta criar o agendamento automaticamente. Se criar_agendamento retornar ok=true, confirme ao lead e use next_stage="CONFIRMED". Se ok=false, NÃO diga que agendou. Só diga que o horário "ficou indisponível" quando error_kind="conflict" (horário ocupado) — e ofereça OUTRO horário, nunca o mesmo. Se error_kind="technical", NÃO minta sobre indisponibilidade: peça desculpas por um problema técnico e diga que vai tentar registrar de novo.
 - **CONFIRMED**: só após appointment_id em lead_data (evento criado na agenda). Agradeça e encerre. ⚠️ MAS se o lead disser que NÃO vai conseguir vir, tem imprevisto/logística, quer CANCELAR, REMARCAR ou está repensando ("vou pensar", "só ano que vem"), NÃO repita "sua visita está confirmada" ignorando isso: reconheça a dificuldade com empatia e ofereça REMARCAR pra um horário/dia melhor (remarcar_agendamento) — ou, se ele quiser mesmo desistir/cancelar, trate (cancelar_agendamento) ou escale pra humano. Nunca reafirme a visita por cima de uma objeção.
 
@@ -2480,6 +2499,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 7b. **MUDAR data/hora de um agendamento existente SÓ via remarcar_agendamento.** criar_agendamento não move evento já criado. NUNCA diga "atualizei/remarquei/mudei/ajustei o agendamento" antes de remarcar_agendamento retornar ok=true — senão a agenda fica no horário antigo e o lead aparece num horário inexistente.
 8. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
 9. **NUNCA repita pergunta de campo que já consta em LEAD_DATA / "Já coletados".** Telefone do lead já está no sistema — não peça telefone em custom_fields.
+9b. **NOME COMPLETO OBRIGATÓRIO:** nunca agende com só o primeiro nome. O nome vai para o CADASTRO DO PACIENTE e para a agenda — "Ana" não identifica ninguém e gera cadastro duplicado. Se o lead responder só o primeiro nome, agradeça e peça o sobrenome numa mensagem curta ("Ana, me confirma seu sobrenome?") antes de seguir; o sistema BLOQUEIA o agendamento até o nome ter nome + sobrenome.
 10. **ACOMPANHANTE (2ª pessoa no mesmo número):** não dá pra cadastrar duas pessoas com o mesmo WhatsApp. Se o lead quiser agendar TAMBÉM para outra pessoa que virá junto, NÃO crie segundo cadastro nem segundo agendamento: mantenha UM agendamento neste número e registre em \`lead_data_patch.notes\` que a consulta INCLUI OUTRA PESSOA (com o nome, ex.: "Inclui outra pessoa (acompanhante): Iraci — equipe cadastrar no local"). Ao lead, diga que deixou registrado que virá acompanhada e que a recepção cadastra a outra pessoa no dia. NUNCA prometa dois horários/cadastros separados.
 
 # FORMATO DE SAÍDA OBRIGATÓRIO
@@ -2493,7 +2513,7 @@ Responda APENAS em JSON válido:
 }
 
 Campos válidos em lead_data_patch:
-- name (string): nome COMPLETO do responsável / lead (nome + sobrenome) — guarde sempre o nome inteiro informado, nunca só o primeiro nome (vai para a agenda e cadastro do paciente)
+- name (string): nome COMPLETO do responsável / lead (nome + sobrenome) — guarde sempre o nome inteiro informado, nunca só o primeiro nome (vai para a agenda e cadastro do paciente). Se o lead mandou só o primeiro nome, PEÇA o sobrenome antes de agendar; quando ele responder só o sobrenome, grave aqui o nome INTEIRO (primeiro + sobrenome), nunca só o sobrenome
 - custom_fields (object): campos extras { "child_name": "...", "child_birth_date": "...", "guardians": "..." }
 - selected_slot_iso (string): ISO do slot escolhido (copie do offered_slots)
 - dentist_person_id (number): copie do offered_slots correspondente (Clinicorp)
@@ -2598,7 +2618,7 @@ ${fieldsBlock ? `${fieldsBlock}\n\n` : ""}${(() => {
       ? "lead_data_patch.name"
       : `lead_data_patch.custom_fields.${f.key}`;
   return `# PRÓXIMO CAMPO A COLETAR
-Campo pendente: ${f.key} — pergunta sugerida: "${f.question}"
+Campo pendente: ${f.key} — pergunta sugerida: "${bookingFieldQuestion(f, ld)}"
 ${lastUser ? `- Última mensagem do lead: "${lastUser.slice(0, 120)}"` : ""}
 - Se essa mensagem já responde o campo, salve em ${savePath} e avance para o próximo campo (não repita a pergunta).
 - Só faça a pergunta sugerida se o campo ainda estiver vazio após analisar a última mensagem do lead.`;
@@ -2843,6 +2863,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Nome rejeitado pelo validador (need_valid_name) — o turn NÃO deve agendar
   // nem ofertar horário: deve pedir o NOME COMPLETO do paciente.
   let invalidNameBlocked = !!autoBooking.toolResult?.includes('"need_valid_name":true');
+  // Nome sem SOBRENOME (need_full_name) — só falta completar o nome: NÃO limpa o
+  // que já temos, só pede o sobrenome.
+  let incompleteNameBlocked = !!autoBooking.toolResult?.includes('"need_full_name":true');
   // Classificação da última falha de booking do turn (conflito x técnica). Guia a
   // trava final: conflito → reoferta OUTROS horários; técnica → mensagem honesta
   // + retry/escala (nunca "indisponível" com o slot ainda livre).
@@ -2872,6 +2895,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         ? "Evento criado na agenda. Confirme ao lead e use next_stage=CONFIRMED."
         : invalidNameBlocked
           ? "O nome informado NÃO é um nome de pessoa válido. NÃO agende e NÃO ofereça horários. Peça gentilmente o NOME COMPLETO do paciente (nome e sobrenome) para finalizar. next_stage=NAME_COLLECT."
+          : incompleteNameBlocked
+          ? "O nome tem só o PRIMEIRO nome — falta o SOBRENOME. NÃO agende e NÃO ofereça horários. Chame o lead pelo primeiro nome e peça só o sobrenome (ex.: \"Ana, me confirma seu sobrenome?\"). Ao receber, guarde o nome INTEIRO (primeiro + sobrenome) em lead_data_patch.name. next_stage=NAME_COLLECT."
           : isGuardHoldFailure(autoBooking.toolResult)
           ? "O agendamento foi SEGURADO de propósito (veja error_kind e a instrução no resultado acima). NÃO houve problema técnico e NÃO houve indisponibilidade — não diga nenhuma das duas coisas ao lead. Siga exatamente a instrução do resultado e responda ao que o lead realmente pediu."
           : 'Falha ao registrar o agendamento. NÃO confirme. Se o resultado indicar error_kind="conflict" (horário ocupado), peça desculpas e ofereça OUTRO horário (nunca o que falhou). Se error_kind="technical" (falha ao registrar, horário segue livre), NÃO diga que ficou indisponível: peça desculpas por um problema técnico momentâneo e diga que já vai tentar registrar de novo.');
@@ -3053,6 +3078,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       if (outcome.result.includes('"need_valid_name":true')) {
         invalidNameBlocked = true;
       }
+      if (outcome.result.includes('"need_full_name":true')) {
+        incompleteNameBlocked = true;
+      }
       console.log(`[scheduler] tool ${tc.function.name} → ${outcome.result.slice(0, 200)}`);
 
       workingMessages.push({
@@ -3182,7 +3210,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       );
       reply =
         missing.length > 0
-          ? `Quase lá! Pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label}, ${missing[0]!.question}`
+          ? `Quase lá! Pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label}, ${bookingFieldQuestion(missing[0]!, ctx.leadData)}`
           : `Só falta confirmar pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label}. Posso confirmar? 😊`;
       // Mantém o slot escolhido (não limpa) — o stage segue na coleta.
       if (outStage === "CONFIRMED") outStage = "NAME_COLLECT";
@@ -3226,6 +3254,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       });
       if (lateBooking.toolResult?.includes('"need_valid_name":true')) {
         invalidNameBlocked = true;
+      }
+      if (lateBooking.toolResult?.includes('"need_full_name":true')) {
+        incompleteNameBlocked = true;
       }
       bookingValidationOnly =
         isValidationOnlyFailure(lateBooking.toolResult) || isGuardHoldFailure(lateBooking.toolResult);
@@ -3322,6 +3353,19 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     if (Object.keys(clearName).length > 0) mergedTelemetry.rejected_name_cleared = true;
   }
 
+  // ── Nome sem sobrenome: pede SÓ o sobrenome (nunca agenda com o 1º nome) ──
+  // Diferente do bloco acima: aqui o nome É um nome de pessoa, só está pela
+  // metade. NÃO limpamos o que já temos — o primeiro nome é reaproveitado na
+  // pergunta e a resposta ("Souza") é juntada pelo mergePartialName na captura.
+  if (incompleteNameBlocked && !invalidNameBlocked && !ctx.leadData.appointment_id) {
+    const first = (resolveBookingLeadName(ctx.leadData) ?? "").trim().split(/\s+/)[0] ?? "";
+    reply = first
+      ? `${first}, me confirma seu sobrenome, por favor? Preciso do nome completo pra registrar seu cadastro e finalizar o agendamento.`
+      : "Me envia seu nome completo (nome e sobrenome), por favor? Preciso dele pra registrar seu cadastro e finalizar o agendamento.";
+    outStage = "NAME_COLLECT";
+    mergedTelemetry.incomplete_name_blocked = true;
+  }
+
   // ── Trava de confirmação falsa ────────────────────────────────────────────
   // Se houve tentativa de agendar NESTE turn mas NÃO há appointment_id, a criação
   // falhou. O modelo às vezes diz "agendado com sucesso" mesmo assim — aqui
@@ -3344,7 +3388,13 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       "agendar_clinic_experts",
     ].includes(t),
   );
-  if (bookingAttempted && !ctx.leadData.appointment_id && !doubleBookingBlocked && !invalidNameBlocked) {
+  if (
+    bookingAttempted &&
+    !ctx.leadData.appointment_id &&
+    !doubleBookingBlocked &&
+    !invalidNameBlocked &&
+    !incompleteNameBlocked
+  ) {
     // Falha de VALIDAÇÃO (campo obrigatório faltando/inválido, ex.:
     // child_birth_date rejeitado pelo preflight): não é conflito de horário
     // nem falha técnica de create — o horário nem chegou a ser tentado de

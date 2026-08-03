@@ -30,7 +30,7 @@ export function classifyBookingError(msg: string): BookingFailureKind {
  * trata pedindo o dado — não devem virar "indisponível" nem "problema técnico".
  */
 const VALIDATION_MARKERS =
-  /"missing"\s*:|"need_valid_name"|NOME_INVALIDO|Campos obrigatórios|selected_slot_iso ausente|name ausente|telefone ausente/i;
+  /"missing"\s*:|"need_valid_name"|"need_full_name"|NOME_INVALIDO|NOME_INCOMPLETO|Campos obrigatórios|selected_slot_iso ausente|name ausente|telefone ausente/i;
 
 /**
  * `error_kind` emitidos pelos GUARDS do scheduler: o agendamento foi segurado de

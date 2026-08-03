@@ -16,6 +16,10 @@ import {
   clearRejectedBookingName,
   formatCpf,
   getMissingBookingFields,
+  hasSurname,
+  mergePartialName,
+  bookingFieldQuestion,
+  tryAutoCaptureBookingAnswer,
   mentionsUnavailability,
   absoluteDdMmFromText,
   relativeDateIsExplanatory,
@@ -1840,12 +1844,205 @@ describe("formatCpf", () => {
   });
 });
 
+// ── NOME COMPLETO (nome + sobrenome) antes de agendar ─────────────────────
+//
+// O prompt do proprietário pedia "nome completo" e o agente agendava com "Ana"
+// mesmo assim — cadastro de paciente sem sobrenome, impossível de localizar
+// depois e fonte de duplicidade. A regra virou determinística.
+
+const CLINIC_NAME_FIELD: BookingFieldDef = {
+  key: "name",
+  label: "Nome completo",
+  question: "Perfeito. Para finalizar, me envia por favor seu nome completo?",
+  required: true,
+  maps_to: "name",
+};
+
+describe("hasSurname", () => {
+  it.each([
+    ["Ana", false],
+    ["ana", false],
+    ["Ana Souza", true],
+    ["ana souza", true],
+    ["Ana de Souza", true],
+    ["João dos Santos", true],
+    ["Ana S.", false], // inicial abreviada não é sobrenome
+    ["Luciano T.", false],
+    ["Ana de", false], // só partícula depois do primeiro nome
+    ["Maria-Clara", false], // nome composto com hífen ainda é um nome só
+    ["Maria-Clara Fonseca", true],
+    ["", false],
+    ["   ", false],
+  ])("hasSurname(%j) → %s", (input, expected) => {
+    expect(hasSurname(input)).toBe(expected);
+  });
+
+  it("ignora nulo/indefinido", () => {
+    expect(hasSurname(null)).toBe(false);
+    expect(hasSurname(undefined)).toBe(false);
+  });
+});
+
+describe("getMissingBookingFields — nome sem sobrenome fica pendente", () => {
+  it("primeiro nome sozinho conta como MISSING", () => {
+    expect(getMissingBookingFields([CLINIC_NAME_FIELD], { name: "Ana" }).map((f) => f.key)).toEqual([
+      "name",
+    ]);
+  });
+
+  it("nome + sobrenome libera o campo", () => {
+    expect(getMissingBookingFields([CLINIC_NAME_FIELD], { name: "Ana Souza" })).toHaveLength(0);
+  });
+
+  it("agendamento JÁ criado não reabre a cobrança do sobrenome", () => {
+    expect(
+      getMissingBookingFields([CLINIC_NAME_FIELD], { name: "Ana", appointment_id: "evt_123" }),
+    ).toHaveLength(0);
+  });
+
+  it("require_full_name:false (opt-out do proprietário) aceita primeiro nome", () => {
+    const field: BookingFieldDef = { ...CLINIC_NAME_FIELD, require_full_name: false };
+    expect(getMissingBookingFields([field], { name: "Ana" })).toHaveLength(0);
+  });
+
+  it("data de nascimento NÃO é tratada como nome (não exige sobrenome)", () => {
+    const ld: LeadData = {
+      custom_fields: {
+        child_name: "Pedro Alves",
+        child_birth_date: "25/07/2019",
+        guardians: "Ana Souza",
+      },
+    };
+    expect(getMissingBookingFields(SCHOOL_FIELDS, ld)).toHaveLength(0);
+  });
+
+  it("nome da criança sem sobrenome segura o agendamento", () => {
+    const ld: LeadData = {
+      custom_fields: {
+        child_name: "Pedro",
+        child_birth_date: "25/07/2019",
+        guardians: "Ana Souza",
+      },
+    };
+    expect(getMissingBookingFields(SCHOOL_FIELDS, ld).map((f) => f.key)).toEqual(["child_name"]);
+  });
+});
+
+describe("isReadyForBooking — bloqueia com nome incompleto", () => {
+  const settings = { booking_fields_json: JSON.stringify([CLINIC_NAME_FIELD]) };
+  const base = { hasPhone: true, hasBookingIntegration: true };
+
+  it("não agenda com só o primeiro nome", () => {
+    const ld: LeadData = { name: "Ana", selected_slot_iso: "2026-08-10T13:00:00.000Z" };
+    expect(isReadyForBooking(ld, settings, base)).toBe(false);
+  });
+
+  it("agenda com nome + sobrenome", () => {
+    const ld: LeadData = { name: "Ana Souza", selected_slot_iso: "2026-08-10T13:00:00.000Z" };
+    expect(isReadyForBooking(ld, settings, base)).toBe(true);
+  });
+});
+
+describe("mergePartialName — resposta só com o sobrenome completa o nome", () => {
+  it('"Ana" + "Souza" → "Ana Souza"', () => {
+    expect(mergePartialName("Ana", "Souza")).toBe("Ana Souza");
+  });
+
+  it("lead repete o nome inteiro → substitui (não duplica)", () => {
+    expect(mergePartialName("Ana", "Ana Souza")).toBe("Ana Souza");
+  });
+
+  it("repetir o mesmo primeiro nome não vira 'Ana Ana'", () => {
+    expect(mergePartialName("Ana", "Ana")).toBe("Ana");
+    expect(mergePartialName("Ana", "ana")).toBe("ana");
+  });
+
+  it("nome já completo é substituído por um novo completo (correção)", () => {
+    expect(mergePartialName("Ana Souza", "Bia Lima")).toBe("Bia Lima");
+  });
+
+  it("sem valor anterior devolve a resposta", () => {
+    expect(mergePartialName(undefined, "Ana")).toBe("Ana");
+  });
+});
+
+describe("captura do sobrenome no histórico (sem loop)", () => {
+  const settings = { booking_fields_json: JSON.stringify([CLINIC_NAME_FIELD]) };
+
+  it('resposta "Souza" ao pedido de sobrenome junta com o "Ana" já guardado', () => {
+    const patch = tryAutoCaptureBookingAnswer(
+      "NAME_COLLECT",
+      { name: "Ana", selected_slot_iso: "2026-08-10T13:00:00.000Z" },
+      [
+        { role: "assistant", content: "Ana, me confirma seu sobrenome, por favor?" },
+        { role: "user", content: "Souza" },
+      ],
+      settings,
+    );
+    expect(patch.name).toBe("Ana Souza");
+  });
+
+  it("backfill do histórico chega no nome completo", () => {
+    const patch = backfillBookingFieldsFromHistory(
+      {},
+      [
+        { role: "assistant", content: "Para finalizar, me envia por favor seu nome completo?" },
+        { role: "user", content: "Ana" },
+        { role: "assistant", content: "Ana, me confirma seu sobrenome, por favor?" },
+        { role: "user", content: "Souza" },
+      ],
+      settings,
+    );
+    expect(patch.name).toBe("Ana Souza");
+  });
+});
+
+describe("bookingFieldQuestion — pede só o que falta", () => {
+  it("campo vazio → pergunta original", () => {
+    expect(bookingFieldQuestion(CLINIC_NAME_FIELD, {})).toBe(CLINIC_NAME_FIELD.question);
+  });
+
+  it("já tem o primeiro nome → pede o sobrenome citando o nome", () => {
+    const q = bookingFieldQuestion(CLINIC_NAME_FIELD, { name: "Ana" });
+    expect(q).toMatch(/^Ana,/);
+    expect(q).toMatch(/sobrenome/i);
+  });
+
+  it("nome da criança incompleto → pergunta pelo sobrenome da criança", () => {
+    const childField = SCHOOL_FIELDS[0]!;
+    const q = bookingFieldQuestion(childField, { custom_fields: { child_name: "Pedro" } });
+    expect(q).toMatch(/sobrenome de Pedro/i);
+  });
+});
+
+describe("sanitizeLeadDataPatch — sobrenome do LLM completa o nome", () => {
+  it('patch name="Souza" logo após pedirmos o sobrenome vira "Ana Souza"', () => {
+    const out = sanitizeLeadDataPatch(
+      { name: "Souza" },
+      { current: { name: "Ana" }, lastAssistantText: "Ana, me confirma seu sobrenome?" },
+    );
+    expect(out.name).toBe("Ana Souza");
+  });
+
+  it("sem pedido de sobrenome, nome novo SUBSTITUI (correção do lead)", () => {
+    const out = sanitizeLeadDataPatch(
+      { name: "Bia" },
+      { current: { name: "Ana" }, lastAssistantText: "Qual horário fica melhor pra você?" },
+    );
+    expect(out.name).toBe("Bia");
+  });
+
+  it("sem contexto mantém o comportamento antigo", () => {
+    expect(sanitizeLeadDataPatch({ name: "Souza" }).name).toBe("Souza");
+  });
+});
+
 describe("CPF no pipeline de booking", () => {
   it("getMissingBookingFields: CPF invalido conta como pendente", () => {
-    const invalido: LeadData = { name: "Laís", custom_fields: { cpf: "9h" } };
+    const invalido: LeadData = { name: "Laís Moreira", custom_fields: { cpf: "9h" } };
     expect(getMissingBookingFields(CPF_FIELDS, invalido).map((f) => f.key)).toContain("cpf");
 
-    const valido: LeadData = { name: "Laís", custom_fields: { cpf: "414.087.718-96" } };
+    const valido: LeadData = { name: "Laís Moreira", custom_fields: { cpf: "414.087.718-96" } };
     expect(getMissingBookingFields(CPF_FIELDS, valido)).toHaveLength(0);
   });
 
