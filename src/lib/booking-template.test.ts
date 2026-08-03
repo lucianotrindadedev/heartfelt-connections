@@ -1946,3 +1946,75 @@ describe("nameIsAttendantSelfIntroduction (caso Odonto Carioca 21 96932-0210)", 
     expect([...attendantSelfIntroducedNames(saudacaoVal)]).toEqual(["val"]);
   });
 });
+
+// ── pergunta que É escolha (caso Marco, Odonto Carioca 21 97457-6765) ──────
+// "Consegue confirmar uma avaliação para amanhã às 09:15?" cita dia + horário
+// ofertados; o "?" final é cortesia, não indecisão. O gate de pergunta zerava
+// a auto-seleção → criar_agendamento falhava por slot ausente → o agente
+// re-oferecia os MESMOS horários e um humano teve que assumir (03/08/2026).
+
+describe("tryAutoSelectOfferedSlot — pergunta educada que cita horário ofertado", () => {
+  const slot = (iso: string, dl: string, tl: string) => ({
+    iso,
+    end_iso: iso,
+    date_label: dl,
+    time_label: tl,
+  });
+  const SLOTS = [
+    slot("2026-08-04T09:15:00-03:00", "terça-feira, 04/08", "09:15"),
+    slot("2026-08-04T11:00:00-03:00", "terça-feira, 04/08", "11:00"),
+    slot("2026-08-05T09:00:00-03:00", "quarta-feira, 05/08", "09:00"),
+  ];
+  const OFERTA =
+    "Consegui dois horários: • terça-feira, 04/08 às 09:15 • quarta-feira, 05/08 às 09:00 Qual fica melhor?";
+  const escolher = (msg: string, slots = SLOTS, oferta = OFERTA) =>
+    tryAutoSelectOfferedSlot(
+      "SLOT_OFFER",
+      { offered_slots: slots as never },
+      [
+        { role: "assistant", content: oferta },
+        { role: "user", content: msg },
+      ],
+    ).selected_slot_iso;
+
+  it("a frase real do lead seleciona o slot pedido", () => {
+    expect(escolher("Consegue confirmar uma avaliação para amanhã às 09:15?")).toBe(
+      "2026-08-04T09:15:00-03:00",
+    );
+  });
+
+  it("outras perguntas educadas com horário ofertado também selecionam", () => {
+    expect(escolher("pode ser às 09:15?")).toBe("2026-08-04T09:15:00-03:00");
+    expect(escolher("dá pra marcar amanhã às 09:15?")).toBe("2026-08-04T09:15:00-03:00");
+  });
+
+  it("sem o '?' o comportamento é o mesmo (não dependia da pontuação)", () => {
+    expect(escolher("Consegue confirmar uma avaliação para amanhã às 09:15")).toBe(
+      "2026-08-04T09:15:00-03:00",
+    );
+  });
+
+  // NÃO-REGRESSÃO: pergunta ABERTA continua sendo pedido de opções, nunca
+  // escolha (caso Costa Lima Recreio, Luciano 32 99160-7088, 15/07).
+  const TARDE = [
+    slot("2026-08-04T13:00:00-03:00", "terça-feira, 04/08", "13:00"),
+    slot("2026-08-04T16:45:00-03:00", "terça-feira, 04/08", "16:45"),
+  ];
+  const OFERTA_TARDE = "Tenho terça-feira, 04/08 às 13:00 ou às 16:45. Qual prefere?";
+
+  it("pergunta aberta (sem horário ofertado citado) NÃO seleciona", () => {
+    for (const m of [
+      "eu trabalho até esse horário, tem mais tarde?",
+      "tem outro dia?",
+      "tem algum de manhã?",
+      "e de manhã?",
+      "tem mais tarde?",
+    ]) {
+      expect(escolher(m, TARDE, OFERTA_TARDE), m).toBeUndefined();
+    }
+  });
+
+  it("'tem outro/mais' barra mesmo citando horário ofertado", () => {
+    expect(escolher("tem outro horário além das 13:00?", TARDE, OFERTA_TARDE)).toBeUndefined();
+  });
+});

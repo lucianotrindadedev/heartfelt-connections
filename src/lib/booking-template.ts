@@ -1919,13 +1919,34 @@ function pickSlotByPreference(
   // Negação/explicação de data NÃO é escolha de horário — não auto-selecionar.
   if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
 
-  // PERGUNTA nunca é escolha. "eu trabalho até esse horário, tem mais tarde?"
-  // é um pedido de OPÇÕES da tarde — o path de turno selecionava o primeiro
-  // slot da tarde (13:00) como se o lead tivesse escolhido, e o booking ia
-  // atrás desse horário mesmo o lead aceitando depois OUTRO (16:45). Caso real
-  // (Costa Lima Recreio, Luciano 32 99160-7088, 15/07). O agente deve
+  // PERGUNTA ABERTA nunca é escolha. "eu trabalho até esse horário, tem mais
+  // tarde?" é um pedido de OPÇÕES da tarde — o path de turno selecionava o
+  // primeiro slot da tarde (13:00) como se o lead tivesse escolhido, e o
+  // booking ia atrás desse horário mesmo o lead aceitando depois OUTRO (16:45).
+  // Caso real (Costa Lima Recreio, Luciano 32 99160-7088, 15/07). O agente deve
   // RESPONDER a pergunta (listar as opções), não travar uma escolha.
-  if (/\?\s*$/.test(t) || /\btem\s+(mais|outro|outra|algum|alguma)\b/.test(t)) return null;
+  if (/\btem\s+(mais|outro|outra|algum|alguma)\b/.test(t)) return null;
+
+  // ...MAS terminar em "?" não basta para desqualificar: em português pedir
+  // educadamente é interrogativo. "Consegue confirmar uma avaliação para amanhã
+  // às 09:15?" é uma ESCOLHA explícita (dia + hora) com verniz de cortesia.
+  // Caso real (Odonto Carioca Campo Grande, Marco 21 97457-6765, 03/08): o "?"
+  // final zerou a auto-seleção, criar_agendamento falhou por slot ausente, o
+  // agente re-ofereceu os MESMOS horários que o lead tinha acabado de escolher
+  // e um humano precisou assumir para agendar.
+  //
+  // A exceção é estreita de propósito: só quando a pergunta cita um horário que
+  // BATE com um slot realmente ofertado. Pergunta genuína de opções ("tem mais
+  // tarde?", "e de manhã?") não cita horário ofertado e continua barrada acima
+  // ou aqui.
+  if (/\?\s*$/.test(t)) {
+    const horariosCitados = timesInText(t);
+    const citaHorarioOfertado = slots.some((s) => {
+      const time = normalizeTimeLabel(s.time_label);
+      return time !== "" && horariosCitados.has(time);
+    });
+    if (!citaHorarioOfertado) return null;
+  }
 
   // Data relativa ("amanhã", "hoje", "depois de amanhã"). O \b em relativo
   // evita o bug clássico: "amanhã" contém "manhã".
