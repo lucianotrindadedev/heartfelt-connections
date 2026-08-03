@@ -12,6 +12,7 @@
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
 import { buildSlotOfferFallback } from "./slot-offer-fallback";
+import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
 import { activeWeekdayKeys } from "@/lib/tools/google-calendar.server";
 import {
   resolveEffectivePhone,
@@ -1132,13 +1133,22 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // lista antiga (agendei/agendado/marquei/confirmado) batia — a confirmação
     // falsa passou direto por este guard. Ancoradas com "pra/para" pra não
     // pegar usos genéricos de "reservado"/"marcado" fora de contexto de agenda.
+    // Existe algum horário EM JOGO nesta conversa? Sem isso não há agendamento
+    // que o agente possa estar confirmando falsamente — e as formas soltas
+    // ("agendado", "confirmado") quase sempre falam de OUTRA coisa: o retorno
+    // que o dentista marcou, uma consulta antiga, um plano de tratamento.
+    // Caso real (Odonto Sorrisos, 87 99625-9078, 03/08): o lead disse "o doutor
+    // disse que com 3 meses eu ia voltar pra fazer os implantes" e a resposta do
+    // agente — 2ª mensagem da conversa, antes de qualquer horário existir —
+    // virou "tive um problema ao registrar sua visita na agenda".
+    const horarioEmJogo =
+      !!(finalLeadData.selected_slot_iso ?? "").trim() ||
+      (finalLeadData.offered_slots?.length ?? 0) > 0;
     if (
       hasBookingIntegration &&
       !finalLeadData.appointment_id &&
       !appointmentJustCancelled &&
-      /\b(agendei|agendado|marquei|confirmad[oa]|visita guiada para|reservei|reservad[oa]\s+(?:pra|para)|marcad[oa]\s+(?:pra|para))\b/i.test(
-        reply,
-      )
+      claimsBookingWithoutAppointment({ reply, horarioEmJogo })
     ) {
       falseBookingClaimBlocked = true;
       console.warn(
@@ -1157,8 +1167,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           "Perfeito! Anotei esse horário. Estou finalizando o registro na agenda e já te confirmo.";
         newStage = "BOOKING";
       } else {
-        reply =
-          "Desculpe, tive um problema ao registrar sua visita na agenda agora. Pode me confirmar o horário que você prefere? Vou tentar registrar de novo.";
+        // NÃO inventar falha técnica: nada foi tentado. O texto antigo dizia
+        // "tive um problema ao registrar sua visita" e pedia para confirmar um
+        // horário que o lead nunca deu — 179 vezes em produção, 46 delas em
+        // RECEPTION/QUALIFICATION, onde não havia sequer horário ofertado.
+        // Aqui a resposta é honesta (nada foi reservado) e avança de verdade.
+        reply = noBookingYetReply(finalLeadData.offered_slots ?? []);
         if (newStage === "CONFIRMED" || stage === "NAME_COLLECT" || stage === "BOOKING") {
           newStage = finalLeadData.selected_slot_iso ? "BOOKING" : "SLOT_OFFER";
         } else if (route === "qualifier" && hasBookingIntegration) {
@@ -1574,6 +1588,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           // Telemetria: marcadores de intervencoes deterministicas.
           duplicate_reply_blocked: duplicateReplyBlocked || undefined,
           false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
+          // Quando um guard TROCA o texto, a resposta original do LLM some — foi
+          // o que impediu de saber qual palavra disparou o false_booking_claim
+          // no caso Odonto Sorrisos (87 99625-9078). Guardamos o original para
+          // conseguir auditar o gatilho depois.
+          reply_llm_original:
+            reply !== result.reply ? result.reply.slice(0, 400) : undefined,
           false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
           confirmed_objection_blocked: confirmedObjectionBlocked || undefined,
           stall_reply_blocked: stallReplyBlocked || undefined,
