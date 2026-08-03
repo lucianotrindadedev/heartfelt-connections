@@ -24,7 +24,10 @@ import {
   getBookingFieldsForChannel,
   getMissingBookingFields,
   isCommitmentRequired,
+  isPointingGesture,
   isReadyForBooking,
+  pointingDisambiguationReply,
+  slotsOfferedInLastTurn,
   type BookingChannelContext,
   looksLikeSchedulingPreference,
   mergeLeadDataPatch,
@@ -1100,7 +1103,40 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let falseBookingClaimBlocked = false;
     let falseRescheduleClaimBlocked = false;
     let stallReplyBlocked = false;
+    let pointingDisambiguated = false;
     let forcedSchedulingAdvance = userAcceptedSchedulingProposal;
+
+    // GESTO DE APONTAR AMBÍGUO ("☝🏼" com 2+ horários ofertados): o gesto diz
+    // "esse aí", mas não QUAL. tryAutoSelectOfferedSlot já se recusa a chutar
+    // (agendar o horário errado é o erro mais caro aqui), então sem este guard
+    // o lead recebe uma pergunta genérica — "você quer seguir com o agendamento
+    // agora?" — que não avança nada. Caso real (Odonto Carioca Campo Grande,
+    // Marco 21 97457-6765, 03/08): o lead apontou, ouviu a pergunta genérica e
+    // um humano precisou assumir 20 min depois. Aqui devolvemos uma pergunta
+    // FECHADA nomeando as opções que o agente acabou de falar.
+    if (
+      hasBookingIntegration &&
+      !finalLeadData.appointment_id &&
+      !(finalLeadData.selected_slot_iso ?? "").trim() &&
+      isPointingGesture(lastUserMsg)
+    ) {
+      const apontados = slotsOfferedInLastTurn(finalLeadData, history);
+      const desambigua = pointingDisambiguationReply(apontados);
+      if (desambigua) {
+        pointingDisambiguated = true;
+        console.warn(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "pointing_gesture_disambiguated",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            opcoes: apontados.map((s) => `${s.date_label} ${s.time_label}`),
+          })}`,
+        );
+        reply = desambigua;
+        newStage = "SLOT_OFFER";
+      }
+    }
 
     // Lista de palavras que indicam "confirmei um agendamento". "reservado"/
     // "marcado" entraram depois de um caso real (Clínica Bomfim, 09/07): o
@@ -1544,6 +1580,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           tools_called: result.tools_called,
           // Telemetria: marcadores de intervencoes deterministicas.
           duplicate_reply_blocked: duplicateReplyBlocked || undefined,
+          pointing_gesture_disambiguated: pointingDisambiguated || undefined,
           false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
           false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
           confirmed_objection_blocked: confirmedObjectionBlocked || undefined,

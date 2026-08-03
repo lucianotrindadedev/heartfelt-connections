@@ -2281,6 +2281,62 @@ export function isSlotAcceptanceMessage(text: string): boolean {
  * Quando o lead aceita um horário ("Pode ser", "Sim", "14:40"), grava
  * selected_slot_iso a partir de offered_slots — evita reservar slot antigo/errado.
  */
+// Emoji de APONTAR: ☝ (com/sem variation selector e tom de pele), 👆, ⬆, 🔝.
+const PONTEIRO_RE = /[☝⬆]️?[\u{1F3FB}-\u{1F3FF}]?|\u{1F446}[\u{1F3FB}-\u{1F3FF}]?|\u{1F51D}/gu;
+// Palavras que, sozinhas ao lado do emoji, não acrescentam informação de
+// escolha. "primeiro"/"segundo" NÃO entram: são ordinais e têm caminho próprio.
+const PONTEIRO_FILLER = new Set([
+  "esse", "essa", "este", "esta", "isso", "aquele", "aquela",
+  "o", "a", "os", "as", "esses", "essas", "sim", "ok", "eh", "e",
+]);
+
+/**
+ * A mensagem é APENAS um gesto de apontar ("☝🏼", "☝🏼☝🏼☝🏼", "esse ☝🏼").
+ *
+ * O lead está indicando o que o agente acabou de oferecer, mas o gesto NÃO diz
+ * QUAL — por isso ele nunca deve, sozinho, escolher entre várias opções. Caso
+ * real (Odonto Carioca Campo Grande, Marco 21 97457-6765, 03/08): o lead pediu
+ * "amanhã às 09:15?", o agente re-ofertou, o lead respondeu "☝🏼☝🏼☝🏼" e o
+ * agente perguntou de novo "você quer seguir com o agendamento agora?" — um
+ * humano teve que assumir.
+ */
+export function isPointingGesture(text: string): boolean {
+  const raw = (text ?? "").trim();
+  if (!raw) return false;
+  if (!PONTEIRO_RE.test(raw)) {
+    PONTEIRO_RE.lastIndex = 0;
+    return false;
+  }
+  PONTEIRO_RE.lastIndex = 0;
+  const resto = raw
+    .replace(PONTEIRO_RE, " ")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  PONTEIRO_RE.lastIndex = 0;
+  return resto.every((w) => PONTEIRO_FILLER.has(w));
+}
+
+/**
+ * Resposta para o gesto de apontar que ficou AMBÍGUO (o agente ofertou 2+
+ * horários). Em vez do genérico "você quer seguir com o agendamento agora?" —
+ * que fez o lead repetir o gesto e o atendimento ir para um humano —, devolve
+ * uma pergunta FECHADA nomeando as opções que o agente acabou de falar.
+ * Retorna null quando não há opções para nomear (aí o fluxo normal segue).
+ */
+export function pointingDisambiguationReply(spokenSlots: OfferedSlot[]): string | null {
+  const opcoes = spokenSlots.slice(0, 3);
+  if (opcoes.length < 2) return null;
+  const rotulos = opcoes.map((s) => `${s.date_label} às ${s.time_label}`);
+  const ultimo = rotulos.pop()!;
+  return (
+    `Só pra eu não marcar errado 😊 você quer ${rotulos.join(", ")} ou ${ultimo}?`
+  );
+}
+
 export function tryAutoSelectOfferedSlot(
   stage: string,
   leadData: LeadData,
@@ -2306,6 +2362,16 @@ export function tryAutoSelectOfferedSlot(
 
   const prefPatch = pickSlotByPreference(slots, lastUser, assistantText, lastTurnText);
   if (prefPatch) return prefPatch;
+
+  // GESTO DE APONTAR ("☝🏼"): vale como aceite APENAS quando o agente ofertou
+  // exatamente UM horário no último turno — aí não há o que desambiguar. Com
+  // duas ou mais opções o gesto é ambíguo (o "de cima" é provável, não certo) e
+  // chutar agendaria o horário errado, o erro mais caro nesta base. Nesse caso
+  // devolvemos {} e quem responde é o guard de desambiguação no orquestrador.
+  if (isPointingGesture(lastUser)) {
+    const apontados = slotsOfferedInLastTurn(leadData, history);
+    return apontados.length === 1 ? patchFromSlot(apontados[0]!) : {};
+  }
 
   if (!isSlotAcceptanceMessage(lastUser)) return {};
 

@@ -35,6 +35,8 @@ import {
   slotsOfferedInLastTurn,
   isReadyForBooking,
   isSlotAcceptanceMessage,
+  isPointingGesture,
+  pointingDisambiguationReply,
   isValidCpf,
   looksLikeBirthDate,
   looksLikeDecline,
@@ -1944,5 +1946,82 @@ describe("nameIsAttendantSelfIntroduction (caso Odonto Carioca 21 96932-0210)", 
 
   it("attendantSelfIntroducedNames coleta os nomes em minúsculas", () => {
     expect([...attendantSelfIntroducedNames(saudacaoVal)]).toEqual(["val"]);
+  });
+});
+
+// ── gesto de apontar (caso Marco, Odonto Carioca 21 97457-6765, 03/08) ─────
+// O lead respondeu "☝🏼☝🏼☝🏼" à oferta e o agente perguntou de novo "você quer
+// seguir com o agendamento agora?" — um humano teve que assumir 20 min depois.
+
+describe("isPointingGesture", () => {
+  it("reconhece as formas de apontar", () => {
+    for (const m of ["☝🏼", "☝🏼☝🏼☝🏼", "☝️", "☝", "👆", "👆🏼", "🔝", "esse ☝🏼", "☝🏼 sim", "isso ☝️"]) {
+      expect(isPointingGesture(m), m).toBe(true);
+    }
+  });
+
+  it("NÃO confunde com mensagem que tem conteúdo próprio", () => {
+    for (const m of ["o primeiro ☝🏼", "☝🏼 mas às 14h", "quero o de terça ☝🏼", "amanhã às 09:15"]) {
+      expect(isPointingGesture(m), m).toBe(false);
+    }
+  });
+
+  it("texto sem emoji nunca é gesto", () => {
+    expect(isPointingGesture("esse")).toBe(false);
+    expect(isPointingGesture("")).toBe(false);
+    expect(isPointingGesture("sim")).toBe(false);
+  });
+
+  it("é idempotente (regex global não vaza lastIndex entre chamadas)", () => {
+    for (let i = 0; i < 5; i++) expect(isPointingGesture("☝🏼")).toBe(true);
+  });
+});
+
+describe("tryAutoSelectOfferedSlot — gesto de apontar", () => {
+  const slot = (iso: string, dl: string, tl: string) => ({ iso, end_iso: iso, date_label: dl, time_label: tl });
+  const A = slot("2026-08-04T09:15:00-03:00", "terça-feira, 04/08", "09:15");
+  const B = slot("2026-08-05T09:00:00-03:00", "quarta-feira, 05/08", "09:00");
+  const escolher = (msg: string, oferta: string, slots = [A, B]) =>
+    tryAutoSelectOfferedSlot("SLOT_OFFER", { offered_slots: slots as never }, [
+      { role: "assistant", content: oferta },
+      { role: "user", content: msg },
+    ]).selected_slot_iso;
+
+  it("UM horário ofertado → o gesto vale como aceite", () => {
+    expect(escolher("☝🏼", "Tenho terça-feira, 04/08 às 09:15. Fica bom?")).toBe(
+      "2026-08-04T09:15:00-03:00",
+    );
+  });
+
+  it("DOIS horários ofertados → NÃO chuta (ambíguo)", () => {
+    const oferta = "Tenho terça-feira, 04/08 às 09:15 ou quarta-feira, 05/08 às 09:00. Qual prefere?";
+    expect(escolher("☝🏼☝🏼☝🏼", oferta)).toBeUndefined();
+    expect(escolher("☝🏼", oferta)).toBeUndefined();
+  });
+
+  it("ordinal junto do emoji continua resolvendo pela palavra", () => {
+    const oferta = "Tenho terça-feira, 04/08 às 09:15 ou quarta-feira, 05/08 às 09:00. Qual prefere?";
+    expect(escolher("o primeiro ☝🏼", oferta)).toBe("2026-08-04T09:15:00-03:00");
+  });
+});
+
+describe("pointingDisambiguationReply", () => {
+  const slot = (dl: string, tl: string) => ({ iso: "x", end_iso: "x", date_label: dl, time_label: tl });
+
+  it("nomeia as opções numa pergunta fechada", () => {
+    const r = pointingDisambiguationReply([
+      slot("terça-feira, 04/08", "09:15"),
+      slot("quarta-feira, 05/08", "09:00"),
+    ] as never);
+    expect(r).toContain("terça-feira, 04/08 às 09:15");
+    expect(r).toContain("quarta-feira, 05/08 às 09:00");
+    expect(r).toContain("?");
+    // não é a pergunta genérica que travou o atendimento do Marco
+    expect(r).not.toContain("seguir com o agendamento agora");
+  });
+
+  it("com menos de 2 opções não há o que desambiguar", () => {
+    expect(pointingDisambiguationReply([slot("terça-feira, 04/08", "09:15")] as never)).toBeNull();
+    expect(pointingDisambiguationReply([])).toBeNull();
   });
 });
