@@ -454,31 +454,72 @@ const clinicExpertsProfessionalSchema = z.object({
   business_hours_json: z.string().max(4000).optional(),
 });
 
+// Unidade (multi-unidade, migração 0053): cada uma é uma conta Clinic Experts
+// separada (token próprio). `api_token` plaintext é opcional no save — sem ele,
+// o api_token_enc já salvo daquela unidade (match por `uid`) é preservado.
+// `use_top_level_token` é a flag transitória do fluxo "converter em
+// multi-unidade": copia o token top-level já criptografado para a unidade.
+const clinicExpertsUnidadeSchema = z.object({
+  uid: z.string().min(1).max(40),
+  label: z.string().min(1).max(80),
+  descricao: z.string().max(500).optional(),
+  api_token: z.string().optional(),
+  use_top_level_token: z.boolean().optional(),
+  procedure_id: z.number().int().optional(),
+  procedure_name: z.string().optional(),
+  duracao_consulta: z.number().int().positive().max(1440).optional(),
+  professionals: z.array(clinicExpertsProfessionalSchema).optional(),
+});
+
+function mapProfessionalsForUi(raw: unknown): {
+  uuid: string;
+  name: string;
+  duracao_minutos?: number;
+  business_hours_json: string;
+}[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[]).map((p) => ({
+    uuid: String(p.uuid ?? ""),
+    name: String(p.name ?? ""),
+    duracao_minutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+    business_hours_json: typeof p.business_hours_json === "string" ? p.business_hours_json : "",
+  }));
+}
+
 export const getClinicExpertsConfig = createServerFn({ method: "GET" })
   .inputValidator((d) => accountIdInput.parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
     const { data: cfg } = await sb
       .from("clinic_experts_config")
-      .select("procedure_id, procedure_name, duracao_consulta, professionals, ativo, api_token_enc")
+      .select(
+        "procedure_id, procedure_name, duracao_consulta, professionals, unidades, ativo, api_token_enc",
+      )
       .eq("account_id", data.accountId)
       .single();
+
+    const rawUnidades = Array.isArray(cfg?.unidades)
+      ? (cfg.unidades as Record<string, unknown>[])
+      : [];
 
     return {
       ativo: cfg?.ativo ?? false,
       procedure_id: (cfg?.procedure_id as number | null) ?? null,
       procedure_name: (cfg?.procedure_name as string | null) ?? "",
       duracao_consulta: (cfg?.duracao_consulta as number | null) ?? 40,
-      professionals: Array.isArray(cfg?.professionals)
-        ? (cfg.professionals as Record<string, unknown>[]).map((p) => ({
-            uuid: String(p.uuid ?? ""),
-            name: String(p.name ?? ""),
-            duracao_minutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
-            business_hours_json:
-              typeof p.business_hours_json === "string" ? p.business_hours_json : "",
-          }))
-        : [],
+      professionals: mapProfessionalsForUi(cfg?.professionals),
       token_configured: !!cfg?.api_token_enc,
+      // Unidades: o api_token_enc NUNCA sai daqui — só o flag por unidade.
+      unidades: rawUnidades.map((u) => ({
+        uid: String(u.uid ?? ""),
+        label: String(u.label ?? ""),
+        descricao: typeof u.descricao === "string" ? u.descricao : "",
+        procedure_id: typeof u.procedure_id === "number" ? u.procedure_id : null,
+        procedure_name: (u.procedure_name as string | null) ?? "",
+        duracao_consulta: typeof u.duracao_consulta === "number" ? u.duracao_consulta : 40,
+        professionals: mapProfessionalsForUi(u.professionals),
+        token_configured: typeof u.api_token_enc === "string" && !!u.api_token_enc,
+      })),
     };
   });
 
@@ -491,19 +532,74 @@ export const saveClinicExpertsConfig = createServerFn({ method: "POST" })
         procedure_name: z.string().optional(),
         duracao_consulta: z.number().int().positive().max(1440).optional(),
         professionals: z.array(clinicExpertsProfessionalSchema).optional(),
+        unidades: z.array(clinicExpertsUnidadeSchema).max(20).optional(),
         ativo: z.boolean().optional(),
       })
       .parse(d),
   )
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { accountId, api_token, procedure_id, procedure_name, professionals, ...rest } = data;
+    const { accountId, api_token, procedure_id, procedure_name, professionals, unidades, ...rest } =
+      data;
 
     const patch: Record<string, unknown> = { ...rest, atualizado_em: new Date().toISOString() };
     if (procedure_id !== undefined) patch.procedure_id = procedure_id || null;
     if (procedure_name !== undefined) patch.procedure_name = procedure_name || null;
     if (professionals !== undefined) patch.professionals = professionals;
     if (api_token) patch.api_token_enc = await encryptValue(api_token);
+
+    if (unidades !== undefined) {
+      // Merge de token por `uid`: token novo → encrypt; sem token → preserva o
+      // enc existente da MESMA unidade (rename de label não perde token);
+      // unidade fora do array recebido → removida (enc some junto).
+      const { data: existing } = await sb
+        .from("clinic_experts_config")
+        .select("unidades, api_token_enc")
+        .eq("account_id", accountId)
+        .maybeSingle();
+      const existingByUid = new Map<string, Record<string, unknown>>();
+      if (Array.isArray(existing?.unidades)) {
+        for (const u of existing.unidades as Record<string, unknown>[]) {
+          if (u.uid) existingByUid.set(String(u.uid), u);
+        }
+      }
+
+      // Labels duplicados quebrariam a resolução por label (mesmo contrato do
+      // multi-agenda GCal) — rejeita cedo com mensagem clara.
+      const seenLabels = new Set<string>();
+      for (const u of unidades) {
+        const key = u.label.trim().toLowerCase();
+        if (seenLabels.has(key)) {
+          throw new Error(`Unidades com label duplicado: "${u.label}". Cada unidade precisa de um nome único.`);
+        }
+        seenLabels.add(key);
+      }
+
+      patch.unidades = await Promise.all(
+        unidades.map(async (u) => {
+          let apiTokenEnc: string | null = null;
+          if (u.api_token?.trim()) {
+            apiTokenEnc = await encryptValue(u.api_token.trim());
+          } else if (u.use_top_level_token && existing?.api_token_enc) {
+            apiTokenEnc = existing.api_token_enc as string;
+          } else {
+            const prev = existingByUid.get(u.uid);
+            apiTokenEnc =
+              prev && typeof prev.api_token_enc === "string" ? prev.api_token_enc : null;
+          }
+          return {
+            uid: u.uid,
+            label: u.label.trim(),
+            descricao: u.descricao ?? "",
+            api_token_enc: apiTokenEnc,
+            procedure_id: u.procedure_id ?? null,
+            procedure_name: u.procedure_name ?? null,
+            duracao_consulta: u.duracao_consulta ?? 40,
+            professionals: u.professionals ?? [],
+          };
+        }),
+      );
+    }
 
     const { error } = await sb
       .from("clinic_experts_config")
@@ -513,12 +609,16 @@ export const saveClinicExpertsConfig = createServerFn({ method: "POST" })
     return { ok: true };
   });
 
+const clinicExpertsUnitInput = accountIdInput.extend({
+  unitLabel: z.string().max(80).optional(),
+});
+
 export const testClinicExpertsConnection = createServerFn({ method: "POST" })
-  .inputValidator((d) => accountIdInput.parse(d))
+  .inputValidator((d) => clinicExpertsUnitInput.parse(d))
   .handler(async ({ data }) => {
     const { listClinicExpertsProfessionals } = await import("@/lib/tools/clinic-experts.server");
     try {
-      await listClinicExpertsProfessionals(data.accountId);
+      await listClinicExpertsProfessionals(data.accountId, data.unitLabel);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -526,11 +626,11 @@ export const testClinicExpertsConnection = createServerFn({ method: "POST" })
   });
 
 export const listClinicExpertsProfessionalsFn = createServerFn({ method: "GET" })
-  .inputValidator((d) => accountIdInput.parse(d))
+  .inputValidator((d) => clinicExpertsUnitInput.parse(d))
   .handler(async ({ data }) => {
     const { listClinicExpertsProfessionals } = await import("@/lib/tools/clinic-experts.server");
     try {
-      const list = await listClinicExpertsProfessionals(data.accountId);
+      const list = await listClinicExpertsProfessionals(data.accountId, data.unitLabel);
       return { ok: true, professionals: list };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e), professionals: [] };
@@ -538,11 +638,11 @@ export const listClinicExpertsProfessionalsFn = createServerFn({ method: "GET" }
   });
 
 export const listClinicExpertsProceduresFn = createServerFn({ method: "GET" })
-  .inputValidator((d) => accountIdInput.parse(d))
+  .inputValidator((d) => clinicExpertsUnitInput.parse(d))
   .handler(async ({ data }) => {
     const { listClinicExpertsProcedures } = await import("@/lib/tools/clinic-experts.server");
     try {
-      const list = await listClinicExpertsProcedures(data.accountId);
+      const list = await listClinicExpertsProcedures(data.accountId, data.unitLabel);
       return { ok: true, procedures: list };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e), procedures: [] };

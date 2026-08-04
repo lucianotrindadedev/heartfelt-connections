@@ -8614,6 +8614,270 @@ interface CeProfessionalState {
   businessHoursJson: string;
 }
 
+/** Unidade do Clinic Experts (multi-unidade). O token plaintext (`token`) só é
+ *  preenchido quando o usuário digita um novo — o já salvo nunca volta do
+ *  servidor (só `tokenConfigured`). `useTopLevelToken` marca a unidade criada
+ *  pelo fluxo "converter em multi-unidade" (o servidor copia o token top-level
+ *  já criptografado no save). */
+interface CeUnidadeState {
+  uid: string;
+  label: string;
+  descricao: string;
+  token: string;
+  tokenConfigured: boolean;
+  useTopLevelToken?: boolean;
+  duracaoConsulta: string;
+  procedureId: string;
+  procedureName: string;
+  selectedProfs: Record<string, CeProfessionalState>;
+}
+
+function newCeUid(): string {
+  return `u_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Card de UMA unidade: token próprio, procedimento e profissionais próprios.
+ *  As listas (procedimentos/profissionais) são carregadas POR unidade via
+ *  unitLabel — exige o token daquela unidade já salvo. */
+function CeUnidadeCard({
+  accountId,
+  unit,
+  onChange,
+  onRemove,
+}: {
+  accountId: string;
+  unit: CeUnidadeState;
+  onChange: (patch: Partial<CeUnidadeState>) => void;
+  onRemove: () => void;
+}) {
+  const listProfs = useServerFn(listClinicExpertsProfessionalsFn);
+  const listProcs = useServerFn(listClinicExpertsProceduresFn);
+  const [procedures, setProcedures] = useState<{ id: number; name: string }[]>([]);
+  const [loadingProcs, setLoadingProcs] = useState(false);
+  const [availableProfs, setAvailableProfs] = useState<{ uuid: string; name: string }[]>([]);
+  const [loadingProfs, setLoadingProfs] = useState(false);
+
+  const canLoad = (unit.tokenConfigured || unit.useTopLevelToken) && !!unit.label.trim();
+
+  async function doLoadProcs() {
+    setLoadingProcs(true);
+    const r = await listProcs({ data: { accountId, unitLabel: unit.label } });
+    if (r.ok) setProcedures(r.procedures);
+    else toast.error(r.error ?? "Erro ao carregar procedimentos.");
+    setLoadingProcs(false);
+  }
+
+  async function doLoadProfs() {
+    setLoadingProfs(true);
+    const r = await listProfs({ data: { accountId, unitLabel: unit.label } });
+    if (r.ok) setAvailableProfs(r.professionals);
+    else toast.error(r.error ?? "Erro ao carregar profissionais.");
+    setLoadingProfs(false);
+  }
+
+  function toggleProf(p: { uuid: string; name: string }) {
+    const next = { ...unit.selectedProfs };
+    if (next[p.uuid]) delete next[p.uuid];
+    else next[p.uuid] = { name: p.name, duracaoMinutos: "", businessHoursJson: "" };
+    onChange({ selectedProfs: next });
+  }
+
+  function patchProf(uuid: string, patch: Partial<CeProfessionalState>) {
+    onChange({
+      selectedProfs: { ...unit.selectedProfs, [uuid]: { ...unit.selectedProfs[uuid], ...patch } },
+    });
+  }
+
+  const selectedUuids = Object.keys(unit.selectedProfs);
+
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50/30 p-3 space-y-3">
+      <div className="flex items-start gap-2">
+        <div className="flex-1 grid grid-cols-2 gap-2">
+          <div>
+            <Label className="text-[10px] font-semibold">Nome da unidade *</Label>
+            <Input
+              value={unit.label}
+              onChange={(e) => onChange({ label: e.target.value })}
+              placeholder="ex.: Recreio"
+              className="mt-1 h-8 text-sm"
+            />
+          </div>
+          <div>
+            <Label className="text-[10px] font-semibold">Quando usar (descrição p/ o agente)</Label>
+            <Input
+              value={unit.descricao}
+              onChange={(e) => onChange({ descricao: e.target.value })}
+              placeholder="ex.: leads do Recreio e região"
+              className="mt-1 h-8 text-sm"
+            />
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="mt-5 shrink-0 text-[10px] text-red-500 hover:underline"
+          title="Remover unidade"
+        >
+          Remover
+        </button>
+      </div>
+
+      <div>
+        <Label className="text-[10px] font-semibold">Token API (Bearer) desta unidade</Label>
+        {unit.tokenConfigured && !unit.token && (
+          <p className="text-[10px] text-muted-foreground">Token configurado ✓</p>
+        )}
+        {unit.useTopLevelToken && !unit.token && (
+          <p className="text-[10px] text-muted-foreground">
+            Herda o token já configurado da conta (será copiado ao salvar).
+          </p>
+        )}
+        <Input
+          type="password"
+          value={unit.token}
+          onChange={(e) => onChange({ token: e.target.value })}
+          placeholder="cole o token da conta Clinic Experts desta unidade"
+          className="mt-1 h-8 text-sm"
+        />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <Label className="text-[10px] font-semibold shrink-0">Duração padrão (min)</Label>
+        <Input
+          type="number"
+          min={5}
+          max={480}
+          value={unit.duracaoConsulta}
+          onChange={(e) => onChange({ duracaoConsulta: e.target.value })}
+          className="h-7 w-20 text-xs"
+        />
+      </div>
+
+      {/* Procedimento padrão da unidade */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label className="text-[10px] font-semibold">Procedimento padrão</Label>
+          {canLoad && (
+            <button
+              type="button"
+              onClick={doLoadProcs}
+              disabled={loadingProcs}
+              className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+            >
+              {loadingProcs ? "Carregando..." : "↻ Carregar procedimentos"}
+            </button>
+          )}
+        </div>
+        {!canLoad ? (
+          <p className="text-[10px] text-muted-foreground">
+            Salve o token desta unidade primeiro para carregar os procedimentos.
+          </p>
+        ) : procedures.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">
+            {unit.procedureName
+              ? `Selecionado: ${unit.procedureName}. Clique em ↻ para trocar.`
+              : "Clique em ↻ Carregar procedimentos."}
+          </p>
+        ) : (
+          <select
+            value={unit.procedureId}
+            onChange={(e) => {
+              const id = e.target.value;
+              onChange({
+                procedureId: id,
+                procedureName: procedures.find((p) => String(p.id) === id)?.name ?? "",
+              });
+            }}
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"
+          >
+            <option value="">Selecione um procedimento</option>
+            {procedures.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {/* Profissionais da unidade */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label className="text-[10px] font-semibold">Profissionais</Label>
+          {canLoad && (
+            <button
+              type="button"
+              onClick={doLoadProfs}
+              disabled={loadingProfs}
+              className="text-[10px] text-blue-600 hover:underline disabled:opacity-50"
+            >
+              {loadingProfs ? "Carregando..." : "↻ Carregar profissionais"}
+            </button>
+          )}
+        </div>
+        {!canLoad ? (
+          <p className="text-[10px] text-muted-foreground">
+            Salve o token desta unidade primeiro para carregar os profissionais.
+          </p>
+        ) : availableProfs.length === 0 && selectedUuids.length === 0 ? (
+          <p className="text-[10px] text-muted-foreground">Clique em ↻ Carregar profissionais.</p>
+        ) : (
+          <>
+            {availableProfs.length > 0 && (
+              <div className="rounded-lg border border-slate-200 bg-white divide-y divide-slate-100 max-h-40 overflow-y-auto">
+                {availableProfs.map((p) => (
+                  <label
+                    key={p.uuid}
+                    className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-slate-50 transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!!unit.selectedProfs[p.uuid]}
+                      onChange={() => toggleProf(p)}
+                      className="h-4 w-4 rounded border-slate-300 accent-slate-800"
+                    />
+                    <span className="text-sm">{p.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {selectedUuids.length > 0 && (
+              <div className="mt-2 space-y-2">
+                {selectedUuids.map((uuid) => {
+                  const prof = unit.selectedProfs[uuid];
+                  return (
+                    <div key={uuid} className="rounded-lg border border-slate-200 bg-white p-2.5 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold text-slate-700">{prof.name}</p>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-muted-foreground">Duração (min)</span>
+                          <Input
+                            type="number"
+                            min={5}
+                            max={480}
+                            value={prof.duracaoMinutos}
+                            onChange={(e) => patchProf(uuid, { duracaoMinutos: e.target.value })}
+                            placeholder={unit.duracaoConsulta}
+                            className="h-7 w-20 text-xs"
+                          />
+                        </div>
+                      </div>
+                      <BusinessHoursEditor
+                        jsonValue={prof.businessHoursJson}
+                        onChange={(_human, json) => patchProf(uuid, { businessHoursJson: json })}
+                        syncOnMount={false}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ClinicExpertsPanel({ accountId }: { accountId: string }) {
   const qc = useQueryClient();
   const getCfg = useServerFn(getClinicExpertsConfig);
@@ -8642,6 +8906,9 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
   // Clinic Experts não expõe isso, então guardamos nós mesmos (mesmo formato
   // JSON do BusinessHoursEditor usado nas agendas Google).
   const [selectedProfs, setSelectedProfs] = useState<Record<string, CeProfessionalState>>({});
+  // Multi-unidade (central que agenda em várias contas Clinic Experts). Vazio =
+  // modo clássico de unidade única (campos acima). 1+ = os cards mandam.
+  const [unidades, setUnidades] = useState<CeUnidadeState[]>([]);
 
   useEffect(() => {
     if (!data) return;
@@ -8659,6 +8926,28 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
           },
         ]),
       ),
+    );
+    setUnidades(
+      (data.unidades ?? []).map((u) => ({
+        uid: u.uid || newCeUid(),
+        label: u.label,
+        descricao: u.descricao ?? "",
+        token: "",
+        tokenConfigured: u.token_configured,
+        duracaoConsulta: String(u.duracao_consulta ?? 40),
+        procedureId: u.procedure_id != null ? String(u.procedure_id) : "",
+        procedureName: u.procedure_name ?? "",
+        selectedProfs: Object.fromEntries(
+          (u.professionals ?? []).map((p) => [
+            p.uuid,
+            {
+              name: p.name,
+              duracaoMinutos: p.duracao_minutos != null ? String(p.duracao_minutos) : "",
+              businessHoursJson: p.business_hours_json ?? "",
+            },
+          ]),
+        ),
+      })),
     );
     setAtivo(data.token_configured ? (data.ativo ?? false) : true);
   }, [data]);
@@ -8723,6 +9012,49 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
     setLoadingProcs(false);
   }
 
+  function updateUnidade(uid: string, patch: Partial<CeUnidadeState>) {
+    setUnidades((prev) => prev.map((u) => (u.uid === uid ? { ...u, ...patch } : u)));
+  }
+
+  function addUnidade() {
+    setUnidades((prev) => [
+      ...prev,
+      {
+        uid: newCeUid(),
+        label: "",
+        descricao: "",
+        token: "",
+        tokenConfigured: false,
+        duracaoConsulta: duracaoConsulta || "40",
+        procedureId: "",
+        procedureName: "",
+        selectedProfs: {},
+      },
+    ]);
+  }
+
+  // Converte a config de unidade única em multi-unidade: a 1ª unidade nasce
+  // pré-preenchida com os campos atuais (o token top-level já criptografado é
+  // copiado pelo SERVIDOR no save — nunca trafega de volta pra cá).
+  function convertToMulti() {
+    setUnidades([
+      {
+        uid: newCeUid(),
+        label: "Unidade 1",
+        descricao: "",
+        token: "",
+        tokenConfigured: false,
+        useTopLevelToken: data?.token_configured ?? false,
+        duracaoConsulta: duracaoConsulta || "40",
+        procedureId,
+        procedureName,
+        selectedProfs: { ...selectedProfs },
+      },
+    ]);
+  }
+
+  const multiMode = unidades.length > 0;
+
   const save = useMutation({
     mutationFn: () =>
       saveCfg({
@@ -8738,6 +9070,26 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
             ...(p.duracaoMinutos ? { duracao_minutos: Number(p.duracaoMinutos) } : {}),
             ...(p.businessHoursJson ? { business_hours_json: p.businessHoursJson } : {}),
           })),
+          // Multi-unidade: manda o array COMPLETO (o servidor faz merge do
+          // token por uid). Array vazio = modo unidade única (campos acima).
+          unidades: unidades
+            .filter((u) => u.label.trim())
+            .map((u) => ({
+              uid: u.uid,
+              label: u.label.trim(),
+              descricao: u.descricao || undefined,
+              ...(u.token.trim() ? { api_token: u.token.trim() } : {}),
+              ...(u.useTopLevelToken ? { use_top_level_token: true } : {}),
+              procedure_id: u.procedureId ? Number(u.procedureId) : undefined,
+              procedure_name: u.procedureName || undefined,
+              duracao_consulta: Number(u.duracaoConsulta) || 40,
+              professionals: Object.entries(u.selectedProfs).map(([uuid, p]) => ({
+                uuid,
+                name: p.name,
+                ...(p.duracaoMinutos ? { duracao_minutos: Number(p.duracaoMinutos) } : {}),
+                ...(p.businessHoursJson ? { business_hours_json: p.businessHoursJson } : {}),
+              })),
+            })),
           // Ao inserir um token novo, ativa automaticamente (evita "salvei mas
           // continua inativo" por esquecer de ligar o toggle).
           ativo: token ? true : ativo,
@@ -8781,6 +9133,44 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
         <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
           <ToggleRow label="Ativar integração Clinic Experts" value={ativo} onChange={setAtivo} />
 
+          {/* Multi-unidade: central que agenda em VÁRIAS contas Clinic Experts
+              (uma por localidade). Com 1+ unidades, os cards abaixo mandam e os
+              campos clássicos ficam ocultos (o backend ignora o top-level). */}
+          {multiMode && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold">
+                  Unidades{" "}
+                  <span className="font-normal text-muted-foreground">
+                    (o agente pergunta a localidade do lead e agenda na unidade certa)
+                  </span>
+                </Label>
+                <button
+                  type="button"
+                  onClick={addUnidade}
+                  className="text-[10px] text-blue-600 hover:underline"
+                >
+                  + Adicionar unidade
+                </button>
+              </div>
+              {unidades.map((u) => (
+                <CeUnidadeCard
+                  key={u.uid}
+                  accountId={accountId}
+                  unit={u}
+                  onChange={(patch) => updateUnidade(u.uid, patch)}
+                  onRemove={() => setUnidades((prev) => prev.filter((x) => x.uid !== u.uid))}
+                />
+              ))}
+              <p className="text-[10px] text-muted-foreground">
+                Com 2+ unidades, o agente pergunta a localidade antes de oferecer horários e trava
+                cadastro/agendamento na unidade escolhida. Fluxo por unidade: salve com o token →
+                carregue procedimentos/profissionais → configure → salve de novo.
+              </p>
+            </div>
+          )}
+
+          {!multiMode && (<>
           {/* Token */}
           <div>
             <Label className="text-xs font-semibold">Token API (Bearer)</Label>
@@ -8946,6 +9336,17 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
               </div>
             )}
           </div>
+
+          {/* Várias unidades/localidades? Converte mantendo tudo o que já está
+              configurado como a 1ª unidade. */}
+          <button
+            type="button"
+            onClick={convertToMulti}
+            className="text-[10px] text-blue-600 hover:underline"
+          >
+            🏥 Esta clínica tem mais de uma unidade? Converter em multi-unidade
+          </button>
+          </>)}
 
           {testResult && <p className="text-xs">{testResult}</p>}
           <div className="flex gap-2">

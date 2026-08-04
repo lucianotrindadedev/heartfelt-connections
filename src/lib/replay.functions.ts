@@ -203,6 +203,7 @@ export const replayConversation = createServerFn({ method: "POST" })
       googleSheets: planilhas,
       googleAgendas: [],
       clinicExpertsProfessionals: [],
+      clinicExpertsUnidades: [],
     clinupProfessionals: [],
       history,
       dryRun: true,

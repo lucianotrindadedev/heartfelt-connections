@@ -189,6 +189,7 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       googleSheets: planilhas,
       googleAgendas: [],
       clinicExpertsProfessionals: [],
+      clinicExpertsUnidades: [],
       clinupProfessionals: [],
       // Faltava desde a introdução de temperatura por modelo — o treinador
       // rodava com o mapa indefinido, resolvendo sempre a temperatura base.

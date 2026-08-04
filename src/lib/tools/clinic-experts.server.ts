@@ -32,6 +32,20 @@ interface ClinicExpertsConfig {
   duracaoConsulta: number; // fallback quando o profissional não tem duração própria
   professionals: ClinicExpertsProfessionalConfig[];
   baseUrl: string;
+  /** Label da unidade resolvida (multi-unidade); undefined em conta de unidade única. */
+  unidadeLabel?: string;
+}
+
+/** Unidade CRUA do jsonb `unidades` (token ainda criptografado). */
+interface ClinicExpertsUnidadeRaw {
+  uid: string;
+  label: string;
+  descricao?: string;
+  apiTokenEnc: string | null;
+  procedureId: number | null;
+  procedureName: string | null;
+  duracaoConsulta: number;
+  professionals: ClinicExpertsProfessionalConfig[];
 }
 
 const DEFAULT_BASE = "https://api.clinicaexperts.com.br/api/v1";
@@ -42,41 +56,185 @@ function fetchCe(url: string, init?: RequestInit): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(CE_TIMEOUT_MS) });
 }
 
-async function loadConfig(accountId: string): Promise<ClinicExpertsConfig> {
+function parseProfessionals(raw: unknown): ClinicExpertsProfessionalConfig[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .map((p) => ({
+      uuid: String(p.uuid ?? ""),
+      name: String(p.name ?? ""),
+      duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+      businessHoursJson:
+        typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
+    }))
+    .filter((p) => p.uuid);
+}
+
+function parseUnidades(raw: unknown): ClinicExpertsUnidadeRaw[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as Record<string, unknown>[])
+    .map((u) => ({
+      uid: String(u.uid ?? ""),
+      label: String(u.label ?? "").trim(),
+      descricao: typeof u.descricao === "string" ? u.descricao : undefined,
+      apiTokenEnc: typeof u.api_token_enc === "string" && u.api_token_enc ? u.api_token_enc : null,
+      procedureId: typeof u.procedure_id === "number" ? u.procedure_id : null,
+      procedureName: (u.procedure_name as string | null) ?? null,
+      duracaoConsulta: typeof u.duracao_consulta === "number" ? u.duracao_consulta : 40,
+      professionals: parseProfessionals(u.professionals),
+    }))
+    .filter((u) => u.label);
+}
+
+interface ClinicExpertsRow {
+  api_token_enc: string | null;
+  procedure_id: number | null;
+  procedure_name: string | null;
+  duracao_consulta: number | null;
+  professionals: unknown;
+  unidades: unknown;
+  ativo: boolean;
+}
+
+async function loadRow(accountId: string): Promise<ClinicExpertsRow> {
   const sb = getSelfhost();
   const { data, error } = await sb
     .from("clinic_experts_config")
-    .select("api_token_enc, procedure_id, procedure_name, duracao_consulta, professionals, ativo")
+    .select(
+      "api_token_enc, procedure_id, procedure_name, duracao_consulta, professionals, unidades, ativo",
+    )
     .eq("account_id", accountId)
     .single();
 
   if (error || !data) throw new Error("Clinic Experts não configurado para esta conta");
   if (!data.ativo) throw new Error("Clinic Experts não está ativo para esta conta");
+  return data as unknown as ClinicExpertsRow;
+}
 
-  const apiToken = await decryptValue(data.api_token_enc as unknown as string);
-  if (!apiToken) throw new Error("Token Clinic Experts inválido");
-
-  const rawProfs = data.professionals as unknown;
-  const professionals: ClinicExpertsProfessionalConfig[] = Array.isArray(rawProfs)
-    ? (rawProfs as Record<string, unknown>[])
-        .map((p) => ({
-          uuid: String(p.uuid ?? ""),
-          name: String(p.name ?? ""),
-          duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
-          businessHoursJson:
-            typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
-        }))
-        .filter((p) => p.uuid)
-    : [];
-
+async function configFromUnidade(unit: ClinicExpertsUnidadeRaw): Promise<ClinicExpertsConfig> {
+  const apiToken = await decryptValue(unit.apiTokenEnc);
+  if (!apiToken) {
+    throw new Error(`Token Clinic Experts inválido na unidade "${unit.label}"`);
+  }
   return {
     apiToken,
-    procedureId: typeof data.procedure_id === "number" ? data.procedure_id : null,
-    procedureName: (data.procedure_name as string | null) ?? null,
-    duracaoConsulta: (data.duracao_consulta as number | null) ?? 40,
-    professionals,
+    procedureId: unit.procedureId,
+    procedureName: unit.procedureName,
+    duracaoConsulta: unit.duracaoConsulta || 40,
+    professionals: unit.professionals,
     baseUrl: DEFAULT_BASE,
+    unidadeLabel: unit.label,
   };
+}
+
+/**
+ * Config resolvida da conta OU de uma unidade (multi-unidade).
+ *
+ * Semântica de `unidades` (jsonb, migração 0053 — espelha o array `agendas` do
+ * multi-agenda Google):
+ *  - []        → campos top-level da linha (comportamento original, contas
+ *                existentes intactas);
+ *  - 1 item    → a unidade é a fonte da config, `unitLabel` é tolerado mas não
+ *                exigido (o LLM não recebe parâmetro);
+ *  - 2+ itens  → `unitLabel` OBRIGATÓRIO (match case-insensitive); ausente ou
+ *                inválido lança erro listando os labels válidos — a mensagem
+ *                chega ao LLM como tool error e ele se corrige (mesmo contrato
+ *                do multi-agenda GCal).
+ */
+async function loadConfig(accountId: string, unitLabel?: string): Promise<ClinicExpertsConfig> {
+  const row = await loadRow(accountId);
+  const unidades = parseUnidades(row.unidades);
+
+  if (unidades.length === 0) {
+    const apiToken = await decryptValue(row.api_token_enc);
+    if (!apiToken) throw new Error("Token Clinic Experts inválido");
+    return {
+      apiToken,
+      procedureId: typeof row.procedure_id === "number" ? row.procedure_id : null,
+      procedureName: row.procedure_name ?? null,
+      duracaoConsulta: row.duracao_consulta ?? 40,
+      professionals: parseProfessionals(row.professionals),
+      baseUrl: DEFAULT_BASE,
+    };
+  }
+
+  if (unidades.length === 1) return configFromUnidade(unidades[0]!);
+
+  const wanted = (unitLabel ?? "").trim().toLowerCase();
+  const labels = unidades.map((u) => u.label);
+  if (!wanted) {
+    throw new Error(
+      `Clinic Experts: unidade não informada. Esta conta tem várias unidades — use exatamente uma destas: ${labels.join(", ")}.`,
+    );
+  }
+  const match = unidades.find((u) => u.label.toLowerCase() === wanted);
+  if (!match) {
+    throw new Error(
+      `Clinic Experts: unidade "${unitLabel}" não existe. Use exatamente uma destas: ${labels.join(", ")}.`,
+    );
+  }
+  return configFromUnidade(match);
+}
+
+/**
+ * TODAS as configs da conta (uma por unidade; ou a única top-level) — para
+ * varreduras que não sabem a unidade: warm-up e busca de paciente sem unidade
+ * selecionada. Unidade com token quebrado é PULADA (log) em vez de derrubar as
+ * demais.
+ */
+async function loadConfigsForScan(accountId: string): Promise<ClinicExpertsConfig[]> {
+  const row = await loadRow(accountId);
+  const unidades = parseUnidades(row.unidades);
+
+  if (unidades.length === 0) {
+    const apiToken = await decryptValue(row.api_token_enc);
+    if (!apiToken) throw new Error("Token Clinic Experts inválido");
+    return [
+      {
+        apiToken,
+        procedureId: typeof row.procedure_id === "number" ? row.procedure_id : null,
+        procedureName: row.procedure_name ?? null,
+        duracaoConsulta: row.duracao_consulta ?? 40,
+        professionals: parseProfessionals(row.professionals),
+        baseUrl: DEFAULT_BASE,
+      },
+    ];
+  }
+
+  const configs = await Promise.all(
+    unidades.map((u) =>
+      configFromUnidade(u).catch((e) => {
+        console.error(
+          `[clinic-experts] unidade "${u.label}" pulada na varredura: ${e instanceof Error ? e.message : e}`,
+        );
+        return null;
+      }),
+    ),
+  );
+  return configs.filter((c): c is ClinicExpertsConfig => c !== null);
+}
+
+/** Metadados das unidades (SEM decrypt) — para o orchestrator montar o ctx. */
+export interface ClinicExpertsUnidadeMeta {
+  label: string;
+  descricao?: string;
+  professionalsCount: number;
+}
+
+export async function listClinicExpertsUnidades(
+  accountId: string,
+): Promise<ClinicExpertsUnidadeMeta[]> {
+  const sb = getSelfhost();
+  const { data } = await sb
+    .from("clinic_experts_config")
+    .select("unidades, ativo")
+    .eq("account_id", accountId)
+    .maybeSingle();
+  if (!data?.ativo) return [];
+  return parseUnidades(data.unidades).map((u) => ({
+    label: u.label,
+    descricao: u.descricao,
+    professionalsCount: u.professionals.length,
+  }));
 }
 
 function authHeaders(config: ClinicExpertsConfig) {
@@ -105,8 +263,9 @@ export interface ClinicExpertsProfessional {
 
 export async function listClinicExpertsProfessionals(
   accountId: string,
+  unitLabel?: string,
 ): Promise<ClinicExpertsProfessional[]> {
-  const config = await loadConfig(accountId);
+  const config = await loadConfig(accountId, unitLabel);
 
   const url = new URL(`${config.baseUrl}/professionals`);
   url.searchParams.set("per_page", "100");
@@ -136,8 +295,9 @@ export interface ClinicExpertsProcedure {
 
 export async function listClinicExpertsProcedures(
   accountId: string,
+  unitLabel?: string,
 ): Promise<ClinicExpertsProcedure[]> {
-  const config = await loadConfig(accountId);
+  const config = await loadConfig(accountId, unitLabel);
 
   const url = new URL(`${config.baseUrl}/procedures`);
   url.searchParams.set("per_page", "100");
@@ -289,11 +449,12 @@ export async function listClinicExpertsSlots(
   accountId: string,
   from: string,
   to: string,
+  unitLabel?: string,
 ): Promise<ClinicExpertsSlot[]> {
-  const config = await loadConfig(accountId);
+  const config = await loadConfig(accountId, unitLabel);
   if (config.professionals.length === 0) {
     console.warn(
-      `[clinic-experts] listClinicExpertsSlots conta=${accountId}: nenhum profissional configurado (clinic_experts_config.professionals está vazio)`,
+      `[clinic-experts] listClinicExpertsSlots conta=${accountId}${config.unidadeLabel ? ` unidade="${config.unidadeLabel}"` : ""}: nenhum profissional configurado (professionals está vazio)`,
     );
     return [];
   }
@@ -395,16 +556,36 @@ async function fetchPatientByPhone(
   };
 }
 
-export async function findClinicExpertsPatient(
-  accountId: string,
+async function findPatientWithConfig(
+  config: ClinicExpertsConfig,
   phone: string,
 ): Promise<ClinicExpertsPatient | null> {
-  const config = await loadConfig(accountId);
   for (const variant of phoneVariantsForPatientGet(phone)) {
     const found = await fetchPatientByPhone(config, variant);
     if (found?.uuid) return found;
   }
   return null;
+}
+
+export async function findClinicExpertsPatient(
+  accountId: string,
+  phone: string,
+  unitLabel?: string,
+): Promise<ClinicExpertsPatient | null> {
+  // Com unidade conhecida (ou conta de unidade única), busca direto nela.
+  if (unitLabel) {
+    const config = await loadConfig(accountId, unitLabel);
+    return findPatientWithConfig(config, phone);
+  }
+  // Sem unidade selecionada ainda: varre todas em paralelo e devolve o primeiro
+  // match. NÃO grava unidade a partir do cadastro achado — paciente cadastrado
+  // na unidade X pode querer agendar na Y; a escolha é sempre do lead.
+  const configs = await loadConfigsForScan(accountId);
+  if (configs.length === 1) return findPatientWithConfig(configs[0]!, phone);
+  const results = await Promise.all(
+    configs.map((c) => findPatientWithConfig(c, phone).catch(() => null)),
+  );
+  return results.find((r) => r !== null) ?? null;
 }
 
 /** A API só aceita telefone em E.164 (+55...) — o resto do sistema trafega o
@@ -474,9 +655,12 @@ export async function createClinicExpertsAppointment(
     endDatetime?: string; // ISO 8601
     professionalUuid?: string; // sobrescreve o único profissional configurado
     notes?: string;
+    /** Unidade (multi-unidade). O paciente é buscado/criado NESTA unidade —
+     *  cada conta Clinic Experts tem base de pacientes própria. */
+    unitLabel?: string;
   },
 ): Promise<AppointmentResult> {
-  const config = await loadConfig(accountId);
+  const config = await loadConfig(accountId, params.unitLabel);
 
   const professionalUuid =
     params.professionalUuid ??
@@ -490,8 +674,9 @@ export async function createClinicExpertsAppointment(
     throw new Error("Clinic Experts: procedimento padrão não configurado (procedure_id ausente)");
   }
 
-  // 1. Busca ou cria paciente
-  let patient = await findClinicExpertsPatient(accountId, params.phone);
+  // 1. Busca ou cria paciente — SEMPRE na config/unidade já resolvida (buscar
+  // por accountId de novo poderia varrer/criar na unidade errada).
+  let patient = await findPatientWithConfig(config, params.phone);
   let patientUuid = patient?.uuid ?? null;
   if (!patientUuid) {
     patientUuid = await createClinicExpertsPatient(config, { name: params.name, phone: params.phone });
@@ -594,8 +779,9 @@ export async function cancelClinicExpertsAppointment(
   accountId: string,
   appointmentUuid: string,
   _reason?: string,
+  unitLabel?: string,
 ): Promise<{ ok: boolean; message: string }> {
-  const config = await loadConfig(accountId);
+  const config = await loadConfig(accountId, unitLabel);
 
   const res = await fetchCe(`${config.baseUrl}/bookings/${appointmentUuid}/cancel`, {
     method: "PATCH",
@@ -616,13 +802,11 @@ function normalizeBrPhone(raw: string): string {
   return digits;
 }
 
-export async function listClinicExpertsUpcomingAppointments(
-  accountId: string,
+async function listUpcomingWithConfig(
+  config: ClinicExpertsConfig,
   from: string,
   to: string,
 ): Promise<{ id: string; start: string; patientName: string; phone: string; status: string }[]> {
-  const config = await loadConfig(accountId);
-
   const url = new URL(`${config.baseUrl}/bookings`);
   url.searchParams.set("starts_at", `${from.slice(0, 10)}T00:00:00-03:00`);
   url.searchParams.set("ends_at", `${to.slice(0, 10)}T23:59:59-03:00`);
@@ -630,7 +814,9 @@ export async function listClinicExpertsUpcomingAppointments(
   const res = await fetchCe(url.toString(), { headers: authHeaders(config) });
   if (!res.ok) {
     const body = await res.text();
-    console.error(`[clinic-experts] list upcoming falhou: ${res.status} — ${body.slice(0, 200)}`);
+    console.error(
+      `[clinic-experts] list upcoming falhou${config.unidadeLabel ? ` (unidade "${config.unidadeLabel}")` : ""}: ${res.status} — ${body.slice(0, 200)}`,
+    );
     return [];
   }
 
@@ -650,4 +836,19 @@ export async function listClinicExpertsUpcomingAppointments(
       };
     })
     .filter((a) => a.id && a.start);
+}
+
+export async function listClinicExpertsUpcomingAppointments(
+  accountId: string,
+  from: string,
+  to: string,
+): Promise<{ id: string; start: string; patientName: string; phone: string; status: string }[]> {
+  // Multi-unidade: varre TODAS as unidades em paralelo (o warm-up precisa dos
+  // agendamentos de todas). Falha numa unidade não derruba as demais (o
+  // listUpcomingWithConfig já devolve [] logando o erro). uuids de booking são
+  // globais, então não há colisão de id entre unidades.
+  const configs = await loadConfigsForScan(accountId);
+  if (configs.length === 1) return listUpcomingWithConfig(configs[0]!, from, to);
+  const perUnit = await Promise.all(configs.map((c) => listUpcomingWithConfig(c, from, to)));
+  return perUnit.flat();
 }

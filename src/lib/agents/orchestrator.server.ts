@@ -535,7 +535,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         sb.from("google_calendar_tokens").select("ativo").eq("account_id", accountId).maybeSingle(),
         sb
           .from("clinic_experts_config")
-          .select("ativo, professionals")
+          .select("ativo, professionals, unidades")
           .eq("account_id", accountId)
           .maybeSingle(),
         sb.from("agent_escalation").select("ativo").eq("agent_id", agentId).maybeSingle(),
@@ -571,6 +571,25 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
                 typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
             }))
             .filter((p) => p.uuid)
+        )
+      : [];
+
+    // Unidades do Clinic Experts (multi-unidade). Vazio = unidade única
+    // (config top-level). Com 2+ o scheduler injeta o parâmetro `agenda` (enum
+    // dos labels) nas tools — mesmo contrato do multi-agenda Google. Sem
+    // tokens aqui: só metadados pra prompt/diagnóstico.
+    const clinicExpertsUnidades = clinicExpertsCfg.data?.ativo
+      ? (
+          (Array.isArray((clinicExpertsCfg.data as { unidades?: unknown }).unidades)
+            ? ((clinicExpertsCfg.data as { unidades: Record<string, unknown>[] }).unidades)
+            : []
+          )
+            .map((u) => ({
+              label: String(u.label ?? "").trim(),
+              descricao: typeof u.descricao === "string" && u.descricao ? u.descricao : undefined,
+              professionalsCount: Array.isArray(u.professionals) ? u.professionals.length : 0,
+            }))
+            .filter((u) => u.label)
         )
       : [];
 
@@ -740,6 +759,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       googleAgendas,
       googleSheets,
       clinicExpertsProfessionals,
+      clinicExpertsUnidades,
       clinupProfessionals,
       // Modo teste: não escreve tags no CRM (tools seguem vivas).
       disableTags: agentSettings.test_mode === "true",

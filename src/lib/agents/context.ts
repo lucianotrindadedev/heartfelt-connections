@@ -110,6 +110,17 @@ export interface AgentContext {
     businessHoursJson?: string;
   }[];
 
+  /** Unidades do Clinic Experts (multi-unidade, migração 0053). Vazio = conta
+   *  de unidade única (config top-level, comportamento original). Com 2+ o
+   *  agente recebe o parâmetro `agenda` (enum dos labels — o MESMO contrato do
+   *  multi-agenda Google) e a unidade fica travada em
+   *  lead_data.selected_agenda. Sem tokens aqui — só metadados. */
+  clinicExpertsUnidades: {
+    label: string;
+    descricao?: string;
+    professionalsCount: number;
+  }[];
+
   /** Profissionais habilitados no Clinup. Diferente do Clinic Experts, a API do
    *  Clinup JÁ devolve os horários livres reais de cada um — o expediente aqui
    *  é restrição opcional. Usado só para diagnosticar "0 horários" (0

@@ -50,6 +50,7 @@ const ctx = (settings: Record<string, string> = {}): AgentContext =>
     googleSheets: [],
     googleAgendas: [],
     clinicExpertsProfessionals: [],
+    clinicExpertsUnidades: [],
     clinupProfessionals: [],
     history: [],
   }) as AgentContext;

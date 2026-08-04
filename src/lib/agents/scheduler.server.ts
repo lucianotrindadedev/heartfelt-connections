@@ -429,10 +429,31 @@ function isMultiAgenda(ctx: AgentContext): boolean {
 }
 
 /**
- * Monta as tools do scheduler. Em multi-agenda (2+ agendas Google), injeta o
- * parâmetro `agenda` (enum dos labels) nas tools que tocam a agenda, para o
- * agente escolher conforme as regras do prompt. Em agenda única, retorna o
- * conjunto base inalterado (comportamento idêntico ao atual).
+ * True quando a conta tem 2+ UNIDADES do Clinic Experts (central de
+ * atendimento que agenda em várias contas Clinic Experts, uma por localidade).
+ * O `!googleCalendar` define a precedência quando ambos estivessem ativos
+ * (não ocorre na prática): os branches de execução checam GCal antes de CE,
+ * então o enum injetado precisa corresponder ao provedor que vai executar.
+ */
+export function isMultiUnidadeCe(ctx: AgentContext): boolean {
+  return (
+    !ctx.integrations.googleCalendar &&
+    ctx.integrations.clinicExperts &&
+    (ctx.clinicExpertsUnidades?.length ?? 0) >= 2
+  );
+}
+
+/** O parâmetro `agenda` está ativo (multi-agenda GCal OU multi-unidade CE)? */
+function agendaParamActive(ctx: AgentContext): boolean {
+  return isMultiAgenda(ctx) || isMultiUnidadeCe(ctx);
+}
+
+/**
+ * Monta as tools do scheduler. Em multi-agenda (2+ agendas Google) ou
+ * multi-unidade (2+ unidades Clinic Experts), injeta o parâmetro `agenda`
+ * (enum dos labels) nas tools que tocam a agenda, para o agente escolher
+ * conforme as regras do prompt. Em agenda/unidade única, retorna o conjunto
+ * base inalterado (comportamento idêntico ao atual).
  */
 export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
   // Modo unificado: o agente também qualifica, então herda a tool de
@@ -449,17 +470,23 @@ export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
   const sheetTool = buildConsultarPlanilhaTool(ctx);
   if (sheetTool) base = [...base, sheetTool];
 
-  if (!isMultiAgenda(ctx)) return base;
+  if (!agendaParamActive(ctx)) return base;
 
-  const labels = ctx.googleAgendas.map((a) => a.label);
+  // GCal tem precedência (ver isMultiUnidadeCe). O enum lista agendas Google
+  // OU unidades Clinic Experts — nunca a mistura dos dois.
+  const options = isMultiAgenda(ctx)
+    ? ctx.googleAgendas.map((a) => ({ label: a.label, descricao: a.descricao }))
+    : ctx.clinicExpertsUnidades.map((u) => ({ label: u.label, descricao: u.descricao }));
+  const labels = options.map((o) => o.label);
   const agendaProp = {
     type: "string",
     enum: labels,
     description:
-      "Qual agenda usar nesta operação. Escolha EXATAMENTE um destes labels conforme a situação:\n" +
-      ctx.googleAgendas
-        .map((a) => `- "${a.label}": ${a.descricao || "(sem descrição)"}`)
-        .join("\n"),
+      (isMultiAgenda(ctx)
+        ? "Qual agenda usar nesta operação. "
+        : "Qual unidade/localidade usar nesta operação. ") +
+      "Escolha EXATAMENTE um destes labels conforme a situação:\n" +
+      options.map((o) => `- "${o.label}": ${o.descricao || "(sem descrição)"}`).join("\n"),
   };
 
   return base.map((t) => {
@@ -544,6 +571,35 @@ function resolveGcalAgenda(ctx: AgentContext, label?: string): ResolvedAgenda {
   };
 }
 
+/**
+ * Resolve a UNIDADE do Clinic Experts (multi-unidade) a partir do label —
+ * espelho do resolveGcalAgenda. Retorna:
+ *  - {} em conta de unidade única (o tool file resolve implícito);
+ *  - { error } quando multi-unidade mas o label está ausente ou inválido —
+ *    a mensagem vai como tool error e o LLM se corrige;
+ *  - { unitLabel, professionalsCount } quando o label é válido.
+ */
+export function resolveCeUnidade(
+  ctx: AgentContext,
+  label?: string,
+): { unitLabel?: string; professionalsCount?: number; error?: string } {
+  if (!isMultiUnidadeCe(ctx)) return {};
+  const validLabels = ctx.clinicExpertsUnidades.map((u) => u.label);
+  if (!label || !label.trim()) {
+    return {
+      error: `Esta conta tem várias unidades. Informe o parâmetro "agenda" com um destes valores: ${validLabels.join(", ")}. Se ainda não sabe a unidade, PERGUNTE a localidade ao lead antes de listar horários.`,
+    };
+  }
+  const wanted = label.trim().toLowerCase();
+  const match = ctx.clinicExpertsUnidades.find((u) => u.label.toLowerCase() === wanted);
+  if (!match) {
+    return {
+      error: `Unidade "${label}" não existe. Use exatamente um destes: ${validLabels.join(", ")}.`,
+    };
+  }
+  return { unitLabel: match.label, professionalsCount: match.professionalsCount };
+}
+
 async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
   if (!ctx.effectivePhone) {
     return { result: JSON.stringify({ found: false, reason: "no_phone" }) };
@@ -610,7 +666,15 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
   // Clinic Experts
   if (ctx.integrations.clinicExperts) {
     try {
-      const patient = await findClinicExpertsPatient(ctx.accountId, ctx.effectivePhone);
+      // Multi-unidade: com unidade já travada na conversa, busca só nela; sem,
+      // o tool file varre todas em paralelo. NÃO gravamos selected_agenda a
+      // partir do cadastro achado — paciente cadastrado na unidade X pode
+      // querer agendar na Y; a escolha da unidade é sempre do lead.
+      const patient = await findClinicExpertsPatient(
+        ctx.accountId,
+        ctx.effectivePhone,
+        ctx.leadData.selected_agenda,
+      );
       if (!patient?.uuid) {
         return { result: JSON.stringify({ found: false }) };
       }
@@ -1190,16 +1254,38 @@ export async function execListarHorarios(
   // janela configurada); aqui só cuidamos da janela de busca (auto-ampliação)
   // e do filtro de turno, igual ao Clinicorp abaixo.
   if (ctx.integrations.clinicExperts) {
+    // Multi-unidade: resolve o label (param `agenda` do LLM, ou a unidade já
+    // travada na conversa). Erro (ausente/inválido) volta como tool error e o
+    // LLM pergunta a localidade / se corrige — mesmo contrato do multi-agenda.
+    const ceUnit = resolveCeUnidade(ctx, agendaLabel ?? ctx.leadData.selected_agenda);
+    if (ceUnit.error) {
+      return { result: JSON.stringify({ count: 0, slots: [], error: ceUnit.error }) };
+    }
+    // Persiste a unidade para criar/cancelar/remarcar usarem a mesma.
+    const ceUnitPatch: Partial<LeadData> = ceUnit.unitLabel
+      ? { selected_agenda: ceUnit.unitLabel }
+      : {};
+
     const fmtCe = (d: Date) =>
       new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
 
-    let ceSlots = await listClinicExpertsSlots(ctx.accountId, fmtCe(today), fmtCe(end));
+    let ceSlots = await listClinicExpertsSlots(
+      ctx.accountId,
+      fmtCe(today),
+      fmtCe(end),
+      ceUnit.unitLabel,
+    );
     if (ceSlots.length === 0 && !anchor && diasAFrente == null) {
       const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       console.log(
-        `[scheduler] listar_horarios (clinic experts) conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+        `[scheduler] listar_horarios (clinic experts) conv=${ctx.conversationId}${ceUnit.unitLabel ? ` unidade="${ceUnit.unitLabel}"` : ""}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
       );
-      ceSlots = await listClinicExpertsSlots(ctx.accountId, fmtCe(today), fmtCe(wideEnd));
+      ceSlots = await listClinicExpertsSlots(
+        ctx.accountId,
+        fmtCe(today),
+        fmtCe(wideEnd),
+        ceUnit.unitLabel,
+      );
     }
     const ceBounds = periodoParaHoras(resolvedPeriodo);
     let cePeriodoAviso: string | undefined;
@@ -1224,23 +1310,29 @@ export async function execListarHorarios(
       .sort((a, b) => a.start.localeCompare(b.start))
       .map(formatCeSlot);
     if (ceLimited.length === 0) {
-      const noProfessionals = ctx.clinicExpertsProfessionals.length === 0;
+      // Em multi-unidade, o count de profissionais relevante é o da UNIDADE
+      // resolvida (o top-level fica vazio nessas contas).
+      const profCount = ceUnit.unitLabel
+        ? (ceUnit.professionalsCount ?? 0)
+        : ctx.clinicExpertsProfessionals.length;
+      const noProfessionals = profCount === 0;
       const causa = noProfessionals
-        ? "Nenhum profissional está configurado no Clinic Experts desta conta (painel de Integrações → Clinic Experts). Não é possível buscar horários até um profissional com expediente ser cadastrado — não prometa horário ao lead; ofereça escalar para um humano."
+        ? `Nenhum profissional está configurado no Clinic Experts${ceUnit.unitLabel ? ` da unidade "${ceUnit.unitLabel}"` : " desta conta"} (painel de Integrações → Clinic Experts). Não é possível buscar horários até um profissional com expediente ser cadastrado — não prometa horário ao lead; ofereça escalar para um humano.`
         : "Nenhum horário livre encontrado no período consultado para os profissionais/expediente configurados. Tente um período maior ou verifique se o expediente cadastrado está correto.";
       console.warn(
-        `[scheduler] listar_horarios (clinic experts) retornou 0 slots conv=${ctx.conversationId} — ${noProfessionals ? "0 profissionais configurados" : "verifique profissionais/expediente configurados"}`,
+        `[scheduler] listar_horarios (clinic experts) retornou 0 slots conv=${ctx.conversationId}${ceUnit.unitLabel ? ` unidade="${ceUnit.unitLabel}"` : ""} — ${noProfessionals ? "0 profissionais configurados" : "verifique profissionais/expediente configurados"}`,
       );
       return {
         result: JSON.stringify({
           count: 0,
           slots: [],
+          ...(ceUnit.unitLabel ? { unidade: ceUnit.unitLabel } : {}),
           debug: {
-            profissionais_configurados: ctx.clinicExpertsProfessionals.length,
+            profissionais_configurados: profCount,
             possivel_causa: causa,
           },
         }),
-        patch: { offered_slots: [] },
+        patch: { offered_slots: [], ...ceUnitPatch },
       };
     }
     const ceAnchorKey = anchor
@@ -1252,6 +1344,7 @@ export async function execListarHorarios(
       result: JSON.stringify({
         count: ceLimited.length,
         slots: ceLimited,
+        ...(ceUnit.unitLabel ? { unidade: ceUnit.unitLabel } : {}),
         ...(cePeriodoAviso ? { aviso_periodo: cePeriodoAviso } : {}),
         ...(ceRequestedDateUnavailable
           ? {
@@ -1259,7 +1352,7 @@ export async function execListarHorarios(
             }
           : {}),
       }),
-      patch: { offered_slots: ceLimited },
+      patch: { offered_slots: ceLimited, ...ceUnitPatch },
     };
   }
 
@@ -1834,7 +1927,14 @@ async function execCriarAgendamento(
             motivo: "Remarcação solicitada pelo paciente",
           });
         } else if (ctx.integrations.clinicExperts) {
-          await cancelClinicExpertsAppointment(ctx.accountId, String(ld.appointment_id));
+          // Multi-unidade: cancela na unidade ORIGINAL do agendamento
+          // (selected_agenda travado quando ele foi criado).
+          await cancelClinicExpertsAppointment(
+            ctx.accountId,
+            String(ld.appointment_id),
+            undefined,
+            ld.selected_agenda,
+          );
         } else {
           await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
         }
@@ -2114,6 +2214,12 @@ async function execCriarAgendamento(
 
   // Clinic Experts
   if (ctx.integrations.clinicExperts) {
+    // Multi-unidade: resolve pelo param `agenda` deste turn OU pela unidade já
+    // travada (selected_agenda do listar_horarios). Erro volta pro LLM.
+    const ceUnit = resolveCeUnidade(ctx, agendaLabel ?? ld.selected_agenda);
+    if (ceUnit.error) {
+      return { result: JSON.stringify({ ok: false, error: ceUnit.error }) };
+    }
     try {
       const chosenSlot = ld.offered_slots?.find((s) => s.iso === ld.selected_slot_iso);
       const appt = await createClinicExpertsAppointment(ctx.accountId, {
@@ -2123,23 +2229,30 @@ async function execCriarAgendamento(
         endDatetime: chosenSlot?.end_iso,
         professionalUuid: ld.professional_uuid ?? chosenSlot?.professional_uuid,
         notes: await buildClinicorpCaseNotes(ctx),
+        unitLabel: ceUnit.unitLabel,
       });
       await applyBookedTagSwap(ctx);
       await removeLeadFromSequences(ctx);
       return {
-        result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
+        result: JSON.stringify({
+          ok: true,
+          appointment_id: appt.id,
+          datetime: appt.datetime,
+          ...(ceUnit.unitLabel ? { unidade: ceUnit.unitLabel } : {}),
+        }),
         patch: {
           appointment_id: appt.id,
           name: leadName,
           booked_tag_applied: true,
           booked_slot_iso: ld.selected_slot_iso,
+          ...(ceUnit.unitLabel ? { selected_agenda: ceUnit.unitLabel } : {}),
         },
       };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const kind = classifyBookingError(msg);
       console.error(
-        `[scheduler] criar_agendamento Clinic Experts falhou conv=${ctx.conversationId} kind=${kind}: ${msg}`,
+        `[scheduler] criar_agendamento Clinic Experts falhou conv=${ctx.conversationId}${ceUnit.unitLabel ? ` unidade="${ceUnit.unitLabel}"` : ""} kind=${kind}: ${msg}`,
       );
       return { result: JSON.stringify({ ok: false, error: msg.slice(0, 300), error_kind: kind }) };
     }
@@ -2268,7 +2381,13 @@ async function execCancelarAgendamento(
       });
       if (!ok) throw new Error("Clinup recusou o cancelamento da consulta");
     } else if (ctx.integrations.clinicExperts) {
-      await cancelClinicExpertsAppointment(ctx.accountId, String(ld.appointment_id));
+      // Multi-unidade: o cancel bate na unidade original (selected_agenda).
+      await cancelClinicExpertsAppointment(
+        ctx.accountId,
+        String(ld.appointment_id),
+        undefined,
+        ld.selected_agenda,
+      );
     } else {
       await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
     }
@@ -2580,7 +2699,21 @@ Regras:
 - Cada agenda tem sua própria duração e horários liberados — você não precisa se preocupar com isso, a tool já aplica conforme a agenda escolhida.
 ${ld.selected_agenda ? `- Agenda já escolhida nesta conversa: "${ld.selected_agenda}". Mantenha-a, a menos que o lead peça para trocar.` : ""}
 `
-    : "";
+    : isMultiUnidadeCe(ctx)
+      ? `\n# UNIDADES DISPONÍVEIS (Clinic Experts)
+
+Esta clínica tem MAIS DE UMA unidade/localidade. Ao chamar **listar_horarios** e **criar_agendamento**, você DEVE preencher o parâmetro \`agenda\` com EXATAMENTE um destes labels, conforme a localidade do lead:
+${ctx.clinicExpertsUnidades
+  .map((u) => `- "${u.label}": ${u.descricao || "(sem descrição — use seu julgamento pelo nome)"}`)
+  .join("\n")}
+
+Regras:
+- ANTES de listar horários, PERGUNTE ao lead em qual unidade/localidade ele quer ser atendido (a menos que ele já tenha dito ou já exista unidade escolhida abaixo). NUNCA presuma.
+- Use a MESMA unidade para listar horários e para agendar (não misture). Cadastro, horários e agendamento acontecem todos na unidade escolhida.
+- Se o lead pedir uma localidade que NÃO está na lista, diga quais unidades existem e pergunte qual prefere.
+${ld.selected_agenda ? `- Unidade já escolhida nesta conversa: "${ld.selected_agenda}". Mantenha-a, a menos que o lead peça para trocar.` : ""}
+`
+      : "";
 
   return `# ESTADO ATUAL
 
@@ -2599,7 +2732,7 @@ ${JSON.stringify(
     interest: ld.interest ?? null,
     selected_slot_iso: ld.selected_slot_iso ?? null,
     dentist_person_id: ld.dentist_person_id ?? null,
-    ...(isMultiAgenda(ctx) ? { selected_agenda: ld.selected_agenda ?? null } : {}),
+    ...(agendaParamActive(ctx) ? { selected_agenda: ld.selected_agenda ?? null } : {}),
     commitment_confirmed: ld.commitment_confirmed ?? false,
     patient_id: ld.patient_id ?? null,
     appointment_id: ld.appointment_id ?? null,
@@ -2664,6 +2797,12 @@ async function ensureOfferedSlots(ctx: AgentContext): Promise<{
   // Multi-agenda: não dá pra auto-listar sem saber QUAL agenda. Deixa o LLM
   // chamar listar_horarios com o parâmetro `agenda` conforme as regras do prompt.
   if (isMultiAgenda(ctx)) {
+    return { patch: {}, toolsCalled: [] };
+  }
+  // Multi-unidade Clinic Experts: mesmo princípio, mas quando a unidade JÁ foi
+  // travada na conversa (selected_agenda), a auto-listagem pode seguir nela —
+  // o branch CE do execListarHorarios cai em `agendaLabel ?? selected_agenda`.
+  if (isMultiUnidadeCe(ctx) && !ctx.leadData.selected_agenda) {
     return { patch: {}, toolsCalled: [] };
   }
 
