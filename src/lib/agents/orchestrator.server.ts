@@ -1543,8 +1543,20 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // duplicadas). Caso real (Maple Bear Osasco, 11 99241-0075): a lead
         // queria PREÇO de matrícula/mensalidade e o agente repetia "vou te
         // mostrar os horários". Pergunta neutra reabre o que ela precisa.
+        //
+        // O texto NÃO cita vocabulário de um ramo específico. A versão anterior
+        // trazia "(valores, turmas, etc.)" — "turmas" veio do caso Maple Bear
+        // (escola) e vazou para TODO agente: 170 mensagens em 16 contas, das
+        // quais só 2 são escolas. Clínicas de odontologia, estética e até uma
+        // casa de festas perguntaram ao lead sobre "turmas". Caso real que
+        // levantou isso: Odonto Sorrisos, 87 99116-9430, 04/08.
+        //
+        // Também não injeta appointment_type_label: os valores reais são
+        // inconsistentes ("Call agendada", "AVALIAÇÃO AGENDADA ", "VISITA
+        // GUIADA") e quebrariam a concordância. "agendar um horário" serve a
+        // todos os ramos.
         reply =
-          "Desculpa, acho que me confundi aqui! 😅 Como posso te ajudar: você quer agendar uma visita ou tirar alguma dúvida (valores, turmas, etc.)?";
+          "Desculpa, acho que me confundi aqui! 😅 Me diz como posso te ajudar: você quer agendar um horário ou tirar alguma dúvida antes?";
         newStage = "QUALIFICATION";
       } else if (hasBookingIntegration) {
         reply =
