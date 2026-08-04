@@ -2160,13 +2160,49 @@ describe("tryAutoSelectOfferedSlot — pergunta educada que cita horário oferta
     date_label: dl,
     time_label: tl,
   });
+
+  // As frases do caso real usam "amanhã", que é RELATIVO ao dia de execução.
+  // A 1ª versão destes testes fixou o slot em 2026-08-04 (o "amanhã" do dia em
+  // que foram escritos) e passou a falhar 24h depois, deixando a main vermelha.
+  // Agora o slot é derivado do "amanhã" de HOJE — o teste vale em qualquer dia.
+  const AMANHA = (() => {
+    const d = new Date(Date.now() + 86_400_000);
+    const iso = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+    const [, mm, dd] = iso.split("-");
+    const diaSemana = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      weekday: "long",
+    }).format(d);
+    return { iso, label: `${diaSemana}, ${dd}/${mm}` };
+  })();
+  const DEPOIS = (() => {
+    const d = new Date(Date.now() + 2 * 86_400_000);
+    const iso = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+    const [, mm, dd] = iso.split("-");
+    const diaSemana = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      weekday: "long",
+    }).format(d);
+    return { iso, label: `${diaSemana}, ${dd}/${mm}` };
+  })();
+
+  const ALVO = `${AMANHA.iso}T09:15:00-03:00`;
   const SLOTS = [
-    slot("2026-08-04T09:15:00-03:00", "terça-feira, 04/08", "09:15"),
-    slot("2026-08-04T11:00:00-03:00", "terça-feira, 04/08", "11:00"),
-    slot("2026-08-05T09:00:00-03:00", "quarta-feira, 05/08", "09:00"),
+    slot(ALVO, AMANHA.label, "09:15"),
+    slot(`${AMANHA.iso}T11:00:00-03:00`, AMANHA.label, "11:00"),
+    slot(`${DEPOIS.iso}T09:00:00-03:00`, DEPOIS.label, "09:00"),
   ];
-  const OFERTA =
-    "Consegui dois horários: • terça-feira, 04/08 às 09:15 • quarta-feira, 05/08 às 09:00 Qual fica melhor?";
+  const OFERTA = `Consegui dois horários: • ${AMANHA.label} às 09:15 • ${DEPOIS.label} às 09:00 Qual fica melhor?`;
   const escolher = (msg: string, slots = SLOTS, oferta = OFERTA) =>
     tryAutoSelectOfferedSlot(
       "SLOT_OFFER",
@@ -2178,20 +2214,16 @@ describe("tryAutoSelectOfferedSlot — pergunta educada que cita horário oferta
     ).selected_slot_iso;
 
   it("a frase real do lead seleciona o slot pedido", () => {
-    expect(escolher("Consegue confirmar uma avaliação para amanhã às 09:15?")).toBe(
-      "2026-08-04T09:15:00-03:00",
-    );
+    expect(escolher("Consegue confirmar uma avaliação para amanhã às 09:15?")).toBe(ALVO);
   });
 
   it("outras perguntas educadas com horário ofertado também selecionam", () => {
-    expect(escolher("pode ser às 09:15?")).toBe("2026-08-04T09:15:00-03:00");
-    expect(escolher("dá pra marcar amanhã às 09:15?")).toBe("2026-08-04T09:15:00-03:00");
+    expect(escolher("pode ser às 09:15?")).toBe(ALVO);
+    expect(escolher("dá pra marcar amanhã às 09:15?")).toBe(ALVO);
   });
 
   it("sem o '?' o comportamento é o mesmo (não dependia da pontuação)", () => {
-    expect(escolher("Consegue confirmar uma avaliação para amanhã às 09:15")).toBe(
-      "2026-08-04T09:15:00-03:00",
-    );
+    expect(escolher("Consegue confirmar uma avaliação para amanhã às 09:15")).toBe(ALVO);
   });
 
   // NÃO-REGRESSÃO: pergunta ABERTA continua sendo pedido de opções, nunca
