@@ -2477,6 +2477,74 @@ export function isSlotAcceptanceMessage(text: string): boolean {
  * Quando o lead aceita um horário ("Pode ser", "Sim", "14:40"), grava
  * selected_slot_iso a partir de offered_slots — evita reservar slot antigo/errado.
  */
+// Emoji de APONTAR: ☝ (com/sem variation selector e tom de pele), 👆, ⬆, 🔝.
+const PONTEIRO_RE = /[☝⬆]️?[\u{1F3FB}-\u{1F3FF}]?|\u{1F446}[\u{1F3FB}-\u{1F3FF}]?|\u{1F51D}/gu;
+// Palavras que, ao lado do emoji, não acrescentam informação de escolha.
+// "primeiro"/"segundo" NÃO entram: são ordinais e têm caminho próprio.
+const PONTEIRO_FILLER = new Set([
+  "esse", "essa", "este", "esta", "isso", "aquele", "aquela",
+  "o", "a", "os", "as", "esses", "essas", "sim", "ok", "eh", "e",
+]);
+
+/**
+ * A mensagem é APENAS um gesto de apontar ("☝🏼", "👆👆", "esse ☝🏼").
+ *
+ * O gesto é AMBÍGUO por natureza — tem pelo menos duas leituras:
+ *   a) "a opção acima" (o horário que o agente ofereceu), ou
+ *   b) "o que EU disse acima" (a própria mensagem anterior do lead).
+ *
+ * Caso real (Odonto Carioca Campo Grande, 21 97558-2703, 03/08): o lead pediu
+ * "amanhã às 09:15", ouviu que não tinha, e respondeu "👆👆" querendo dizer
+ * "eu pedi AMANHÃ". A IA leu como (a), travou quinta 06/08 09:00 e seguiu para
+ * o nome — o lead passou as mensagens seguintes tentando corrigir.
+ *
+ * Por isso o gesto NUNCA seleciona sozinho: quem responde é a pergunta fechada
+ * de pointingConfirmationReply().
+ */
+export function isPointingGesture(text: string): boolean {
+  const raw = (text ?? "").trim();
+  if (!raw) return false;
+  PONTEIRO_RE.lastIndex = 0;
+  if (!PONTEIRO_RE.test(raw)) {
+    PONTEIRO_RE.lastIndex = 0;
+    return false;
+  }
+  PONTEIRO_RE.lastIndex = 0;
+  const resto = raw
+    .replace(PONTEIRO_RE, " ")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  PONTEIRO_RE.lastIndex = 0;
+  return resto.every((w) => PONTEIRO_FILLER.has(w));
+}
+
+/**
+ * Pergunta FECHADA para o gesto de apontar. Nomeia o(s) horário(s) que o agente
+ * acabou de falar e devolve a decisão ao lead — que é a única fonte confiável
+ * do que ele quis dizer. Com um horário vira confirmação ("você quer X?"), com
+ * vários vira escolha ("você quer X ou Y?").
+ *
+ * Isso resolve as DUAS leituras do gesto: se ele apontava para a oferta, um
+ * "sim" fecha; se apontava para o próprio pedido, ele corrige aqui — em vez de
+ * descobrir depois que foi agendado no dia errado.
+ *
+ * Retorna null quando não há horário para nomear (o fluxo normal segue).
+ */
+export function pointingConfirmationReply(spokenSlots: OfferedSlot[]): string | null {
+  const opcoes = spokenSlots.slice(0, 3);
+  if (opcoes.length === 0) return null;
+  const rotulos = opcoes.map((s) => `${s.date_label} às ${s.time_label}`);
+  if (rotulos.length === 1) {
+    return `Só pra eu não marcar errado 😊 você quer confirmar ${rotulos[0]}?`;
+  }
+  const ultimo = rotulos.pop()!;
+  return `Só pra eu não marcar errado 😊 você quer ${rotulos.join(", ")} ou ${ultimo}?`;
+}
+
 export function tryAutoSelectOfferedSlot(
   stage: string,
   leadData: LeadData,
@@ -2502,6 +2570,13 @@ export function tryAutoSelectOfferedSlot(
 
   const prefPatch = pickSlotByPreference(slots, lastUser, assistantText, lastTurnText);
   if (prefPatch) return prefPatch;
+
+  // GESTO DE APONTAR ("☝🏼", "👆👆"): NUNCA escolhe sozinho, nem quando só um
+  // horário foi ofertado. O gesto pode apontar para a oferta OU para o pedido
+  // anterior do próprio lead (ver isPointingGesture) — e agendar no dia errado
+  // é o erro mais caro nesta base. Quem responde é o guard de confirmação no
+  // orquestrador, com pergunta fechada.
+  if (isPointingGesture(lastUser)) return {};
 
   if (!isSlotAcceptanceMessage(lastUser)) return {};
 

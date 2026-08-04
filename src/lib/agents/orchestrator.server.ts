@@ -26,7 +26,10 @@ import {
   getBookingFieldsForChannel,
   getMissingBookingFields,
   isCommitmentRequired,
+  isPointingGesture,
   isReadyForBooking,
+  pointingConfirmationReply,
+  slotsOfferedInLastTurn,
   type BookingChannelContext,
   looksLikeSchedulingPreference,
   mergeLeadDataPatch,
@@ -1125,6 +1128,41 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     let falseBookingClaimBlocked = false;
     let falseRescheduleClaimBlocked = false;
     let stallReplyBlocked = false;
+    let pointingConfirmAsked = false;
+
+    // GESTO DE APONTAR ("☝🏼", "👆👆"): o lead está indicando algo, mas o gesto
+    // não diz O QUÊ — pode ser a oferta do agente OU o pedido dele mesmo. Em vez
+    // de adivinhar (agendar no dia errado é o erro mais caro aqui) ou de cair na
+    // resposta genérica, devolvemos uma pergunta FECHADA nomeando o(s) horário(s)
+    // que o agente acabou de falar. Se ele apontava para a oferta, um "sim"
+    // fecha; se apontava para o próprio pedido, ele corrige AQUI.
+    //
+    // Caso real (Odonto Carioca Campo Grande, 21 97558-2703, 03/08): lead pediu
+    // "amanhã às 09:15", ouviu que não tinha e respondeu "👆👆" querendo dizer
+    // "eu pedi AMANHÃ" — a IA travou quinta 06/08 e seguiu para o nome.
+    if (
+      hasBookingIntegration &&
+      !finalLeadData.appointment_id &&
+      !(finalLeadData.selected_slot_iso ?? "").trim() &&
+      isPointingGesture(lastUserMsg)
+    ) {
+      const apontados = slotsOfferedInLastTurn(finalLeadData, history);
+      const confirma = pointingConfirmationReply(apontados);
+      if (confirma) {
+        pointingConfirmAsked = true;
+        console.warn(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "pointing_gesture_confirm_asked",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            opcoes: apontados.map((s) => `${s.date_label} ${s.time_label}`),
+          })}`,
+        );
+        reply = confirma;
+        newStage = "SLOT_OFFER";
+      }
+    }
     let forcedSchedulingAdvance = userAcceptedSchedulingProposal;
 
     // Lista de palavras que indicam "confirmei um agendamento". "reservado"/
@@ -1587,6 +1625,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           tools_called: result.tools_called,
           // Telemetria: marcadores de intervencoes deterministicas.
           duplicate_reply_blocked: duplicateReplyBlocked || undefined,
+          pointing_gesture_confirm_asked: pointingConfirmAsked || undefined,
           false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
           // Quando um guard TROCA o texto, a resposta original do LLM some — foi
           // o que impediu de saber qual palavra disparou o false_booking_claim
