@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
+import { pointingConfirmationReply } from "@/lib/booking-template";
 
 const claim = (reply: string, horarioEmJogo: boolean) =>
   claimsBookingWithoutAppointment({ reply, horarioEmJogo });
@@ -103,5 +104,45 @@ describe("âncora de data — separa confirmação falsa de conversa sobre outra
 
   it("mas com horário em jogo o particípio solto ainda pega", () => {
     expect(claim("Então seu retorno está agendado para daqui 3 meses.", true)).toBe(true);
+  });
+});
+
+// ── interação com o guard do gesto de apontar (PR #20) ────────────────────
+// Os dois guards vivem na MESMA cadeia do orquestrador e o do gesto roda ANTES.
+// O texto que ele produz contém "confirmar" + uma data — exatamente o padrão que
+// este guard caça. Se ele disparasse, a pergunta de desambiguação seria
+// substituída por "ainda não reservei nada..." e o #20 perderia o efeito.
+//
+// Hoje não dispara porque o detector exige o PARTICÍPIO ("confirmado") e o texto
+// usa o INFINITIVO ("confirmar"), que não afirma nada — só propõe. A margem é
+// estreita: reescrever aquela mensagem para "quer deixar confirmado para quinta?"
+// voltaria a disparar. Este teste trava a combinação.
+describe("não pode engolir a pergunta do gesto de apontar (#20)", () => {
+  const slot = (dl: string, tl: string) => ({
+    iso: "2026-08-06T09:00:00-03:00",
+    end_iso: "2026-08-06T09:15:00-03:00",
+    date_label: dl,
+    time_label: tl,
+  });
+
+  it("a pergunta de UMA opção não é lida como confirmação falsa", () => {
+    const r = pointingConfirmationReply([slot("quinta-feira, 06/08", "09:00")] as never)!;
+    expect(r).toBeTruthy();
+    expect(claim(r, true)).toBe(false);
+    expect(claim(r, false)).toBe(false);
+  });
+
+  it("a pergunta de DUAS opções também não", () => {
+    const r = pointingConfirmationReply([
+      slot("quinta-feira, 06/08", "09:00"),
+      slot("quinta-feira, 06/08", "10:15"),
+    ] as never)!;
+    expect(r).toBeTruthy();
+    expect(claim(r, true)).toBe(false);
+  });
+
+  it("mas a forma AFIRMATIVA equivalente continua sendo bloqueada", () => {
+    // se alguém trocar a pergunta por uma afirmação, o guard tem que pegar
+    expect(claim("Deixei confirmado para quinta-feira, 06/08 às 09:00.", true)).toBe(true);
   });
 });
