@@ -830,6 +830,86 @@ describe("rankSlotsByRequestedHour", () => {
   });
 });
 
+// ── ranking por hora NÃO pode comer o dia pedido ─────────────────────────────
+// Caso real (04/08/2026, Implanto Master Venda Nova, Sérgio 31 98727-1682): o
+// lead disse "quero as 9:00 horas" e depois "Hoje". A terça (hoje) tinha 16:00 e
+// 17:30 livres, mas o ranking global por proximidade de 9h colocou quarta 08:00/
+// 08:30 e sábado 08:30/11:00 na frente; o corte de 6 zerou a terça e o agente
+// respondeu "hoje (terça) infelizmente não temos vaga disponível".
+describe("rankSlotsByRequestedHour — agrupado por dia", () => {
+  interface S {
+    dia: string;
+    hora: string;
+  }
+  const dia = (s: S) => s.dia;
+  const min = (s: S) => minutesOfDayFromLabel(s.hora);
+  const rotulo = (arr: S[]) => arr.map((s) => `${s.dia.slice(-2)} ${s.hora}`);
+
+  const agenda: S[] = [
+    // HOJE (terça): só tarde
+    { dia: "2026-08-04", hora: "16:00" },
+    { dia: "2026-08-04", hora: "17:30" },
+    // quarta
+    { dia: "2026-08-05", hora: "08:00" },
+    { dia: "2026-08-05", hora: "08:30" },
+    { dia: "2026-08-05", hora: "10:30" },
+    { dia: "2026-08-05", hora: "11:00" },
+    // sábado
+    { dia: "2026-08-08", hora: "08:30" },
+    { dia: "2026-08-08", hora: "11:00" },
+  ];
+
+  it("o dia pedido sobrevive ao corte de 6 mesmo com a hora pedida longe", () => {
+    const cortado = rankSlotsByRequestedHour(agenda, 9, min, dia).slice(0, 6);
+    expect(cortado.filter((s) => s.dia === "2026-08-04").length).toBeGreaterThan(0);
+    // Sem o agrupamento por dia, a terça sumia inteira:
+    const semDia = rankSlotsByRequestedHour(agenda, 9, min).slice(0, 6);
+    expect(semDia.filter((s) => s.dia === "2026-08-04")).toEqual([]);
+  });
+
+  it("dentro de cada dia, a hora pedida continua mandando", () => {
+    const r = rankSlotsByRequestedHour(agenda, 9, min, dia);
+    // 08:30 (30min de 9h) antes de 08:00 (60min) dentro da quarta
+    const quarta = r.filter((s) => s.dia === "2026-08-05");
+    expect(quarta[0]!.hora).toBe("08:30");
+    // 16:00 antes de 17:30 dentro da terça
+    expect(r.filter((s) => s.dia === "2026-08-04")[0]!.hora).toBe("16:00");
+  });
+
+  it("os dias entram em ordem cronológica, 2 por rodada", () => {
+    expect(rotulo(rankSlotsByRequestedHour(agenda, 9, min, dia)).slice(0, 6)).toEqual([
+      "04 16:00",
+      "04 17:30",
+      "05 08:30",
+      "05 08:00",
+      "08 08:30",
+      "08 11:00",
+    ]);
+  });
+
+  it("um dia cheio não consome o corte inteiro", () => {
+    const cheio: S[] = [
+      ...Array.from({ length: 20 }, (_, i) => ({
+        dia: "2026-08-05",
+        hora: `${String(8 + Math.floor(i / 2)).padStart(2, "0")}:${i % 2 ? "30" : "00"}`,
+      })),
+      { dia: "2026-08-06", hora: "09:00" },
+    ];
+    const r = rankSlotsByRequestedHour(cheio, 9, min, dia).slice(0, 6);
+    expect(r.some((s) => s.dia === "2026-08-06")).toBe(true);
+  });
+
+  it("sem hora pedida ignora o agrupamento (ordem cronológica intacta)", () => {
+    expect(rankSlotsByRequestedHour(agenda, null, min, dia)).toEqual(agenda);
+  });
+
+  it("devolve todos os slots, sem perder nem duplicar", () => {
+    const r = rankSlotsByRequestedHour(agenda, 9, min, dia);
+    expect(r.length).toBe(agenda.length);
+    expect(new Set(r).size).toBe(agenda.length);
+  });
+});
+
 describe("minutesOfDayFromLabel", () => {
   it("lê os formatos que os provedores devolvem", () => {
     expect(minutesOfDayFromLabel("16:45")).toBe(1005);
@@ -2101,6 +2181,57 @@ describe("scrubInventedTimeOffers — qualifier oferta horário sem ter agenda (
     expect(
       scrubInventedTimeOffers("Funcionamos de segunda a sábado, das 8h às 12h. 😊").scrubbed,
     ).toBe(false);
+  });
+
+  // ── com offered_slots: só corta o que NÃO está na agenda ──────────────────
+  // Caso real (04/08/2026, Implanto Master Venda Nova, Sérgio 31 98727-1682):
+  // listar_horarios devolveu 08:00 e 08:30 de quarta; o lead tinha pedido
+  // "as 9:00 horas" e o agente ofertou "amanhã (quarta) às 9h ou às 9h30".
+  describe("com offered_slots reais", () => {
+    const reais = [
+      { iso: "2026-08-05T08:00:00-03:00", date_label: "quarta-feira, 05/08", time_label: "08:00" },
+      { iso: "2026-08-05T08:30:00-03:00", date_label: "quarta-feira, 05/08", time_label: "08:30" },
+      { iso: "2026-08-05T10:30:00-03:00", date_label: "quarta-feira, 05/08", time_label: "10:30" },
+    ];
+
+    it("corta a oferta deslocada e devolve os horários REAIS", () => {
+      const out = scrubInventedTimeOffers(
+        "Sérgio, hoje (terça) infelizmente não temos vaga disponível. Mas consigo te encaixar amanhã (quarta) às 9h ou às 9h30 — qual fica melhor pra você? 😊",
+        reais,
+      );
+      expect(out.scrubbed).toBe(true);
+      expect(out.reply).toContain("hoje (terça) infelizmente não temos vaga");
+      expect(out.reply).not.toContain("9h30");
+      expect(out.reply).toContain("08:00");
+      expect(out.reply).toContain("08:30");
+    });
+
+    it("NÃO corta quando os horários citados estão entre os ofertados", () => {
+      expect(
+        scrubInventedTimeOffers("Consigo amanhã às 08:00 ou às 10:30 — qual prefere?", reais)
+          .scrubbed,
+      ).toBe(false);
+      // Mesmo horário escrito como o lead fala ("8h", "8h30").
+      expect(
+        scrubInventedTimeOffers("Tenho quarta-feira às 8h ou às 8h30. Qual fica melhor?", reais)
+          .scrubbed,
+      ).toBe(false);
+    });
+
+    it("um único horário fora da lista já dispara", () => {
+      expect(
+        scrubInventedTimeOffers("Posso te encaixar amanhã às 08:00 ou às 09:00?", reais).scrubbed,
+      ).toBe(true);
+    });
+
+    it("horário de funcionamento com slots reais em mãos segue sem disparar", () => {
+      expect(
+        scrubInventedTimeOffers(
+          "Atendemos de segunda a sexta, das 08:00 às 18:00. Posso te ajudar em algo mais?",
+          reais,
+        ).scrubbed,
+      ).toBe(false);
+    });
   });
 
   it("NÃO dispara em respostas normais sem dia+horário", () => {

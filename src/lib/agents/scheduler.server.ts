@@ -122,6 +122,7 @@ import {
   extractCompanionAppointmentNote,
   requestedHoraFromText,
   rankSlotsByRequestedHour,
+  scrubInventedTimeOffers,
   minutesOfDayFromLabel,
   affirmedDatesFromAssistant,
   ddmmInBrt,
@@ -1201,8 +1202,11 @@ export async function execListarHorarios(
       }
     }
 
-    const clLimited = rankSlotsByRequestedHour(clSlots, resolvedHora, (s) =>
-      minutesOfDayFromLabel(s.time.slice(0, 5)),
+    const clLimited = rankSlotsByRequestedHour(
+      clSlots,
+      resolvedHora,
+      (s) => minutesOfDayFromLabel(s.time.slice(0, 5)),
+      (s) => s.date,
     )
       .slice(0, 6)
       .sort((a, b) => a.start.localeCompare(b.start))
@@ -1303,8 +1307,11 @@ export async function execListarHorarios(
     // Prioriza a hora pedida ANTES do corte de 6 (senão o slice pega sempre as
     // vagas mais cedo do turno e "prefiro perto das 16h" nunca é alcançado),
     // reordenando cronologicamente só na saída — igual ao Clinicorp.
-    const ceLimited = rankSlotsByRequestedHour(ceSlots, resolvedHora, (s) =>
-      minutesOfDayFromLabel(s.fromTime),
+    const ceLimited = rankSlotsByRequestedHour(
+      ceSlots,
+      resolvedHora,
+      (s) => minutesOfDayFromLabel(s.fromTime),
+      (s) => s.localDate,
     )
       .slice(0, 6)
       .sort((a, b) => a.start.localeCompare(b.start))
@@ -1401,8 +1408,11 @@ export async function execListarHorarios(
   // PRÓXIMOS dela antes do corte — senão o corte pega sempre os 6 mais cedo
   // do turno (ex: 12:00-14:30) e nunca alcança um horário pedido mais tarde
   // no mesmo turno (ex: 16:00), mesmo com esse horário livre.
-  const ranked = rankSlotsByRequestedHour(slots, resolvedHora, (s) =>
-    minutesOfDayFromLabel(s.fromTime),
+  const ranked = rankSlotsByRequestedHour(
+    slots,
+    resolvedHora,
+    (s) => minutesOfDayFromLabel(s.fromTime),
+    (s) => s.localDate,
   );
   const limited = ranked
     .slice(0, 6)
@@ -3678,6 +3688,29 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Rede de segurança final: pega a confirmação falsa mesmo quando NENHUM booking
   // foi tentado (o LLM afirmou "ficou agendado" sozinho, sem chamar tool).
   scrubFalseConfirmation();
+
+  // ── Oferta com horário FORA da agenda ──────────────────────────────────────
+  // O turn ofertou "quarta às 9h" mas a agenda devolveu 08:00/08:30: o lead
+  // recebe um horário que não existe e a resposta dele nunca casa com nenhum
+  // slot (a auto-seleção não acha), travando a conversa. Roda só no momento de
+  // OFERTA — sem agendamento criado e sem slot já escolhido — porque depois
+  // disso citar o horário escolhido/agendado é legítimo mesmo que ele já tenha
+  // saído de offered_slots. Mesma trava do qualifier; ver scrubInventedTimeOffers.
+  const jaTemAppt = ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
+  const jaEscolheu =
+    (outPatch as Partial<LeadData>).selected_slot_iso ?? ctx.leadData.selected_slot_iso;
+  if (!jaTemAppt && !jaEscolheu && outStage !== "ESCALATED") {
+    const ofertados = ((outPatch as Partial<LeadData>).offered_slots ??
+      ctx.leadData.offered_slots) as OfferedSlotLike[] | undefined;
+    const scrubOferta = scrubInventedTimeOffers(reply, ofertados);
+    if (scrubOferta.scrubbed) {
+      reply = scrubOferta.reply;
+      mergedTelemetry.invented_time_offer_scrubbed = true;
+      console.warn(
+        `[scheduler] oferta de horário fora da agenda removida conv=${ctx.conversationId} (offered_slots=${ofertados?.length ?? 0})`,
+      );
+    }
+  }
 
   return {
     reply,

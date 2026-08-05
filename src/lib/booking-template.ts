@@ -1726,34 +1726,84 @@ const TIME_RANGE_RE =
 const CONCRETE_TIME_OFFER_RE =
   /\b(?:segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|amanh[ãa]|hoje)(?:-feira)?[^.!?\n]{0,40}?\s[àa]s\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)?\b/i;
 
+/** Horários citados dentro de uma frase, em minutos do dia: "9h" → 540,
+ *  "9h30" → 570, "às 14" → 840, "10:30" → 630. Faixas de funcionamento já saem
+ *  antes (TIME_RANGE_RE), então "das 8h às 18h" não entra aqui. */
+const CITED_TIME_RE = /(?:[àa]s\s*)?(\d{1,2})(?::(\d{2})|h(\d{2})|h)(?![\d:])|[àa]s\s*(\d{1,2})\b/gi;
+
+function citedTimesInMinutes(sentence: string): number[] {
+  const out: number[] = [];
+  for (const m of sentence.matchAll(CITED_TIME_RE)) {
+    const h = Number(m[1] ?? m[4]);
+    const min = Number(m[2] ?? m[3] ?? 0);
+    if (h >= 0 && h <= 23 && min >= 0 && min <= 59) out.push(h * 60 + min);
+  }
+  return out;
+}
+
+/** Slot ofertado, no mínimo que este arquivo precisa ler. */
+type OfferedTimeLike = { date_label?: string; time_label?: string };
+
 /**
- * Remove de uma resposta do QUALIFIER ofertas de dia+horário concretos.
+ * Remove de uma resposta ofertas de dia+horário que o agente NÃO pode sustentar.
  *
- * O qualifier NÃO tem acesso à agenda (listar_horarios é do scheduler) — logo
- * qualquer "segunda às 14h" que ele oferte é INVENTADO e pode cair em dia
- * bloqueado. Caso real (18/07, Costa Lima Recreio, Haiku já a 0.3): na
- * transição p/ SLOT_OFFER o qualifier ofertou "segunda-feira às 14h ou
- * terça-feira às 10h" com a segunda bloqueada na agenda e offered_slots vazio.
+ * Dois cenários, um mesmo estrago (o lead recebe um horário que não existe):
+ *
+ *  1. `offered` vazio — o qualifier não tem agenda (listar_horarios é do
+ *     scheduler), então qualquer "segunda às 14h" é INVENTADO e pode cair em dia
+ *     bloqueado. Caso real (18/07, Costa Lima Recreio): "segunda-feira às 14h ou
+ *     terça-feira às 10h" com a segunda bloqueada.
+ *  2. `offered` preenchido mas a resposta cita um horário que NÃO está nele — o
+ *     agente consultou a agenda e mesmo assim deslocou o horário, tipicamente
+ *     para a hora que o lead pediu. Caso real (04/08/2026, Implanto Master Venda
+ *     Nova, Sérgio 31 98727-1682): a agenda devolveu 08:00 e 08:30, o lead tinha
+ *     pedido "as 9:00 horas" e o agente ofertou "amanhã às 9h ou às 9h30" —
+ *     horários que nunca existiram. A trava antiga não pegava: ela só rodava com
+ *     offered_slots VAZIO, e a chamada da tool no mesmo turn já os preenchia.
  *
  * Estratégia: mantém tudo ANTES da primeira frase ofensora (o pitch de valor
- * fica), corta dali em diante (a pergunta "qual desses?" que referencia a
- * oferta cai junto) e fecha com uma pergunta neutra de preferência — deixando
- * o scheduler ofertar os horários REAIS no turno seguinte. Menções a horário de
- * funcionamento ("das 8h às 18h") não disparam o corte.
+ * fica), corta dali em diante (a pergunta "qual desses?" que referencia a oferta
+ * cai junto) e fecha ofertando os horários REAIS — ou, quando não há nenhum em
+ * mãos, com uma pergunta neutra de preferência, deixando o scheduler ofertar de
+ * verdade no turno seguinte. Menções a horário de funcionamento ("das 8h às
+ * 18h") não disparam o corte.
  */
-export function scrubInventedTimeOffers(reply: string): { reply: string; scrubbed: boolean } {
+export function scrubInventedTimeOffers(
+  reply: string,
+  offered?: OfferedTimeLike[] | null,
+): { reply: string; scrubbed: boolean } {
   const original = reply ?? "";
   if (!original.trim()) return { reply: original, scrubbed: false };
-  if (!CONCRETE_TIME_OFFER_RE.test(original.replace(TIME_RANGE_RE, ""))) {
-    return { reply: original, scrubbed: false };
-  }
+
+  const reais = (offered ?? []).filter((s) => s?.time_label);
+  const minutosReais = new Set(reais.map((s) => minutesOfDayFromLabel(s.time_label!)));
+
+  /** A frase oferta dia+hora que não podemos sustentar? */
+  const ofensiva = (texto: string): boolean => {
+    const limpo = texto.replace(TIME_RANGE_RE, "");
+    if (!CONCRETE_TIME_OFFER_RE.test(limpo)) return false;
+    // Sem horários reais em mãos, qualquer oferta concreta é inventada.
+    if (minutosReais.size === 0) return true;
+    // Com horários reais, só é ofensiva se citar um que não está entre eles.
+    const citados = citedTimesInMinutes(limpo);
+    return citados.length > 0 && citados.some((m) => !minutosReais.has(m));
+  };
+
+  if (!ofensiva(original)) return { reply: original, scrubbed: false };
+
+  const fechamento = reais.length
+    ? `Os horários que consigo são ${reais
+        .slice(0, 2)
+        .map((s) => `${s.date_label ?? ""} às ${s.time_label}`.trim())
+        .join(" ou ")}. Qual deles fica melhor pra você? 😊`
+    : NEUTRAL_SLOT_PREFERENCE_QUESTION;
 
   const lines = original.split("\n");
   let cutLine = -1;
   let cutCol = -1;
   outer: for (let i = 0; i < lines.length; i++) {
     for (const sentence of lines[i]!.split(/(?<=[.!?…])\s+/)) {
-      if (CONCRETE_TIME_OFFER_RE.test(sentence.replace(TIME_RANGE_RE, ""))) {
+      if (ofensiva(sentence)) {
         cutLine = i;
         cutCol = lines[i]!.indexOf(sentence);
         break outer;
@@ -1761,14 +1811,14 @@ export function scrubInventedTimeOffers(reply: string): { reply: string; scrubbe
     }
   }
   // Detectou no texto inteiro mas não numa frase isolada (quebra atípica):
-  // fail-safe corta tudo e fica só a pergunta neutra.
-  if (cutLine === -1) return { reply: NEUTRAL_SLOT_PREFERENCE_QUESTION, scrubbed: true };
+  // fail-safe corta tudo e fica só o fechamento.
+  if (cutLine === -1) return { reply: fechamento, scrubbed: true };
 
   const kept = [...lines.slice(0, cutLine), lines[cutLine]!.slice(0, Math.max(0, cutCol)).trim()]
     .filter((l) => l.trim())
     .join("\n");
   return {
-    reply: kept ? `${kept}\n\n${NEUTRAL_SLOT_PREFERENCE_QUESTION}` : NEUTRAL_SLOT_PREFERENCE_QUESTION,
+    reply: kept ? `${kept}\n\n${fechamento}` : fechamento,
     scrubbed: true,
   };
 }
@@ -2028,20 +2078,61 @@ export function requestedHoraFromText(text: string): number | null {
  * `minutosDoDia` extrai o minuto do dia de cada slot (ex.: "16:45" → 1005), o
  * que desempata dentro da mesma hora: pedindo 17h, 16:45 vem antes de 16:00.
  *
- * Vive aqui (e não no ramo de um provedor) porque os três provedores precisam do
- * MESMO comportamento: o ranking existia só no Clinicorp, então Google Calendar
- * e Clinic Experts ignoravam a hora pedida e ofertavam sempre o começo do turno.
+ * `diaDoSlot` (YYYY-MM-DD) é o que impede o ranking de COMER O DIA PEDIDO. Sem
+ * ele a ordenação é global: pedindo 9h, um 08:30 de sábado (3 dias à frente)
+ * passa na frente do 16:00 de HOJE, e com o corte de 6 o dia pedido some da
+ * lista inteira — o agente então conclui "hoje não temos vaga" com a agenda de
+ * hoje livre. Caso real (04/08/2026, Implanto Master Venda Nova, Sérgio
+ * 31 98727-1682): lead disse "quero as 9:00 horas" e depois "Hoje"; as 6 vagas
+ * ofertadas eram de quarta e sábado, nenhuma de terça — e a clínica tinha 16:00
+ * e 17:30 livres naquela terça.
+ *
+ * Com `diaDoSlot`, os dias entram em ordem CRONOLÓGICA e o ranking por hora vale
+ * DENTRO de cada dia; a saída intercala os dias em rodadas de 2, de modo que
+ * todo dia com vaga sobrevive ao corte enquanto couber.
+ *
+ * Vive aqui (e não no ramo de um provedor) porque os quatro provedores precisam
+ * do MESMO comportamento: o ranking existia só no Clinicorp, então Google
+ * Calendar e Clinic Experts ignoravam a hora pedida e ofertavam sempre o começo
+ * do turno.
  */
 export function rankSlotsByRequestedHour<T>(
   slots: readonly T[],
   hora: number | null | undefined,
   minutosDoDia: (slot: T) => number,
+  diaDoSlot?: (slot: T) => string,
 ): T[] {
   if (hora == null) return [...slots];
   const alvo = hora * 60;
-  return [...slots].sort(
-    (a, b) => Math.abs(minutosDoDia(a) - alvo) - Math.abs(minutosDoDia(b) - alvo),
-  );
+  const porProximidade = (a: T, b: T) =>
+    Math.abs(minutosDoDia(a) - alvo) - Math.abs(minutosDoDia(b) - alvo);
+  if (!diaDoSlot) return [...slots].sort(porProximidade);
+
+  const porDia = new Map<string, T[]>();
+  for (const s of slots) {
+    const chave = diaDoSlot(s);
+    const fila = porDia.get(chave);
+    if (fila) fila.push(s);
+    else porDia.set(chave, [s]);
+  }
+  // Chaves YYYY-MM-DD ordenam lexicograficamente = cronologicamente.
+  const dias = [...porDia.keys()].sort();
+  for (const d of dias) porDia.get(d)!.sort(porProximidade);
+
+  // 2 por rodada: o dia pedido entra com um PAR de opções (é o que o agente
+  // oferta) sem que um único dia cheio consuma o corte inteiro.
+  const POR_RODADA = 2;
+  const out: T[] = [];
+  for (let rodada = 0; out.length < slots.length; rodada++) {
+    const antes = out.length;
+    for (const d of dias) {
+      const fila = porDia.get(d)!;
+      const ini = rodada * POR_RODADA;
+      for (let i = ini; i < ini + POR_RODADA && i < fila.length; i++) out.push(fila[i]!);
+    }
+    if (out.length === antes) break;
+  }
+  return out;
 }
 
 /** "16:45" / "16h45" / "9:00" → minutos do dia (1005, 1005, 540). -1 se inválido. */

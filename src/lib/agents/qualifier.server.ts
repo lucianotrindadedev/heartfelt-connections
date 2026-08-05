@@ -954,23 +954,27 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   const finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;
 
   // ── Trava anti-horário-inventado ───────────────────────────────────────────
-  // O qualifier NÃO tem acesso à agenda; qualquer "segunda às 14h" que ele
-  // oferte é inventado (pode cair em dia bloqueado). Corta a oferta e fecha com
-  // pergunta neutra de preferência — o scheduler oferta os horários REAIS no
-  // turno seguinte. Só roda quando NÃO há offered_slots (com slots reais no
-  // lead_data, citar horário pode ser legítimo). Caso real: Costa Lima Recreio
+  // Sem offered_slots o qualifier não tem agenda nenhuma: qualquer "segunda às
+  // 14h" é inventado (pode cair em dia bloqueado). Caso real: Costa Lima Recreio
   // 18/07, "segunda-feira às 14h ou terça-feira às 10h" com a segunda bloqueada.
+  //
+  // COM offered_slots a checagem continua valendo — e é aqui que ela roda agora.
+  // Antes o guard era pulado assim que houvesse slots, mas a chamada de
+  // listar_horarios do PRÓPRIO turn já preenche offered_slots (ctx.leadData é
+  // atualizado no loop de tools acima), então o cenário mais comum ficava
+  // descoberto: o agente consulta a agenda e mesmo assim desloca o horário para
+  // o que o lead pediu. Caso real (04/08/2026, Implanto Master Venda Nova,
+  // Sérgio 31 98727-1682): agenda devolveu 08:00 e 08:30, lead tinha pedido
+  // "as 9:00 horas", o agente ofertou "amanhã às 9h ou às 9h30".
   let finalReply = result.reply;
   let inventedOfferScrubbed = false;
-  if ((ctx.leadData.offered_slots?.length ?? 0) === 0) {
-    const scrub = scrubInventedTimeOffers(finalReply);
-    if (scrub.scrubbed) {
-      finalReply = scrub.reply;
-      inventedOfferScrubbed = true;
-      console.warn(
-        `[qualifier] oferta de horário inventada removida conv=${ctx.conversationId} stage=${ctx.stage}->${finalStage}`,
-      );
-    }
+  const scrub = scrubInventedTimeOffers(finalReply, ctx.leadData.offered_slots);
+  if (scrub.scrubbed) {
+    finalReply = scrub.reply;
+    inventedOfferScrubbed = true;
+    console.warn(
+      `[qualifier] oferta de horário fora da agenda removida conv=${ctx.conversationId} stage=${ctx.stage}->${finalStage} (offered_slots=${ctx.leadData.offered_slots?.length ?? 0})`,
+    );
   }
 
   return {

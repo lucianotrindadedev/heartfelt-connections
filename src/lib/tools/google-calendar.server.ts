@@ -821,15 +821,22 @@ export async function listGoogleCalendarSlots(
   // nunca é ofertado mesmo estando livre. Reordena cronologicamente depois, para
   // o lead receber as opções em ordem natural.
   if (params.horaPreferida != null) {
-    resultado = rankSlotsByRequestedHour(resultado, params.horaPreferida, (s) =>
-      minutesOfDayFromLabel(
-        new Intl.DateTimeFormat("pt-BR", {
-          timeZone: TZ,
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: false,
-        }).format(s.inicio),
-      ),
+    const diaBrt = new Intl.DateTimeFormat("en-CA", { timeZone: TZ });
+    resultado = rankSlotsByRequestedHour(
+      resultado,
+      params.horaPreferida,
+      (s) =>
+        minutesOfDayFromLabel(
+          new Intl.DateTimeFormat("pt-BR", {
+            timeZone: TZ,
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).format(s.inicio),
+        ),
+      // Agrupa por DIA: sem isto o ranking por hora é global e o dia que o lead
+      // pediu pode sumir inteiro do corte (ver rankSlotsByRequestedHour).
+      (s) => diaBrt.format(s.inicio),
     );
   }
   if (typeof params.amostras === "number" && params.amostras > 0) {
