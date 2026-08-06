@@ -33,6 +33,11 @@ export interface BookingTemplateVars {
   dia_semana: string;
   tipo_consulta: string;
   agenda: string;
+  /** Unidade/localidade do agendamento (multi-unidade Clinic Experts ou
+   *  multi-agenda Google). Alias semântico de {{agenda}}: mesma origem
+   *  (lead_data.selected_agenda), nome que faz sentido pra quem opera uma
+   *  central com várias unidades. Vazio em conta de unidade única. */
+  unidade: string;
   interesse: string;
   observacoes: string;
   resumo: string;
@@ -56,6 +61,9 @@ interface NotifyBookingParams {
   summary?: string;
   /** Contexto adicional disponibilizado ao template. */
   agenda?: string;
+  /** Unidade/localidade (multi-unidade). Se omitido, cai em `agenda` — as duas
+   *  vêm do mesmo lead_data.selected_agenda. */
+  unidade?: string;
   interesse?: string;
   observacoes?: string;
   agenteNome?: string;
@@ -143,6 +151,8 @@ export function buildTemplateVars(p: NotifyBookingParams, summary: string): Book
     dia_semana: dt.weekday,
     tipo_consulta: label,
     agenda: (p.agenda ?? "").trim(),
+    // Mesma origem de {{agenda}} — o label da agenda/unidade escolhida.
+    unidade: (p.unidade ?? p.agenda ?? "").trim(),
     interesse: (p.interesse ?? "").trim(),
     observacoes: (p.observacoes ?? "").trim(),
     resumo: (summary ?? "").trim(),

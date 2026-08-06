@@ -45,6 +45,7 @@ import { loadHelenaAccount, removeContactFromAllSequences } from "@/lib/helena.s
 import { summarizeConversationForNotification } from "@/lib/agents/notify-booking.server";
 import {
   swapTagBySynonyms,
+  applyTagByApproxName,
   NOT_SCHEDULED_SYNONYMS,
   SCHEDULED_SYNONYMS,
 } from "@/lib/helena-tags.server";
@@ -172,6 +173,59 @@ async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
     }
   } catch (e) {
     console.warn("[scheduler] erro ao trocar tags pós-agendamento:", e);
+  }
+}
+
+/**
+ * Etiqueta o lead com a UNIDADE em que ele agendou (central multi-unidade:
+ * multi-agenda Google ou multi-unidade Clinic Experts). A tag usada é o label
+ * da unidade — a mesma coisa que o dono já vê no painel e na notificação
+ * ({{unidade}}), então não há nome novo pra ele decorar.
+ *
+ * Só aplica quando a tag JÁ EXISTE no CRM (resolveTagName por nome aproximado):
+ * a Helena não cria tags por API, e criar tag "fantasma" por engano poluiria o
+ * CRM do cliente. Se a tag não existe, loga e segue — o agendamento nunca falha
+ * por causa de etiqueta.
+ *
+ * Roda DEPOIS do swap de status para não competir com ele: o swap reescreve o
+ * conjunto de tags (mantendo as demais) e esta chamada só insere a da unidade.
+ */
+async function applyUnidadeTag(ctx: AgentContext): Promise<void> {
+  const unidade = (ctx.leadData.selected_agenda ?? "").trim();
+  if (!unidade) return; // conta de unidade/agenda única
+  if (ctx.dryRun || ctx.disableTags) {
+    console.log(
+      `[scheduler] tag de unidade PULADA (${ctx.dryRun ? "dry_run" : "test_mode"}) conv=${ctx.conversationId} unidade="${unidade}"`,
+    );
+    return;
+  }
+  if (!ctx.helenaContact?.id) return;
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    const res = await applyTagByApproxName(
+      helena,
+      ctx.helenaContact.id,
+      unidade,
+      "InsertIfNotExists",
+      // Passa as tags atuais + a de status recém-aplicada seria ideal, mas o
+      // contato em ctx está pré-swap; o InsertIfNotExists da Helena preserva as
+      // existentes, então basta não mandar currentTags stale aqui.
+    );
+    if (res.ok) {
+      console.log(
+        `[scheduler] tag de unidade aplicada conv=${ctx.conversationId}: "${res.tag}"`,
+      );
+    } else if (res.reason === "not_found") {
+      console.warn(
+        `[scheduler] tag de unidade "${unidade}" não existe no CRM conv=${ctx.conversationId} — crie a etiqueta na Helena com esse nome para o lead ser etiquetado por unidade`,
+      );
+    } else {
+      console.warn(
+        `[scheduler] tag de unidade falhou conv=${ctx.conversationId}: motivo=${res.reason} status=${res.status ?? "-"}`,
+      );
+    }
+  } catch (e) {
+    console.warn("[scheduler] erro ao aplicar tag de unidade:", e);
   }
 }
 
@@ -2161,6 +2215,7 @@ async function execCriarAgendamento(
         resolved.calendarId,
       );
       await applyBookedTagSwap(ctx);
+      await applyUnidadeTag(ctx);
       await removeLeadFromSequences(ctx);
       return {
         result: JSON.stringify({
@@ -2201,6 +2256,7 @@ async function execCriarAgendamento(
         notes: await buildClinicorpCaseNotes(ctx),
       });
       await applyBookedTagSwap(ctx);
+      await applyUnidadeTag(ctx);
       await removeLeadFromSequences(ctx);
       return {
         result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
@@ -2242,6 +2298,7 @@ async function execCriarAgendamento(
         unitLabel: ceUnit.unitLabel,
       });
       await applyBookedTagSwap(ctx);
+      await applyUnidadeTag(ctx);
       await removeLeadFromSequences(ctx);
       return {
         result: JSON.stringify({
@@ -2284,6 +2341,7 @@ async function execCriarAgendamento(
       notes: await buildClinicorpCaseNotes(ctx),
     });
     await applyBookedTagSwap(ctx);
+    await applyUnidadeTag(ctx);
     await removeLeadFromSequences(ctx);
     return {
       result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
