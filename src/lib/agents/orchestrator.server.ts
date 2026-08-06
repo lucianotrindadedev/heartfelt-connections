@@ -1787,6 +1787,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             : slotIsoBefore,
           appointmentLabel,
           agenda: selectedAgenda,
+          // {{unidade}}: mesma origem de {{agenda}} (selected_agenda), nome que
+          // faz sentido numa central com várias unidades/localidades.
+          unidade: selectedAgenda,
           interesse: (finalLeadData.interest as string | undefined) ?? "",
           observacoes: (finalLeadData.notes as string | undefined) ?? "",
           agenteNome: (agent.data.nome as string | undefined) ?? "",

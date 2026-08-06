@@ -45,6 +45,7 @@ import { loadHelenaAccount, removeContactFromAllSequences } from "@/lib/helena.s
 import { summarizeConversationForNotification } from "@/lib/agents/notify-booking.server";
 import {
   swapTagBySynonyms,
+  applyTagByApproxName,
   NOT_SCHEDULED_SYNONYMS,
   SCHEDULED_SYNONYMS,
 } from "@/lib/helena-tags.server";
@@ -122,6 +123,7 @@ import {
   extractCompanionAppointmentNote,
   requestedHoraFromText,
   rankSlotsByRequestedHour,
+  scrubInventedTimeOffers,
   minutesOfDayFromLabel,
   affirmedDatesFromAssistant,
   ddmmInBrt,
@@ -171,6 +173,59 @@ async function applyBookedTagSwap(ctx: AgentContext): Promise<void> {
     }
   } catch (e) {
     console.warn("[scheduler] erro ao trocar tags pós-agendamento:", e);
+  }
+}
+
+/**
+ * Etiqueta o lead com a UNIDADE em que ele agendou (central multi-unidade:
+ * multi-agenda Google ou multi-unidade Clinic Experts). A tag usada é o label
+ * da unidade — a mesma coisa que o dono já vê no painel e na notificação
+ * ({{unidade}}), então não há nome novo pra ele decorar.
+ *
+ * Só aplica quando a tag JÁ EXISTE no CRM (resolveTagName por nome aproximado):
+ * a Helena não cria tags por API, e criar tag "fantasma" por engano poluiria o
+ * CRM do cliente. Se a tag não existe, loga e segue — o agendamento nunca falha
+ * por causa de etiqueta.
+ *
+ * Roda DEPOIS do swap de status para não competir com ele: o swap reescreve o
+ * conjunto de tags (mantendo as demais) e esta chamada só insere a da unidade.
+ */
+async function applyUnidadeTag(ctx: AgentContext): Promise<void> {
+  const unidade = (ctx.leadData.selected_agenda ?? "").trim();
+  if (!unidade) return; // conta de unidade/agenda única
+  if (ctx.dryRun || ctx.disableTags) {
+    console.log(
+      `[scheduler] tag de unidade PULADA (${ctx.dryRun ? "dry_run" : "test_mode"}) conv=${ctx.conversationId} unidade="${unidade}"`,
+    );
+    return;
+  }
+  if (!ctx.helenaContact?.id) return;
+  try {
+    const helena = await loadHelenaAccount(ctx.accountId);
+    const res = await applyTagByApproxName(
+      helena,
+      ctx.helenaContact.id,
+      unidade,
+      "InsertIfNotExists",
+      // Passa as tags atuais + a de status recém-aplicada seria ideal, mas o
+      // contato em ctx está pré-swap; o InsertIfNotExists da Helena preserva as
+      // existentes, então basta não mandar currentTags stale aqui.
+    );
+    if (res.ok) {
+      console.log(
+        `[scheduler] tag de unidade aplicada conv=${ctx.conversationId}: "${res.tag}"`,
+      );
+    } else if (res.reason === "not_found") {
+      console.warn(
+        `[scheduler] tag de unidade "${unidade}" não existe no CRM conv=${ctx.conversationId} — crie a etiqueta na Helena com esse nome para o lead ser etiquetado por unidade`,
+      );
+    } else {
+      console.warn(
+        `[scheduler] tag de unidade falhou conv=${ctx.conversationId}: motivo=${res.reason} status=${res.status ?? "-"}`,
+      );
+    }
+  } catch (e) {
+    console.warn("[scheduler] erro ao aplicar tag de unidade:", e);
   }
 }
 
@@ -1201,8 +1256,11 @@ export async function execListarHorarios(
       }
     }
 
-    const clLimited = rankSlotsByRequestedHour(clSlots, resolvedHora, (s) =>
-      minutesOfDayFromLabel(s.time.slice(0, 5)),
+    const clLimited = rankSlotsByRequestedHour(
+      clSlots,
+      resolvedHora,
+      (s) => minutesOfDayFromLabel(s.time.slice(0, 5)),
+      (s) => s.date,
     )
       .slice(0, 6)
       .sort((a, b) => a.start.localeCompare(b.start))
@@ -1303,8 +1361,11 @@ export async function execListarHorarios(
     // Prioriza a hora pedida ANTES do corte de 6 (senão o slice pega sempre as
     // vagas mais cedo do turno e "prefiro perto das 16h" nunca é alcançado),
     // reordenando cronologicamente só na saída — igual ao Clinicorp.
-    const ceLimited = rankSlotsByRequestedHour(ceSlots, resolvedHora, (s) =>
-      minutesOfDayFromLabel(s.fromTime),
+    const ceLimited = rankSlotsByRequestedHour(
+      ceSlots,
+      resolvedHora,
+      (s) => minutesOfDayFromLabel(s.fromTime),
+      (s) => s.localDate,
     )
       .slice(0, 6)
       .sort((a, b) => a.start.localeCompare(b.start))
@@ -1401,8 +1462,11 @@ export async function execListarHorarios(
   // PRÓXIMOS dela antes do corte — senão o corte pega sempre os 6 mais cedo
   // do turno (ex: 12:00-14:30) e nunca alcança um horário pedido mais tarde
   // no mesmo turno (ex: 16:00), mesmo com esse horário livre.
-  const ranked = rankSlotsByRequestedHour(slots, resolvedHora, (s) =>
-    minutesOfDayFromLabel(s.fromTime),
+  const ranked = rankSlotsByRequestedHour(
+    slots,
+    resolvedHora,
+    (s) => minutesOfDayFromLabel(s.fromTime),
+    (s) => s.localDate,
   );
   const limited = ranked
     .slice(0, 6)
@@ -2151,6 +2215,7 @@ async function execCriarAgendamento(
         resolved.calendarId,
       );
       await applyBookedTagSwap(ctx);
+      await applyUnidadeTag(ctx);
       await removeLeadFromSequences(ctx);
       return {
         result: JSON.stringify({
@@ -2191,6 +2256,7 @@ async function execCriarAgendamento(
         notes: await buildClinicorpCaseNotes(ctx),
       });
       await applyBookedTagSwap(ctx);
+      await applyUnidadeTag(ctx);
       await removeLeadFromSequences(ctx);
       return {
         result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
@@ -2232,6 +2298,7 @@ async function execCriarAgendamento(
         unitLabel: ceUnit.unitLabel,
       });
       await applyBookedTagSwap(ctx);
+      await applyUnidadeTag(ctx);
       await removeLeadFromSequences(ctx);
       return {
         result: JSON.stringify({
@@ -2274,6 +2341,7 @@ async function execCriarAgendamento(
       notes: await buildClinicorpCaseNotes(ctx),
     });
     await applyBookedTagSwap(ctx);
+    await applyUnidadeTag(ctx);
     await removeLeadFromSequences(ctx);
     return {
       result: JSON.stringify({ ok: true, appointment_id: appt.id, datetime: appt.datetime }),
@@ -3678,6 +3746,29 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Rede de segurança final: pega a confirmação falsa mesmo quando NENHUM booking
   // foi tentado (o LLM afirmou "ficou agendado" sozinho, sem chamar tool).
   scrubFalseConfirmation();
+
+  // ── Oferta com horário FORA da agenda ──────────────────────────────────────
+  // O turn ofertou "quarta às 9h" mas a agenda devolveu 08:00/08:30: o lead
+  // recebe um horário que não existe e a resposta dele nunca casa com nenhum
+  // slot (a auto-seleção não acha), travando a conversa. Roda só no momento de
+  // OFERTA — sem agendamento criado e sem slot já escolhido — porque depois
+  // disso citar o horário escolhido/agendado é legítimo mesmo que ele já tenha
+  // saído de offered_slots. Mesma trava do qualifier; ver scrubInventedTimeOffers.
+  const jaTemAppt = ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
+  const jaEscolheu =
+    (outPatch as Partial<LeadData>).selected_slot_iso ?? ctx.leadData.selected_slot_iso;
+  if (!jaTemAppt && !jaEscolheu && outStage !== "ESCALATED") {
+    const ofertados = ((outPatch as Partial<LeadData>).offered_slots ??
+      ctx.leadData.offered_slots) as OfferedSlotLike[] | undefined;
+    const scrubOferta = scrubInventedTimeOffers(reply, ofertados);
+    if (scrubOferta.scrubbed) {
+      reply = scrubOferta.reply;
+      mergedTelemetry.invented_time_offer_scrubbed = true;
+      console.warn(
+        `[scheduler] oferta de horário fora da agenda removida conv=${ctx.conversationId} (offered_slots=${ofertados?.length ?? 0})`,
+      );
+    }
+  }
 
   return {
     reply,
