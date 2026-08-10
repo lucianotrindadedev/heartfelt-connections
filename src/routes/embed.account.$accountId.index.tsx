@@ -38,6 +38,7 @@ import {
   Search,
   FileText,
   FlaskConical,
+  CalendarClock,
   Sparkles,
   Mic,
   Square,
@@ -413,6 +414,29 @@ function EmbedHome() {
     onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao alterar modo do agente"),
   });
 
+  // Atendimento programado: salva modo + janelas de SILÊNCIO (quando a equipe
+  // humana atende e a IA não responde). Merge de 2 chaves, sem tocar no resto.
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const saveSchedule = useMutation({
+    mutationFn: (v: { mode: "24h" | "scheduled"; json: string }) =>
+      mergeSettingsFn({
+        data: {
+          accountId,
+          settings: { schedule_mode: v.mode, schedule_silence_json: v.json },
+        },
+      }),
+    onSuccess: (_r, v) => {
+      toast.success(
+        v.mode === "scheduled"
+          ? "Atendimento programado salvo."
+          : "Agente responde 24 horas.",
+      );
+      setScheduleOpen(false);
+      qc.invalidateQueries({ queryKey: ["agent", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar horários"),
+  });
+
   // Conta não cadastrada → mas pode ser alias do helena_account_id.
   // Se o servidor retornou siblings, redireciona/mostra seletor em vez do blocker.
   if (data && data.registered === false) {
@@ -479,6 +503,8 @@ function EmbedHome() {
   const testTag = agentSettings.test_tag?.trim() || "Testando";
   const testEnableCmd = agentSettings.test_enable_command?.trim() || "#teste";
   const testDisableCmd = agentSettings.test_disable_command?.trim() || "#sair";
+  const scheduleOn = (agentSettings.schedule_mode ?? "").toLowerCase() === "scheduled";
+  const scheduleJson = agentSettings.schedule_silence_json ?? "";
 
   // Full-screen training view replaces the dashboard
   if (openSheet === "training") {
@@ -640,8 +666,46 @@ function EmbedHome() {
               {toggleAgentMode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               {unifiedAgent ? "Agente único ativo" : "Agente único"}
             </button>
+            <button
+              onClick={() => setScheduleOpen(true)}
+              title="Defina as janelas em que a equipe atende e o agente fica calado."
+              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold backdrop-blur transition-all active:scale-95 ${
+                scheduleOn
+                  ? "bg-sky-400 text-sky-950 ring-1 ring-sky-300 hover:bg-sky-300"
+                  : "bg-white/10 text-white ring-1 ring-white/20 hover:bg-white/20"
+              }`}
+            >
+              <CalendarClock className="h-4 w-4" />
+              {scheduleOn ? "Atendimento programado ativo" : "Atendimento programado"}
+            </button>
           </div>
         </div>
+
+        {scheduleOpen && (
+          <ScheduleModal
+            initialMode={scheduleOn ? "scheduled" : "24h"}
+            initialJson={scheduleJson}
+            saving={saveSchedule.isPending}
+            onCancel={() => setScheduleOpen(false)}
+            onSave={(mode, json) => saveSchedule.mutate({ mode, json })}
+          />
+        )}
+
+        {/* ── Banner do atendimento programado ── */}
+        {scheduleOn && (
+          <div className="flex items-start gap-3 rounded-2xl border border-sky-300 bg-sky-50 p-4">
+            <CalendarClock className="mt-0.5 h-5 w-5 shrink-0 text-sky-600" />
+            <div className="text-sm text-sky-900">
+              <p className="font-semibold">Atendimento programado ativo</p>
+              <p className="mt-0.5 text-[13px] text-sky-800">
+                Nas janelas configuradas o agente <b>não responde</b> (é quando sua equipe
+                atende). Fora delas — inclusive no <b>almoço</b>, à noite e nos dias
+                desativados — ele volta a responder sozinho. Em qualquer horário, todas as
+                mensagens do lead e da equipe continuam sendo <b>gravadas no histórico</b>.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* ── Banner do agente único ── */}
         {unifiedAgent && (
@@ -861,6 +925,125 @@ function bhToHuman(s: WeekSchedule): string {
     i = j;
   }
   return parts.length ? parts.join(" / ") : "Não definido";
+}
+
+/**
+ * Modal do "Atendimento programado".
+ *
+ * ATENÇÃO à semântica (definida com o usuário): as janelas marcadas são o
+ * horário em que a EQUIPE HUMANA atende — nelas o agente fica CALADO. Fora
+ * delas (noite, fim de semana, dias desligados e o ALMOÇO) o agente responde.
+ * Silenciar nunca descarta mensagem: o histórico continua sendo gravado.
+ */
+function ScheduleModal({
+  initialMode,
+  initialJson,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  initialMode: "24h" | "scheduled";
+  initialJson: string;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (mode: "24h" | "scheduled", json: string) => void;
+}) {
+  const [mode, setMode] = useState<"24h" | "scheduled">(initialMode);
+  // Começa dos defaults (Seg–Sex 08–18, almoço 12–13) quando ainda não há nada
+  // salvo — é o caso mais comum de horário comercial.
+  const [json, setJson] = useState(
+    () => initialJson || JSON.stringify(BH_DEFAULT),
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm"
+      onClick={onCancel}
+    >
+      <div
+        className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3 border-b border-slate-100 p-5">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-100">
+            <CalendarClock className="h-5 w-5 text-sky-600" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold">Atendimento programado</p>
+            <p className="text-xs text-muted-foreground">
+              Defina quando o agente responde automaticamente.
+            </p>
+          </div>
+          <button
+            onClick={onCancel}
+            className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+            aria-label="Fechar"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              onClick={() => setMode("24h")}
+              className={`rounded-xl border p-3 text-left transition-all ${
+                mode === "24h"
+                  ? "border-sky-400 bg-sky-50 ring-1 ring-sky-300"
+                  : "border-slate-200 hover:border-slate-300"
+              }`}
+            >
+              <p className="text-sm font-semibold">24 horas</p>
+              <p className="text-xs text-muted-foreground">
+                Sempre ativo, responde a todo momento.
+              </p>
+            </button>
+            <button
+              onClick={() => setMode("scheduled")}
+              className={`rounded-xl border p-3 text-left transition-all ${
+                mode === "scheduled"
+                  ? "border-sky-400 bg-sky-50 ring-1 ring-sky-300"
+                  : "border-slate-200 hover:border-slate-300"
+              }`}
+            >
+              <p className="text-sm font-semibold">Horário programado</p>
+              <p className="text-xs text-muted-foreground">
+                Restrição: fica <b>inativo</b> nas janelas abaixo.
+              </p>
+            </button>
+          </div>
+
+          {mode === "scheduled" && (
+            <>
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[13px] text-amber-900">
+                ⚠️ As janelas marcadas são quando o agente <b>NÃO responde</b> (ex.: horário
+                comercial em que a equipe atende). Fora delas — inclusive no almoço, à noite e
+                nos dias desativados — o agente fica <b>ativo</b>. Fuso: America/Sao_Paulo.
+                <br />
+                Em qualquer horário o <b>histórico continua sendo gravado</b> (mensagens do
+                lead e da equipe).
+              </div>
+              <BusinessHoursEditor
+                jsonValue={json}
+                onChange={(_human, j) => setJson(j)}
+                syncOnMount={false}
+              />
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-slate-100 p-4">
+          <Button variant="outline" onClick={onCancel} disabled={saving}>
+            Cancelar
+          </Button>
+          <Button onClick={() => onSave(mode, json)} disabled={saving}>
+            {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Salvar
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function BusinessHoursEditor({

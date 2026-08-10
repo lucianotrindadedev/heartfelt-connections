@@ -78,6 +78,7 @@ import { isInsufficientCreditsError } from "@/lib/agents/llm.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { notifyBooking } from "@/lib/agents/notify-booking.server";
+import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
 import type { AgentContext, AgentResult } from "./context";
 import { stripNullishFields } from "./parse-llm-json.server";
 import { runQualifierAgent } from "./qualifier.server";
@@ -351,6 +352,19 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     .single();
   if (agent.error || !agent.data) throw new Error("Agente não encontrado");
   if (!agent.data.ativo) return;
+
+  // Atendimento programado: dentro da janela da equipe humana o agente fica
+  // calado. O webhook já barra o disparo, mas repetimos aqui porque este turn
+  // também é chamado pela fila (pg_cron/Redis), pelo cron de retomada e pelo
+  // diag — e a janela pode ter começado DEPOIS do enfileiramento (msg às 07:59
+  // com debounce de 20s executaria 08:00, já dentro do silêncio).
+  // NÃO apaga nem ignora mensagem: o histórico já foi gravado pelo webhook.
+  if (isAgentMutedNow((agent.data.settings as Record<string, string> | null) ?? {})) {
+    console.log(
+      `[orch] turn ignorado conv=${conversationId} — ${scheduleMuteReason()} (histórico preservado)`,
+    );
+    return;
+  }
 
   const accountId = agent.data.account_id as string;
   const agentId = agent.data.id as string;

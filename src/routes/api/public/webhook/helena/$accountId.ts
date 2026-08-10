@@ -11,6 +11,7 @@ import {
 } from "@/lib/conversation-channel.server";
 import { dispatchInboundAgentTurn } from "@/lib/schedule-agent-turn.server";
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
+import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
 import { isOptOutMessage } from "@/lib/opt-out.server";
 import { getGroqApiKey, transcribeAudioFromUrl } from "@/lib/groq.server";
@@ -999,6 +1000,17 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           );
         }
 
+        // Atendimento programado: janela em que a EQUIPE atende e a IA fica
+        // calada. Só decide o DISPARO do turn — a mensagem já foi (ou será)
+        // gravada logo abaixo, então o histórico do atendimento humano fica
+        // completo e o agente retoma o contexto quando a janela terminar.
+        const blockedBySchedule = isInbound && isAgentMutedNow(agentSettings);
+        if (blockedBySchedule) {
+          console.log(
+            `[webhook] ${scheduleMuteReason()} — agente não responde, mensagem gravada (conv ${convId}).`,
+          );
+        }
+
         const role = isInbound ? "user" : "assistant";
         const meta: Record<string, unknown> = {
           origem,
@@ -1041,7 +1053,8 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           agentRow.data.ativo &&
           !agentBlockedByTag &&
           !blockedByTestMode &&
-          !blockUnverifiable
+          !blockUnverifiable &&
+          !blockedBySchedule
         ) {
           // Modo teste zera o delay (debounce) para iterar rápido nos testes.
           const debounce = testMode ? 0 : (agentRow.data.debounce_segundos as number | null) ?? 20;
@@ -1056,7 +1069,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           }
         } else if (isInbound) {
           console.log(
-            `[webhook] agente NÃO disparado — ativo=${agentRow.data.ativo}, bloqueado=${agentBlockedByTag}, modo_teste_sem_etiqueta=${blockedByTestMode}, contato_nao_verificavel=${blockUnverifiable}`,
+            `[webhook] agente NÃO disparado — ativo=${agentRow.data.ativo}, bloqueado=${agentBlockedByTag}, modo_teste_sem_etiqueta=${blockedByTestMode}, contato_nao_verificavel=${blockUnverifiable}, fora_do_atendimento_programado=${blockedBySchedule}`,
           );
         }
 
