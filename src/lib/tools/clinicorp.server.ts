@@ -471,15 +471,35 @@ export async function listClinicorpSlots(
     }
   }
 
+  return dedupSlotsByDateTime(merged).sort((a, b) => a.start.localeCompare(b.start));
+}
+
+/**
+ * Dedup por data+hora, SEM o profissional na chave.
+ *
+ * O lead nunca escolhe profissional — é implementação interna (o slot escolhido
+ * já carrega o dentist_person_id certo). Com o dentista na chave, dois dentistas
+ * livres no MESMO horário viravam duas entradas idênticas em offered_slots
+ * ("terça 11/08 10:00" duas vezes). Aí o lead responde "às 10 horas",
+ * tryAutoSelectOfferedSlot encontra 2 candidatos ambíguos e NUNCA preenche
+ * selected_slot_iso → criar_agendamento falha por slot ausente → a trava de
+ * confirmação falsa re-oferta → LOOP até um humano assumir.
+ *
+ * Caso real (Sorriso Saúde, 27 99922-9610, 10/08/2026): a lead pediu "às 10
+ * horas" duas vezes e recebeu de volta 13:00/13:30 e depois 09:00/09:30.
+ * Mesma correção já aplicada no Clinic Experts (8415c1d); o Clinup já
+ * deduplicava por data+hora (dedupPorDataHora). Mantém o 1º profissional livre.
+ */
+export function dedupSlotsByDateTime<T extends { localDate: string; fromTime: string }>(
+  slots: T[],
+): T[] {
   const seen = new Set<string>();
-  return merged
-    .filter((s) => {
-      const key = `${s.localDate}|${s.fromTime}|${s.dentistPersonId ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .sort((a, b) => a.start.localeCompare(b.start));
+  return slots.filter((s) => {
+    const key = `${s.localDate}|${s.fromTime}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // ── Paciente ──────────────────────────────────────────────────────────────

@@ -11,6 +11,40 @@ const SLOTS = [
 
 const FRASE_REAL = "Olha eu estou pensando em ir aí no sábado, mais não tenho certeza até nesse momento";
 
+// ── Datas DINÂMICAS ────────────────────────────────────────────────────────
+// buildSlotOfferFallback resolve o dia pedido ("sábado") para a PRÓXIMA
+// ocorrência a partir de HOJE. Testes que fixam o `iso` do slot só passam na
+// semana em que foram escritos: em 10/08/2026 (segunda) "sábado" vira 15/08 e
+// um slot fixo em 08/08 deixa de casar — o invariante "tem vaga no dia pedido"
+// quebrava sem regressão nenhuma no código. Gera o slot no dia REAL pedido.
+const BRT = "America/Sao_Paulo";
+function proximoDiaBrt(stem: string): { iso: string; label: string } {
+  for (let i = 0; i <= 7; i++) {
+    const d = new Date(Date.now() + i * 86_400_000);
+    const nome = new Intl.DateTimeFormat("pt-BR", { timeZone: BRT, weekday: "long" }).format(d);
+    const canon = nome
+      .replace("-feira", "")
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .slice(0, 3);
+    if (canon === stem) {
+      const iso = new Intl.DateTimeFormat("en-CA", { timeZone: BRT }).format(d);
+      const ddmm = new Intl.DateTimeFormat("pt-BR", {
+        timeZone: BRT,
+        day: "2-digit",
+        month: "2-digit",
+      }).format(d);
+      return { iso, label: `${nome}, ${ddmm}` };
+    }
+  }
+  throw new Error(`dia não encontrado: ${stem}`);
+}
+/** Slot no próximo <dia> real (ex.: slotNo("sab", "10:00")). */
+function slotNo(stem: string, hora: string) {
+  const { iso, label } = proximoDiaBrt(stem);
+  return { iso: `${iso}T${hora}:00-03:00`, date_label: label, time_label: hora };
+}
+
 describe("chaveDoDiaBrt", () => {
   it("resolve a chave do dia da semana em BRT", () => {
     expect(chaveDoDiaBrt("2026-07-25")).toBe("sab"); // 25/07/2026 = sábado
@@ -160,10 +194,8 @@ describe("INVARIANTE: nunca negar um dia em que existe vaga ofertada", () => {
   it("mesmo com o expediente dizendo fechado, a agenda manda", () => {
     const r = buildSlotOfferFallback({
       lastUserMsg: "posso no sábado?",
-      // expediente diz Seg–Sex, mas a agenda TEM vaga no sábado 08/08
-      offeredSlots: [
-        { iso: "2026-08-08T10:00:00-03:00", date_label: "sábado, 08/08", time_label: "10:00" },
-      ],
+      // expediente diz Seg–Sex, mas a agenda TEM vaga no próximo sábado real
+      offeredSlots: [slotNo("sab", "10:00")],
       diasAtivos: SEG_A_SEX_EXTENSO,
     });
     expect(r.reply).not.toContain("não atende");
@@ -197,14 +229,17 @@ const NOME_DIA_TESTE: Record<string, string> = {
 
 describe("prioriza o dia pedido na oferta", () => {
   it("pediu quinta e há vaga na quinta → cita a quinta, não a terça", () => {
+    // Datas dinâmicas: o slot precisa cair na PRÓXIMA quinta real, senão o
+    // filtro por dia pedido não casa e o teste passaria por acaso (a quinta
+    // apareceria só porque a oferta lista todos os slots).
+    const terca = slotNo("ter", "09:00");
+    const quinta = slotNo("qui", "12:00");
     const r = buildSlotOfferFallback({
       lastUserMsg: "consigo na quinta?",
-      offeredSlots: [
-        { iso: "2026-08-04T09:00:00-03:00", date_label: "terça-feira, 04/08", time_label: "09:00" },
-        { iso: "2026-08-06T12:00:00-03:00", date_label: "quinta-feira, 06/08", time_label: "12:00" },
-      ],
+      offeredSlots: [terca, quinta],
       diasAtivos: SEG_A_SEX_EXTENSO,
     });
-    expect(r.reply).toContain("quinta-feira, 06/08 às 12:00");
+    expect(r.reply).toContain(`${quinta.date_label} às ${quinta.time_label}`);
+    expect(r.reply).not.toContain(terca.date_label);
   });
 });
