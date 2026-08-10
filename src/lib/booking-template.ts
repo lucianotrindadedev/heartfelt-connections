@@ -1365,7 +1365,12 @@ const HH_MM_SRC = String.raw`(?<![\d.,])(\d{1,2})\s*[:h.,]\s*([0-5]\d)(?!\d)`;
 const TIME_WITH_MINUTES_RE = new RegExp(HH_MM_SRC, "i");
 // Hora CHEIA, sem minutos: "9h", "9 h", "9hs", "9hrs", "9 horas". O lookahead
 // negativo impede de casar "9h30" aqui (esse é o caso acima).
-const BARE_HOUR_RE = /(?:^|[^\d])(\d{1,2})\s*h(?:s|rs?|oras?)?(?![\d:])/i;
+// A vírgula opcional antes do marcador cobre "10, horas" / "10 , h" — jeito
+// comum de digitar (e o que a transcrição de áudio produz). Sem ela o horário
+// não era reconhecido de forma alguma. Caso real (Sorriso Saúde,
+// 27 99922-9610): a lead escreveu "Às 10, horas" três vezes e nunca teve o
+// slot selecionado — a conversa entrou em loop até a supervisora agendar à mão.
+const BARE_HOUR_RE = /(?:^|[^\d])(\d{1,2})\s*,?\s*h(?:s|rs?|oras?)?(?![\d:])/i;
 // Hora cheia anunciada por preposição, sem o marcador "h": "às 9", "as 9".
 // Um número solto ("9") NÃO entra: seria ambíguo com dia do mês, idade, etc.
 const AS_BARE_HOUR_RE = /(?:^|\s)[àa]s\s+(\d{1,2})(?![\d:h])/i;
@@ -2484,13 +2489,15 @@ export function leadRequestedUnofferedDate(
 // "pode ser 9h" / "sexta 9h" não eram lidos como aceite.
 // Mesmos separadores/espaçamento de HH_MM_SRC ("14:30", "14: 30", "14.30",
 // "14h30") — antes só ":"/"h" colados aos minutos valiam aqui também.
-const TIME_IN_TEXT_SRC = String.raw`(?<![\d.,])\d{1,2}(?:\s*[:h.,]\s*[0-5]\d(?!\d)|\s*h(?:s|rs?|oras?)?\b)`;
+// O `,?` antes do marcador de hora aceita "10, horas" (ver BARE_HOUR_RE). A
+// alternativa com minutos vem primeiro, então "10,30" continua sendo 10:30.
+const TIME_IN_TEXT_SRC = String.raw`(?<![\d.,])\d{1,2}(?:\s*[:h.,]\s*[0-5]\d(?!\d)|\s*,?\s*h(?:s|rs?|oras?)?\b)`;
 const TIME_IN_TEXT_RE = new RegExp(TIME_IN_TEXT_SRC, "i");
 // A mensagem inteira é SÓ um horário: "18:20", "14.30", "às 18:20", "9h",
 // "9 horas", "às 9". Um número solto ("9") fica de fora de propósito — sem o
 // marcador de hora ou a preposição não dá pra distinguir de dia do mês/idade.
 const ONLY_TIME_RE = new RegExp(
-  String.raw`^(?:(?:[àa]s?\s+)?\d{1,2}(?:\s*[:h.,]\s*[0-5]\d|\s*h(?:s|rs?|oras?)?)|[àa]s\s+\d{1,2})\s*[.!?]?$`,
+  String.raw`^(?:(?:[àa]s?\s+)?\d{1,2}(?:\s*[:h.,]\s*[0-5]\d|\s*,?\s*h(?:s|rs?|oras?)?)|[àa]s\s+\d{1,2})\s*[.!?]?$`,
   "i",
 );
 
@@ -2543,7 +2550,11 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   if (SECOND_ORDINAL_RE.test(t)) return true;
   if (
     TIME_IN_TEXT_RE.test(t) &&
-    /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero|otimo|ótimo|t[aá] otimo|t[aá] ótimo|legal|bom|maravilha|certo|fechado|perfeito|marcar|agendar)/i.test(
+    // "se for possível" / "por favor" são PEDIDOS educados acompanhando o
+    // horário escolhido ("Às 10, horas Se for possível") — aceite, não recusa.
+    // A forma condicional é exigida de propósito: "não é possível" continua
+    // fora, e "impossível" já é barrado por mentionsUnavailability acima.
+    /(pode ser|sim|ok|confirmo|esse|essa|este|esta|funciona|prefiro|quero|otimo|ótimo|t[aá] otimo|t[aá] ótimo|legal|bom|maravilha|certo|fechado|perfeito|marcar|agendar|se\s+for\s+poss[íi]vel|se\s+poss[íi]vel|por\s+favor|por\s+gentileza)/i.test(
       t,
     )
   ) {
