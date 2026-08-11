@@ -13,6 +13,7 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
 import { buildSlotOfferFallback } from "./slot-offer-fallback";
 import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
+import { closedAgendaSafeReply, unfoundedClosedAgendaClaim } from "./closed-agenda-claim";
 import { activeWeekdayKeys } from "@/lib/tools/google-calendar.server";
 import {
   resolveEffectivePhone,
@@ -1261,6 +1262,46 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
+    // Guard anti-"agenda fechada inventada": o agente afirma que a clínica não
+    // abre no dia pedido, ou que não há vaga nele, sem ter como saber.
+    //
+    // Caso real (Odonto Carioca Campo Grande, 21 99826-0816, 11/08): "a agenda
+    // de amanhã já está fechada para novos agendamentos" — mensagem com
+    // tools=[], sobre um dia útil, e com 2 vagas reais na agenda naquele dia.
+    // O modelo recebeu uma lista de horários sem o dia 12 e racionalizou.
+    //
+    // Só o EXPEDIENTE sustenta "a clínica não abre nesse dia" — agenda vazia num
+    // dia útil pode ser agenda cheia, feriado, ou busca ancorada no dia errado.
+    // "Não tenho vaga" segue livre, salvo quando contradiz a própria agenda.
+    let closedAgendaClaimBlocked = false;
+    if (!falseBookingClaimBlocked && hasBookingIntegration) {
+      const semProva = unfoundedClosedAgendaClaim({
+        reply,
+        lastUserMsg,
+        offeredSlots: finalLeadData.offered_slots ?? [],
+        diasAtivos: activeWeekdayKeys(agentSettings.business_hours_json),
+      });
+      if (semProva) {
+        closedAgendaClaimBlocked = true;
+        console.warn(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "closed_agenda_claim_blocked",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            motivo: semProva.motivo,
+            dia: semProva.diaIso,
+          })}`,
+        );
+        reply = closedAgendaSafeReply(semProva.diaIso, finalLeadData.offered_slots ?? []);
+        // Volta pro SLOT_OFFER: o próximo turn precisa BUSCAR o dia pedido, não
+        // seguir para nome/cadastro em cima de uma negativa que não existia.
+        if (!finalLeadData.appointment_id && newStage !== "ESCALATED") {
+          newStage = "SLOT_OFFER";
+        }
+      }
+    }
+
     // Guard anti-"remarcação falsa": JÁ existe appointment_id e o agente afirma
     // que MUDOU/atualizou/remarcou o horário, mas NENHUMA tool de remarcação/
     // cancelamento/criação rodou neste turn → a alteração NÃO aconteceu na
@@ -1673,6 +1714,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           duplicate_reply_blocked: duplicateReplyBlocked || undefined,
           pointing_gesture_confirm_asked: pointingConfirmAsked || undefined,
           false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
+          closed_agenda_claim_blocked: closedAgendaClaimBlocked || undefined,
           // Quando um guard TROCA o texto, a resposta original do LLM some — foi
           // o que impediu de saber qual palavra disparou o false_booking_claim
           // no caso Odonto Sorrisos (87 99625-9078). Guardamos o original para
