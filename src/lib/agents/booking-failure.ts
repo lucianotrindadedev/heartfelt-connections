@@ -185,12 +185,34 @@ export function findChosenRealSlot<T extends OfferedSlotLike>(
 export function claimsBookingConfirmed(reply: string | undefined | null): boolean {
   const t = (reply ?? "").toLowerCase();
   if (!t) return false;
-  return (
+  if (
     /\bagendamento\b[^.!?\n]{0,40}\b(conclu[ií]d[oa]|realizad[oa]|efetuad[oa]|feito|registrad[oa]|confirmad[oa])\b/.test(t) ||
     /\b(ficou|est[áa]|foi|est[aã]o)\s+(agendad[oa]|marcad[oa]|confirmad[oa]|reservad[oa])\b/.test(t) ||
     /\bagendad[oa]\s+(com\s+sucesso|para\b)/.test(t) ||
     /\breservad[oa]\s+(com\s+sucesso|para\b)/.test(t)
-  );
+  ) {
+    return true;
+  }
+
+  // DESPEDIDA DE CONFIRMAÇÃO — o agente não usa a palavra "agendado", mas
+  // encerra como se a vaga existisse: "Vamos ficar aguardando você na
+  // sexta-feira, 14/08 às 08:00", "te esperamos quinta às 10h", "nos vemos
+  // amanhã às 9h". Para o lead isso é uma confirmação; sem appointment_id ele
+  // aparece na clínica num horário que não existe.
+  // Caso real (Implanto Master Venda Nova, Jose Francisco 31 99757-0449,
+  // 11/08): o lead escreveu "Confirmado", o agente respondeu "Obrigada por
+  // confirmar 😊 ... Vamos ficar aguardando você na sexta-feira, 14/08 às
+  // 08:00" com tools=[] — nada foi criado na agenda e nenhuma trava disparou.
+  //
+  // Exige a REFERÊNCIA A HORÁRIO na mesma frase: "vamos aguardar sua
+  // confirmação"/"fico no aguardo" (sem dia/hora) não são confirmação e
+  // continuam passando.
+  const despedida =
+    /\b(aguardando|aguardamos|esperando|esperamos|espero)\s+(voc[êe]|vc|o\s+senhor|a\s+senhora|te\b)|\bte\s+(esperamos|aguardamos|espero|aguardo)\b|\bnos\s+vemos\b/;
+  const temHorario =
+    /\b(?:[àa]s\s*)?\d{1,2}\s*(?::\s*[0-5]\d|h(?:s|rs?|oras?)?\b)/.test(t) ||
+    /\b(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo|amanh[ãa]|hoje)\b/.test(t);
+  return despedida.test(t) && temHorario;
 }
 
 /** Falha TÉCNICA (slot segue livre): não mente, avisa que vai tentar de novo. */

@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 
 import { dedupSlotsByDateTime } from "./clinicorp.server";
 import { isSlotAcceptanceMessage, tryAutoSelectOfferedSlot } from "@/lib/booking-template";
+import { claimsBookingConfirmed } from "@/lib/agents/booking-failure";
 
 const slot = (localDate: string, fromTime: string, dentistPersonId: number) => ({
   localDate,
@@ -89,6 +90,66 @@ describe("REGRESSÃO: horário com vírgula ('Às 10, horas')", () => {
     expect(isSlotAcceptanceMessage("não posso às 10 horas")).toBe(false);
     expect(isSlotAcceptanceMessage("nenhum dos 2")).toBe(false);
     expect(isSlotAcceptanceMessage("às 10, horas é impossível")).toBe(false);
+  });
+});
+
+// Caso Implanto Master Venda Nova (Jose Francisco, 31 99757-0449, 11/08):
+// 1 único horário ofertado, o lead respondeu "Confirmado" + comentário, e o
+// agente se despediu ("Vamos ficar aguardando você na sexta 14/08 às 08:00")
+// SEM criar o agendamento — e nenhuma trava disparou. Dois buracos:
+describe("REGRESSÃO: 'Confirmado' + texto extra e despedida de confirmação", () => {
+  const SLOT = [
+    { iso: "2026-08-14T08:00:00-03:00", date_label: "sexta-feira, 14/08", time_label: "08:00" },
+  ];
+  const LEAD_REAL = "Confirmado \n Moro no viena ( justinopolis )  \n\nEntão é proximo daqui .\nObg";
+
+  it("aceite forte no início da mensagem, com comentário depois, seleciona o slot", () => {
+    const r = tryAutoSelectOfferedSlot(
+      "SLOT_OFFER",
+      { offered_slots: SLOT as never },
+      [
+        { role: "assistant", content: "E aí, sexta-feira, 14/08 às 08:00 funciona pra você?" },
+        { role: "user", content: LEAD_REAL },
+      ],
+    );
+    expect(r.selected_slot_iso).toBe("2026-08-14T08:00:00-03:00");
+  });
+
+  it("outras formas de fechamento com texto extra", () => {
+    for (const m of [
+      "Confirmo, obrigado!",
+      "Fechado, vou anotar aqui",
+      "Combinado! até lá",
+      "Pode marcar, moro perto",
+    ]) {
+      expect(isSlotAcceptanceMessage(m), m).toBe(true);
+    }
+  });
+
+  it("NÃO-REGRESSÃO: recusa que começa com 'confirmado' continua barrada", () => {
+    expect(isSlotAcceptanceMessage("Confirmado que não vou poder ir")).toBe(false);
+  });
+
+  it("despedida com dia/hora conta como confirmação falsa", () => {
+    for (const r of [
+      "Perfeito! Vamos ficar aguardando você na sexta-feira, 14/08 às 08:00.",
+      "Te esperamos quinta às 10h!",
+      "Nos vemos amanhã às 9h",
+    ]) {
+      expect(claimsBookingConfirmed(r), r).toBe(true);
+    }
+  });
+
+  it("NÃO-REGRESSÃO: aguardar RESPOSTA/pergunta não é confirmação", () => {
+    for (const r of [
+      "Fico no aguardo da sua confirmação!",
+      "Vamos aguardar sua resposta",
+      "Aguardo seu retorno",
+      "Posso agendar para sexta às 08:00?",
+      "Quer que eu marque quinta às 10h?",
+    ]) {
+      expect(claimsBookingConfirmed(r), r).toBe(false);
+    }
   });
 });
 

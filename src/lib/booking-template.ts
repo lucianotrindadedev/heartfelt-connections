@@ -2546,6 +2546,19 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   ) {
     return true;
   }
+  // Aceite FORTE abrindo a mensagem, com texto extra depois: "Confirmado.
+  // Moro no viena (justinópolis), então é próximo daqui. Obg". O ramo acima
+  // exige que a mensagem seja SÓ a palavra de aceite, então esse caso — muito
+  // comum, o lead confirma e emenda um comentário — não era reconhecido e o
+  // slot nunca era selecionado. Caso real (Implanto Master Venda Nova, Jose
+  // Francisco 31 99757-0449, 11/08): 1 único horário ofertado, o lead
+  // respondeu "Confirmado …" e o agente se despediu sem criar o agendamento.
+  // Só vale para palavras INEQUÍVOCAS de fechamento (não "pode"/"vamos", que
+  // aparecem em pergunta) e no INÍCIO da mensagem. Recusa e indisponibilidade
+  // já foram barradas no topo da função.
+  if (/^(confirmad[oa]|confirmo|confirmar|fechado|combinado|isso mesmo|pode confirmar|pode marcar|pode agendar)\b/i.test(t)) {
+    return true;
+  }
   if (FIRST_ORDINAL_RE.test(t)) return true;
   if (SECOND_ORDINAL_RE.test(t)) return true;
   if (
