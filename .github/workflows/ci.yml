@@ -1,0 +1,96 @@
+name: CI
+
+# Roda a suíte e o typecheck em todo PR e no push pra main.
+#
+# Por que existe: em 03/08 dois testes entraram na main verdes e quebraram 24h
+# depois (fixavam uma data e a entrada dizia "amanhã"). Ninguém percebeu porque
+# nada rodava a suíte automaticamente — foi descoberto por acaso, um dia depois.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Um PR que recebe vários pushes seguidos cancela as execuções antigas.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # TZ fixo: o produto é 100% BRT e vários testes dependem de fuso
+      # (labels de dia, "amanhã", horários de agenda). Sem isto o runner roda
+      # em UTC e resultados mudam entre 21h e 00h BRT.
+      - name: Rodar vitest
+        run: npm test
+        env:
+          TZ: America/Sao_Paulo
+
+  typecheck:
+    name: Typecheck (sem regressão)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # O repo já tem erros de tsc herdados (8, em 4 arquivos). Falhar em tudo
+      # deixaria o CI vermelho desde o primeiro dia — e CI sempre vermelho é CI
+      # ignorado. Então comparamos com um baseline: erro NOVO reprova, erro
+      # antigo não. Corrigir um erro antigo nunca quebra o build.
+      - name: Comparar com o baseline
+        run: |
+          set -uo pipefail
+          npx tsc --noEmit 2>&1 | tee /tmp/tsc-out.txt || true
+
+          # Normaliza para "arquivo|TSxxxx" — imune a mudança de linha/coluna.
+          grep -oE "^[^ (]+\.tsx?\([0-9]+,[0-9]+\): error TS[0-9]+" /tmp/tsc-out.txt \
+            | sed -E 's/\([0-9]+,[0-9]+\): error /|/' | tr -d '\r' | sort -u > /tmp/atual.txt || true
+
+          # tr -d '\r' nos DOIS lados: o baseline é editado no Windows e, com
+          # CRLF, todo item vira "diferente" — o comm reportaria os 6 erros
+          # herdados como novos E como resolvidos ao mesmo tempo, deixando o CI
+          # permanentemente vermelho. O .gitattributes já força LF; isto aqui é
+          # a segunda linha de defesa, para o job não depender disso.
+          tr -d '\r' < .github/tsc-baseline.txt | sort -u > /tmp/baseline.txt
+
+          NOVOS=$(comm -23 /tmp/atual.txt /tmp/baseline.txt || true)
+          RESOLVIDOS=$(comm -13 /tmp/atual.txt /tmp/baseline.txt || true)
+
+          if [ -n "$RESOLVIDOS" ]; then
+            echo "✅ Erros do baseline que sumiram (pode atualizar .github/tsc-baseline.txt):"
+            echo "$RESOLVIDOS" | sed 's/^/   /'
+            echo ""
+          fi
+
+          if [ -n "$NOVOS" ]; then
+            echo "❌ Erros de tipo NOVOS (não estão no baseline):"
+            echo "$NOVOS" | sed 's/^/   /'
+            echo ""
+            echo "Detalhe:"
+            for par in $NOVOS; do
+              arquivo="${par%%|*}"
+              grep -F "$arquivo(" /tmp/tsc-out.txt | sed 's/^/   /' || true
+            done
+            exit 1
+          fi
+
+          echo "✅ Nenhum erro de tipo novo."

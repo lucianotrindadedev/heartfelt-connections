@@ -1,2 +1,4 @@
 *.sh text eol=lf
 scripts/vps/* text eol=lf
+.github/tsc-baseline.txt text eol=lf
+.github/workflows/*.yml text eol=lf
