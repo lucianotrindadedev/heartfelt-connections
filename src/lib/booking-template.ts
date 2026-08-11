@@ -1604,13 +1604,24 @@ function nextWeekdayDateBrt(weekdayStem: string, nowMs: number): string {
  */
 function relativeTargetDateBrt(t: string): string | null {
   const now = Date.now();
+  return immediateRelativeBrt(t, now) ?? weekOrWeekdayTargetBrt(t, now);
+}
+
+/** "hoje" / "amanhã" / "depois de amanhã" — os relativos INEQUÍVOCOS.
+ *  Separados do resto porque têm precedência sobre a data absoluta; o nome do
+ *  dia da semana, não (ver targetDateFromText). */
+function immediateRelativeBrt(t: string, now: number): string | null {
   const DAY = 86_400_000;
   // \b só no início: "amanhã" termina em "ã" (não-word), então \b final falha.
   // O \b inicial basta — em "manhã" o "m" abre palavra; dentro de "amanhã" não.
   if (/depois\s+de\s+amanh[aã]/.test(t)) return dateInBrt(new Date(now + 2 * DAY));
   if (/\bamanh[aã]/.test(t)) return dateInBrt(new Date(now + DAY));
   if (/\bhoje\b/.test(t)) return dateInBrt(new Date(now));
+  return null;
+}
 
+/** Dia da semana, "próxima semana", "mês que vem", "daqui a X dias". */
+function weekOrWeekdayTargetBrt(t: string, now: number): string | null {
   const semNorm = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
   // Referências de SEMANA/MÊS/PRAZO. Sem isto o lead pede "próxima semana"/"mês
   // que vem"/"daqui a 10 dias", o LLM não passa data_alvo e a busca ancora em
@@ -1845,9 +1856,190 @@ export function relativeDateIsExplanatory(text: string): boolean {
   return false;
 }
 
+// ── Datas ABSOLUTAS ("12 de agosto", "12/08", "dia 12") ────────────────────
+//
+// relativeTargetDateBrt cobre só o vocabulário RELATIVO (hoje/amanhã/dia da
+// semana/próxima semana/mês que vem/daqui a X). A forma mais explícita que um
+// lead pode usar — a data em si — não era reconhecida por NINGUÉM.
+//
+// Caso real (Odonto Carioca Campo Grande, 21 99826-0816, 11/08/2026): o lead viu
+// no Instagram o evento "Resgatando Sorrisos" do dia 12 e escreveu "Posso agendar
+// uma consulta para o dia 12 de agosto?". O LLM chamou listar_horarios 3× sem
+// data_alvo; a rede determinística devolveu null (não sabia ler "12 de agosto"),
+// a busca ancorou em HOJE e o corte de 6 vagas encheu com quinta 13/08 — que
+// tinha 33 vagas contra 2 no dia 12 (11:00 e 11:15, confirmadas na agenda).
+// O agente então INVENTOU a justificativa: "a agenda de amanhã já está fechada
+// para novos agendamentos". O lead foi atraído por uma campanha e ouviu que o
+// dia da campanha estava fechado.
+
+/** Ano/mês/dia de "agora" no fuso de Brasília. */
+function brtYmd(nowMs: number): { y: number; m: number; d: number } {
+  const p = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(nowMs));
+  const g = (k: string) => Number(p.find((x) => x.type === k)!.value);
+  return { y: g("year"), m: g("month"), d: g("day") };
+}
+
+/** "YYYY-MM-DD" se o trio existe no calendário, senão null (barra 31/02, 29/02
+ *  em ano comum). Date.UTC normaliza silenciosamente — por isso conferimos. */
+function isoValidoBrt(y: number, m: number, d: number): string | null {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+  return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+// Uma data já passada NESTE ano só vira o ano seguinte quando está BEM para trás
+// — o caso legítimo é o lead pedindo "5 de janeiro" em dezembro. Data recém-
+// passada ("10 de agosto" dito no dia 11) é ambígua: engano de digitação ou
+// referência ao passado. Aí devolvemos null e o agente pergunta — errar para
+// 2027 seria muito pior do que uma re-pergunta.
+const DIAS_ATE_VIRAR_O_ANO = 60;
+
+/** Dia+mês (e ano, se o lead disse) → "YYYY-MM-DD" BRT futuro, ou null. */
+function resolveDiaMesBrt(
+  d: number,
+  m: number,
+  anoExplicito: number | null,
+  nowMs: number,
+): string | null {
+  const hoje = brtYmd(nowMs);
+  const hojeIso = isoValidoBrt(hoje.y, hoje.m, hoje.d)!;
+
+  if (anoExplicito != null) {
+    // Ano fora de [hoje, hoje+2] é data de NASCIMENTO ("15/03/1990") ou lixo
+    // ("15/03/90" → 2090). Nunca é pedido de agendamento.
+    if (anoExplicito < hoje.y || anoExplicito > hoje.y + 2) return null;
+    const iso = isoValidoBrt(anoExplicito, m, d);
+    return iso && iso >= hojeIso ? iso : null;
+  }
+
+  const esteAno = isoValidoBrt(hoje.y, m, d);
+  if (esteAno && esteAno >= hojeIso) return esteAno;
+  if (esteAno) {
+    const diasAtras = (Date.parse(hojeIso) - Date.parse(esteAno)) / 86_400_000;
+    if (diasAtras <= DIAS_ATE_VIRAR_O_ANO) return null;
+  }
+  return isoValidoBrt(hoje.y + 1, m, d);
+}
+
+/** "dia 12" sem mês → próxima ocorrência desse dia do mês, em BRT. */
+function proximoDiaDoMesBrt(d: number, nowMs: number): string | null {
+  const hoje = brtYmd(nowMs);
+  if (d >= hoje.d) {
+    const esteMes = isoValidoBrt(hoje.y, hoje.m, d);
+    if (esteMes) return esteMes;
+  }
+  const y = hoje.m === 12 ? hoje.y + 1 : hoje.y;
+  const m = hoje.m === 12 ? 1 : hoje.m + 1;
+  return isoValidoBrt(y, m, d);
+}
+
+/**
+ * Data ABSOLUTA pedida pelo lead → "YYYY-MM-DD" em BRT, ou null.
+ * Formas aceitas: "12/08/2026", "12/08", "12 de agosto", "12 agosto",
+ * "12 de agosto de 2026", "dia 12". Sempre resolve para o FUTURO.
+ *
+ * O que NÃO casa, de propósito:
+ *  - horário ("14:30", "9h30") — separador ":"/"h", nunca "/";
+ *  - telefone/CPF ("99826-0816") — mês precisa ser 1-12 e não pode haver dígito
+ *    colado antes/depois do par;
+ *  - endereço/valor ("Av. das Américas, 13.685") — ponto não é separador aqui;
+ *  - data de nascimento ("15/03/1990") — ano explícito fora da janela.
+ */
+function absoluteComMesBrt(t: string, nowMs: number): string | null {
+  if (!t) return null;
+
+  // 1) Numérica COM ano: "12/08/2026", "12-08-26".
+  const comAno = t.match(/(?<![\d/.-])(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?![\d/-])/);
+  if (comAno) {
+    const d = Number(comAno[1]);
+    const m = Number(comAno[2]);
+    const yy = comAno[3]!;
+    const y = yy.length <= 2 ? 2000 + Number(yy) : Number(yy);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12) return resolveDiaMesBrt(d, m, y, nowMs);
+    return null;
+  }
+
+  // 2) Numérica SEM ano: "12/08", "dia 12/8".
+  const num = t.match(/(?<![\d/.-])(\d{1,2})[/-](\d{1,2})(?![\d/.-])/);
+  if (num) {
+    const d = Number(num[1]);
+    const m = Number(num[2]);
+    // "2/3 anos", "1/2 hora" — a barra ali é intervalo/fração, não data. Caso
+    // real: "Não sei o certo, 2/3 anos" virava 2 de março.
+    const unidade = /^\s*(anos?|mes(?:es)?|semanas?|dias?|horas?|h|min)\b/.test(
+      t.slice(num.index! + num[0].length),
+    );
+    if (!unidade && d >= 1 && d <= 31 && m >= 1 && m <= 12) {
+      return resolveDiaMesBrt(d, m, null, nowMs);
+    }
+  }
+
+  // 3) Textual: "12 de agosto", "12 agosto", "12 de agosto de 2026".
+  // matchAll (e não match) porque a primeira ocorrência de "<número> <palavra>"
+  // pode não ser mês ("12 horas", "2 semanas") — seguimos procurando.
+  const semAcc = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  for (const mt of semAcc.matchAll(/(?<!\d)(\d{1,2})\s*(?:de\s+)?([a-z]+)(?:\s+de\s+(\d{2,4}))?/g)) {
+    const mes = MONTHS_PT[mt[2]!];
+    const d = Number(mt[1]);
+    if (!mes || d < 1 || d > 31) continue;
+    const yy = mt[3];
+    const y = yy == null ? null : yy.length <= 2 ? 2000 + Number(yy) : Number(yy);
+    return resolveDiaMesBrt(d, mes, y, nowMs);
+  }
+
+  return null;
+}
+
+/** Só o dia do mês: "dia 12", "no dia 5". Exige a palavra "dia" — um número
+ *  solto não dá pra distinguir de idade, quantidade ou horário. Sinal FRACO:
+ *  sem o mês, "dia 8" pode ser o mês que vem. */
+function absoluteSoDiaBrt(t: string, nowMs: number): string | null {
+  const m = t.match(/\bdia\s+(\d{1,2})(?![\d/:.h-])/);
+  if (!m) return null;
+  // "dia 31 de fevereiro" não é "dia 31": o lead DEU o mês, e a data não existe.
+  // Sem esta guarda o ramo forte devolvia null e este aqui reinterpretava como
+  // dia 31 do mês corrente — inventando uma data que o lead não pediu.
+  const depois = t.slice(m.index! + m[0].length).match(/^\s*(?:de\s+)?([a-zà-ú]+)/);
+  if (depois && MONTHS_PT[depois[1]!.normalize("NFD").replace(/[̀-ͯ]/g, "")]) {
+    return null;
+  }
+  const d = Number(m[1]);
+  return d >= 1 && d <= 31 ? proximoDiaDoMesBrt(d, nowMs) : null;
+}
+
+/**
+ * Data pedida pelo lead, combinando todos os sinais. A ORDEM é o que importa,
+ * porque o lead frequentemente cita mais de um e eles se contradizem:
+ *
+ *  1. "hoje"/"amanhã"/"depois de amanhã" — inequívocos, ganham de tudo.
+ *  2. Data absoluta COM mês ("20/08/26", "12 de agosto") — o sinal mais
+ *     específico que existe. Ganha do nome do dia da semana: caso real
+ *     "Pode se possível dia 20/08/26 quinta feira" — a próxima quinta era 13/08
+ *     e o pedido era 20/08 (que também é quinta, uma semana depois).
+ *  3. Dia da semana / "próxima semana" / "mês que vem" / "daqui a X dias".
+ *  4. "dia 12" solto — fica por ÚLTIMO justamente por ser fraco. Caso real
+ *     "Terça-feira, dia 8, às 10 horas": o dia 8 já tinha passado, e resolver
+ *     por ele jogaria a busca pro mês seguinte; a terça-feira é a leitura certa.
+ */
+function targetDateFromText(t: string): string | null {
+  const now = Date.now();
+  return (
+    immediateRelativeBrt(t, now) ??
+    absoluteComMesBrt(t, now) ??
+    weekOrWeekdayTargetBrt(t, now) ??
+    absoluteSoDiaBrt(t, now)
+  );
+}
+
 /**
  * Data (YYYY-MM-DD BRT) que o lead PEDIU numa mensagem, se houver: dia da
- * semana ("quinta", "quinta-feira"), relativo ("amanhã", "hoje") ou nada.
+ * semana ("quinta", "quinta-feira"), relativo ("amanhã", "hoje") ou absoluto
+ * ("12 de agosto", "12/08", "dia 12"). Null se não houver.
  * Ignora negação ("quinta não dá") e afirmação-fato ("amanhã é feriado").
  * Usada pelo scheduler para ancorar a busca de horários no dia certo quando o
  * LLM esquece de passar data_alvo — sem isso a busca começa em "hoje" e oferta
@@ -1857,7 +2049,15 @@ export function requestedDateFromText(text: string): string | null {
   const t = (text ?? "").trim().toLowerCase();
   if (!t) return null;
   if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
-  return relativeTargetDateBrt(t);
+  // Data de NASCIMENTO completa ("15/03/1990", "15 de março de 1990") é resposta
+  // de cadastro, não pedido de dia. requestedDateFromHistory varre o histórico
+  // inteiro de trás pra frente — sem isto, a data de nascimento informada no
+  // BOOKING viraria a âncora da próxima busca de horários.
+  // Só bloqueia quando o ANO é passado: "14 de agosto de 2026" tem a mesma forma
+  // de uma data de nascimento e é um pedido de agendamento legítimo.
+  const nasc = parseBirthDateParts(text);
+  if (nasc && nasc.year < brtYmd(Date.now()).y) return null;
+  return targetDateFromText(t);
 }
 
 /** DD/MM (zero-padded, fuso BRT) de um instante ISO. "" se inválido. */
@@ -2199,7 +2399,12 @@ function pickSlotByPreference(
 
   // Data relativa ("amanhã", "hoje", "depois de amanhã"). O \b em relativo
   // evita o bug clássico: "amanhã" contém "manhã".
-  const targetDate = relativeTargetDateBrt(t);
+  // Absoluta também ("dia 12/08 às 14h"): sem ela a data era ignorada e o filtro
+  // olhava só o HORÁRIO — "14h" casava o slot das 14h de QUALQUER dia ofertado.
+  // Aqui a data só pode ESTREITAR a escolha: se nenhum slot cai nela, filtered
+  // zera e não se auto-seleciona nada (o guard leadRequestedUnofferedDate já
+  // barra antes o pedido de um dia que não foi ofertado).
+  const targetDate = targetDateFromText(t);
 
   // Turno do dia. \b inicial impede "amanhã" de casar como "manhã": o "m"
   // dentro de "amanhã" é precedido por "a" (sem boundary); em "manhã"/"de
