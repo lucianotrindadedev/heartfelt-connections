@@ -33,7 +33,13 @@ dist-ssr
 *.sln
 *.sw?
 
+# Ignora pastas "workflows/" (exports de automação externa) em qualquer nível.
+# A exceção abaixo é obrigatória: sem ela a regra também casa .github/workflows/
+# e os arquivos de CI ficam invisíveis pro git — foi o que aconteceu em 04/08,
+# quando um workflow do GitHub Actions foi "commitado" e nunca chegou ao repo
+# (o PR passou levando só o baseline, e o CI nunca existiu).
 workflows/
+!.github/workflows/
 .vercel
 
 # Claude Code worktrees / sandboxes
