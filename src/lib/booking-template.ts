@@ -2011,9 +2011,32 @@ export function isAskingDifferentDay(
   return req !== sel;
 }
 
+/**
+ * "boa tarde" / "boa noite" — a SAUDAÇÃO, não uma preferência de turno.
+ *
+ * Caso real (Odonto Carioca Campo Grande, 21 99272-7525, 11/08): o lead escreveu
+ * "Boa tarde, gostaria de agendar uma avaliação para amanhã". A âncora de data
+ * acertou (12/08), mas o "tarde" da SAUDAÇÃO virou filtro de turno. A agenda do
+ * dia 12 tinha uma única vaga — 11:15, de manhã — que o filtro removeu; a busca
+ * reportou "SEM VAGA em 2026-08-12" e ofereceu quinta 13/08. A prova está na
+ * própria oferta: o dia 13 tinha 30 vagas a partir das 09:00 e o agente citou
+ * 12:00, 12:15, 13:15, 13:30, 13:45, 14:00 — nenhuma de manhã.
+ *
+ * Em 20.000 mensagens de lead, 665 dos 1.182 turnos detectados (56%) vinham só
+ * da saudação, afetando 557 conversas. E requestedPeriodoFromHistory varre o
+ * histórico inteiro: um "Boa tarde" na primeira mensagem filtrava toda busca da
+ * conversa daí em diante. "Bom dia" escapava por acaso — "dia" não é turno.
+ *
+ * Mascara com espaços do MESMO tamanho para preservar os offsets: o desempate
+ * "último turno citado vence" usa a posição de cada ocorrência.
+ */
+const SAUDACAO_RE = /\bbo(?:a|as)\s*-?\s*(?:tardes?|noites?)\b/g;
+
 export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noite" | null {
-  const t = (text ?? "").toLowerCase();
-  if (!t) return null;
+  // Só a ocorrência da saudação sai — "Boa tarde, prefiro de tarde" continua
+  // sendo tarde.
+  const t = (text ?? "").toLowerCase().replace(SAUDACAO_RE, (s) => " ".repeat(s.length));
+  if (!t.trim()) return null;
   const present: Array<{ key: "manha" | "tarde" | "noite"; re: string; idx: number }> = [];
   const m = t.search(/\bmanh[aã]/);
   const ta = t.search(/\btarde/);
