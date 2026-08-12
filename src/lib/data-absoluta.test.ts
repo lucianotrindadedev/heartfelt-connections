@@ -146,6 +146,32 @@ describe("quando o lead cita dois sinais de data", () => {
     expect(requestedDateFromText(frase), frase).toBe(alvo.iso);
   });
 
+  it("'dia N' ganha do dia da semana quando os dois concordam e N não passou", () => {
+    // Real (Escudero Odontologia, 12 98114-1612): "Tem que ser a partir do dia
+    // 25 terça-feira". Os dois sinais dizem terça; só o número diz QUAL terça.
+    // Resolver pelo dia da semana pegava 18/08 — uma semana antes.
+    //
+    // Varre 1..14 dias à frente para cobrir toda posição no calendário: quando
+    // o "dia N" cai no mês corrente ele manda; quando vira o mês, é sinal fraco
+    // e o dia da semana manda.
+    const hoje = daqui(0);
+    for (let n = 1; n <= 14; n++) {
+      const alvo = daqui(n);
+      const nomeDia = new Intl.DateTimeFormat("pt-BR", {
+        timeZone: BRT,
+        weekday: "long",
+      }).format(new Date(Date.now() + n * DAY));
+      const frase = `Tem que ser a partir do dia ${alvo.dia} ${nomeDia}`;
+      const r = requestedDateFromText(frase);
+      if (alvo.iso.slice(0, 7) === hoje.iso.slice(0, 7)) {
+        expect(r, frase).toBe(alvo.iso);
+      } else {
+        // "dia N" só existe no mês que vem — fraco demais para pular um mês.
+        expect(r, frase).not.toBe(alvo.iso);
+      }
+    }
+  });
+
   it("dia da semana ganha do 'dia N' solto", () => {
     // Real: "vou deixar então pra terça, tá? Terça-feira, dia 8, às 10 horas".
     // O dia 8 já tinha passado — resolver por ele jogaria a busca pro mês que

@@ -49,6 +49,17 @@ export function chaveDoDiaBrt(dataIso: string): string | null {
   return ABBR_PARA_CHAVE[abbr] ?? null;
 }
 
+/** "2026-08-21" → "21/08" (BRT). "" se inválido. */
+export function ddmmBrt(dataIso: string): string {
+  const d = new Date(`${dataIso}T12:00:00-03:00`);
+  if (isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+  }).format(d);
+}
+
 /**
  * Canoniza a chave de dia para comparação. As duas pontas falam vocabulários
  * DIFERENTES: activeWeekdayKeys() devolve nome por extenso sem acento
@@ -105,7 +116,6 @@ export function buildSlotOfferFallback(
   input: SlotOfferFallbackInput,
 ): SlotOfferFallbackResult {
   const slots = input.offeredSlots ?? [];
-  const temOpcoes = slots.length > 0;
   const dataPedida = requestedDateFromText(input.lastUserMsg);
 
   // Se há vaga no dia que o lead pediu, ela vem PRIMEIRO — ele pediu quinta,
@@ -113,11 +123,32 @@ export function buildSlotOfferFallback(
   const noDiaPedido = dataPedida
     ? slots.filter((s) => (s.iso ?? "").slice(0, 10) === dataPedida)
     : [];
-  const paraCitar = noDiaPedido.length > 0 ? noDiaPedido : slots;
+
+  // NUNCA citar vaga ANTERIOR ao dia pedido. O lead que diz "depois do dia 21"
+  // ou "a partir do dia 25" está EXCLUINDO o que veio antes — reoferecer isso
+  // é ignorar o que ele acabou de falar, e o texto ainda se contradiz sozinho:
+  // "Consigo verificar sexta-feira... Por enquanto tenho quarta-feira, 12/08".
+  // Caso real (Escudero Odontologia, 12 98114-1612, 12/08): aconteceu duas
+  // vezes na mesma conversa e a lead pediu desculpa pela confusão. Na varredura
+  // de produção, 7 dos 8 usos deste ramo ofertavam um dia diferente do pedido.
+  //
+  // Slot sem `iso` fica: não dá para afirmar que é anterior, e barrar por
+  // suposição descartaria a oferta inteira.
+  const naoAnteriores = dataPedida
+    ? slots.filter((s) => {
+        const dia = (s.iso ?? "").slice(0, 10);
+        return dia === "" || dia >= dataPedida;
+      })
+    : slots;
+
+  const paraCitar = noDiaPedido.length > 0 ? noDiaPedido : naoAnteriores;
   const opcoes = paraCitar
     .slice(0, 2)
     .map((s) => `${s.date_label ?? ""} às ${s.time_label ?? ""}`.trim())
     .join(" ou ");
+  // Baseado no que SOBROU de citável, não no que existe em mãos: filtrado tudo,
+  // o texto precisa cair na variante que não mostra horário nenhum.
+  const temOpcoes = opcoes !== "";
 
   const chave = dataPedida ? chaveDoDiaBrt(dataPedida) : null;
 
@@ -146,12 +177,17 @@ export function buildSlotOfferFallback(
     }
     // Dia ATIVO, mas fora dos horários que temos em mãos: reconhece o pedido em
     // vez de repetir a mesma oferta (era isso que virava loop).
+    //
+    // Nomeia a DATA, não só o dia da semana. Quando o lead diz "depois do dia
+    // 21", responder "consigo verificar sexta-feira" não confirma que
+    // entendemos QUAL sexta — e foi justamente aí que a conversa real derrapou.
+    const rotulo = `${nome}, ${ddmmBrt(dataPedida!)}`;
     return {
       motivo: "dia_pedido_disponivel",
       diaPedido: chave,
       reply: temOpcoes
-        ? `Consigo verificar ${nome} pra você! 😊 Por enquanto tenho ${opcoes}. Prefere um desses ou quer que eu busque os horários de ${nome}?`
-        : `Consigo verificar ${nome} pra você! 😊 Me confirma que eu já busco os horários desse dia.`,
+        ? `Consigo verificar ${rotulo} pra você! 😊 Por enquanto tenho ${opcoes}. Prefere um desses ou quer que eu busque os horários de ${rotulo}?`
+        : `Consigo verificar ${rotulo} pra você! 😊 Me confirma que eu já busco os horários desse dia.`,
     };
   }
 
