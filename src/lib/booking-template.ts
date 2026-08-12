@@ -2026,14 +2026,54 @@ function absoluteSoDiaBrt(t: string, nowMs: number): string | null {
  *     "Terça-feira, dia 8, às 10 horas": o dia 8 já tinha passado, e resolver
  *     por ele jogaria a busca pro mês seguinte; a terça-feira é a leitura certa.
  */
+const CITA_DIA_DA_SEMANA_RE =
+  /\b(?:domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/;
+
+/** Dia da semana ("2026-08-25" → 2 = terça), em BRT. -1 se inválido. */
+function diaDaSemanaBrt(iso: string): number {
+  const d = new Date(`${iso}T12:00:00-03:00`);
+  if (isNaN(d.getTime())) return -1;
+  const abbr = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "short",
+  }).format(d);
+  return ({ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 } as Record<string, number>)[
+    abbr
+  ] ?? -1;
+}
+
 function targetDateFromText(t: string): string | null {
   const now = Date.now();
-  return (
-    immediateRelativeBrt(t, now) ??
-    absoluteComMesBrt(t, now) ??
-    weekOrWeekdayTargetBrt(t, now) ??
-    absoluteSoDiaBrt(t, now)
-  );
+  const imediato = immediateRelativeBrt(t, now);
+  if (imediato) return imediato;
+
+  const comMes = absoluteComMesBrt(t, now);
+  if (comMes) return comMes;
+
+  const porSemana = weekOrWeekdayTargetBrt(t, now);
+  const soDia = absoluteSoDiaBrt(t, now);
+
+  // "a partir do dia 25 terça-feira": os DOIS sinais dizem terça, mas só o
+  // número diz QUAL terça. Resolver pelo dia da semana pegava 18/08 — uma
+  // semana antes do que a lead pediu. Caso real (Escudero Odontologia,
+  // 12 98114-1612, 12/08).
+  //
+  // A condição de "dia N ainda não passou neste mês" é o que separa este caso
+  // do outro real que fixou a ordem original — "Terça-feira, dia 8, às 10
+  // horas", com o dia 8 já vencido. A armadilha ali é que 08/09/2026 TAMBÉM é
+  // uma terça: sem exigir o mês corrente, a busca pularia um mês inteiro.
+  if (
+    soDia &&
+    porSemana &&
+    soDia !== porSemana &&
+    CITA_DIA_DA_SEMANA_RE.test(t.normalize("NFD").replace(/[̀-ͯ]/g, "")) &&
+    soDia.slice(0, 7) === dateInBrt(new Date(now)).slice(0, 7) &&
+    diaDaSemanaBrt(soDia) === diaDaSemanaBrt(porSemana)
+  ) {
+    return soDia;
+  }
+
+  return porSemana ?? soDia;
 }
 
 /**

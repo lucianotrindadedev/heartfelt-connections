@@ -227,6 +227,100 @@ const NOME_DIA_TESTE: Record<string, string> = {
   qui: "quinta-feira", sex: "sexta-feira", sab: "sábado",
 };
 
+// ── Caso Escudero Odontologia (12 98114-1612, 12/08) ──────────────────────
+// A lead disse "A tarde!! Depois do dia 21!!" e ouviu "Consigo verificar
+// sexta-feira... Por enquanto tenho quarta-feira, 12/08 às 09:00" — uma vaga
+// ANTERIOR à data que ela acabara de excluir. Aconteceu duas vezes na mesma
+// conversa; na segunda ela pediu desculpa pela confusão. Na varredura de
+// produção, 7 dos 8 usos deste ramo ofertavam um dia diferente do pedido.
+describe("nunca oferta vaga ANTERIOR ao dia pedido", () => {
+  /** Próximo dia ÚTIL a pelo menos `min` dias de hoje. */
+  function utilDaqui(min: number) {
+    for (let i = min; i <= min + 7; i++) {
+      const d = new Date(Date.now() + i * 86_400_000);
+      const nome = new Intl.DateTimeFormat("pt-BR", { timeZone: BRT, weekday: "long" }).format(d);
+      if (/domingo|sábado/.test(nome)) continue;
+      const iso = new Intl.DateTimeFormat("en-CA", { timeZone: BRT }).format(d);
+      const ddmm = new Intl.DateTimeFormat("pt-BR", {
+        timeZone: BRT,
+        day: "2-digit",
+        month: "2-digit",
+      }).format(d);
+      return { iso, ddmm, nome, label: `${nome}, ${ddmm}` };
+    }
+    throw new Error("sem dia útil");
+  }
+  const pedido = utilDaqui(9);
+  const antigo = utilDaqui(1);
+  const slotAntigo = {
+    iso: `${antigo.iso}T09:00:00-03:00`,
+    date_label: antigo.label,
+    time_label: "09:00",
+  };
+  const slotNoPedido = {
+    iso: `${pedido.iso}T14:00:00-03:00`,
+    date_label: pedido.label,
+    time_label: "14:00",
+  };
+  const pedeDepois = `Só posso a tarde e depois do dia ${pedido.ddmm.replace("/", "/")} ok`;
+
+  it("só há vaga ANTES do dia pedido → não cita nenhuma", () => {
+    const r = buildSlotOfferFallback({
+      lastUserMsg: pedeDepois,
+      offeredSlots: [slotAntigo],
+      diasAtivos: SEG_A_SEX_EXTENSO,
+    });
+    expect(r.reply, "citou a data recusada").not.toContain(antigo.ddmm);
+    expect(r.reply).toContain(pedido.ddmm);
+    expect(r.reply).toMatch(/me confirma/i);
+  });
+
+  it("nomeia a DATA, não só o dia da semana", () => {
+    // "consigo verificar sexta-feira" não diz QUAL sexta — foi onde a conversa
+    // real derrapou, porque a lead tinha falado "depois do dia 21".
+    const r = buildSlotOfferFallback({
+      lastUserMsg: pedeDepois,
+      offeredSlots: [slotAntigo],
+      diasAtivos: SEG_A_SEX_EXTENSO,
+    });
+    expect(r.reply).toContain(`${pedido.nome}, ${pedido.ddmm}`);
+  });
+
+  it("vaga NO dia pedido continua sendo oferecida", () => {
+    const r = buildSlotOfferFallback({
+      lastUserMsg: pedeDepois,
+      offeredSlots: [slotAntigo, slotNoPedido],
+      diasAtivos: SEG_A_SEX_EXTENSO,
+    });
+    expect(r.reply).toContain("14:00");
+    expect(r.reply).not.toContain(antigo.ddmm);
+  });
+
+  it("vaga DEPOIS do dia pedido também serve", () => {
+    const depois = utilDaqui(12);
+    const r = buildSlotOfferFallback({
+      lastUserMsg: pedeDepois,
+      offeredSlots: [
+        slotAntigo,
+        { iso: `${depois.iso}T16:00:00-03:00`, date_label: depois.label, time_label: "16:00" },
+      ],
+      diasAtivos: SEG_A_SEX_EXTENSO,
+    });
+    expect(r.reply).toContain(depois.ddmm);
+    expect(r.reply).not.toContain(antigo.ddmm);
+  });
+
+  it("sem dia pedido, nada é filtrado (sem regressão)", () => {
+    const r = buildSlotOfferFallback({
+      lastUserMsg: "Com certeza",
+      offeredSlots: [slotAntigo],
+      diasAtivos: SEG_A_SEX_EXTENSO,
+    });
+    expect(r.motivo).toBe("reoferta");
+    expect(r.reply).toContain(antigo.ddmm);
+  });
+});
+
 describe("prioriza o dia pedido na oferta", () => {
   it("pediu quinta e há vaga na quinta → cita a quinta, não a terça", () => {
     // Datas dinâmicas: o slot precisa cair na PRÓXIMA quinta real, senão o
