@@ -210,6 +210,33 @@ function logQuoteFieldsIfAny(content: unknown): void {
   }
 }
 
+/** Imagem/sticker — único tipo que o Vision consegue descrever. */
+function isImageMedia(messageType: string, fileMime: string): boolean {
+  const t = messageType.toUpperCase();
+  return t === "IMAGE" || t === "STICKER" || fileMime.startsWith("image/");
+}
+
+/**
+ * Rótulo do anexo ("um vídeo", "uma imagem"…) ou null quando não é mídia
+ * reconhecida. Compartilhado pelos dois lados (entrada e saída) para que a
+ * classificação do tipo não divirja entre eles.
+ */
+function describeMediaKind(messageType: string, fileMime: string): string | null {
+  const t = messageType.toUpperCase();
+  if (isImageMedia(messageType, fileMime)) return "uma imagem";
+  if (t === "VIDEO" || fileMime.startsWith("video/")) return "um vídeo";
+  if (t === "CONTACT") return "um contato";
+  if (t === "LOCATION") return "uma localização";
+  const isDoc =
+    t === "DOCUMENT" ||
+    t === "FILE" ||
+    (!!fileMime &&
+      !fileMime.startsWith("image/") &&
+      !fileMime.startsWith("video/") &&
+      !fileMime.startsWith("audio/"));
+  return isDoc ? "um documento" : null;
+}
+
 function timingSafeEqual(a: string, b: string) {
   if (a.length !== b.length) return false;
   let r = 0;
@@ -514,6 +541,35 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           return Response.json({ ok: true, skipped: "track-event" });
         }
 
+        // `direction` é a fonte da verdade: TO_HUB = SAÍDA (mensagem que partiu
+        // da clínica — bot, atendente OU alguém digitando direto no WhatsApp do
+        // número), FROM_HUB = ENTRADA (mensagem do lead). Uma msg enviada direto
+        // pelo WhatsApp da própria clínica chega como TO_HUB porém com
+        // origin=GATEWAY — e o GATEWAY vencia a direção, fazendo a IA tratar o
+        // próprio envio como mensagem do lead e responder. Tornamos a direção
+        // autoritativa: TO_HUB NUNCA é entrada.
+        //
+        // Fica ANTES do tratamento de mídia: o texto substituto de anexo afirma
+        // "o lead enviou ..." e precisa saber quem mandou (ver mais abaixo).
+        const isOutbound = c.direction === "TO_HUB";
+        const isInbound =
+          !isOutbound &&
+          (c.direction === "FROM_HUB" ||
+            c.origin === "GATEWAY" ||
+            c.origin === "CUSTOMER" ||
+            (eventType === "MESSAGE_RECEIVED" && !c.direction) ||
+            (body.evento ?? "").toLowerCase() === "mensagem_recebida" ||
+            (body.origem ?? "").toLowerCase() === "lead" ||
+            (body.origem ?? "").toLowerCase() === "cliente");
+
+        const isHuman =
+          !isInbound &&
+          (!!c.userId ||
+            (body.origem ?? "").toLowerCase() === "humano" ||
+            (body.origem ?? "").toLowerCase() === "atendente");
+
+        const origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
+
         // ── Áudio: detecta arquivo de áudio no payload e transcreve via Groq ──
         // Helena entrega o anexo em content.details.file { mimeType, publicUrl }.
         const helenaFile = c.details?.file ?? null;
@@ -557,22 +613,25 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // Imagens: descritas via OpenAI Vision (GPT-4o-mini) quando OPENAI_API_KEY
         // estiver configurada — o agente passa a "enxergar" foto enviada pelo lead.
         // Demais mídias (vídeo, doc, contato, localização) caem em placeholder.
+        //
+        // O texto substituto AFIRMA que "o lead enviou" o anexo, mas era injetado
+        // antes de saber a direção da mensagem — então mídia que a EQUIPE mandou
+        // entrava no histórico como se o lead tivesse enviado. Caso real (Escudero,
+        // 12 99189-4420, 13/08): a atendente mandou 6 vídeos e o histórico do LLM
+        // passou a afirmar que o lead enviara 6 vídeos que ele nunca mandou, ainda
+        // por cima com a instrução de "agradecer" por eles. Agora só mensagem de
+        // ENTRADA recebe o texto do lead; a saída recebe uma nota factual.
         const mediaUrl: string | null =
           helenaFile?.publicUrl ?? helenaFile?.url ?? null;
-        if (!messageContent.trim() && !isAudioMessage) {
+        if (!messageContent.trim() && !isAudioMessage && !isInbound) {
+          const kind = describeMediaKind(messageType, fileMime);
+          if (kind) {
+            messageContent = `[A equipe da clínica enviou ${kind} pelo WhatsApp.]`;
+            console.log(`[webhook] mídia de SAÍDA (${messageType || fileMime}) — nota neutra`);
+          }
+        } else if (!messageContent.trim() && !isAudioMessage) {
           const type = messageType.toUpperCase();
-          const isImage =
-            type === "IMAGE" || type === "STICKER" || fileMime.startsWith("image/");
-          const isVideo = type === "VIDEO" || fileMime.startsWith("video/");
-          const isDoc =
-            type === "DOCUMENT" ||
-            type === "FILE" ||
-            (!!fileMime &&
-              !fileMime.startsWith("image/") &&
-              !fileMime.startsWith("video/") &&
-              !fileMime.startsWith("audio/"));
-          const isContact = type === "CONTACT";
-          const isLocation = type === "LOCATION";
+          const isImage = isImageMedia(messageType, fileMime);
 
           // Tenta descrever imagens via Vision antes do placeholder.
           if (isImage && mediaUrl && getOpenAiKey()) {
@@ -596,49 +655,13 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
           // Placeholder genérico (também cobre quando vision falhou).
           if (!messageContent.trim()) {
-            const kindLabel = isImage
-              ? "uma imagem"
-              : isVideo
-                ? "um vídeo"
-                : isContact
-                  ? "um contato"
-                  : isLocation
-                    ? "uma localização"
-                    : isDoc
-                      ? "um documento"
-                      : "um anexo";
-            if (isImage || isVideo || isDoc || isContact || isLocation) {
+            const kindLabel = describeMediaKind(messageType, fileMime);
+            if (kindLabel) {
               messageContent = `[O lead enviou ${kindLabel} sem nenhum texto. Você não tem acesso ao conteúdo — agradeça brevemente e peça para descrever em texto o que ele gostaria de tratar, ou siga o fluxo natural da conversa.]`;
               console.log(`[webhook] mídia ${type || fileMime} sem texto — placeholder injetado`);
             }
           }
         }
-
-        // `direction` é a fonte da verdade: TO_HUB = SAÍDA (mensagem que partiu
-        // da clínica — bot, atendente OU alguém digitando direto no WhatsApp do
-        // número), FROM_HUB = ENTRADA (mensagem do lead). Uma msg enviada direto
-        // pelo WhatsApp da própria clínica chega como TO_HUB porém com
-        // origin=GATEWAY — e o GATEWAY vencia a direção, fazendo a IA tratar o
-        // próprio envio como mensagem do lead e responder. Tornamos a direção
-        // autoritativa: TO_HUB NUNCA é entrada.
-        const isOutbound = c.direction === "TO_HUB";
-        const isInbound =
-          !isOutbound &&
-          (c.direction === "FROM_HUB" ||
-            c.origin === "GATEWAY" ||
-            c.origin === "CUSTOMER" ||
-            (eventType === "MESSAGE_RECEIVED" && !c.direction) ||
-            (body.evento ?? "").toLowerCase() === "mensagem_recebida" ||
-            (body.origem ?? "").toLowerCase() === "lead" ||
-            (body.origem ?? "").toLowerCase() === "cliente");
-
-        const isHuman =
-          !isInbound &&
-          (!!c.userId ||
-            (body.origem ?? "").toLowerCase() === "humano" ||
-            (body.origem ?? "").toLowerCase() === "atendente");
-
-        const origem = isInbound ? "lead" : isHuman ? "humano" : "agente";
 
         if (!sessionId && !fromDetails && !legacyPhone) {
           return new Response("Missing sessionId or contact identifier", { status: 400 });
