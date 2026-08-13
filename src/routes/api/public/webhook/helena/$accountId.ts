@@ -22,6 +22,14 @@ import {
   RESET_CONFIRMATION_MESSAGE,
 } from "@/lib/reset-conversation.server";
 import {
+  classifyEchoAgainstOwnSends,
+  ECHO_FRESH_WINDOW_MS,
+  ECHO_STALE_WINDOW_MS,
+  normalizeEcho,
+  OWN_OUTBOUND_ORIGINS,
+  type EchoVerdict,
+} from "@/lib/helena-echo.server";
+import {
   getContactChannel,
   loadHelenaAccount,
   loadHelenaContactFromSession,
@@ -244,62 +252,54 @@ function timingSafeEqual(a: string, b: string) {
   return r === 0;
 }
 
-/** Origens das mensagens que ESTA plataforma gera e envia (não são do lead nem
- *  de atendente humano). Usadas para detectar o eco/loopback. */
-const OWN_OUTBOUND_ORIGINS = new Set(["agente", "followup", "warmup", "warm-up"]);
-
-function normalizeEcho(s: string | null | undefined): string {
-  return (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
-}
-
 /**
  * Anti-eco/loopback: a Helena reentrega como evento (TO_HUB, e às vezes até
  * FROM_HUB) as mensagens que a própria plataforma enviou — resposta do agente,
- * follow-up, warm-up. Esses ecos chegam com `userId` (parecendo atendente
- * humano), eram gravados como mensagem do histórico e poluíam o contexto do LLM
- * — inclusive CRUZANDO leads quando uma saudação em massa caía na sessão errada
- * (agente chamava o lead pelo nome de outra pessoa).
- *
- * Detecção sem depender de campos internos da Helena: o eco é sempre uma cópia
- * de algo que NÓS enviamos há pouco. Comparamos o texto recebido com as
- * mensagens que esta plataforma gerou nos últimos minutos (qualquer conversa da
- * conta — pega eco cruzado). Mensagem real de atendente humano é texto livre,
- * diferente das nossas, e passa normalmente.
- *
- * O envio em bolhas faz a mensagem gravada (reply completo, multi-bolha) ser
- * diferente do eco (uma bolha só) — por isso comparamos por containment nos
- * dois sentidos.
+ * follow-up, warm-up. Carrega os nossos envios recentes da conta (qualquer
+ * conversa — pega eco cruzado) e delega a classificação para
+ * `classifyEchoAgainstOwnSends`. Ver helena-echo.server.ts para o porquê.
  */
-async function isOwnRecentOutboundEcho(
+async function classifyOwnOutboundEcho(
   sb: ReturnType<typeof getSelfhost>,
   accountId: string,
   content: string,
-): Promise<boolean> {
-  const target = normalizeEcho(content);
-  if (target.length < 25) return false; // curto demais: risco de falso positivo com msg real
+  opts: { fromLead: boolean },
+): Promise<EchoVerdict> {
+  if (!normalizeEcho(content)) return "none";
 
-  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const now = Date.now();
+  const staleSince = new Date(now - ECHO_STALE_WINDOW_MS).toISOString();
+  const freshSince = now - ECHO_FRESH_WINDOW_MS;
+
   // Escopo por conta: messages → conversations(agent_id) → agents(account_id).
   const { data, error } = await sb
     .from("messages")
-    .select("content, meta, conversations!inner(agents!inner(account_id))")
+    .select("content, meta, criado_em, conversations!inner(agents!inner(account_id))")
     .eq("role", "assistant")
     .eq("conversations.agents.account_id", accountId)
-    .gte("criado_em", since)
+    .gte("criado_em", staleSince)
     .order("criado_em", { ascending: false })
-    .limit(300);
-  if (error || !data) return false;
+    .limit(500);
+  if (error || !data) return "none";
 
-  for (const m of data as Array<{ content: string | null; meta: Record<string, unknown> | null }>) {
+  // Separa por idade: só a janela recente autoriza DESCARTAR a mensagem; a
+  // janela longa serve apenas para MARCAR is_echo (ver ECHO_STALE_WINDOW_MS).
+  const freshSends: Array<string | null> = [];
+  const staleSends: Array<string | null> = [];
+  for (const m of data as Array<{
+    content: string | null;
+    meta: Record<string, unknown> | null;
+    criado_em: string;
+  }>) {
     const origem = (m.meta?.origem as string | undefined) ?? "";
     if (!OWN_OUTBOUND_ORIGINS.has(origem)) continue; // ignora ecos já gravados (origem "humano") e msgs do lead
-    const stored = normalizeEcho(m.content);
-    if (!stored) continue;
-    if (stored === target || stored.includes(target) || target.includes(stored)) {
-      return true;
-    }
+    if (new Date(m.criado_em).getTime() >= freshSince) freshSends.push(m.content);
+    else staleSends.push(m.content);
   }
-  return false;
+
+  const fresh = classifyEchoAgainstOwnSends(content, freshSends, opts);
+  if (fresh !== "none") return fresh;
+  return classifyEchoAgainstOwnSends(content, staleSends, { ...opts, stale: true });
 }
 
 interface ConversationUpsertInput {
@@ -677,7 +677,11 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // como "lead" em alguns casos). Roda para QUALQUER classificação porque a
         // Helena ecoa nossos envios ora como TO_HUB, ora como FROM_HUB. Mensagem
         // real de atendente humano é texto livre e não casa com nossos envios.
-        if (await isOwnRecentOutboundEcho(sb, accountId, messageContent)) {
+        // `suspect` (bolha curta) é gravado, porém marcado is_echo — ver meta abaixo.
+        const echoVerdict = await classifyOwnOutboundEcho(sb, accountId, messageContent, {
+          fromLead: isInbound,
+        });
+        if (echoVerdict === "confirmed") {
           console.log(
             `[webhook] eco da própria plataforma descartado (conv-key=${fromDetails || legacyPhone || sessionId}) — não gravado`,
           );
@@ -698,6 +702,31 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
 
         if (!convId) {
           return new Response("DB error: could not upsert conversation", { status: 500 });
+        }
+
+        // ── Reentrega da MESMA mensagem (mesmo content.id da Helena) ──
+        // A Helena reenvia o mesmo evento várias vezes. Sem dedupe a cópia era
+        // gravada de novo e, quando caía logo depois de uma mensagem do lead,
+        // virava a ÚLTIMA mensagem da conversa — fazendo o turno do agente ser
+        // abortado ("já respondida"). Caso real (Maple Bear Guarujá,
+        // 13 99602-7940, 13/08): a lead respondeu o nome às 10:32, o eco da
+        // pergunta chegou 1s depois pela 3ª vez e ela ficou 1h04 sem resposta.
+        // Fica ANTES de qualquer comando (/reset, pausar, opt-out) para que uma
+        // reentrega nunca dispare a ação duas vezes.
+        if (c.id) {
+          const dup = await sb
+            .from("messages")
+            .select("id")
+            .eq("conversation_id", convId)
+            .eq("meta->>helena_msg_id", c.id)
+            .limit(1)
+            .maybeSingle();
+          if (dup.data) {
+            console.log(
+              `[webhook] reentrega ignorada — helena_msg_id=${c.id} já gravado na conv ${convId}`,
+            );
+            return Response.json({ ok: true, skipped: "duplicate-message" });
+          }
         }
 
         // ── Comando /reset: limpa histórico, confirma e NÃO aciona o agente ──
@@ -726,13 +755,14 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // (09/07, Dental Clinic Corcovado): pause_command="Olá!" configurado
         // pra atendente assumir o atendimento, mas só isInbound era checado —
         // a mensagem da atendente (TO_HUB, origem="humano") nunca disparava a
-        // tag. Seguro: isHuman só chega aqui depois de passar pelo filtro
-        // anti-eco (isOwnRecentOutboundEcho, linha ~656), então não reabre o
-        // bug de eco — só reconhece o atendente humano de verdade.
+        // tag. Seguro: só passa aqui o que o anti-eco liberou como mensagem real
+        // (echoVerdict === "none") — eco marcado is_echo não dispara comando.
         const isPauseCmd =
+          echoVerdict === "none" &&
           (isInbound || isHuman) &&
           messageMatchesAgentCommand(messageContent, pauseCommandRaw, ["/pausar"]);
         const isResumeCmd =
+          echoVerdict === "none" &&
           (isInbound || isHuman) &&
           messageMatchesAgentCommand(messageContent, resumeCommandRaw, ["/ativar"]);
 
@@ -1049,6 +1079,11 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           ...(audioTranscription
             ? { audio_transcrito: true, transcription: audioTranscription }
             : {}),
+          // Eco provável (bolha curta de uma resposta nossa quebrada em partes).
+          // Fica gravado para auditoria, mas `conversationNeedsAgentReply` e o
+          // histórico do LLM pulam tudo que tem is_echo — então não esconde o
+          // lead sem resposta nem polui o contexto.
+          ...(echoVerdict === "suspect" ? { is_echo: true } : {}),
         };
 
         await sb.from("messages").insert({
