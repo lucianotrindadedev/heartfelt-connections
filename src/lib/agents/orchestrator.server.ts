@@ -61,6 +61,7 @@ import {
   tryAcquireConversationLock,
 } from "@/lib/conversation-lock.server";
 import { conversationNeedsAgentReply } from "@/lib/conversation-reply.server";
+import { leadSkippedOptionsQuestion } from "@/lib/agents/pending-question";
 import {
   resolveLeads360Config,
   sendLeads360Lead,
@@ -1559,9 +1560,20 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Baseline da comparação: a última resposta REAL do agente. Cai para
     // lastAssistantMsg quando ainda não há nenhuma (primeiro turno).
     const baselineAnterior = assistantMsg1 || lastAssistantMsg;
+
+    // 2ª isenção: a pergunta anterior oferecia opções e o lead respondeu só
+    // "sim"/"ok" — não escolheu nada, então a pergunta continua em aberto e
+    // repeti-la é a única reação correta, não um loop. Caso real (Escudero,
+    // 12 99189-4420, 13/08): "superior, inferior ou nas duas?" → "Sim" → a trava
+    // engoliu a repergunta e mandou "Desculpa, acho que me confundi aqui! 😅",
+    // zerando a conversa para refazer a MESMA pergunta um turno depois.
+    // Como a de cima, vale UMA vez: `jaRepetiuDuasVezes` continua mandando.
+    const leadSkippedOptions = leadSkippedOptionsQuestion(lastUserMsg, baselineAnterior);
+
     if (
       baselineAnterior &&
       (!userAlsoRepeated || jaRepetiuDuasVezes) &&
+      (!leadSkippedOptions || jaRepetiuDuasVezes) &&
       isReplyTooSimilar(reply, baselineAnterior)
     ) {
       duplicateReplyBlocked = true;
