@@ -78,6 +78,41 @@ describe("texto longo — comportamento anterior preservado", () => {
   });
 });
 
+// Escudero, 12 99189-4420, 13/08: às 15:36 a Helena reentregou de uma vez 10
+// mensagens, incluindo a pergunta que o agente fez às 01:49 — 14h antes. Fora da
+// janela recente, o eco antigo é MARCADO, nunca descartado (um atendente pode
+// legitimamente copiar nossa frase horas depois).
+describe("janela longa (stale) — marca, nunca descarta", () => {
+  const pergunta = "No seu caso, seria protocolo na arcada superior, inferior ou nas duas?";
+
+  it("rebaixa cópia literal antiga de confirmed para suspect", () => {
+    expect(classifyEchoAgainstOwnSends(pergunta, [pergunta], { fromLead: false })).toBe("confirmed");
+    expect(
+      classifyEchoAgainstOwnSends(pergunta, [pergunta], { fromLead: false, stale: true }),
+    ).toBe("suspect");
+  });
+
+  it("rebaixa containment antigo de texto longo", () => {
+    const inteira = `Oi! Tudo bem? Eu sou Samara, da Escudero Odontologia. ${pergunta}`;
+    expect(
+      classifyEchoAgainstOwnSends(pergunta, [inteira], { fromLead: false, stale: true }),
+    ).toBe("suspect");
+  });
+
+  it("texto sem relação continua none mesmo na janela longa", () => {
+    expect(
+      classifyEchoAgainstOwnSends("Bom dia, qual o endereço de vocês?", [pergunta], {
+        fromLead: false,
+        stale: true,
+      }),
+    ).toBe("none");
+  });
+
+  it("mensagem curta do lead segue intocada na janela longa", () => {
+    expect(classifyEchoAgainstOwnSends("Sim", ["Sim"], { fromLead: true, stale: true })).toBe("none");
+  });
+});
+
 describe("bordas", () => {
   it("texto vazio não é eco", () => {
     expect(classifyEchoAgainstOwnSends("", ["qualquer coisa"], { fromLead: false })).toBe("none");

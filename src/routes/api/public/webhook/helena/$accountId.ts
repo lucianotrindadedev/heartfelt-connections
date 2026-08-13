@@ -23,6 +23,8 @@ import {
 } from "@/lib/reset-conversation.server";
 import {
   classifyEchoAgainstOwnSends,
+  ECHO_FRESH_WINDOW_MS,
+  ECHO_STALE_WINDOW_MS,
   normalizeEcho,
   OWN_OUTBOUND_ORIGINS,
   type EchoVerdict,
@@ -238,26 +240,39 @@ async function classifyOwnOutboundEcho(
 ): Promise<EchoVerdict> {
   if (!normalizeEcho(content)) return "none";
 
-  const since = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const now = Date.now();
+  const staleSince = new Date(now - ECHO_STALE_WINDOW_MS).toISOString();
+  const freshSince = now - ECHO_FRESH_WINDOW_MS;
+
   // Escopo por conta: messages → conversations(agent_id) → agents(account_id).
   const { data, error } = await sb
     .from("messages")
-    .select("content, meta, conversations!inner(agents!inner(account_id))")
+    .select("content, meta, criado_em, conversations!inner(agents!inner(account_id))")
     .eq("role", "assistant")
     .eq("conversations.agents.account_id", accountId)
-    .gte("criado_em", since)
+    .gte("criado_em", staleSince)
     .order("criado_em", { ascending: false })
-    .limit(300);
+    .limit(500);
   if (error || !data) return "none";
 
-  const ownSends: Array<string | null> = [];
-  for (const m of data as Array<{ content: string | null; meta: Record<string, unknown> | null }>) {
+  // Separa por idade: só a janela recente autoriza DESCARTAR a mensagem; a
+  // janela longa serve apenas para MARCAR is_echo (ver ECHO_STALE_WINDOW_MS).
+  const freshSends: Array<string | null> = [];
+  const staleSends: Array<string | null> = [];
+  for (const m of data as Array<{
+    content: string | null;
+    meta: Record<string, unknown> | null;
+    criado_em: string;
+  }>) {
     const origem = (m.meta?.origem as string | undefined) ?? "";
     if (!OWN_OUTBOUND_ORIGINS.has(origem)) continue; // ignora ecos já gravados (origem "humano") e msgs do lead
-    ownSends.push(m.content);
+    if (new Date(m.criado_em).getTime() >= freshSince) freshSends.push(m.content);
+    else staleSends.push(m.content);
   }
 
-  return classifyEchoAgainstOwnSends(content, ownSends, opts);
+  const fresh = classifyEchoAgainstOwnSends(content, freshSends, opts);
+  if (fresh !== "none") return fresh;
+  return classifyEchoAgainstOwnSends(content, staleSends, { ...opts, stale: true });
 }
 
 interface ConversationUpsertInput {
