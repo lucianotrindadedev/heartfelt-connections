@@ -2797,10 +2797,23 @@ export function leadRequestedUnofferedDate(
 const TIME_IN_TEXT_SRC = String.raw`(?<![\d.,])\d{1,2}(?:\s*[:h.,]\s*[0-5]\d(?!\d)|\s*,?\s*h(?:s|rs?|oras?)?\b)`;
 const TIME_IN_TEXT_RE = new RegExp(TIME_IN_TEXT_SRC, "i");
 // A mensagem inteira é SÓ um horário: "18:20", "14.30", "às 18:20", "9h",
-// "9 horas", "às 9". Um número solto ("9") fica de fora de propósito — sem o
-// marcador de hora ou a preposição não dá pra distinguir de dia do mês/idade.
+// "9 horas", "às 9", "09:45hs.". Um número solto ("9") fica de fora de
+// propósito — sem o marcador de hora ou a preposição não dá pra distinguir de
+// dia do mês/idade.
+//
+// O sufixo de unidade depois dos MINUTOS ("09:45hs", "16:30h", "14:00 horas")
+// era o buraco: o padrão só aceitava o sufixo quando NÃO havia minutos, então
+// "9h" passava e "09:45h" não — o mesmo "h" aceito como separador e recusado
+// como unidade. A mensagem casava o horário e sobrava "hs.", a âncora `$`
+// falhava, e o horário nunca era extraído.
+//
+// Caso real (Odonto Carioca Campo Grande, 21 99027-0086, 12–13/08): o lead
+// escreveu "09:45hs." e depois "Vc. Marcou para o dia 20/08 às 09:45 hs, nao
+// foi?". O slot das 09:45 estava ofertado e livre; o sistema manteve 09:30 nas
+// duas vezes. Em produção, as 13 mensagens que são só-horário com minutos e
+// sufixo de unidade falhavam — 100% delas.
 const ONLY_TIME_RE = new RegExp(
-  String.raw`^(?:(?:[àa]s?\s+)?\d{1,2}(?:\s*[:h.,]\s*[0-5]\d|\s*,?\s*h(?:s|rs?|oras?)?)|[àa]s\s+\d{1,2})\s*[.!?]?$`,
+  String.raw`^(?:(?:[àa]s?\s+)?\d{1,2}(?:\s*[:h.,]\s*[0-5]\d(?:\s*h(?:s|rs?|oras?)?)?|\s*,?\s*h(?:s|rs?|oras?)?)|[àa]s\s+\d{1,2})\s*[.!?]*$`,
   "i",
 );
 
