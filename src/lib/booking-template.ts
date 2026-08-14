@@ -810,20 +810,42 @@ export function looksLikeIntentMessage(text: string): boolean {
 
   const tl = t.toLowerCase();
   const intentWords =
-    /\b(ol[aá]|oi|bom dia|boa tarde|boa noite|tudo bem|tudo bom|tudo certo|gostaria|gostari[ae]|quero|queria|preciso|posso|pode|poderia|tenho|estou|interesse|interessad[oa]|informa[cç][oõ]es?|saber|sobre|d[uú]vida|escola|consulta|atendiment|servi[cç]o|aula|curso|mensalidad|valor|pre[cç]o|hor[aá]rio|disponibilidade|matr[ií]cul|filh[oa]|crian[cç]a|esposa|marido|m[ãa]e|pai|melhor falar|gente|al[ôo])\b/i;
+    /\b(ol[aá]|oi|bom dia|boa tarde|boa noite|tudo bem|tudo bom|tudo certo|gostaria|gostari[ae]|quero|queria|preciso|posso|pode|poderia|tenho|estou|interesse|interessad[oa]|informa[cç][oõ]es?|saber|sobre|d[uú]vida|escola|consulta|atendiment|servi[cç]o|aula|curso|mensalidad|valor|pre[cç]o|hor[aá]rio|disponibilidade|matr[ií]cul|crian[cç]a|esposa|marido|m[ãa]e|melhor falar|gente|al[ôo])\b/i;
   if (intentWords.test(tl)) return true;
 
-  // Mensagens longas costumam ser intent — MAS um nome completo brasileiro tem
-  // com frequência 4–6 palavras (ex.: "Ana Lucia Valentim do Nascimento"). Se
-  // TODAS as palavras são alfabéticas (partículas "do/da/de" inclusas) e não há
-  // nenhuma palavra de intenção (já checadas acima), é quase certamente um nome —
-  // não classificar como intent, senão o nome real é rejeitado na captura e no
-  // getMissingBookingFields (caso real 21 97486-6018: a lead repetia o nome e
-  // ele nunca era registrado).
+  // "filho"/"filha"/"pai" SÓ contam como intenção quando vêm com determinante
+  // ("meu filho", "a filha", "do pai"). Soltos são SOBRENOME — e "Filho" é um
+  // dos sobrenomes mais comuns do Brasil.
+  //
+  // Caso real (Odonto Carioca Campo Grande, 13/08): "Relandy Izabel Filho" e
+  // "Jose herminio filho" eram descartados na captura, e o lead ficava preso
+  // repetindo o nome. "Neto" e "Junior" passavam; só quem se chama "Filho"
+  // era barrado.
+  if (
+    /\b(?:meu|minha|seu|sua|nosso|nossa|d[oa]|n[oa]|pel[oa]|pr[oa]|para\s+[oa]|com\s+[oa]|o|a)\s+(?:filh[oa]s?|pai)\b/i.test(
+      tl,
+    )
+  ) {
+    return true;
+  }
+
+  // Mensagens longas costumam ser intent — MAS um nome completo brasileiro passa
+  // de 6 palavras com facilidade quando tem duas partículas.
+  //
+  // Caso real (Odonto Carioca Campo Grande, 21 96543-1529, 07–13/08): "Karla
+  // deborah da Silva nunes de lima" tem SETE palavras. O limite antigo (6) a
+  // classificava como intenção, a captura descartava o nome, o preflight pedia
+  // o nome de novo e a lead reenviou quatro vezes ao longo de SEIS DIAS até
+  // desistir ("Desisto", "Ja confirmei tudo e vc nao resolve nada tchau").
+  // O limite agora é 10; acima disso já não é nome plausível.
+  //
+  // A assimetria aqui é o oposto da do agendamento: recusar um nome válido
+  // trava a conversa em loop infinito, enquanto aceitar um nome estranho custa
+  // uma correção na recepção. Na dúvida, ACEITA.
   const tokens = t.split(/\s+/).filter(Boolean);
   const wordCount = tokens.length;
   const looksLikeNameSequence =
-    wordCount <= 6 && tokens.every((w) => /^[\p{L}][\p{L}'.-]*$/u.test(w));
+    wordCount <= 10 && tokens.every((w) => /^[\p{L}][\p{L}'.-]*$/u.test(w));
   if (wordCount >= 5 && !looksLikeNameSequence) return true;
 
   return false;
@@ -932,6 +954,14 @@ function looksLikePersonName(text: string): boolean {
   if (/^\d+$/.test(t)) return false;
   // Rejeita mensagens de saudacao/intencao — elas nao sao nome de pessoa.
   if (looksLikeIntentMessage(t)) return false;
+  // ...e frases com verbo conjugado ("Ja te mandei", "Jesus já mandei"). Os dois
+  // classificadores cobrem buracos DIFERENTES um do outro: o de intenção pega
+  // "Gostaria de informações" (que não tem verbo da lista) e o de frase pega
+  // "Ja te mandei" (que não tem palavra de intenção). Exigir os dois é o que
+  // impede uma frase de virar o nome do paciente — e um nome virado frase é o
+  // erro mais caro deste fluxo, porque trava a conversa em loop até o lead
+  // desistir. Caso real (21 96543-1529): name ficou preso em "Ja te mandei".
+  if (looksLikeSentenceNotName(t)) return false;
   // Rejeita recusas ("não, obrigado", "não quero") — nao sao nome de pessoa.
   if (looksLikeDecline(t)) return false;
   // Rejeita agradecimento/bênção ("obrigado", "Deus abençoe") — nao sao nome.
@@ -1269,7 +1299,12 @@ const TEMPO_NA_FRASE_RE = B(
 // Verbos conjugados em 1ª/2ª pessoa típicos de correção/pergunta do lead. Um
 // nome próprio nunca traz forma verbal conjugada.
 const VERBO_CONJUGADO_RE = B(
-  "pedi|pedir|quero|queria|consigo|consegue|posso|preciso|prefiro|falando|falou|disse|mandei|marquei|agendei|tava|estava|vou|vai|trabalho",
+  "pedi|pedir|quero|queria|consigo|consegue|posso|preciso|prefiro|falando|falou|disse|mandei|marquei|agendei|tava|estava|vou|vai|trabalho|" +
+    // 3ª pessoa do plural — o lead fala DA CLÍNICA ("fazem atendimento aos
+    // sábados?", "vocês atendem convênio"). Nenhuma dessas é nome, e sem elas a
+    // frase escapava dos DOIS classificadores e virava nome do paciente. Caso
+    // real encontrado na varredura: name="Fazem atendimento aos sábados".
+    "fazem|atendem|aceitam|trabalham|funcionam|abrem|cobram|t[êe]m|possuem",
 );
 
 /**
