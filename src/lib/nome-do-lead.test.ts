@@ -58,8 +58,13 @@ describe("nomes reais de lead PRECISAM ser aceitos", () => {
   });
 
   it("o limite de palavras só corta o que já não é nome plausível", () => {
-    expect(looksLikeIntentMessage("Ana Beatriz da Silva dos Santos Lima Costa")).toBe(false); // 8
-    expect(looksLikeIntentMessage("Ana Beatriz da Silva dos Santos Lima Costa Junior")).toBe(true); // 9
+    // 10 palavras ainda é nome; 11 já não.
+    expect(
+      looksLikeIntentMessage("Ana Beatriz da Silva dos Santos Lima Costa Pereira Neto"),
+    ).toBe(false); // 10
+    expect(
+      looksLikeIntentMessage("Ana Beatriz da Silva dos Santos Lima Costa Pereira Neto Junior"),
+    ).toBe(true); // 11
   });
 });
 

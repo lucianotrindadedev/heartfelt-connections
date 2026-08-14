@@ -837,7 +837,7 @@ export function looksLikeIntentMessage(text: string): boolean {
   // classificava como intenção, a captura descartava o nome, o preflight pedia
   // o nome de novo e a lead reenviou quatro vezes ao longo de SEIS DIAS até
   // desistir ("Desisto", "Ja confirmei tudo e vc nao resolve nada tchau").
-  // O limite agora é 8; acima disso já não é nome plausível.
+  // O limite agora é 10; acima disso já não é nome plausível.
   //
   // A assimetria aqui é o oposto da do agendamento: recusar um nome válido
   // trava a conversa em loop infinito, enquanto aceitar um nome estranho custa
@@ -845,7 +845,7 @@ export function looksLikeIntentMessage(text: string): boolean {
   const tokens = t.split(/\s+/).filter(Boolean);
   const wordCount = tokens.length;
   const looksLikeNameSequence =
-    wordCount <= 8 && tokens.every((w) => /^[\p{L}][\p{L}'.-]*$/u.test(w));
+    wordCount <= 10 && tokens.every((w) => /^[\p{L}][\p{L}'.-]*$/u.test(w));
   if (wordCount >= 5 && !looksLikeNameSequence) return true;
 
   return false;
