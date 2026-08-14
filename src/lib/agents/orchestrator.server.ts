@@ -33,6 +33,7 @@ import {
   slotsOfferedInLastTurn,
   type BookingChannelContext,
   looksLikeSchedulingPreference,
+  looksLikeSentenceNotName,
   mergeLeadDataPatch,
   nameIsAttendantSelfIntroduction,
   normalizeLeadDataForBooking,
@@ -1625,6 +1626,22 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         reply =
           "Desculpa, acho que me confundi aqui! 😅 Me diz como posso te ajudar: você quer agendar um horário ou tirar alguma dúvida antes?";
         newStage = "QUALIFICATION";
+      } else if (effectiveStage === "NAME_COLLECT" || stage === "NAME_COLLECT") {
+        // A trava não pode TROCAR DE ASSUNTO. Se a repetição é sobre o NOME,
+        // perguntar "quer seguir com o agendamento?" faz o lead achar que
+        // voltou à estaca zero — ele já escolheu o horário.
+        //
+        // Caso real (Odonto Carioca Campo Grande, 21 96543-1529): a lead mandou
+        // o nome completo 4x, a trava respondeu 4x "quer seguir com o
+        // agendamento agora?", e ela respondeu "Eu já escolhi para as 16:15" e
+        // depois "Desisto". A repetição era sintoma de outro bug (o nome dela
+        // era descartado na captura), mas este texto transformou um travamento
+        // em perda do lead.
+        const primeiro = (finalLeadData.name ?? "").trim().split(/\s+/)[0] ?? "";
+        reply =
+          primeiro && !looksLikeSentenceNotName(finalLeadData.name ?? "")
+            ? `Desculpa insistir! Só me confirma o sobrenome do ${primeiro}, por favor, que eu finalizo o agendamento.`
+            : "Desculpa insistir! Pra fechar o agendamento eu preciso do nome completo do paciente (nome e sobrenome). Pode me mandar?";
       } else if (hasBookingIntegration) {
         reply =
           "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";

@@ -118,6 +118,7 @@ import {
   leadRequestedUnofferedDate,
   requestedDateFromText,
   requestedPeriodoFromText,
+  looksLikeSentenceNotName,
   isAskingDifferentDay,
   slotDayBrt,
   extractCompanionAppointmentNote,
@@ -2130,6 +2131,28 @@ async function execCriarAgendamento(
         error: "NOME_INCOMPLETO",
         need_full_name: true,
         motivo: `"${leadName}" tem só o primeiro nome — o cadastro do paciente exige nome e sobrenome.`,
+      }),
+    };
+  }
+  // BARREIRA DETERMINÍSTICA, ANTES DA LLM: nome que é FRASE ("Ja te mandei",
+  // "Já mandei meu nome completo") nunca vai passar — e enquanto ele estiver
+  // gravado, getMissingBookingFields vê o campo preenchido e o nome REAL nunca
+  // é recapturado. Rejeitar aqui aciona o clearRejectedBookingName no mesmo
+  // turn, sem gastar uma chamada de LLM e sem depender de ela concordar.
+  //
+  // Caso real (Odonto Carioca Campo Grande, 21 96543-1529): name ficou preso em
+  // "Ja te mandei" por SEIS DIAS. A lead reenviou o nome completo quatro vezes e
+  // desistiu ("Ja confirmei tudo e vc nao resolve nada tchau").
+  if (looksLikeSentenceNotName(leadName)) {
+    console.warn(
+      `[scheduler] nome é frase, não nome — rejeitado deterministicamente conv=${ctx.conversationId} name="${leadName.slice(0, 60)}"`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error: "NOME_INVALIDO",
+        need_valid_name: true,
+        motivo: `"${leadName}" é uma frase, não o nome do paciente. Peça o nome completo de novo.`,
       }),
     };
   }
