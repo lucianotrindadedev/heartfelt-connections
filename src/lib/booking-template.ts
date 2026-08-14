@@ -2307,6 +2307,29 @@ export function isAskingDifferentDay(
  */
 const SAUDACAO_RE = /\bbo(?:a|as)\s*-?\s*(?:tardes?|noites?)\b/g;
 
+/**
+ * Marcos do dia que implicam um TURNO. Exigem direção ("depois de", "antes de")
+ * de propósito: `almoço` sozinho é quase sempre narrativa, não preferência.
+ *
+ * "na volta do almoço" foi TESTADO e REMOVIDO: na varredura de produção era o
+ * único padrão que gerava falso positivo — "vou falar com ela na volta do
+ * almoço" fala de quando alguém RETORNA, não de quando o lead quer ser
+ * atendido, e virava filtro de tarde.
+ */
+const MARCOS_DO_DIA: Array<{ key: "manha" | "tarde" | "noite"; src: string }> = [
+  // → TARDE
+  { key: "tarde", src: String.raw`(?:depois|ap[oó]s|passad[oa])\s+(?:(?:d[oe]|[oa])\s+)?almo[cç]o` },
+  { key: "tarde", src: String.raw`p[oó]s[-\s]*almo[cç]o` },
+  { key: "tarde", src: String.raw`(?:depois|ap[oó]s)\s+(?:de\s+)?(?:que\s+)?(?:eu\s+)?almo[cç]ar` },
+  { key: "tarde", src: String.raw`(?:depois|ap[oó]s)\s+(?:(?:d[oe]|[oa])\s+)?meio[-\s]?dia` },
+  // → MANHÃ
+  { key: "manha", src: String.raw`antes\s+(?:d[oe]|[oa])\s+almo[cç]o` },
+  { key: "manha", src: String.raw`antes\s+de\s+almo[cç]ar` },
+  { key: "manha", src: String.raw`antes\s+(?:d[oe]|[oa])\s+meio[-\s]?dia` },
+  // → NOITE
+  { key: "noite", src: String.raw`(?:depois|ap[oó]s)\s+(?:(?:d[oe]|[oa])\s+)?jantar` },
+];
+
 export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noite" | null {
   // Só a ocorrência da saudação sai — "Boa tarde, prefiro de tarde" continua
   // sendo tarde.
@@ -2319,6 +2342,25 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
   if (m >= 0) present.push({ key: "manha", re: "manh[ãa]", idx: m });
   if (ta >= 0) present.push({ key: "tarde", re: "tarde", idx: ta });
   if (n >= 0) present.push({ key: "noite", re: "noite", idx: n });
+
+  // Marcos do dia: muita gente organiza a agenda por REFEIÇÃO, não por turno.
+  // Entram aqui como se o turno tivesse sido dito, na posição em que aparecem —
+  // assim o desempate "último turno citado vence" e o periodoExcluido
+  // ("não posso depois do almoço") continuam valendo.
+  //
+  // Caso real (Odonto Carioca Campo Grande, 21 99027-0086, 12/08): o lead disse
+  // "Pode ser depois do almoço." e recebeu 09:30 e 09:45. O turno ficava nulo, a
+  // busca não filtrava nada e a oferta vinha com os horários mais cedo da agenda.
+  //
+  // A DIREÇÃO é obrigatória ("depois de", "antes de"): "almoço" solto quase
+  // sempre é narrativa — "Ontem no almoço a dentadura quebrou", "Estou fazendo o
+  // almoço" — e virar filtro de tarde nesses casos seria pior que não detectar.
+  for (const marco of MARCOS_DO_DIA) {
+    for (const hit of t.matchAll(new RegExp(marco.src, "g"))) {
+      present.push({ key: marco.key, re: marco.src, idx: hit.index ?? 0 });
+    }
+  }
+
   if (present.length === 0) return null;
   if (present.length === 1) return present[0]!.key;
 
