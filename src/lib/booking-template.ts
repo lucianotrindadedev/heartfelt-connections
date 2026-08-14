@@ -2621,6 +2621,24 @@ function pickSlotByPreference(
   }
   if (filtered.length === 0) return null;
 
+  // DATA sozinha é filtro, não escolha. Quem responde "20/08" tendo três
+  // horários naquele dia não escolheu nenhum — pegar o mais cedo é escolher
+  // pela pessoa, que é o erro mais caro daqui. Sobrando UMA opção a leitura é
+  // inequívoca e a seleção continua.
+  //
+  // Caso real (Odonto Carioca Campo Grande, 21 99027-0086): o agente ofertou
+  // 09:30, 09:45 e 10:00 em 20/08 e o lead respondeu "09:45hs.". O sufixo "hs"
+  // impedia a leitura do horário, sobrava a data, e a data selecionava 09:30 —
+  // o lead escolheu 09:45 duas vezes e ficou com 09:30 nas duas.
+  //
+  // Restrito a data SEM turno de propósito. Turno dito depois de uma oferta
+  // continua selecionando: é uma decisão anterior, tomada sobre o caso Wagner
+  // (21 99401-9696), e tem teste próprio. Mesmo princípio, escopo diferente —
+  // mexer nela exige medição à parte.
+  if (!userTime && targetDate && !wantMorning && !wantAfternoon && !wantEvening && filtered.length > 1) {
+    return null;
+  }
+
   filtered.sort((a, b) => new Date(a.iso).getTime() - new Date(b.iso).getTime());
   const s = filtered[0]!;
   return {
