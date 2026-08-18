@@ -183,6 +183,119 @@ export function resolveCollectedPhone(
 }
 
 /**
+ * Chave canônica em `custom_fields` para o telefone que o LEAD digitou na
+ * conversa. Só é usada em canais SEM telefone no contexto (Instagram /
+ * Messenger / contato de teste sem número no CRM) — no WhatsApp o número já
+ * vem do próprio canal. `resolveCollectedPhone` também reconhece outras chaves
+ * ("whatsapp", "telefone", ...) que o LLM tenha criado por conta própria.
+ */
+export const COLLECTED_PHONE_KEY = "whatsapp_phone";
+
+/** O agente pediu telefone/WhatsApp nas últimas falas? */
+const ASKED_FOR_PHONE_RE =
+  /whats\s*app|\bzap\b|telefone|celular|n[úu]mero\s+(?:de\s+)?(?:contato|celular|telefone|whats)|\bddd\b/i;
+
+export function assistantAskedForPhone(text: string | null | undefined): boolean {
+  return ASKED_FOR_PHONE_RE.test(text ?? "");
+}
+
+/**
+ * Telefone utilizável para agendar: o do contexto (WhatsApp/CRM) OU o que o
+ * lead digitou na conversa. Em canais sem telefone (Instagram/Messenger) só
+ * existe o segundo — e era exatamente ele que os portões de agendamento
+ * ignoravam (ver `isReadyForBooking`).
+ */
+export function resolveLeadPhone(
+  leadData: LeadData,
+  settings: Record<string, string>,
+  effectivePhone: string | null | undefined,
+  normalize: (raw: string | null | undefined) => string | null,
+): string | null {
+  const fromContext = effectivePhone?.trim();
+  if (fromContext) return fromContext;
+  return resolveCollectedPhone(getBookingFields(settings), leadData, normalize);
+}
+
+export function hasBookingPhone(
+  leadData: LeadData,
+  settings: Record<string, string>,
+  effectivePhone: string | null | undefined,
+  normalize: (raw: string | null | undefined) => string | null,
+): boolean {
+  return !!resolveLeadPhone(leadData, settings, effectivePhone, normalize);
+}
+
+// Sequência que PARECE telefone escrito por gente: 10-11 dígitos com os
+// separadores usuais — "(32) 99160-7088", "32 99160 7088", "+55 32 991607088".
+// Extrair por token (em vez de tirar os dígitos da frase inteira) evita que
+// "dia 21 as 12:00, pode ser" vire um "telefone" de 6 dígitos por acidente.
+const PHONE_TOKEN_RE = /(?:\+?55[\s.-]*)?\(?\d{2}\)?[\s.-]*\d{4,5}[\s.-]*\d{4}/g;
+
+function extractPhoneCandidate(
+  text: string,
+  normalize: (raw: string | null | undefined) => string | null,
+): string | null {
+  for (const m of (text ?? "").matchAll(PHONE_TOKEN_RE)) {
+    const norm = normalize(m[0]);
+    if (norm) return norm;
+  }
+  return null;
+}
+
+/**
+ * Captura DETERMINÍSTICA do telefone que o lead digitou, para canais sem
+ * telefone no contexto (Instagram / Messenger).
+ *
+ * Por que determinística: o telefone não é um `booking_field` declarado — não
+ * há campo para ele em nenhum template —, então gravá-lo em `custom_fields`
+ * dependia inteiramente de o LLM lembrar de fazê-lo por conta própria. Quando
+ * ele não lembrava, `criar_agendamento` respondia "telefone ausente", o agente
+ * repetia "me confirma seu WhatsApp com DDD" e a conversa entrava em LOOP.
+ * Caso real (18/08, MF Beauty Magé, Instagram @olucianodev): o lead mandou o
+ * número duas vezes, confirmou o horário duas vezes, e o agente voltava a
+ * "Posso confirmar? 😊" sem nunca agendar.
+ *
+ * Conservador de propósito: só grava quando o AGENTE pediu o número nas
+ * últimas falas. Um número de 11 dígitos solto também é um CPF — sem a
+ * pergunta como âncora, um CPF viraria "telefone" do paciente.
+ */
+export function captureLeadPhoneFromHistory(
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+  settings: Record<string, string>,
+  channelCtx: BookingChannelContext | undefined,
+  normalize: (raw: string | null | undefined) => string | null,
+): Partial<LeadData> {
+  // WhatsApp com número no contexto não coleta telefone nenhum.
+  if (channelCtx && shouldSkipPhoneCollection(channelCtx.channel, channelCtx.effectivePhone)) {
+    return {};
+  }
+  if (channelCtx?.effectivePhone?.trim()) return {};
+  if (hasBookingPhone(leadData, settings, null, normalize)) return {};
+
+  let lastUserIdx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  if (lastUserIdx < 0) return {};
+
+  const phone = extractPhoneCandidate(history[lastUserIdx]!.content, normalize);
+  if (!phone) return {};
+
+  const askedRecently = history
+    .slice(0, lastUserIdx)
+    .filter((m) => m.role === "assistant")
+    .slice(-3)
+    .some((m) => assistantAskedForPhone(m.content));
+  if (!askedRecently) return {};
+
+  return { custom_fields: { ...(leadData.custom_fields ?? {}), [COLLECTED_PHONE_KEY]: phone } };
+}
+
+/**
  * Chaves que travam a etiquetagem de interesse até serem coletadas.
  *
  * PADRÃO AUTOMÁTICO (sem config): escolas (template MB / MB Escolas) classificam
@@ -416,9 +529,12 @@ O lead está no **WhatsApp**. Telefone já confirmado: **${effectivePhone}**.
 - O agendamento usa esse número automaticamente (GCal / Clinicorp).`;
   }
   if ((channel === "instagram" || channel === "messenger") && !effectivePhone?.trim()) {
-    return `# TELEFONE
+    return `# TELEFONE — PEÇA E GUARDE
 
-Canal ${channel}: confirme o WhatsApp do lead antes do agendamento, se ainda não houver telefone no contexto.`;
+Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp). Peça o WhatsApp com DDD antes de agendar.
+
+- Ao receber o número, grave-o em \`lead_data_patch.custom_fields.${COLLECTED_PHONE_KEY}\` no MESMO turn.
+- Se ele já constar em "Já coletados", NÃO pergunte de novo — use o que está lá.`;
   }
   return "";
 }

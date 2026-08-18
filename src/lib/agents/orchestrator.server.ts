@@ -16,6 +16,7 @@ import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-book
 import { closedAgendaSafeReply, unfoundedClosedAgendaClaim } from "./closed-agenda-claim";
 import { activeWeekdayKeys } from "@/lib/tools/google-calendar.server";
 import {
+  normalizeBrazilPhone,
   resolveEffectivePhone,
   type ConversationChannel,
 } from "@/lib/conversation-channel.server";
@@ -23,6 +24,9 @@ import {
   agentUsesTurmaClassifier,
   backfillBookingFieldsFromHistory,
   bookingFieldQuestion,
+  captureLeadPhoneFromHistory,
+  hasBookingPhone,
+  resolveLeadPhone,
   defaultCommitmentQuestion,
   getBookingFieldsForChannel,
   getMissingBookingFields,
@@ -503,6 +507,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const leads360Synced = !!leadData.leads360_lead_sent;
     const agentSettings = (agent.data.settings as Record<string, string> | null) ?? {};
 
+    // Telefone para REGISTRO/AVISO (equipe da clínica, escalação, Leads360) —
+    // NÃO para entrega (o Helena entrega por sessionId, ignora o phone).
+    // Prefere um telefone de verdade: o do canal ou o que o lead digitou. Em
+    // Instagram/Messenger `conversationPhone` é a CHAVE da conversa ("ig:fulano"),
+    // que a clínica não consegue ligar de volta — só cai nela como último recurso.
+    const recordPhone = (ld: LeadData): string =>
+      resolveLeadPhone(ld, agentSettings, effectivePhone, normalizeBrazilPhone) ??
+      conversationPhone;
+
     if (leadData.custom_fields) {
       const cleaned: Record<string, string> = {};
       let removedInvalid = false;
@@ -694,9 +707,29 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
+    // Telefone digitado pelo lead em canal SEM telefone no contexto
+    // (Instagram/Messenger). Não é um booking_field declarado, então gravá-lo
+    // dependia do LLM lembrar — quando não lembrava, criar_agendamento
+    // respondia "telefone ausente" e o agente repetia a pergunta em loop.
+    if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
+      const phonePatch = captureLeadPhoneFromHistory(
+        leadData,
+        history,
+        agentSettings,
+        channelCtx,
+        normalizeBrazilPhone,
+      );
+      if (Object.keys(phonePatch).length > 0) {
+        leadData = mergeLeadDataPatch(leadData, phonePatch);
+        console.log(`[orch] telefone do lead capturado conv=${conversationId} canal=${channel}`);
+      }
+    }
+
     // 8. Stage deterministico (effectiveStage) — calculado por stage-signals.
     const isReady = isReadyForBooking(leadData, agentSettings, {
-      hasPhone: !!effectivePhone,
+      // Inclui o telefone coletado na conversa — sem isso, Instagram/Messenger
+      // nunca chegavam a BOOKING (ver captureLeadPhoneFromHistory).
+      hasPhone: hasBookingPhone(leadData, agentSettings, effectivePhone, normalizeBrazilPhone),
       hasBookingIntegration,
       channel,
       effectivePhone,
@@ -954,7 +987,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           helenaContactId: helenaContact?.id,
           currentTags: helenaContact?.tagNames,
           leadName: (leadData.name as string | undefined) || helenaContact?.name,
-          phone: effectivePhone ?? conversationPhone,
+          phone: recordPhone(leadData),
           erro: errMsg,
           disableTags: ctx.disableTags,
         });
@@ -1806,7 +1839,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         await escalateToHuman({
           accountId,
           agentId,
-          phone: effectivePhone ?? conversationPhone,
+          phone: recordPhone(finalLeadData),
           sessionId,
           helenaContactId: helenaContact?.id,
           helenaContactName: helenaContact?.name,
@@ -1866,7 +1899,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             resolveBookingLeadName(finalLeadData) ||
             (finalLeadData.name as string | undefined) ||
             "(sem nome)",
-          phone: effectivePhone ?? conversationPhone,
+          phone: recordPhone(finalLeadData),
           datetimeIso: justBooked
             ? (finalLeadData.selected_slot_iso as string | undefined) ?? ""
             : slotIsoBefore,
@@ -1897,7 +1930,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         (finalLeadData.name as string | undefined) ||
         helenaContact?.name ||
         "(sem nome)";
-      const leads360Phone = effectivePhone ?? conversationPhone;
+      const leads360Phone = recordPhone(finalLeadData);
       if (leads360SendLead) {
         await sendLeads360Lead(leads360, {
           name: helenaContact?.name || leads360Name,
