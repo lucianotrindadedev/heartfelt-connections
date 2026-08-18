@@ -292,6 +292,50 @@ describe("tryAutoSelectOfferedSlot — data pedida fora dos slots ofertados (Wag
   });
 });
 
+describe("tryAutoSelectOfferedSlot — escolha durante o estágio do QUALIFIER (MF Beauty Teresópolis)", () => {
+  // Caso real 18/08 (IG @olucianodev): o qualifier ofertou "19h ou 19h30" com o
+  // stage em RECEPTION/QUALIFICATION; o "19h" do lead caía fora do gate de
+  // estágio e nunca virava selected_slot_iso — criar_agendamento devolvia
+  // "selected_slot_iso ausente" e a conversa entrava em loop de re-oferta.
+  const SLOTS_TER = [
+    { iso: "2026-08-21T19:00:00-03:00", date_label: "sexta-feira, 21/08", time_label: "19:00" },
+    { iso: "2026-08-21T19:30:00-03:00", date_label: "sexta-feira, 21/08", time_label: "19:30" },
+  ];
+  const OFERTA = "Na sexta-feira encontrei estes 2 horários: 19h ou 19h30. Qual fica melhor pra você?";
+
+  it("QUALIFICATION: '19h' seleciona o slot ofertado", () => {
+    const patch = tryAutoSelectOfferedSlot("QUALIFICATION", { offered_slots: SLOTS_TER }, [
+      { role: "assistant", content: OFERTA },
+      { role: "user", content: "19h" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-08-21T19:00:00-03:00");
+  });
+
+  it("RECEPTION: escolha logo após a saudação com oferta também seleciona", () => {
+    const patch = tryAutoSelectOfferedSlot("RECEPTION", { offered_slots: SLOTS_TER }, [
+      { role: "assistant", content: OFERTA },
+      { role: "user", content: "19h30" },
+    ]);
+    expect(patch.selected_slot_iso).toBe("2026-08-21T19:30:00-03:00");
+  });
+
+  it("QUALIFICATION sem offered_slots segue no-op (qualificação normal)", () => {
+    const patch = tryAutoSelectOfferedSlot("QUALIFICATION", {}, [
+      { role: "assistant", content: "Qual procedimento você tem interesse?" },
+      { role: "user", content: "botox" },
+    ]);
+    expect(patch).toEqual({});
+  });
+
+  it("CONFIRMED continua fora da auto-seleção", () => {
+    const patch = tryAutoSelectOfferedSlot("CONFIRMED", { offered_slots: SLOTS_TER }, [
+      { role: "assistant", content: OFERTA },
+      { role: "user", content: "19h" },
+    ]);
+    expect(patch).toEqual({});
+  });
+});
+
 describe("relativeDateIsExplanatory", () => {
   it("detecta data relativa afirmada como fato (não é pedido)", () => {
     expect(relativeDateIsExplanatory("08/07 será amanhã")).toBe(true);

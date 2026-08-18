@@ -668,7 +668,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     });
     const { lastUserMsg, lastAssistantMsg, slotSelectionTurn, userAcceptedSchedulingProposal } = signals;
 
-    if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
+    // RECEPTION/QUALIFICATION incluídos — o qualifier também oferta horários
+    // (ver tryAutoSelectOfferedSlot). A função é no-op sem offered_slots.
+    if (
+      stage === "RECEPTION" ||
+      stage === "QUALIFICATION" ||
+      stage === "SLOT_OFFER" ||
+      stage === "NAME_COLLECT" ||
+      stage === "BOOKING"
+    ) {
       const slotPatch = tryAutoSelectOfferedSlot(stage, leadData, history);
       if (Object.keys(slotPatch).length > 0) {
         leadData = mergeLeadDataPatch(leadData, slotPatch);
