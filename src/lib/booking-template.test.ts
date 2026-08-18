@@ -51,6 +51,10 @@ import {
   preflightBookingFields,
   renderBookingTemplate,
   resolveCollectedPhone,
+  captureLeadPhoneFromHistory,
+  hasBookingPhone,
+  resolveLeadPhone,
+  COLLECTED_PHONE_KEY,
   turmaTagForLead,
   sanitizeLeadDataPatch,
   scrubInventedTimeOffers,
@@ -2520,5 +2524,145 @@ describe("pointingConfirmationReply", () => {
   it("nunca é a pergunta genérica que travou o atendimento", () => {
     const r = pointingConfirmationReply([slot("quinta-feira, 06/08", "09:00")] as never)!;
     expect(r).not.toContain("seguir com o agendamento agora");
+  });
+});
+
+// ── Telefone coletado em canal SEM telefone (Instagram/Messenger) ──────────
+//
+// Regressão do loop de 18/08 (MF Beauty Magé, Instagram @olucianodev): o lead
+// mandou o WhatsApp e confirmou o horário duas vezes e o agente repetia
+// "Posso confirmar? 😊" sem nunca agendar — `hasPhone` só olhava o telefone do
+// canal, que no Instagram nunca existe.
+describe("telefone do lead em canal sem telefone", () => {
+  const CLINIC_SETTINGS: Record<string, string> = {};
+  const norm = (raw: string | null | undefined): string | null => {
+    if (!raw?.trim()) return null;
+    const d = raw.replace(/\D/g, "");
+    if (d.length < 10 || d.length > 13) return null;
+    let n = d;
+    if (n.startsWith("55") && n.length >= 12) n = n.slice(2);
+    return n.length === 10 || n.length === 11 ? n : null;
+  };
+  const IG = { channel: "instagram" as const, effectivePhone: null };
+  const hist = (...msgs: ["user" | "assistant", string][]) =>
+    msgs.map(([role, content]) => ({ role, content }));
+
+  it("captura o número quando o agente acabou de pedir", () => {
+    const patch = captureLeadPhoneFromHistory(
+      {} as never,
+      hist(
+        ["assistant", "Pra garantir seu horário, me confirma seu nome completo e seu WhatsApp com DDD?"],
+        ["user", "32991607088"],
+      ) as never,
+      CLINIC_SETTINGS,
+      IG,
+      norm,
+    );
+    expect(patch.custom_fields?.[COLLECTED_PHONE_KEY]).toBe("32991607088");
+  });
+
+  it("aceita o número formatado como a gente escreve", () => {
+    const patch = captureLeadPhoneFromHistory(
+      {} as never,
+      hist(
+        ["assistant", "Me passa seu telefone, por favor?"],
+        ["user", "meu whats é (32) 99160-7088"],
+      ) as never,
+      CLINIC_SETTINGS,
+      IG,
+      norm,
+    );
+    expect(patch.custom_fields?.[COLLECTED_PHONE_KEY]).toBe("32991607088");
+  });
+
+  it("não inventa telefone a partir de data/hora na resposta", () => {
+    const patch = captureLeadPhoneFromHistory(
+      {} as never,
+      hist(
+        ["assistant", "Me confirma seu WhatsApp com DDD?"],
+        ["user", "pode ser sexta 21/08 as 12:00"],
+      ) as never,
+      CLINIC_SETTINGS,
+      IG,
+      norm,
+    );
+    expect(patch).toEqual({});
+  });
+
+  it("sem o agente ter pedido, número solto NÃO vira telefone (pode ser CPF)", () => {
+    const patch = captureLeadPhoneFromHistory(
+      {} as never,
+      hist(
+        ["assistant", "Me envia seu CPF, por favor?"],
+        ["user", "12345678901"],
+      ) as never,
+      CLINIC_SETTINGS,
+      IG,
+      norm,
+    );
+    expect(patch).toEqual({});
+  });
+
+  it("WhatsApp com telefone no contexto não coleta nada", () => {
+    const patch = captureLeadPhoneFromHistory(
+      {} as never,
+      hist(
+        ["assistant", "Me confirma seu WhatsApp?"],
+        ["user", "32991607088"],
+      ) as never,
+      CLINIC_SETTINGS,
+      { channel: "whatsapp", effectivePhone: "21999999999" },
+      norm,
+    );
+    expect(patch).toEqual({});
+  });
+
+  it("não regrava quando o telefone já foi coletado", () => {
+    const ld = { custom_fields: { whatsapp: "(32) 99160-7088" } };
+    const patch = captureLeadPhoneFromHistory(
+      ld as never,
+      hist(
+        ["assistant", "Me confirma seu WhatsApp com DDD?"],
+        ["user", "32991607088"],
+      ) as never,
+      CLINIC_SETTINGS,
+      IG,
+      norm,
+    );
+    expect(patch).toEqual({});
+  });
+
+  it("resolveLeadPhone devolve o número coletado, e o do canal tem prioridade", () => {
+    const ld = { custom_fields: { [COLLECTED_PHONE_KEY]: "32991607088" } };
+    expect(resolveLeadPhone(ld as never, CLINIC_SETTINGS, null, norm)).toBe("32991607088");
+    expect(resolveLeadPhone(ld as never, CLINIC_SETTINGS, "21999998888", norm)).toBe("21999998888");
+    expect(resolveLeadPhone({} as never, CLINIC_SETTINGS, null, norm)).toBeNull();
+  });
+
+  it("hasBookingPhone reconhece o número coletado na conversa", () => {
+    const ld = { custom_fields: { [COLLECTED_PHONE_KEY]: "32991607088" } };
+    expect(hasBookingPhone(ld as never, CLINIC_SETTINGS, null, norm)).toBe(true);
+    expect(hasBookingPhone({} as never, CLINIC_SETTINGS, null, norm)).toBe(false);
+  });
+
+  it("isReadyForBooking libera o agendamento no Instagram com o número coletado", () => {
+    const ld = {
+      name: "Luciano Trindade",
+      custom_fields: { [COLLECTED_PHONE_KEY]: "32991607088" },
+      selected_slot_iso: "2026-08-21T12:00:00-03:00",
+      commitment_confirmed: true,
+    };
+    const opts = {
+      hasBookingIntegration: true,
+      channel: "instagram" as const,
+      effectivePhone: null,
+    };
+    expect(isReadyForBooking(ld as never, CLINIC_SETTINGS, { ...opts, hasPhone: false })).toBe(false);
+    expect(
+      isReadyForBooking(ld as never, CLINIC_SETTINGS, {
+        ...opts,
+        hasPhone: hasBookingPhone(ld as never, CLINIC_SETTINGS, null, norm),
+      }),
+    ).toBe(true);
   });
 });

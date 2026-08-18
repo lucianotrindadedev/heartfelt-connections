@@ -369,9 +369,10 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "buscar_paciente",
       description:
-        "Procura paciente no Clinicorp/Clinic Experts pelo telefone do lead (já fixo no contexto). " +
+        "Procura paciente no Clinicorp/Clinic Experts pelo telefone do lead — o do contexto ou o que ele informou na conversa. " +
         "Use UMA vez no início de NAME_COLLECT para evitar duplicar cadastro. " +
-        "Retorna {patient_id, name} se encontrado, ou {found: false}.",
+        "Retorna {patient_id, name} se encontrado, ou {found: false}. " +
+        "{found: false, reason: \"no_phone\"} = ainda não há telefone nenhum (Instagram/Messenger antes de o lead informar) — peça o WhatsApp e chame de novo depois.",
       parameters: {
         type: "object",
         properties: {},
@@ -657,14 +658,21 @@ export function resolveCeUnidade(
 }
 
 async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
-  if (!ctx.effectivePhone) {
+  // Telefone da busca: o do canal (WhatsApp/CRM) OU o que o lead digitou na
+  // conversa (resolveBookingPhone). Instagram/Messenger NÃO têm telefone no
+  // canal — antes a busca devolvia `no_phone` sempre nesses canais, então um
+  // lead que já é paciente da clínica nunca era reconhecido e ganhava um
+  // cadastro NOVO a cada visita (mesmo problema de duplicidade do fix da busca
+  // por nome+telefone no Clinicorp, só que por outro caminho).
+  const searchPhone = resolveBookingPhone(ctx);
+  if (!searchPhone) {
     return { result: JSON.stringify({ found: false, reason: "no_phone" }) };
   }
 
   // Google Calendar: usa busca por telefone na descrição dos eventos
   if (ctx.integrations.googleCalendar) {
     try {
-      const events = await findGoogleCalendarEventsByPhone(ctx.accountId, ctx.effectivePhone);
+      const events = await findGoogleCalendarEventsByPhone(ctx.accountId, searchPhone);
       if (events.length === 0) {
         return { result: JSON.stringify({ found: false }) };
       }
@@ -698,7 +706,7 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
       // pessoa (ver findClinupPatient).
       const patient = await findClinupPatient(
         ctx.accountId,
-        ctx.effectivePhone,
+        searchPhone,
         ctx.leadData.name ?? undefined,
       );
       if (!patient?.id) {
@@ -728,7 +736,7 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
       // querer agendar na Y; a escolha da unidade é sempre do lead.
       const patient = await findClinicExpertsPatient(
         ctx.accountId,
-        ctx.effectivePhone,
+        searchPhone,
         ctx.leadData.selected_agenda,
       );
       if (!patient?.uuid) {
@@ -752,7 +760,7 @@ async function execBuscarPaciente(ctx: AgentContext): Promise<ToolOutcome> {
   // agente (ver findClinicorpPatient).
   const patient = await findClinicorpPatient(
     ctx.accountId,
-    ctx.effectivePhone,
+    searchPhone,
     ctx.leadData.name ?? undefined,
   );
   if (!patient?.id) {
@@ -2708,7 +2716,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 7. Se o lead já tem appointment_id em lead_data → next_stage="CONFIRMED" e agradeça.
 7b. **MUDAR data/hora de um agendamento existente SÓ via remarcar_agendamento.** criar_agendamento não move evento já criado. NUNCA diga "atualizei/remarquei/mudei/ajustei o agendamento" antes de remarcar_agendamento retornar ok=true — senão a agenda fica no horário antigo e o lead aparece num horário inexistente.
 8. Se buscar_paciente retornar found=true e name combinar, confirme o nome com o lead ANTES de prosseguir.
-9. **NUNCA repita pergunta de campo que já consta em LEAD_DATA / "Já coletados".** Telefone do lead já está no sistema — não peça telefone em custom_fields.
+9. **NUNCA repita pergunta de campo que já consta em LEAD_DATA / "Já coletados".** Sobre telefone, siga o bloco "# TELEFONE" do contexto: no WhatsApp o número já está no sistema (não peça); em Instagram/Messenger ele NÃO existe (peça uma vez e grave).
 9b. **NOME COMPLETO OBRIGATÓRIO:** nunca agende com só o primeiro nome. O nome vai para o CADASTRO DO PACIENTE e para a agenda — "Ana" não identifica ninguém e gera cadastro duplicado. Se o lead responder só o primeiro nome, agradeça e peça o sobrenome numa mensagem curta ("Ana, me confirma seu sobrenome?") antes de seguir; o sistema BLOQUEIA o agendamento até o nome ter nome + sobrenome.
 10. **ACOMPANHANTE (2ª pessoa no mesmo número):** não dá pra cadastrar duas pessoas com o mesmo WhatsApp. Se o lead quiser agendar TAMBÉM para outra pessoa que virá junto, NÃO crie segundo cadastro nem segundo agendamento: mantenha UM agendamento neste número e registre em \`lead_data_patch.notes\` que a consulta INCLUI OUTRA PESSOA (com o nome, ex.: "Inclui outra pessoa (acompanhante): Iraci — equipe cadastrar no local"). Ao lead, diga que deixou registrado que virá acompanhada e que a recepção cadastra a outra pessoa no dia. NUNCA prometa dois horários/cadastros separados.
 
@@ -2810,7 +2818,7 @@ ${ld.selected_agenda ? `- Unidade já escolhida nesta conversa: "${ld.selected_a
 
 - 📅 HOJE é ${dateStr} (São Paulo) — data de referência ISO: ${todayIso}. Localize-se SEMPRE por ela. NUNCA ofereça, confirme ou mencione horários no PASSADO. Só ofereça horários vindos de listar_horarios (que já começa a partir de hoje). Ao passar data_alvo, calcule "amanhã"/"sexta"/"dia 15" a partir de HOJE (${todayIso}).
 - Stage corrente: ${ctx.stage}
-- Telefone do lead: ${ctx.effectivePhone ?? "(sem telefone WhatsApp confirmado)"}
+- Telefone do lead: ${resolveBookingPhone(ctx) ?? "(nenhum telefone ainda — peça o WhatsApp com DDD)"}
 - Canal: ${ctx.channel}
 ${phoneBlock ? `\n${phoneBlock}\n` : ""}${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
 ${agendasBlock}
@@ -2949,8 +2957,14 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   // cria o cadastro antes de marcar. Se ainda faltar dado, o isReadyForBooking
   // abaixo retorna sem agendar e o agente pergunta o que falta no próximo turn.
 
+  // hasPhone considera TAMBÉM o telefone que o lead digitou na conversa
+  // (resolveBookingPhone). Antes olhava só o `effectivePhone` do canal — que em
+  // Instagram/Messenger NUNCA existe —, então o agendamento determinístico
+  // jamais rodava nesses canais: o lead mandava o número e confirmava o horário
+  // repetidamente e a conversa ficava em loop de "Posso confirmar? 😊".
+  // Caso real: 18/08, MF Beauty Magé, Instagram @olucianodev.
   const ready = isReadyForBooking(ctx.leadData, ctx.agentSettings, {
-    hasPhone: !!ctx.effectivePhone,
+    hasPhone: !!resolveBookingPhone(ctx),
     hasBookingIntegration: hasBookingIntegration(ctx),
     channel: ctx.channel,
     effectivePhone: ctx.effectivePhone,
