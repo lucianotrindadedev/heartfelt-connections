@@ -240,6 +240,35 @@ describe("inferEffectiveStage", () => {
     expect(res.reason).toBe("all_fields_collected");
   });
 
+  it("QUALIFICATION com slot já escolhido → NAME_COLLECT (scheduler assume)", () => {
+    const ctx = baseCtx({
+      stage: "QUALIFICATION",
+      leadData: { selected_slot_iso: "2026-08-21T19:00:00-03:00" },
+    });
+    const res = inferEffectiveStage(ctx, detectSignals(ctx), false);
+    expect(res.effectiveStage).toBe("NAME_COLLECT");
+    expect(res.reason).toBe("slot_selected_before_slot_offer");
+  });
+
+  it("slot LIMPO (sentinela \"\") não promove QUALIFICATION", () => {
+    const ctx = baseCtx({
+      stage: "QUALIFICATION",
+      leadData: { selected_slot_iso: "" },
+    });
+    const res = inferEffectiveStage(ctx, detectSignals(ctx), false);
+    expect(res.effectiveStage).toBe("QUALIFICATION");
+  });
+
+  it("QUALIFICATION com slot mas SEM agenda não promove", () => {
+    const ctx = baseCtx({
+      stage: "QUALIFICATION",
+      hasBookingIntegration: false,
+      leadData: { selected_slot_iso: "2026-08-21T19:00:00-03:00" },
+    });
+    const res = inferEffectiveStage(ctx, detectSignals(ctx), false);
+    expect(res.effectiveStage).toBe("QUALIFICATION");
+  });
+
   it("mantem stage original em casos sem sinais", () => {
     const ctx = baseCtx({ stage: "RECEPTION" });
     const res = inferEffectiveStage(ctx, detectSignals(ctx), false);

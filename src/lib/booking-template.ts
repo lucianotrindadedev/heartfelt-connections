@@ -3157,7 +3157,17 @@ export function tryAutoSelectOfferedSlot(
   leadData: LeadData,
   history: { role: "user" | "assistant"; content: string }[],
 ): Partial<LeadData> {
-  if (stage !== "SLOT_OFFER" && stage !== "NAME_COLLECT" && stage !== "BOOKING") return {};
+  // RECEPTION/QUALIFICATION incluídos: o QUALIFIER também oferta horários reais
+  // (tem listar_horarios), e a escolha do lead chega enquanto o stage ainda é o
+  // dele — um estágio ANTES do que esta máquina esperava. Sem isso, "19h" nunca
+  // virava selected_slot_iso: cada turno seguinte (telefone, nome) já não
+  // mencionava horário, criar_agendamento devolvia "selected_slot_iso ausente"
+  // e a trava de confirmação falsa re-ofertava — em loop. Caso real (18/08,
+  // MF Beauty Teresópolis, IG @olucianodev). É seguro nos estágios iniciais:
+  // só seleciona se offered_slots existir (veio de listar_horarios de verdade)
+  // e a última mensagem do lead casar com um horário ofertado.
+  const AUTO_SELECT_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "NAME_COLLECT", "BOOKING"];
+  if (!AUTO_SELECT_STAGES.includes(stage)) return {};
 
   const slots = leadData.offered_slots ?? [];
   if (slots.length === 0) return {};

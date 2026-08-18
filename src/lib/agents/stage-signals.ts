@@ -185,6 +185,25 @@ export function inferEffectiveStage(
 ): InferEffectiveStageResult {
   const { stage, leadData, hasBookingIntegration } = ctx;
 
+  // O lead JÁ escolheu um horário ofertado (auto-seleção) enquanto o stage
+  // ainda era do qualifier — ex.: qualifier ofertou "19h ou 19h30" e o lead
+  // respondeu "19h" com o stage em QUALIFICATION. O scheduler assume AGORA em
+  // NAME_COLLECT (mesma transição do SLOT_OFFER com slot escolhido, abaixo).
+  // Sem isso o qualifier seguia no comando, re-listava horários por cima da
+  // oferta aceita e a escolha se perdia. Antes das demais regras: com slot
+  // escolhido, coletar os dados é mais específico que re-ofertar.
+  if (
+    (stage === "RECEPTION" || stage === "QUALIFICATION") &&
+    hasBookingIntegration &&
+    (leadData.selected_slot_iso ?? "").toString().trim() &&
+    !leadData.appointment_id
+  ) {
+    return {
+      effectiveStage: "NAME_COLLECT",
+      reason: "slot_selected_before_slot_offer",
+    };
+  }
+
   if (signals.userAcceptedSchedulingProposal && hasBookingIntegration) {
     return {
       effectiveStage: "SLOT_OFFER",
