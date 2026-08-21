@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { AccountEscalationTab } from "@/components/admin/AccountEscalationTab";
+import { AccountAgentTab } from "@/components/admin/AccountAgentTab";
 
 function CopyField({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
@@ -38,7 +39,7 @@ export const Route = createFileRoute("/_authenticated/admin/account/$accountId")
   component: AdminAccountDetail,
 });
 
-type Tab = "overview" | "logs" | "setup" | "escalation";
+type Tab = "overview" | "agent" | "logs" | "setup" | "escalation";
 
 function AdminAccountDetail() {
   const { accountId } = Route.useParams();
@@ -124,6 +125,9 @@ function AdminAccountDetail() {
             <TabButton active={tab === "overview"} onClick={() => setTab("overview")}>
               Visão geral
             </TabButton>
+            <TabButton active={tab === "agent"} onClick={() => setTab("agent")}>
+              Agente
+            </TabButton>
             <TabButton active={tab === "logs"} onClick={() => setTab("logs")}>
               Logs
             </TabButton>
@@ -138,6 +142,15 @@ function AdminAccountDetail() {
           {tab === "overview" && (
             <OverviewTab
               data={q.data}
+            />
+          )}
+
+          {tab === "agent" && (
+            <AccountAgentTab
+              accountId={accountId}
+              agentId={q.data.agent?.id as string | undefined}
+              ativo={!!q.data.agent?.ativo}
+              settings={(q.data.agent?.settings as Record<string, string> | null) ?? {}}
             />
           )}
 

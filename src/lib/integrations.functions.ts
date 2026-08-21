@@ -922,17 +922,34 @@ export const resetAgent = createServerFn({ method: "POST" })
   .inputValidator((d) => z.object({ agentId: z.string().uuid() }).parse(d))
   .handler(async ({ data }) => {
     const sb = getSelfhost();
-    const { data: convs } = await sb
-      .from("conversations")
-      .select("id")
-      .eq("agent_id", data.agentId);
 
-    if (!convs?.length) return { ok: true, deleted: 0 };
-
-    for (const c of convs) {
-      await resetConversationHistory(c.id as string);
+    // PAGINADO. O PostgREST devolve no máximo 1000 linhas por resposta e um
+    // select sem `.range()` era cortado aí CALADO: o reset limpava as 1000
+    // primeiras conversas, respondia ok e deixava o resto do histórico de pé —
+    // com o painel dizendo que tinha apagado tudo. Em 21/08/2026 sete agentes
+    // já passavam de 1000 conversas (o maior com 2744), então isso não era
+    // hipótese: era o comportamento real de quem mais usava a plataforma.
+    const PAGE = 1000;
+    const ids: string[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data: page, error } = await sb
+        .from("conversations")
+        .select("id")
+        .eq("agent_id", data.agentId)
+        .order("criado_em", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(error.message);
+      const rows = page ?? [];
+      ids.push(...rows.map((c) => c.id as string));
+      if (rows.length < PAGE) break; // página incompleta = acabou
     }
 
-    return { ok: true, deleted: convs.length };
+    if (ids.length === 0) return { ok: true, deleted: 0 };
+
+    for (const id of ids) {
+      await resetConversationHistory(id);
+    }
+
+    return { ok: true, deleted: ids.length };
   });
 

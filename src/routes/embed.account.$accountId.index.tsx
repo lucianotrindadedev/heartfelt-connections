@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate, Navigate } from "@tanstack/react-router";
-import { helenaWebhookUrl, helenaAutomationWebhookUrl } from "@/lib/app-base-url";
+import { helenaAutomationWebhookUrl } from "@/lib/app-base-url";
 import { joinAba, splitAba } from "@/lib/sheets-range";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -13,7 +13,7 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { Markdown } from "tiptap-markdown";
 import {
   Bot,
-  Power,
+  BarChart3,
   RotateCcw,
   Play,
   GraduationCap,
@@ -58,6 +58,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "sonner";
+import { MetricsView } from "@/components/embed/MetricsView";
 import {
   getAgent,
   updateAgent,
@@ -110,7 +111,6 @@ import {
   saveAgentEscalation,
   getFollowupConfig,
   saveFollowupConfig,
-  resetAgent,
 } from "@/lib/integrations.functions";
 import {
   listTagAutomations,
@@ -195,7 +195,8 @@ type SheetKey =
   | "followup"
   | "warmup"
   | "escalation"
-  | "automations";
+  | "automations"
+  | "metrics";
 
 // =================================================================
 // Blocker: conta não cadastrada
@@ -355,7 +356,6 @@ function EmbedHome() {
   const qc = useQueryClient();
   const fetchAgent = useServerFn(getAgent);
   const updateAgentFn = useServerFn(updateAgent);
-  const resetAgentFn = useServerFn(resetAgent);
   const mergeSettingsFn = useServerFn(mergeAgentSettings);
 
   const [openSheet, setOpenSheet] = useState<SheetKey>(null);
@@ -374,18 +374,6 @@ function EmbedHome() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["agent", accountId] }),
   });
 
-  const doReset = useMutation({
-    mutationFn: () => {
-      const aid = data && data.registered ? (data.agent?.id as string | undefined) : undefined;
-      if (!aid) throw new Error("Agente indisponível");
-      return resetAgentFn({ data: { agentId: aid } });
-    },
-    onSuccess: () => {
-      toast.success("Histórico do agente limpo.");
-      qc.invalidateQueries({ queryKey: ["agent", accountId] });
-    },
-  });
-
   // Modo teste: merge seguro de UMA chave (test_mode) sem tocar nas outras
   // settings. Fica antes dos early returns (Rules of Hooks).
   const toggleTestMode = useMutation({
@@ -396,22 +384,6 @@ function EmbedHome() {
       qc.invalidateQueries({ queryKey: ["agent", accountId] });
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao alterar modo teste"),
-  });
-
-  // Agente único (agent_mode). Padrão = "staged" (dois sub-agentes: um conversa,
-  // outro mexe na agenda). Em "unified" um só agente conduz tudo, com todas as
-  // ferramentas sempre disponíveis — acaba com a classe de falha em que a troca
-  // entre eles não acontecia e o lead ficava sem os horários.
-  const toggleAgentMode = useMutation({
-    mutationFn: (next: boolean) =>
-      mergeSettingsFn({
-        data: { accountId, settings: { agent_mode: next ? "unified" : "staged" } },
-      }),
-    onSuccess: (_r, next) => {
-      toast.success(next ? "Agente único ATIVADO." : "Voltou para o modo dividido.");
-      qc.invalidateQueries({ queryKey: ["agent", accountId] });
-    },
-    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao alterar modo do agente"),
   });
 
   // Atendimento programado: salva modo + janelas de SILÊNCIO (quando a equipe
@@ -569,6 +541,11 @@ function EmbedHome() {
     return <AutomationsView agentId={agentId} accountId={accountId} onClose={() => setOpenSheet(null)} />;
   }
 
+  // Full-screen Métricas view
+  if (openSheet === "metrics") {
+    return <MetricsView accountId={accountId} onClose={() => setOpenSheet(null)} />;
+  }
+
   return (
     <div className="min-h-screen w-full bg-gradient-to-br from-slate-50 via-white to-slate-50/80">
       {/* ── Header ── */}
@@ -613,29 +590,19 @@ function EmbedHome() {
             </div>
           </div>
 
+          {/* Pausar, Resetar, Webhook URL e Agente único saíram daqui de propósito:
+              são controles de OPERAÇÃO/infra, não do dia a dia de quem usa o
+              agente, e um "Resetar" a um clique do dono apagava todo o histórico
+              de conversas. Continuam existindo e funcionando — mudaram de lugar
+              para o superadmin (aba "Agente" em /admin/account/$accountId). */}
           <div className="relative mt-5 flex flex-wrap gap-2">
             <button
-              onClick={() => toggleAtivo.mutate(!ativo)}
-              disabled={toggleAtivo.isPending}
-              className="inline-flex items-center gap-2 rounded-xl bg-white/20 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/25 backdrop-blur transition-all hover:bg-white/30 active:scale-95 disabled:opacity-60"
+              onClick={() => setOpenSheet("metrics")}
+              title="Tempo de resposta, agendamentos, objeções e interesses dos leads."
+              className="inline-flex items-center gap-2 rounded-xl bg-white/20 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/25 backdrop-blur transition-all hover:bg-white/30 active:scale-95"
             >
-              {toggleAtivo.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Power className="h-4 w-4" />}
-              {ativo ? "Pausar" : "Ativar assistente"}
-            </button>
-            <button
-              onClick={() => { if (confirm("Isso apagará TODO o histórico de conversas. Continuar?")) doReset.mutate(); }}
-              disabled={doReset.isPending}
-              className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/20 backdrop-blur transition-all hover:bg-white/20 active:scale-95 disabled:opacity-60"
-            >
-              {doReset.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
-              Resetar
-            </button>
-            <button
-              onClick={() => { void navigator.clipboard.writeText(helenaWebhookUrl(accountId)); toast.success("URL do webhook copiada!"); }}
-              className="inline-flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/20 backdrop-blur transition-all hover:bg-white/20 active:scale-95"
-            >
-              <Zap className="h-4 w-4" />
-              Webhook URL
+              <BarChart3 className="h-4 w-4" />
+              Métricas
             </button>
             <button
               onClick={() => toggleTestMode.mutate(!testMode)}
@@ -648,23 +615,6 @@ function EmbedHome() {
             >
               {toggleTestMode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <FlaskConical className="h-4 w-4" />}
               {testMode ? "Modo teste ativo" : "Modo teste"}
-            </button>
-            <button
-              onClick={() => toggleAgentMode.mutate(!unifiedAgent)}
-              disabled={toggleAgentMode.isPending}
-              title={
-                unifiedAgent
-                  ? "Um único agente conduz da saudação ao agendamento, com todas as ferramentas sempre disponíveis."
-                  : "Hoje o atendimento é dividido em dois agentes (conversa e agenda). Ative para usar um agente único."
-              }
-              className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold backdrop-blur transition-all active:scale-95 disabled:opacity-60 ${
-                unifiedAgent
-                  ? "bg-violet-400 text-violet-950 ring-1 ring-violet-300 hover:bg-violet-300"
-                  : "bg-white/10 text-white ring-1 ring-white/20 hover:bg-white/20"
-              }`}
-            >
-              {toggleAgentMode.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {unifiedAgent ? "Agente único ativo" : "Agente único"}
             </button>
             <button
               onClick={() => setScheduleOpen(true)}
