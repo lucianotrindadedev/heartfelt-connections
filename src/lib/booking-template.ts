@@ -1620,7 +1620,14 @@ export function slotsOfferedInLastTurn(
   for (const time of orderedTimesInText(turnText)) {
     const sameTime = slots.filter((s) => normalizeTimeLabel(s.time_label) === time);
     // Mesmo horário em dias diferentes: fica com os que o agente citou pelo dia.
-    const byDay = sameTime.filter((s) => slotMentionedInText(s, turnText));
+    // Tem que ser um teste de DIA. slotMentionedInText casa logo de cara pelo
+    // HORÁRIO ("hay.includes(time)"), então com "10:30" no texto os dois slots
+    // de 10:30 passavam e este filtro nunca desambiguava nada — o desempate por
+    // dia existia só no comentário. Caso real (Central de atendimento MF Beauty,
+    // Anete Lessa Leal 21 97197-1008, 15/08): o agente ofertou 21/08 às 10:00 ou
+    // 10:30, a agenda também tinha 22/08 às 10:30, e o "Às 10:30" dela ficou
+    // eternamente ambíguo entre dois dias — um deles nunca ofertado a ela.
+    const byDay = sameTime.filter((s) => slotDayMentionedInText(s, turnText));
     for (const s of byDay.length > 0 ? byDay : sameTime) {
       if (!seen.has(s.iso)) {
         seen.add(s.iso);
@@ -2828,6 +2835,30 @@ export function sanitizeLeadDataPatch(
   return next;
 }
 
+/**
+ * O texto cita o DIA deste slot? Só sinais de dia — data DD/MM ou nome do dia da
+ * semana. Diferente de slotMentionedInText, que dá "mencionado" já no horário e
+ * por isso não serve para separar dois slots do MESMO horário em dias distintos.
+ */
+function slotDayMentionedInText(slot: OfferedSlot, text: string): boolean {
+  const semAcento = (s: string) =>
+    s
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase();
+  const hay = semAcento(text);
+
+  const ddmm = slot.date_label.match(/\b(\d{1,2}\/\d{1,2})\b/)?.[1];
+  if (ddmm && hay.includes(ddmm)) return true;
+
+  const dayPart = semAcento(slot.date_label.split(/[,/]/)[0] ?? "");
+  if (!dayPart) return false;
+  for (const stem of ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"]) {
+    if (dayPart.startsWith(stem) && hay.includes(stem)) return true;
+  }
+  return false;
+}
+
 function slotMentionedInText(slot: OfferedSlot, text: string): boolean {
   const hay = text.toLowerCase();
   const time = normalizeTimeLabel(slot.time_label);
@@ -2906,8 +2937,18 @@ function lastAssistantTurnText(
   history: { role: "user" | "assistant"; content: string }[],
   beforeIdx: number,
 ): string {
+  let i = beforeIdx - 1;
+  // Pula a RAJADA do lead antes de procurar a fala do agente. beforeIdx é o
+  // índice da ÚLTIMA mensagem do lead; quando ele manda duas seguidas ("Às
+  // 10:30 porque moro em santo Aleixo" + "Qual o endereço?"), a mensagem
+  // anterior também é dele e o laço quebrava de cara, devolvendo "". Com o texto
+  // vazio, slotsOfferedInLastTurn devolvia lista VAZIA e todo o desempate por
+  // "o que o agente acabou de oferecer" ficava cego — inclusive nos ordinais e
+  // no aceite sem hora. Caso real (Central de atendimento MF Beauty, Anete
+  // Lessa Leal 21 97197-1008, 15/08).
+  while (i >= 0 && history[i]!.role === "user") i--;
   const turn: string[] = [];
-  for (let i = beforeIdx - 1; i >= 0; i--) {
+  for (; i >= 0; i--) {
     if (history[i]!.role === "user") break;
     turn.unshift(history[i]!.content);
   }
@@ -2920,7 +2961,7 @@ function lastAssistantTurnText(
  * seguidas ("Pode ser dia 11/08" + "Na parte da manhã") — olhar só a última
  * perderia a data que veio na mensagem anterior da mesma rajada.
  */
-function lastUserBurst(
+export function lastUserBurst(
   history: { role: "user" | "assistant"; content: string }[],
 ): string[] {
   const out: string[] = [];
@@ -3071,6 +3112,22 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   ) {
     return true;
   }
+  // HORÁRIO ABRINDO a mensagem, com um porquê emendado depois: "Às 10:30 porque
+  // moro em santo Aleixo", "10:00 que aí dá tempo de voltar". O lead escolhe e
+  // justifica na mesma frase — forma comuníssima que nenhum ramo cobria: o
+  // ONLY_TIME_RE abaixo exige a mensagem inteira ser só o horário.
+  // Caso real (Central de atendimento MF Beauty, Anete Lessa Leal
+  // 21 97197-1008, 15/08): "Às 10:30 porque moro em santo Aleixo" não foi lida
+  // como escolha, criar_agendamento nunca rodou e ela recebeu uma confirmação
+  // de um horário que não existia na agenda.
+  //
+  // A ÂNCORA NO INÍCIO é o que separa a escolha da restrição: "Só largo às
+  // 18:00" e "não posso às 9h" têm horário no MEIO da frase e continuam de
+  // fora (além de já caírem em looksLikeDecline/mentionsUnavailability no topo).
+  if (new RegExp(String.raw`^(?:[àa]s\s*)?${TIME_IN_TEXT_SRC}\b`, "i").test(t)) {
+    return true;
+  }
+
   // Fallback final: a mensagem é SÓ um horário (ex.: "18:20", "às 18:20", "9h"),
   // sem texto adicional. Texto extra ao redor do horário (ex.: "Só largo às
   // 18:00" — uma RESTRIÇÃO, não uma escolha) não deve cair aqui. Caso real
@@ -3182,82 +3239,238 @@ export function tryAutoSelectOfferedSlot(
   // está tentando MUDAR de dia — não finalize nenhum slot (nem por turno).
   if (leadRequestedUnofferedDate(leadData, history)) return {};
 
-  const assistantText = recentAssistantContext(history, lastUserIdx);
-  const lastTurnText = lastAssistantTurnText(history, lastUserIdx);
+  // RAJADA do lead, não só a última mensagem. O lead escolhe o horário e emenda
+  // uma pergunta na mensagem seguinte — olhar só a última fazia a ESCOLHA
+  // desaparecer. Caso real (Central de atendimento MF Beauty, Anete Lessa Leal
+  // 21 97197-1008, 15/08): "Às 10:30 porque moro em santo Aleixo" seguido de
+  // "Qual o endereço?"; a auto-seleção enxergou só a pergunta, nada foi
+  // selecionado, criar_agendamento nunca rodou e o agente confirmou mesmo assim.
+  // Tentamos da mais recente para a mais antiga: a escolha mais NOVA ganha
+  // ("quero as 10:00" + "na verdade 11:30" → 11:30).
+  const burst = lastUserBurst(history)
+    .map((m) => m.trim())
+    .filter(Boolean);
+  if (burst.length === 0) return {};
 
-  const prefPatch = pickSlotByPreference(slots, lastUser, assistantText, lastTurnText);
-  if (prefPatch) return prefPatch;
-
-  // GESTO DE APONTAR ("☝🏼", "👆👆"): NUNCA escolhe sozinho, nem quando só um
-  // horário foi ofertado. O gesto pode apontar para a oferta OU para o pedido
-  // anterior do próprio lead (ver isPointingGesture) — e agendar no dia errado
-  // é o erro mais caro nesta base. Quem responde é o guard de confirmação no
-  // orquestrador, com pergunta fechada.
-  if (isPointingGesture(lastUser)) return {};
-
-  if (!isSlotAcceptanceMessage(lastUser)) return {};
-
-  const mentionedByUser = slots.filter((s) => slotMentionedInText(s, lastUser));
-  if (mentionedByUser.length === 1) {
-    return patchFromSlot(mentionedByUser[0]!);
-  }
-
-  const userTime = normalizeTimeLabel(lastUser);
-  if (userTime) {
-    const byTime = slots.filter((s) => normalizeTimeLabel(s.time_label) === userTime);
-    if (byTime.length === 1) {
-      return patchFromSlot(byTime[0]!);
-    }
-    if (byTime.length > 1) {
-      const narrowed = byTime.filter((s) => slotMentionedInText(s, lastUser));
-      if (narrowed.length === 1) {
-        return patchFromSlot(narrowed[0]!);
-      }
-    }
-    // O lead digitou um horário EXPLÍCITO (ex.: "10:00") que não bate com
-    // NENHUM slot em offered_slots (ou continua ambíguo entre vários). NÃO cai
-    // nos fallbacks abaixo — mentionedInAssistant, em particular, ignora o
-    // horário pedido e casa QUALQUER slot atual que a última mensagem do
-    // assistente tenha mencionado, podendo "confirmar" um horário TOTALMENTE
-    // DIFERENTE do que o lead pediu. Caso real (MF Beauty BSB): listar_horarios
-    // foi chamado 3x no mesmo turn, offered_slots final não tinha mais o
-    // "10:00" que o agente tinha acabado de oferecer (resultado de uma chamada
-    // anterior, já stale) — só "13:30" sobreviveu — e o lead respondendo
-    // "10:00" acabou agendado às 13:30 sem nunca ter pedido esse horário.
+  // Recusa/indisponibilidade em QUALQUER mensagem da rajada veta a rajada
+  // inteira. Sem isto, olhar as mensagens anteriores reabriria justamente o
+  // buraco que isSlotAcceptanceMessage fecha: "as 15h" + "ah não, esqueci que
+  // não posso" selecionaria as 15h pela primeira mensagem.
+  if (burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()))) {
     return {};
   }
 
-  // Ordinal ("o primeiro", "a 2ª opção") se refere à ordem em que o AGENTE
-  // falou os horários, não à ordem de offered_slots (que traz até 6 vagas da
-  // agenda, das quais o agente só citou 2). Ver slotsOfferedInLastTurn.
+  const assistantText = recentAssistantContext(history, lastUserIdx);
+  const lastTurnText = lastAssistantTurnText(history, lastUserIdx);
+  // Ordem em que o AGENTE falou os horários, não a ordem de offered_slots (que
+  // traz até 6 vagas da agenda, das quais o agente só citou 2). Usada pelos
+  // ordinais e pela escolha por dia. Ver slotsOfferedInLastTurn.
   const spoken = slotsOfferedInLastTurn(leadData, history);
-  const ordinalPool = spoken.length > 0 ? spoken : slots;
-  if (FIRST_ORDINAL_RE.test(lastUser.toLowerCase()) && ordinalPool[0]) {
-    return patchFromSlot(ordinalPool[0]);
-  }
-  if (SECOND_ORDINAL_RE.test(lastUser.toLowerCase()) && ordinalPool[1]) {
-    return patchFromSlot(ordinalPool[1]);
-  }
 
-  // Aceite sem hora ("fica sim", "pode ser"): o lead está respondendo à
-  // proposta do ÚLTIMO turno do agente. Se o agente propôs exatamente UM
-  // horário ali ("...às 16:45. Fica bom?"), é ESSE — mesmo que um slot antigo
-  // tenha ficado selecionado antes. Caso real (Costa Lima Recreio, Luciano
-  // 32 99160-7088): "fica sim" ao 16:45 e o booking foi atrás do 13:00 velho.
-  if (spoken.length === 1) {
-    return patchFromSlot(spoken[0]!);
-  }
+  const attempt = (msg: string): Partial<LeadData> => {
+    const prefPatch = pickSlotByPreference(slots, msg, assistantText, lastTurnText);
+    if (prefPatch) return prefPatch;
 
-  const mentionedInAssistant = slots.filter((s) => slotMentionedInText(s, assistantText));
-  if (mentionedInAssistant.length === 1) {
-    return patchFromSlot(mentionedInAssistant[0]!);
-  }
+    // GESTO DE APONTAR ("☝🏼", "👆👆"): NUNCA escolhe sozinho, nem quando só um
+    // horário foi ofertado. O gesto pode apontar para a oferta OU para o pedido
+    // anterior do próprio lead (ver isPointingGesture) — e agendar no dia errado
+    // é o erro mais caro nesta base. Quem responde é o guard de confirmação no
+    // orquestrador, com pergunta fechada.
+    if (isPointingGesture(msg)) return {};
 
-  if (slots.length === 1) {
-    return patchFromSlot(slots[0]!);
+    // ESCOLHA POR DIA, sem hora ("Dia 20/08", "quinta", "pode ser sexta"). Roda
+    // ANTES de isSlotAcceptanceMessage de propósito: uma data seca nunca foi
+    // "aceite" para aquele matcher (que só entende hora), então a escolha do lead
+    // morria aqui e a conversa seguia sem selected_slot_iso. Caso real (Central de
+    // atendimento MF Beauty, Rafaela Adriano 21 97996-8794, 16/08): o agente
+    // ofertou "quinta 20/08 às 14:30 ou quarta 19/08 às 12:00", a lead respondeu
+    // "Dia 20/08" e nada foi selecionado — nenhum agendamento chegou à agenda.
+    const byDate = pickSlotByRequestedDate(slots, lastTurnText, msg);
+    if (byDate) return patchFromSlot(byDate);
+
+    if (!isSlotAcceptanceMessage(msg)) return {};
+
+    const mentionedByUser = slots.filter((s) => slotMentionedInText(s, msg));
+    if (mentionedByUser.length === 1) {
+      return patchFromSlot(mentionedByUser[0]!);
+    }
+
+    const userTime = normalizeTimeLabel(msg);
+    if (userTime) {
+      const byTime = slots.filter((s) => normalizeTimeLabel(s.time_label) === userTime);
+      if (byTime.length === 1) {
+        return patchFromSlot(byTime[0]!);
+      }
+      if (byTime.length > 1) {
+        const narrowed = byTime.filter((s) => slotMentionedInText(s, msg));
+        if (narrowed.length === 1) {
+          return patchFromSlot(narrowed[0]!);
+        }
+        // MESMO horário em dias diferentes e o lead não disse o dia: fica com o
+        // que o AGENTE acabou de oferecer. offered_slots traz até 6 vagas da
+        // agenda, o agente cita 2 — sem este desempate, uma oferta perfeitamente
+        // clara ("21/08 às 10:00 ou 21/08 às 10:30") ficava "ambígua" só porque a
+        // agenda também tinha 10:30 no dia seguinte, que o lead nunca viu.
+        // Caso real (Central de atendimento MF Beauty, Anete Lessa Leal
+        // 21 97197-1008, 15/08). Difere de mentionedInAssistant (rejeitado logo
+        // abaixo): aqui o horário do lead JÁ casou, o desempate é só de DIA.
+        const spokenSameTime = byTime.filter((s) => spoken.some((sp) => sp.iso === s.iso));
+        if (spokenSameTime.length === 1) {
+          return patchFromSlot(spokenSameTime[0]!);
+        }
+      }
+      // O lead digitou um horário EXPLÍCITO (ex.: "10:00") que não bate com
+      // NENHUM slot em offered_slots (ou continua ambíguo entre vários). NÃO cai
+      // nos fallbacks abaixo — mentionedInAssistant, em particular, ignora o
+      // horário pedido e casa QUALQUER slot atual que a última mensagem do
+      // assistente tenha mencionado, podendo "confirmar" um horário TOTALMENTE
+      // DIFERENTE do que o lead pediu. Caso real (MF Beauty BSB): listar_horarios
+      // foi chamado 3x no mesmo turn, offered_slots final não tinha mais o
+      // "10:00" que o agente tinha acabado de oferecer (resultado de uma chamada
+      // anterior, já stale) — só "13:30" sobreviveu — e o lead respondendo
+      // "10:00" acabou agendado às 13:30 sem nunca ter pedido esse horário.
+      return {};
+    }
+
+    // Ordinal ("o primeiro", "a 2ª opção") se refere à ordem em que o AGENTE
+    // falou os horários (spoken), não à ordem de offered_slots.
+    const ordinalPool = spoken.length > 0 ? spoken : slots;
+    if (FIRST_ORDINAL_RE.test(msg.toLowerCase()) && ordinalPool[0]) {
+      return patchFromSlot(ordinalPool[0]);
+    }
+    if (SECOND_ORDINAL_RE.test(msg.toLowerCase()) && ordinalPool[1]) {
+      return patchFromSlot(ordinalPool[1]);
+    }
+
+    // Aceite sem hora ("fica sim", "pode ser"): o lead está respondendo à
+    // proposta do ÚLTIMO turno do agente. Se o agente propôs exatamente UM
+    // horário ali ("...às 16:45. Fica bom?"), é ESSE — mesmo que um slot antigo
+    // tenha ficado selecionado antes. Caso real (Costa Lima Recreio, Luciano
+    // 32 99160-7088): "fica sim" ao 16:45 e o booking foi atrás do 13:00 velho.
+    if (spoken.length === 1) {
+      return patchFromSlot(spoken[0]!);
+    }
+
+    const mentionedInAssistant = slots.filter((s) => slotMentionedInText(s, assistantText));
+    if (mentionedInAssistant.length === 1) {
+      return patchFromSlot(mentionedInAssistant[0]!);
+    }
+
+    if (slots.length === 1) {
+      return patchFromSlot(slots[0]!);
+    }
+
+    return {};
+  };
+
+  for (let i = burst.length - 1; i >= 0; i--) {
+    const msg = burst[i]!;
+    const out = attempt(msg);
+    if (Object.keys(out).length > 0) return out;
+    // A mensagem falou de HORA ou DIA e mesmo assim não resolveu: PARA aqui.
+    // Continuar para as anteriores ressuscitaria uma escolha já superada —
+    // "quero as 10:00" + "na verdade 11:30" acabaria selecionando 10:00, que é
+    // pior do que não selecionar nada (quem resolve é o resolvedor por LLM, que
+    // recebe a rajada inteira). Só seguimos para trás quando a mensagem mais
+    // recente não tem nada de horário/data — tipicamente a pergunta emendada
+    // ("Qual o endereço?"), que não anula a escolha anterior.
+    if (mentionsTimeOrDate(msg)) return {};
   }
 
   return {};
+}
+
+/** A mensagem cita alguma HORA ou DIA (ainda que a leitura não resolva)? */
+function mentionsTimeOrDate(msg: string): boolean {
+  return (
+    timesInText(msg).size > 0 ||
+    normalizeTimeLabel(msg) !== "" ||
+    absoluteDdMmFromText(msg) != null ||
+    requestedDateFromText(msg) != null
+  );
+}
+
+/** Acima disto a mensagem é frase corrida, não uma escolha de dia. */
+const MAX_DATE_ONLY_CHOICE_LEN = 40;
+
+/**
+ * Slot escolhido pelo DIA, quando a mensagem não traz hora nenhuma ("Dia 20/08",
+ * "quinta", "pode ser sexta"). Só resolve quando aquele dia tem UM único horário
+ * entre os que o agente acabou de falar — com dois ou mais a escolha segue
+ * ambígua e quem decide é o resolvedor por LLM (ou o agente repergunta).
+ *
+ * Conservador de propósito, porque um dia inteiro é um alvo largo:
+ *  - mensagem COM hora não entra aqui (senão "quinta às 16h" viraria o único
+ *    slot da quinta, que pode ser 14:30 — um horário que o lead não pediu);
+ *  - pergunta ("Tem no dia 20/08?") não é escolha;
+ *  - mensagem longa não entra: requestedDateFromText casa dia da semana dentro
+ *    de frase corrida ("trabalho de segunda a sexta"), e isso não é escolha.
+ * O guard leadRequestedUnofferedDate já rodou antes de chegar aqui, então a data
+ * é comprovadamente uma das ofertadas — nunca um dia que o lead quer trocar.
+ */
+function pickSlotByRequestedDate(
+  slots: OfferedSlot[],
+  lastTurnText: string,
+  msg: string,
+): OfferedSlot | undefined {
+  const t = msg.trim();
+  if (!t || t.length > MAX_DATE_ONLY_CHOICE_LEN) return undefined;
+  if (t.endsWith("?")) return undefined;
+  if (normalizeTimeLabel(t) || timesInText(t).size > 0) return undefined;
+
+  let ddmm = absoluteDdMmFromText(t);
+  if (!ddmm) {
+    const parts = requestedDateFromText(t)?.split("-"); // "YYYY-MM-DD" (BRT)
+    if (parts?.length === 3) ddmm = `${parts[2]}/${parts[1]}`;
+  }
+  if (!ddmm) return undefined;
+
+  const sameDay = slots.filter((s) => ddmmInBrt(s.iso) === ddmm);
+  if (sameDay.length === 0) return undefined;
+  if (sameDay.length === 1) return sameDay[0];
+
+  // Vários horários naquele dia em offered_slots. Só desempata o que o agente
+  // falou COLADO àquele dia no último turno — e não basta olhar
+  // slotsOfferedInLastTurn, que casa cada horário citado com QUALQUER dia
+  // mencionado no texto. Foi exatamente esse o caso da Rafaela Adriano
+  // (21 97996-8794): a oferta foi "quinta 20/08 às 14:30 ou quarta 19/08 às
+  // 12:00" e offered_slots também tinha 20/08 às 12:00 — casando por dia solto,
+  // a quinta ficava com DOIS horários e a escolha "Dia 20/08" virava ambígua.
+  const outrosDias = [...new Set(slots.map((s) => ddmmInBrt(s.iso)))].filter(
+    (d) => d && d !== ddmm,
+  );
+  const faladosNoDia = timesSpokenNextToDay(lastTurnText, ddmm, outrosDias);
+  const narrowed = sameDay.filter((s) => faladosNoDia.has(normalizeTimeLabel(s.time_label)));
+  return narrowed.length === 1 ? narrowed[0] : undefined;
+}
+
+/**
+ * Horários que o agente falou LOGO DEPOIS de citar `ddmm` no último turno, ou
+ * seja, os que pertencem àquele dia na frase — não os do dia seguinte na mesma
+ * mensagem. A janela de cada menção do dia vai até a menção do PRÓXIMO dia
+ * diferente ("...20/08 às 14:30 ou 19/08 às 12:00" → 20/08 fica só com 14:30).
+ */
+function timesSpokenNextToDay(
+  lastTurnText: string,
+  ddmm: string,
+  outrosDias: string[],
+): Set<string> {
+  const t = (lastTurnText ?? "").toLowerCase();
+  const out = new Set<string>();
+  let from = 0;
+  for (;;) {
+    const at = t.indexOf(ddmm, from);
+    if (at < 0) break;
+    const start = at + ddmm.length;
+    let end = t.length;
+    for (const outro of outrosDias) {
+      const i = t.indexOf(outro, start);
+      if (i >= 0 && i < end) end = i;
+    }
+    for (const time of orderedTimesInText(t.slice(start, end))) out.add(time);
+    from = start;
+  }
+  return out;
 }
 
 export function mergeLeadDataPatch(current: LeadData, patch: Partial<LeadData>): LeadData {

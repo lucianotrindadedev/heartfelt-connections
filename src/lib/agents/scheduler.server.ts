@@ -112,6 +112,7 @@ import {
   resolveBookingLeadName,
   clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
+  lastUserBurst,
   slotsOfferedInLastTurn,
   patchFromSlot,
   mentionsUnavailability,
@@ -1794,12 +1795,14 @@ async function resolveSlotChoiceLLM(
             role: "user",
             content:
               `Horários que o atendente ofereceu, nesta ordem:\n${lista}\n\n` +
-              `Mensagem do paciente: "${lastUser}"\n\n` +
+              `Mensagem(ns) do paciente, na ordem em que ele mandou:\n"""\n${lastUser}\n"""\n\n` +
               `Qual ele escolheu? Responda { "escolha": <número da lista> | null, "motivo": "curto" }.\n\n` +
               `Regras:\n` +
               `- "escolha" DEVE ser um dos números da lista acima. NUNCA invente horário.\n` +
               `- Aceite qualquer forma de escrever a hora: "14:30", "14: 30", "14.30", "14h30", "14h", "duas e meia", "2 e meia da tarde".\n` +
               `- Aceite referência por ordem: "o primeiro"/"a 1ª" = ${0}, "o segundo" = ${1}, "o mais cedo" = o mais cedo da lista, "o mais tarde" = o mais tarde.\n` +
+              `- Aceite escolha pelo DIA quando ela for inequívoca: se ele responde só a data ou o dia da semana ("dia 20/08", "pode ser quinta") e a lista tem UM único horário nesse dia, é esse. Se a lista tiver dois ou mais horários nesse dia, escolha=null.\n` +
+              `- A escolha pode estar em QUALQUER uma das mensagens acima, não só na última: é comum ele escolher o horário e emendar uma pergunta ("às 10:30" / "qual o endereço?"). A pergunta não anula a escolha. Se ele escolher mais de uma vez, vale a MAIS RECENTE.\n` +
               `- escolha=null se NÃO for uma escolha: recusa ("nenhum dos dois"), restrição/indisponibilidade ("só saio às 18h", "não posso de manhã"), pergunta ("tem na quinta?"), pedido de outro horário, ou se ficar ambíguo.\n` +
               `- Na dúvida, escolha=null. É melhor o atendente reperguntar do que marcar o horário errado.`,
           },
@@ -1870,12 +1873,16 @@ async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
   // extração da data, e com razão), então não há sinal confiável de dia. O pior
   // caso de limpar demais é reofertar um turn a mais; o de limpar de menos é
   // reafirmar um dia recusado e queimar o lead.
+  // Rajada inteira do lead, não só a última mensagem: a recusa costuma vir
+  // emendada ("não vou conseguir" + "pode ser sábado?") e olhar só a última
+  // deixava o slot recusado de pé.
+  const burst = lastUserBurst(ctx.history)
+    .map((m) => m.trim())
+    .filter(Boolean);
+
   if ((ctx.leadData.selected_slot_iso ?? "").trim()) {
-    const lastUserMsg =
-      [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
     if (
-      lastUserMsg &&
-      (looksLikeDecline(lastUserMsg) || mentionsUnavailability(lastUserMsg.toLowerCase()))
+      burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()))
     ) {
       console.log(
         `[scheduler] lead recusou o horário escolhido conv=${ctx.conversationId} iso=${ctx.leadData.selected_slot_iso} — limpando a escolha p/ reofertar`,
@@ -1894,12 +1901,20 @@ async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
   }
   if ((ctx.leadData.offered_slots?.length ?? 0) === 0) return {};
 
-  const lastUser = [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
-  if (!lastUser) return {};
+  // A rajada INTEIRA vai para o resolvedor, não só a última mensagem: o lead
+  // escolhe o horário e emenda uma pergunta ("Às 10:30 porque moro em santo
+  // Aleixo" + "Qual o endereço?"). Olhando só a última, o resolvedor recebia a
+  // pergunta, devolvia null (fail-closed) e a escolha se perdia — o
+  // criar_agendamento nunca rodava e o agente ainda assim confirmava. Caso real
+  // (Central de atendimento MF Beauty, Anete Lessa Leal 21 97197-1008, 15/08).
+  if (burst.length === 0) return {};
+  const lastUser = burst.join("\n");
 
   // Recusa/indisponibilidade NUNCA vai para a LLM — os guards determinísticos
   // que impedem "só largo às 18:00" de virar agendamento continuam mandando.
-  if (looksLikeDecline(lastUser) || mentionsUnavailability(lastUser.toLowerCase())) return {};
+  if (burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()))) {
+    return {};
+  }
 
   // Lead pediu uma DATA que não está entre os slots ofertados ("dia 11/08" com
   // ofertas de 07-08/08): quer trocar de dia. Não deixa a LLM escolher um slot
@@ -3130,9 +3145,17 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Guarda o resultado cru da última falha de booking p/ persistir o erro no meta
   // da mensagem (diagnóstico). Sem isto, a causa do "indisponível" ficava só no
   // log do servidor e invisível no banco.
-  let lastBookingFailureResult: string | undefined = bookingFailureKind
-    ? autoBooking.toolResult
-    : undefined;
+  //
+  // Qualquer ok:false conta, não só o que parseBookingFailure classifica: falha
+  // de VALIDAÇÃO e HOLD de guard não têm "kind", então a mensagem chegava ao
+  // banco só com booking_validation_only_blocked:true e ZERO motivo. Caso real
+  // (Central de atendimento MF Beauty, Rafaela Adriano 21 97996-8794, 16/08): o
+  // turn registrou o bloqueio sem dizer que a causa era "selected_slot_iso
+  // ausente", e o diagnóstico teve que ser reconstruído por fora.
+  let lastBookingFailureResult: string | undefined =
+    bookingFailureKind || autoBooking.toolResult?.includes('"ok":false')
+      ? autoBooking.toolResult
+      : undefined;
   if (autoBooking.toolResult) {
     baseDynamic += `\n\n# RESULTADO criar_agendamento (automático)\n${autoBooking.toolResult}\n` +
       (ctx.leadData.appointment_id
@@ -3316,6 +3339,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         const f = parseBookingFailure(outcome.result);
         if (f) {
           bookingFailureKind = f.kind;
+          lastBookingFailureResult = outcome.result;
+        } else if (outcome.result.includes('"ok":false')) {
+          // Validação/hold: sem "kind", mas o motivo TEM que chegar ao meta da
+          // mensagem — ver o comentário em lastBookingFailureResult acima.
           lastBookingFailureResult = outcome.result;
         }
       }
@@ -3507,6 +3534,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       const lf = parseBookingFailure(lateBooking.toolResult);
       if (lf) {
         bookingFailureKind = lf.kind;
+        lastBookingFailureResult = lateBooking.toolResult;
+      } else if (lateBooking.toolResult?.includes('"ok":false')) {
         lastBookingFailureResult = lateBooking.toolResult;
       }
     }

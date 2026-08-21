@@ -185,12 +185,41 @@ export function findChosenRealSlot<T extends OfferedSlotLike>(
 export function claimsBookingConfirmed(reply: string | undefined | null): boolean {
   const t = (reply ?? "").toLowerCase();
   if (!t) return false;
+
+  // Referência a dia/hora na resposta. Usada pelas duas formas que NÃO contêm a
+  // palavra "agendado" (compromisso marcado + despedida de confirmação): sem
+  // dia/hora não há promessa de vaga nenhuma.
+  const temHorario =
+    /\b(?:[àa]s\s*)?\d{1,2}\s*(?::\s*[0-5]\d|h(?:s|rs?|oras?)?\b)/.test(t) ||
+    /\b(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo|amanh[ãa]|hoje)\b/.test(t);
+
   if (
     /\bagendamento\b[^.!?\n]{0,40}\b(conclu[ií]d[oa]|realizad[oa]|efetuad[oa]|feito|registrad[oa]|confirmad[oa])\b/.test(t) ||
     /\b(ficou|est[áa]|foi|est[aã]o)\s+(agendad[oa]|marcad[oa]|confirmad[oa]|reservad[oa])\b/.test(t) ||
     /\bagendad[oa]\s+(com\s+sucesso|para\b)/.test(t) ||
     /\breservad[oa]\s+(com\s+sucesso|para\b)/.test(t)
   ) {
+    return true;
+  }
+
+  // COMPROMISSO MARCADO SEM A PALAVRA "AGENDADO" — "Sua avaliação na MF Beauty
+  // ficou PARA quinta-feira, 20/08 às 14:30". Para o lead isso é uma
+  // confirmação fechada, mas nenhuma das formas acima casa: o particípio
+  // ("agendada"/"marcada") nunca aparece, só o verbo + "para" + o dia.
+  // Casos reais (Central de atendimento MF Beauty, 15-16/08): Rafaela Adriano
+  // (21 97996-8794) e Anete Lessa Leal (21 97197-1008) receberam exatamente
+  // essa frase com tools=[] — nada foi criado na agenda, nenhuma trava disparou
+  // e as duas apareceram na clínica em horários que não existiam.
+  //
+  // Exige o SUBSTANTIVO do compromisso + verbo no passado/presente + "para".
+  // "Sua avaliação PODE FICAR para quinta?" (oferta) não casa: o verbo teria de
+  // ser "ficar", que está fora da lista. "seria para" idem.
+  const compromissoMarcado =
+    /\b(sua|seu|a\s+sua|o\s+seu)\s+(avalia[çc][ãa]o|consulta|visita|hor[áa]rio|agendamento|atendimento|sess[ãa]o|procedimento)\b[^.!?\n]{0,60}\b(ficou|fica|ficar[áa]|est[áa]|ser[áa]|foi)\s+(para|pra|em|no|na)\b/;
+  // Primeira pessoa no PASSADO: "já marquei pra você quinta às 14:30". O
+  // infinitivo ("posso marcar", "vou agendar") não casa — só o pretérito.
+  const marqueiPraVoce = /\b(j[áa]\s+)?(agendei|marquei|reservei)\b/;
+  if ((compromissoMarcado.test(t) || marqueiPraVoce.test(t)) && temHorario) {
     return true;
   }
 
@@ -207,11 +236,13 @@ export function claimsBookingConfirmed(reply: string | undefined | null): boolea
   // Exige a REFERÊNCIA A HORÁRIO na mesma frase: "vamos aguardar sua
   // confirmação"/"fico no aguardo" (sem dia/hora) não são confirmação e
   // continuam passando.
+  //
+  // O ramo do pronome ANTES do verbo ("te esperamos") cobria só as formas
+  // conjugadas e deixava passar o GERÚNDIO e o INFINITIVO — "Estaremos te
+  // esperando 💎" era o fecho padrão da Central MF Beauty e nunca disparou a
+  // trava (Rafaela 21 97996-8794 e Anete 21 97197-1008, 15-16/08).
   const despedida =
-    /\b(aguardando|aguardamos|esperando|esperamos|espero)\s+(voc[êe]|vc|o\s+senhor|a\s+senhora|te\b)|\bte\s+(esperamos|aguardamos|espero|aguardo)\b|\bnos\s+vemos\b/;
-  const temHorario =
-    /\b(?:[àa]s\s*)?\d{1,2}\s*(?::\s*[0-5]\d|h(?:s|rs?|oras?)?\b)/.test(t) ||
-    /\b(segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo|amanh[ãa]|hoje)\b/.test(t);
+    /\b(aguardando|aguardamos|esperando|esperamos|espero)\s+(voc[êe]|vc|o\s+senhor|a\s+senhora|te\b)|\bte\s+(esperamos|aguardamos|espero|aguardo|esperando|aguardando|esperar|aguardar)\b|\bnos\s+vemos\b/;
   return despedida.test(t) && temHorario;
 }
 
