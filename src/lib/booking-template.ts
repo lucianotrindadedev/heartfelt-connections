@@ -282,7 +282,23 @@ export function captureLeadPhoneFromHistory(
   }
   if (lastUserIdx < 0) return {};
 
-  const phone = extractPhoneCandidate(history[lastUserIdx]!.content, normalize);
+  // RAJADA do lead, não só a última mensagem — mesmo motivo de
+  // tryAutoSelectOfferedSlot. O lead manda o número e emenda outra coisa em
+  // seguida, e a plataforma ainda injeta avisos ("*Atenção:* o tipo da mensagem
+  // enviada pelo contato não é suportado.") como se fossem fala DELE, o que
+  // desloca a "última mensagem do lead" para um texto sem telefone nenhum.
+  // Caso real (Clínica Bomfim, Instagram @wallaceblacklima, 24/08): ele mandou
+  // "2198264-4836" e 3 segundos depois entrou o aviso da plataforma; a captura
+  // leu só o aviso, não gravou nada, e o agente perguntou o WhatsApp de novo.
+  //
+  // Da mais recente para a mais antiga: se o lead corrigiu o número na mesma
+  // rajada, o último vale.
+  const burst = lastUserBurst(history);
+  let phone: string | null = null;
+  for (let i = burst.length - 1; i >= 0; i--) {
+    phone = extractPhoneCandidate(burst[i]!, normalize);
+    if (phone) break;
+  }
   if (!phone) return {};
 
   const askedRecently = history

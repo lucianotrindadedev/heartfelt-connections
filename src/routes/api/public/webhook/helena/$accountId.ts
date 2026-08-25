@@ -14,6 +14,7 @@ import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
 import { isOptOutMessage } from "@/lib/opt-out.server";
+import { isPlatformNotice } from "@/lib/platform-notice";
 import { getGroqApiKey, transcribeAudioFromUrl } from "@/lib/groq.server";
 import { describeImageFromUrl, getOpenAiKey } from "@/lib/openai-vision.server";
 import {
@@ -1084,6 +1085,10 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           // histórico do LLM pulam tudo que tem is_echo — então não esconde o
           // lead sem resposta nem polui o contexto.
           ...(echoVerdict === "suspect" ? { is_echo: true } : {}),
+          // Aviso da própria plataforma ("*Atenção:* ... não é suportado"),
+          // que chega como se fosse fala do lead. Marcado aqui para o histórico
+          // do LLM poder pulá-lo sem reprocessar texto — ver isPlatformNotice.
+          ...(isPlatformNotice(messageContent) ? { platform_notice: true } : {}),
         };
 
         await sb.from("messages").insert({
