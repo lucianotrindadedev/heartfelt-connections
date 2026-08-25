@@ -10,6 +10,7 @@
 // 6. Lock + re-run + escalação humana.
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { isPlatformNotice } from "@/lib/platform-notice";
 import { decryptValue } from "@/lib/crypto.server";
 import { buildSlotOfferFallback } from "./slot-offer-fallback";
 import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
@@ -456,6 +457,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       if (m.meta && (m.meta as Record<string, unknown>).is_echo === true) continue;
       // Eventos vazios (TRACK/status, mídia sem legenda) só confundem o LLM.
       if (!(m.content ?? "").trim()) continue;
+      // Aviso da PLATAFORMA gravado como fala do lead ("*Atenção:* o tipo da
+      // mensagem enviada pelo contato não é suportado."). Não é mensagem de
+      // ninguém, e como chega com role="user" vira "a última mensagem do lead"
+      // — a âncora de captura de telefone, auto-seleção de horário e afins.
+      // Caso real (Clínica Bomfim, IG @wallaceblacklima, 24/08): o aviso entrou
+      // 3s depois do telefone e a captura leu o aviso no lugar do número.
+      // Aceita tanto a marca gravada na ingestão quanto o texto (retroativo,
+      // para as ~2.5k mensagens que já estão no banco sem a marca).
+      if ((m.meta as Record<string, unknown> | null)?.platform_notice === true) continue;
+      if (isPlatformNotice(m.content)) continue;
       if (m.role === "user") history.push({ role: "user", content: m.content ?? "" });
       else if (m.role === "assistant") {
         history.push({ role: "assistant", content: m.content ?? "" });
@@ -719,18 +730,29 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // (Instagram/Messenger). Não é um booking_field declarado, então gravá-lo
     // dependia do LLM lembrar — quando não lembrava, criar_agendamento
     // respondia "telefone ausente" e o agente repetia a pergunta em loop.
-    if (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") {
-      const phonePatch = captureLeadPhoneFromHistory(
-        leadData,
-        history,
-        agentSettings,
-        channelCtx,
-        normalizeBrazilPhone,
-      );
-      if (Object.keys(phonePatch).length > 0) {
-        leadData = mergeLeadDataPatch(leadData, phonePatch);
-        console.log(`[orch] telefone do lead capturado conv=${conversationId} canal=${channel}`);
-      }
+    //
+    // Roda em TODO estágio. O gate anterior (SLOT_OFFER/NAME_COLLECT/BOOKING)
+    // assumia que o telefone só é pedido na hora de agendar — mas o prompt de
+    // vários proprietários abre pedindo nome e telefone, e o bloco "# TELEFONE"
+    // do canal manda pedir o WhatsApp desde a primeira fala. Caso real (Clínica
+    // Bomfim, Instagram @wallaceblacklima, 24/08): o lead mandou "2198264-4836"
+    // em RECEPTION, a captura nem foi chamada, e 42 segundos depois o agente
+    // perguntou "qual é o seu WhatsApp com DDD?" — a conversa inteira ficou em
+    // RECEPTION/QUALIFICATION, então a captura nunca rodou uma vez sequer.
+    //
+    // Seguro em qualquer estágio: a função é no-op quando o canal já tem
+    // telefone, quando já existe um coletado, ou quando o AGENTE não pediu o
+    // número nas últimas falas (a âncora que separa telefone de CPF).
+    const phonePatch = captureLeadPhoneFromHistory(
+      leadData,
+      history,
+      agentSettings,
+      channelCtx,
+      normalizeBrazilPhone,
+    );
+    if (Object.keys(phonePatch).length > 0) {
+      leadData = mergeLeadDataPatch(leadData, phonePatch);
+      console.log(`[orch] telefone do lead capturado conv=${conversationId} canal=${channel}`);
     }
 
     // 8. Stage deterministico (effectiveStage) — calculado por stage-signals.
@@ -1678,11 +1700,37 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // depois "Desisto". A repetição era sintoma de outro bug (o nome dela
         // era descartado na captura), mas este texto transformou um travamento
         // em perda do lead.
-        const primeiro = (finalLeadData.name ?? "").trim().split(/\s+/)[0] ?? "";
-        reply =
-          primeiro && !looksLikeSentenceNotName(finalLeadData.name ?? "")
-            ? `Desculpa insistir! Só me confirma o sobrenome do ${primeiro}, por favor, que eu finalizo o agendamento.`
-            : "Desculpa insistir! Pra fechar o agendamento eu preciso do nome completo do paciente (nome e sobrenome). Pode me mandar?";
+        //
+        // ...e também não pode COBRAR O QUE JÁ TEM. Este ramo escolhia o texto
+        // pelo ESTÁGIO, sem nunca olhar se ainda faltava algum campo — então
+        // pedia sobrenome de quem já tinha mandado o nome completo. Caso real
+        // (Odonto Carioca Campo Grande, Adriana 21 98746-4703, 24/08): ela
+        // mandou "Adriana Amazonas de Araújo" às 10:31 e às 10:41 a trava
+        // respondeu "Só me confirma o sobrenome do Adriana". O nome estava
+        // completo e válido — o turno tinha sido barrado pelo portão de
+        // INTENÇÃO, que roda DEPOIS de todas as barreiras de nome, e o
+        // effectiveStage era NAME_COLLECT só porque havia slot escolhido.
+        //
+        // Agora a pergunta sai do campo REALMENTE pendente (bookingFieldQuestion
+        // já pede só o sobrenome quando o primeiro nome está lá). Sem campo
+        // pendente, a trava avança para a confirmação em vez de reabrir cadastro.
+        const missingNoLoop = getMissingBookingFields(
+          getBookingFieldsForChannel(agentSettings, channelCtx),
+          finalLeadData,
+        );
+        const nomeEhFrase = looksLikeSentenceNotName(finalLeadData.name ?? "");
+        if (missingNoLoop.length > 0) {
+          reply = `Desculpa insistir! ${bookingFieldQuestion(missingNoLoop[0]!, finalLeadData)}`;
+        } else if (nomeEhFrase) {
+          // Nome que é FRASE ("Ja te mandei") passa por getMissingBookingFields
+          // (tem 2+ palavras), mas nunca vai virar cadastro de paciente.
+          reply =
+            "Desculpa insistir! Pra fechar o agendamento eu preciso do nome completo do paciente (nome e sobrenome). Pode me mandar?";
+        } else {
+          reply = finalLeadData.selected_slot_iso
+            ? "Quase lá! Só me confirma que posso garantir esse horário pra você que eu finalizo o agendamento. 😊"
+            : "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
+        }
       } else if (hasBookingIntegration) {
         reply =
           "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
