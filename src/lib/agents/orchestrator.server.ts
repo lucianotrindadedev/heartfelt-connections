@@ -1678,11 +1678,37 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // depois "Desisto". A repetição era sintoma de outro bug (o nome dela
         // era descartado na captura), mas este texto transformou um travamento
         // em perda do lead.
-        const primeiro = (finalLeadData.name ?? "").trim().split(/\s+/)[0] ?? "";
-        reply =
-          primeiro && !looksLikeSentenceNotName(finalLeadData.name ?? "")
-            ? `Desculpa insistir! Só me confirma o sobrenome do ${primeiro}, por favor, que eu finalizo o agendamento.`
-            : "Desculpa insistir! Pra fechar o agendamento eu preciso do nome completo do paciente (nome e sobrenome). Pode me mandar?";
+        //
+        // ...e também não pode COBRAR O QUE JÁ TEM. Este ramo escolhia o texto
+        // pelo ESTÁGIO, sem nunca olhar se ainda faltava algum campo — então
+        // pedia sobrenome de quem já tinha mandado o nome completo. Caso real
+        // (Odonto Carioca Campo Grande, Adriana 21 98746-4703, 24/08): ela
+        // mandou "Adriana Amazonas de Araújo" às 10:31 e às 10:41 a trava
+        // respondeu "Só me confirma o sobrenome do Adriana". O nome estava
+        // completo e válido — o turno tinha sido barrado pelo portão de
+        // INTENÇÃO, que roda DEPOIS de todas as barreiras de nome, e o
+        // effectiveStage era NAME_COLLECT só porque havia slot escolhido.
+        //
+        // Agora a pergunta sai do campo REALMENTE pendente (bookingFieldQuestion
+        // já pede só o sobrenome quando o primeiro nome está lá). Sem campo
+        // pendente, a trava avança para a confirmação em vez de reabrir cadastro.
+        const missingNoLoop = getMissingBookingFields(
+          getBookingFieldsForChannel(agentSettings, channelCtx),
+          finalLeadData,
+        );
+        const nomeEhFrase = looksLikeSentenceNotName(finalLeadData.name ?? "");
+        if (missingNoLoop.length > 0) {
+          reply = `Desculpa insistir! ${bookingFieldQuestion(missingNoLoop[0]!, finalLeadData)}`;
+        } else if (nomeEhFrase) {
+          // Nome que é FRASE ("Ja te mandei") passa por getMissingBookingFields
+          // (tem 2+ palavras), mas nunca vai virar cadastro de paciente.
+          reply =
+            "Desculpa insistir! Pra fechar o agendamento eu preciso do nome completo do paciente (nome e sobrenome). Pode me mandar?";
+        } else {
+          reply = finalLeadData.selected_slot_iso
+            ? "Quase lá! Só me confirma que posso garantir esse horário pra você que eu finalizo o agendamento. 😊"
+            : "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
+        }
       } else if (hasBookingIntegration) {
         reply =
           "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";

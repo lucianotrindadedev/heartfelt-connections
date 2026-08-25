@@ -3495,7 +3495,23 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     }
 
     // Slot alucinado (não está entre os ofertados): re-oferta os reais e limpa.
-    reply = buildReofferReply(realSlots);
+    //
+    // Re-oferta o que o AGENTE acabou de falar, não os dois primeiros da agenda.
+    // buildReofferReply corta em .slice(0, 2): offered_slots traz até 6 vagas e o
+    // agente cita 2 por mensagem, então a re-oferta saía com horários que o lead
+    // NUNCA viu — e por cima do que ele tinha acabado de pedir. Caso real (Odonto
+    // Carioca Campo Grande, Adriana 21 98746-4703, 24/08): o agente ofertou
+    // "25/08 às 12:30 ou 13:00", a lead respondeu "As 13h" e a re-oferta veio
+    // "12:30 ou 12:45" — os índices 0 e 1 da lista. Ela repetiu o horário três
+    // vezes e a consulta acabou marcada na mão pela recepção.
+    //
+    // Cai para realSlots quando a última fala do agente não citou horário nenhum
+    // (ex.: o turno anterior foi só uma pergunta de cadastro).
+    const spokenSlots = slotsOfferedInLastTurn(
+      { ...ctx.leadData, offered_slots: realSlots },
+      ctx.history,
+    );
+    reply = buildReofferReply(spokenSlots.length > 0 ? spokenSlots : realSlots);
     if (outStage === "CONFIRMED") outStage = "SLOT_OFFER";
     outPatch = { ...outPatch, appointment_id: undefined, selected_slot_iso: CLEARED_SLOT };
     mergedTelemetry.false_confirmation_scrubbed = true;

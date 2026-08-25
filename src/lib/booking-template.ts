@@ -1000,6 +1000,24 @@ export function looksLikeDecline(text: string): boolean {
 }
 
 /**
+ * Agradecimento SECO: a mensagem inteira é só "obrigado"/"obrigada" (com ou sem
+ * pontuação). É o subconjunto de looksLikeDecline que significa educação, não
+ * recusa — "Obrigada" mandado no meio de uma escolha de horário não é o mesmo
+ * "Obrigada" que responde sozinho a uma oferta. Quem decide qual é o caso é o
+ * chamador, olhando o resto da rajada (ver tryAutoSelectOfferedSlot).
+ */
+export function isBareGratitude(text: string | null | undefined): boolean {
+  const t = (text ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[.!,;]+$/g, "")
+    .trim();
+  return /^obrigad[oa]$/.test(t);
+}
+
+/**
  * Lead que JÁ tem visita/consulta confirmada sinalizando que NÃO vai conseguir
  * vir, quer cancelar, quer remarcar, ou está repensando seriamente. Usado no
  * estágio CONFIRMED: sem isto, o agente só reafirma "sua visita está
@@ -3256,7 +3274,31 @@ export function tryAutoSelectOfferedSlot(
   // inteira. Sem isto, olhar as mensagens anteriores reabriria justamente o
   // buraco que isSlotAcceptanceMessage fecha: "as 15h" + "ah não, esqueci que
   // não posso" selecionaria as 15h pela primeira mensagem.
-  if (burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()))) {
+  if (
+    burst.some(
+      (m) =>
+        !isBareGratitude(m) && (looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase())),
+    )
+  ) {
+    return {};
+  }
+
+  // ...MAS o agradecimento SECO ("Obrigada") não é recusa quando a MESMA rajada
+  // traz um horário explícito. looksLikeDecline trata "obrigada" sozinho como
+  // "não, obrigada" — correto quando é a resposta INTEIRA a uma oferta, e
+  // desastroso no meio de uma escolha. Caso real (Odonto Carioca Campo Grande,
+  // Adriana 21 98746-4703, 24/08): o agente ofertou "25/08 às 12:30 ou 13:00" e
+  // ela respondeu "Ótima as 13: horas" + "Obrigada" + "As 13h". A rajada inteira
+  // foi vetada, criar_agendamento devolveu "selected_slot_iso ausente" e a trava
+  // re-ofertou 12:30/12:45 — o horário que ela pediu nunca foi agendado.
+  //
+  // Só a EDUCAÇÃO isolada é isentada: qualquer outra recusa (inclusive
+  // "não, obrigada") continua vetando acima. E a isenção exige HORA explícita —
+  // um "ok" + "obrigada" continua sendo lido como encerramento, não escolha.
+  if (
+    burst.some((m) => isBareGratitude(m)) &&
+    !burst.some((m) => TIME_IN_TEXT_RE.test(m) && isSlotAcceptanceMessage(m))
+  ) {
     return {};
   }
 
