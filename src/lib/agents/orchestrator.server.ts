@@ -96,9 +96,11 @@ import {
   resolveNextStage,
   routeForStage,
   clampStageForBooking,
+  stageAfterResume,
   type LeadData,
   type Stage,
 } from "./stage";
+import { AI_DISABLED_TAG, findBlockingTag } from "@/lib/agent-block.server";
 import {
   applyDeterministicStageOverrides,
   detectSignals,
@@ -484,7 +486,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
 
     // 7. Stage + lead_data a partir de conversations.meta
     const meta = (conv.data.meta as ConversationMeta | null) ?? null;
-    const stage = readStageFromMeta(meta);
+    let stage = readStageFromMeta(meta);
     let leadData = readLeadDataFromMeta(meta);
     // Poda horários já passados (offered_slots/selected_slot_iso) ANTES de
     // qualquer lógica de slot — evita reofertar horário no passado quando a
@@ -495,6 +497,48 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         leadData = pruned.leadData;
         console.log(`[orch] slots passados removidos conv=${conversationId}`);
       }
+    }
+
+    // ── Retomada de conversa escalada ──────────────────────────────────────
+    // ESCALATED é terminal na máquina de estados: o orquestrador se cala e
+    // NENHUMA mensagem posterior é respondida. A saída era o humano "reativar"
+    // — só que reativar (comando /ativar ou tirar a etiqueta na mão no CRM)
+    // mexia APENAS na etiqueta "IA Desligada" e deixava o stage em ESCALATED.
+    // Resultado: etiqueta limpa, lead escrevendo, IA muda para sempre. Caso
+    // real (Dental Clinic Corcovado, 21 99818-0091): escalada em 21/08 porque
+    // o assunto não era odontológico, etiqueta já removida, e as mensagens de
+    // 27/08 — inclusive o "Teste IA" da própria clínica — não tiveram resposta.
+    //
+    // A etiqueta é a fonte da verdade do pause em todo o resto do código
+    // (webhook, follow-up, warm-up); aqui também é. Chegar neste ponto já
+    // significa que o webhook não viu etiqueta bloqueadora (senão nem teria
+    // disparado o turn), mas confirmamos no contato carregado antes de voltar
+    // a falar. Contato ilegível → silêncio, o mesmo fail-safe do webhook.
+    if (stage === "ESCALATED") {
+      if (!helenaContact) {
+        console.log(
+          `[orch] conv=${conversationId} ESCALATED e contato do CRM não carregou — mantendo silêncio`,
+        );
+        return;
+      }
+      const stillPaused = findBlockingTag(helenaContact.tagNames, [AI_DISABLED_TAG]);
+      if (stillPaused) {
+        console.log(
+          `[orch] conv=${conversationId} ESCALATED com etiqueta "${stillPaused}" — mantendo silêncio`,
+        );
+        return;
+      }
+      const resumedStage = stageAfterResume(leadData);
+      console.log(
+        `[orch] conv=${conversationId} retomada após escalada — etiqueta "${AI_DISABLED_TAG}" ausente, ESCALATED → ${resumedStage}`,
+      );
+      stage = resumedStage;
+      // Motivo da escalada some junto: ele descreve um atendimento que o humano
+      // já assumiu e encerrou. Mantê-lo faria o agente responder o lead ainda
+      // sob o contexto de "isto aqui precisa de humano". String vazia, não
+      // undefined — stripNullishFields apaga a chave em vez de zerar o valor
+      // (o campo ficava grudento e voltava no turn seguinte).
+      leadData = { ...leadData, escalation_reason: "" };
     }
     // Captura ANTES de qualquer mutação — usado para detectar transições de
     // agendamento (sem→com = agendou; com→sem = cancelou) e disparar a
@@ -971,7 +1015,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       } else if (route === "scheduler") {
         result = await runSchedulerAgent(ctx);
       } else {
-        // ESCALATED — não roda agente, só silencia
+        // ESCALATED — inalcançável: a retomada acima ou devolve um stage vivo
+        // ou já deu return. Fica como rede de segurança para não falar com o
+        // lead num estado que ninguém previu.
+        console.warn(`[orch] conv=${conversationId} route=escalation inesperado — silêncio`);
         return;
       }
     } catch (e) {
