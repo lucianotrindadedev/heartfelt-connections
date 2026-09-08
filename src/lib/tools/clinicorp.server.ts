@@ -418,20 +418,102 @@ export function filterSlotsByClosing<
   });
 }
 
+/**
+ * Resultado da busca de horários. Separa "não tem vaga" de "não consegui olhar".
+ *
+ * O `.catch(() => [])` que existia aqui transformava QUALQUER falha do dia
+ * (timeout de 20s, 5xx da Clinicorp, rede) em "esse dia não tem vaga nenhuma" —
+ * sem log, sem retry e sem sinal para o LLM. O agente então afirmava ao lead a
+ * versão mais forte: "hoje infelizmente não temos vaga".
+ *
+ * Caso real (Odonto Carioca Campo Grande, 21 96647-7334, 08/09/2026 10:56): o
+ * lead pediu extração "para hoje", a busca voltou só com os horários de amanhã
+ * (09/09 09:00–10:15) e o agente disse que hoje não tinha vaga. Nove minutos
+ * depois a recepção marcou 13:00 DE HOJE na mão. A agenda tinha 14 vagas hoje
+ * (13:45–17:00) — nenhuma delas chegou ao agente.
+ *
+ * A falha é intermitente e mensurável: 12 execuções idênticas da mesma janela
+ * devolveram 88 vagas onze vezes e 72 numa delas — um dia inteiro sumido, ~8%.
+ */
+export interface ClinicorpSlotsResult {
+  slots: ClinicorpSlot[];
+  /** Dias (YYYY-MM-DD) que NÃO puderam ser consultados. Vazio ≠ sem vaga. */
+  failedDates: string[];
+  /** A leitura dos agendamentos reais falhou — o cross-check não rodou. */
+  busyCheckFailed: boolean;
+}
+
+/** Uma repetição antes de desistir do dia: as duas falhas que reproduzimos em
+ *  produção passaram na segunda tentativa. */
+const FETCH_ATTEMPTS = 2;
+
+async function fetchAvailableTimesWithRetry(
+  config: ClinicorpConfig,
+  date: string,
+): Promise<{ slots: ClinicorpSlot[]; failed: boolean }> {
+  for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt++) {
+    try {
+      return { slots: await fetchAvailableTimesForDate(config, date), failed: false };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (attempt < FETCH_ATTEMPTS) {
+        console.warn(
+          `[clinicorp] agenda de ${date} falhou (tentativa ${attempt}/${FETCH_ATTEMPTS}), repetindo: ${msg}`,
+        );
+        continue;
+      }
+      // Este log é o que faltava: antes a falha não deixava rastro nenhum e o
+      // dia simplesmente sumia da oferta.
+      console.error(
+        `[clinicorp] agenda de ${date} NÃO consultada após ${FETCH_ATTEMPTS} tentativas — o dia NÃO pode ser declarado sem vaga: ${msg}`,
+      );
+      return { slots: [], failed: true };
+    }
+  }
+  return { slots: [], failed: true };
+}
+
+async function fetchBusyWithRetry(
+  config: ClinicorpConfig,
+  from: string,
+  to: string,
+): Promise<{ busy: BusyInterval[]; failed: boolean }> {
+  for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt++) {
+    try {
+      return { busy: await fetchBusyIntervals(config, from, to), failed: false };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (attempt < FETCH_ATTEMPTS) {
+        console.warn(`[clinicorp] agendamentos ${from}..${to} falharam, repetindo: ${msg}`);
+        continue;
+      }
+      // Falha na direção OPOSTA à do dia: sem o cross-check sobra horário
+      // OCUPADO na oferta, e o create depois falha. Também precisa ser dito.
+      console.error(
+        `[clinicorp] agendamentos ${from}..${to} NÃO lidos após ${FETCH_ATTEMPTS} tentativas — a oferta pode conter horário ocupado: ${msg}`,
+      );
+      return { busy: [], failed: true };
+    }
+  }
+  return { busy: [], failed: true };
+}
+
 export async function listClinicorpSlots(
   accountId: string,
   from: string,
   to: string,
-): Promise<ClinicorpSlot[]> {
+): Promise<ClinicorpSlotsResult> {
   const config = await loadConfig(accountId);
   const dates = enumerateDates(from, to);
-  if (!dates.length) return [];
+  if (!dates.length) return { slots: [], failedDates: [], busyCheckFailed: false };
 
-  const [perDay, busy] = await Promise.all([
-    Promise.all(dates.map((d) => fetchAvailableTimesForDate(config, d).catch(() => []))),
-    fetchBusyIntervals(config, from, to).catch(() => [] as BusyInterval[]),
+  const [perDay, busyResult] = await Promise.all([
+    Promise.all(dates.map((d) => fetchAvailableTimesWithRetry(config, d))),
+    fetchBusyWithRetry(config, from, to),
   ]);
-  let merged = perDay.flat();
+  const failedDates = dates.filter((_, i) => perDay[i]!.failed);
+  const busy = busyResult.busy;
+  let merged = perDay.flatMap((r) => r.slots);
 
   if (config.profissionalIds.length > 0) {
     const allowed = new Set(config.profissionalIds);
@@ -471,7 +553,11 @@ export async function listClinicorpSlots(
     }
   }
 
-  return dedupSlotsByDateTime(merged).sort((a, b) => a.start.localeCompare(b.start));
+  return {
+    slots: dedupSlotsByDateTime(merged).sort((a, b) => a.start.localeCompare(b.start)),
+    failedDates,
+    busyCheckFailed: busyResult.failed,
+  };
 }
 
 /**

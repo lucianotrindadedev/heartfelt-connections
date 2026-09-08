@@ -407,7 +407,16 @@ export const testClinicorpConnection = createServerFn({ method: "POST" })
     const today = new Date().toISOString().slice(0, 10);
     const nextWeek = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
     try {
-      await listClinicorpSlots(data.accountId, today, nextWeek);
+      // Falha por DIA não levanta exceção (a busca segue com os outros dias) —
+      // então um teste de conexão que só olha o throw dizia "ok" com a
+      // integração fora do ar. Se NENHUM dia pôde ser consultado, não está ok.
+      const r = await listClinicorpSlots(data.accountId, today, nextWeek);
+      if (r.failedDates.length > 0 && r.slots.length === 0) {
+        return {
+          ok: false,
+          error: `A Clinicorp respondeu com erro em todos os dias consultados (${r.failedDates.join(", ")}). Verifique o token, o subscriber_id e a agenda online (code_link).`,
+        };
+      }
       return { ok: true };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) };

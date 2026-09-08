@@ -113,6 +113,7 @@ import {
   clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
   lastUserBurst,
+  classifyRequestedDay,
   slotsOfferedInLastTurn,
   patchFromSlot,
   mentionsUnavailability,
@@ -1440,7 +1441,8 @@ export async function execListarHorarios(
         })
       : arr;
 
-  let slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(end));
+  let clinicorp = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(end));
+  let slots = clinicorp.slots;
   // Amplia a busca para a janela ampla (até 60 dias) quando: (a) NÃO há vaga
   // nenhuma na janela próxima, OU (b) o lead pediu um TURNO e não há vaga NESSE
   // turno na janela próxima. Assim "de tarde" VARRE vários dias até achar uma
@@ -1454,7 +1456,8 @@ export async function execListarHorarios(
     console.log(
       `[scheduler] listar_horarios (clinicorp) conv=${ctx.conversationId}: sem vaga${bounds ? ` no turno (${resolvedPeriodo})` : ""} em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
     );
-    slots = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(wideEnd));
+    clinicorp = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(wideEnd));
+    slots = clinicorp.slots;
   }
   // Filtro de TURNO ANTES do corte de 6 (senão o slice pegava só os mais cedo).
   let periodoAviso: string | undefined;
@@ -1491,6 +1494,26 @@ export async function execListarHorarios(
     ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
     : null;
 
+  // Dias que a agenda NÃO conseguiu consultar (timeout/5xx da Clinicorp). Eles
+  // voltam vazios, e vazio aqui NÃO é "sem vaga" — ver ClinicorpSlotsResult.
+  // Sem esta distinção o agente afirmava ao lead que o dia estava sem vaga
+  // quando na verdade ninguém tinha conseguido olhar. Caso real (Odonto Carioca
+  // Campo Grande, 21 96647-7334, 08/09): 14 vagas livres hoje, o lead ouviu
+  // "para hoje infelizmente não temos vaga" e a recepção marcou 13:00 na mão
+  // nove minutos depois.
+  const naoConsultados = clinicorp.failedDates;
+  const avisoFalha = naoConsultados.length
+    ? {
+        dias_nao_consultados: naoConsultados,
+        aviso_falha: `A agenda destes dias NÃO pôde ser consultada (falha na integração): ${naoConsultados.join(", ")}. NÃO diga ao lead que esses dias estão sem vaga nem que estão lotados — você não sabe. Se ele pediu justamente um desses dias, diga que não conseguiu verificar agora e ofereça os horários abaixo como alternativa, ou peça um instante para checar de novo.`,
+      }
+    : {};
+  if (clinicorp.busyCheckFailed) {
+    console.warn(
+      `[scheduler] listar_horarios (clinicorp) conv=${ctx.conversationId}: cross-check de ocupados NÃO rodou — a oferta pode conter horário já agendado`,
+    );
+  }
+
   // ZERO vaga: devolve o PORQUÊ, igual ao ramo do Google Calendar. Sem isto o
   // Clinicorp respondia um `count: 0` mudo e o modelo concluía "está lotado"
   // quando na verdade o dia NEM ABRE (caso Odonto Carioca Campo Grande,
@@ -1504,7 +1527,10 @@ export async function execListarHorarios(
     const diasAtivos = activeWeekdayKeys(businessHoursJson);
     let dataAlvoDebug: Record<string, unknown> = {};
     let causa: string;
-    if (!hasBusinessHours) {
+    if (naoConsultados.length > 0) {
+      // Zero vaga PORQUE a consulta falhou — não porque a agenda está cheia.
+      causa = `A busca FALHOU nestes dias: ${naoConsultados.join(", ")}. Não há informação de disponibilidade — NÃO afirme que está lotado nem que não há vaga. Diga que não conseguiu consultar a agenda agora e ofereça verificar de novo em instantes ou passar para a recepção.`;
+    } else if (!hasBusinessHours) {
       causa = "Horário de funcionamento não está configurado nas Settings.";
     } else if (anchor) {
       const diaAlvo = diaSemanaChave(anchor);
@@ -1523,6 +1549,7 @@ export async function execListarHorarios(
     const diag = {
       count: 0,
       slots: [],
+      ...avisoFalha,
       debug: {
         tem_horario_funcionamento: hasBusinessHours,
         dias_ativos: diasAtivos,
@@ -1534,16 +1561,31 @@ export async function execListarHorarios(
     return { result: JSON.stringify(diag), patch: { offered_slots: [] } };
   }
 
-  const requestedDateUnavailable =
-    !!anchorKey && !limited.some((s) => (s.iso ?? "").slice(0, 10) === anchorKey);
+  // "SEM VAGA em X" só quando X foi REALMENTE consultado. Era esta string que
+  // punha a frase na boca do agente: com a âncora no dia pedido e nenhum slot
+  // desse dia na resposta, ela mandava dizer que o dia não tinha vaga — mesmo
+  // quando o dia só tinha falhado na consulta.
+  const veredito = classifyRequestedDay(
+    anchorKey,
+    naoConsultados,
+    limited.map((s) => s.iso),
+  );
+  const requestedDateUnavailable = veredito === "no_vacancy";
+  const anchorNaoConsultado = veredito === "not_checked";
   return {
     result: JSON.stringify({
       count: limited.length,
       slots: limited,
+      ...avisoFalha,
       ...(periodoAviso ? { aviso_periodo: periodoAviso } : {}),
       ...(requestedDateUnavailable
         ? {
             aviso_data: `SEM VAGA em ${anchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${anchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${anchorKey}).`,
+          }
+        : {}),
+      ...(anchorNaoConsultado
+        ? {
+            aviso_data: `A agenda de ${anchorKey} — o dia que o lead pediu — NÃO pôde ser consultada. NÃO diga que ${anchorKey} está sem vaga: você não sabe. Diga que não conseguiu verificar esse dia agora e ofereça os horários abaixo, que são de OUTRAS datas.`,
           }
         : {}),
     }),
