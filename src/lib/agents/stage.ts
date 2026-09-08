@@ -101,8 +101,26 @@ const TRANSITIONS: Record<Stage, Stage[]> = {
   NAME_COLLECT: ["NAME_COLLECT", "BOOKING", "SLOT_OFFER", "ESCALATED", "CONFIRMED"],
   BOOKING: ["BOOKING", "CONFIRMED", "SLOT_OFFER", "ESCALATED"], // retry ou volta ao slot
   CONFIRMED: ["CONFIRMED", "ESCALATED", "SLOT_OFFER"], // SLOT_OFFER = remarcação (cancela o antigo e reoferta)
-  ESCALATED: ["ESCALATED"], // terminal — só humano pode reativar (via /ativar)
+  ESCALATED: ["ESCALATED"], // terminal — só sai por retomada (stageAfterResume)
 };
+
+/**
+ * Estágio para onde uma conversa ESCALATED volta quando o humano libera a IA
+ * (etiqueta "IA Desligada" removida do contato, pelo comando /ativar ou na mão
+ * no CRM). ESCALATED não tem transição de saída na tabela acima de propósito —
+ * o LLM nunca deve se desescalar sozinho. Quem desescala é o código, aqui,
+ * a partir de um sinal humano.
+ *
+ * O estágio anterior à escalada não é persistido, então derivamos do lead_data,
+ * que é o que de fato determina o que o agente pode fazer no próximo turno.
+ * Nunca devolve RECEPTION: uma conversa retomada já teve trocas, e cair em
+ * RECEPTION faria o agente se apresentar de novo do zero.
+ */
+export function stageAfterResume(leadData: LeadData): Stage {
+  if (leadData.appointment_id) return "CONFIRMED";
+  if (leadData.selected_slot_iso || leadData.offered_slots?.length) return "SLOT_OFFER";
+  return "QUALIFICATION";
+}
 
 /**
  * Valida transição. Retorna o próximo stage permitido ou o atual se inválido.
