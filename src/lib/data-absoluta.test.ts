@@ -166,8 +166,17 @@ describe("quando o lead cita dois sinais de data", () => {
       if (alvo.iso.slice(0, 7) === hoje.iso.slice(0, 7)) {
         expect(r, frase).toBe(alvo.iso);
       } else {
-        // "dia N" só existe no mês que vem — fraco demais para pular um mês.
-        expect(r, frase).not.toBe(alvo.iso);
+        // "dia N" só existe no mês que vem — fraco demais para pular um mês, e
+        // quem resolve a frase é o dia da semana sozinho.
+        //
+        // A asserção é essa, e NÃO `not.toBe(alvo)`: para n pequeno o dia da
+        // semana aponta para a MESMA data que o "dia N" apontaria, e aí exigir
+        // "diferente de alvo" é impossível de satisfazer mesmo com o código
+        // certo. Isso quebrava a suíte nos últimos ~6 dias de TODO mês — visto
+        // em 31/08/2026, com "dia 1 terça-feira" resolvendo (corretamente, pelo
+        // dia da semana) para 01/09.
+        const soDiaDaSemana = requestedDateFromText(`Tem que ser a partir de ${nomeDia}`);
+        expect(r, frase).toBe(soDiaDaSemana);
       }
     }
   });
