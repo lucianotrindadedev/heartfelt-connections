@@ -1022,6 +1022,35 @@ export function looksLikeDecline(text: string): boolean {
  * "Obrigada" que responde sozinho a uma oferta. Quem decide qual é o caso é o
  * chamador, olhando o resto da rajada (ver tryAutoSelectOfferedSlot).
  */
+/**
+ * O que dizer ao lead sobre o DIA que ele pediu, depois de consultar a agenda.
+ *
+ * Existe para separar "não tem vaga" de "não consegui olhar". A busca por dia
+ * pode falhar (timeout/5xx da integração) e voltar VAZIA — e vazio não é prova
+ * de agenda cheia. Sem esta separação, o dia que falhou virava a afirmação mais
+ * forte possível na boca do agente: "hoje não temos vaga".
+ *
+ * Caso real (Odonto Carioca Campo Grande, 21 96647-7334, 08/09/2026): o lead
+ * pediu extração "para hoje", a consulta de hoje falhou em silêncio, a oferta
+ * veio só com amanhã e o agente afirmou que hoje não tinha vaga. A agenda tinha
+ * 14 horários livres hoje; a recepção marcou 13:00 na mão nove minutos depois.
+ */
+export type RequestedDayVerdict = "available" | "no_vacancy" | "not_checked";
+
+export function classifyRequestedDay(
+  requestedDay: string | null | undefined,
+  uncheckedDays: readonly string[],
+  offeredIsos: readonly (string | undefined)[],
+): RequestedDayVerdict | null {
+  const day = (requestedDay ?? "").slice(0, 10);
+  if (!day) return null;
+  // "Não consultado" vence "sem vaga": um dia que falhou pode ter vagas que
+  // ninguém viu, e afirmar o contrário é o erro caro.
+  if (uncheckedDays.includes(day)) return "not_checked";
+  if (offeredIsos.some((iso) => (iso ?? "").slice(0, 10) === day)) return "available";
+  return "no_vacancy";
+}
+
 export function isBareGratitude(text: string | null | undefined): boolean {
   const t = (text ?? "")
     .trim()
