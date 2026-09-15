@@ -114,6 +114,11 @@ import {
   tryAutoSelectOfferedSlot,
   lastUserBurst,
   classifyRequestedDay,
+  filterSlotsToWeekday,
+  requestedWeekdayFromText,
+  shouldWidenSlotWindow,
+  weekdayKeyOfIso,
+  type WeekdayKey,
   slotsOfferedInLastTurn,
   patchFromSlot,
   mentionsUnavailability,
@@ -966,6 +971,19 @@ function requestedPeriodoFromHistory(
  * pega sempre as 6 mais cedo e nunca alcança um horário pedido mais tarde no
  * mesmo turno (ver requestedHoraFromText).
  */
+/** Último dia da semana citado pelo lead nas mensagens recentes. Irmão de
+ *  requestedPeriodoFromHistory — ver requestedWeekdayFromText. */
+function requestedWeekdayFromHistory(
+  history: { role: "user" | "assistant"; content: string }[],
+): WeekdayKey | null {
+  const userMsgs = history.filter((m) => m.role === "user");
+  for (let i = userMsgs.length - 1; i >= 0; i--) {
+    const w = requestedWeekdayFromText(userMsgs[i]!.content);
+    if (w) return w;
+  }
+  return null;
+}
+
 function requestedHoraFromHistory(
   history: { role: "user" | "assistant"; content: string }[],
 ): number | null {
@@ -980,6 +998,17 @@ function requestedHoraFromHistory(
 // Janela padrão do slot offer: prioriza SEMPRE os horários mais próximos —
 // hoje + os próximos 3 dias. Se não houver vaga nesse período, a busca amplia
 // automaticamente até SLOT_WIDE_WINDOW_DAYS para achar as próximas datas livres.
+/** Nome por extenso do dia da semana, para as mensagens ao modelo. */
+const NOME_DIA_SEMANA: Record<WeekdayKey, string> = {
+  dom: "domingo",
+  seg: "segunda-feira",
+  ter: "terça-feira",
+  qua: "quarta-feira",
+  qui: "quinta-feira",
+  sex: "sexta-feira",
+  sab: "sábado",
+};
+
 const SLOT_NEAR_WINDOW_DAYS = 4; // hoje + 3 dias
 const SLOT_WIDE_WINDOW_DAYS = 60;
 
@@ -1098,6 +1127,33 @@ export async function execListarHorarios(
   // requestedHoraFromHistory.
   const resolvedHora = requestedHoraFromHistory(ctx.history);
 
+  // DIA DA SEMANA pedido ("tem que ser no sábado"). É uma RESTRIÇÃO, não uma
+  // data: quando aquele sábado não tem vaga, o certo é procurar o PRÓXIMO
+  // sábado — não oferecer a segunda seguinte. Caso real (Implanto Master Venda
+  // Nova, Wellington 31 99726-9556, 12–14/09): ele disse "tem q ser no sábado"
+  // quatro vezes, a âncora resolveu 19/09 (sábado sem agenda), a janela de 4
+  // dias parou em 23/09 e o próximo sábado com vaga — 26/09 — ficou fora do
+  // alcance. O agente ofertou segunda e terça chamando-as de "sábado", entrou
+  // em loop de cinco turnos e a recepção marcou 26/09 na mão.
+  //
+  // Só vale como restrição quando a ÂNCORA cai nesse mesmo dia da semana — ou
+  // seja, quando a data que estamos buscando veio justamente da palavra que o
+  // lead usou. Com data absoluta ("dia 20/08") não há restrição de dia da
+  // semana a propagar.
+  const anchorKeyRaw = anchor
+    ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
+    : null;
+  const diaSemanaPedido = requestedWeekdayFromHistory(ctx.history);
+  const restringeDiaSemana =
+    diaSemanaPedido && anchorKeyRaw && weekdayKeyOfIso(anchorKeyRaw) === diaSemanaPedido
+      ? diaSemanaPedido
+      : null;
+  if (restringeDiaSemana) {
+    console.log(
+      `[scheduler] listar_horarios conv=${ctx.conversationId}: lead restringiu o dia da semana (${restringeDiaSemana}) — a busca só oferta esse dia`,
+    );
+  }
+
   // Google Calendar: usa lógica de janelas com expediente da clínica
   if (ctx.integrations.googleCalendar) {
     // Multi-agenda: resolve qual calendário consultar a partir do label.
@@ -1153,14 +1209,40 @@ export async function execListarHorarios(
     // data específica. Não se aplica ao modo "uma por dia" (festas, que já usa
     // janela ampla) nem quando o lead pediu uma data (anchor) ou um período
     // explícito (diasAFrente).
-    if (formatted.length === 0 && !anchor && !resolved.umaPorDia && diasAFrente == null) {
+    if (
+      !resolved.umaPorDia &&
+      shouldWidenSlotWindow({
+        totalSlots: formatted.length,
+        explicitWindowDays: diasAFrente,
+        requestedDay: anchorKeyRaw,
+        slotsOnRequestedDay: formatted.filter((s) => (s.iso ?? "").slice(0, 10) === anchorKeyRaw)
+          .length,
+        requestedWeekday: restringeDiaSemana,
+        slotsOnRequestedWeekday: filterSlotsToWeekday(formatted, restringeDiaSemana, (s) => s.iso)
+          .length,
+      })
+    ) {
       const wideEnd = new Date(
         today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
       );
       console.log(
-        `[scheduler] listar_horarios conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando busca p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+        `[scheduler] listar_horarios conv=${ctx.conversationId}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${formatted.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana ?? "-"})`,
       );
       formatted = await fetchFormatted(wideEnd);
+    }
+
+    // Filtro de DIA DA SEMANA — ver o ramo do Clinup. No Google Calendar o corte
+    // de 6 já acontece dentro de listGoogleCalendarSlots (amostras: 6), então
+    // filtrar aqui pode esvaziar a lista; por isso a ampliação acima já leva o
+    // dia da semana em conta antes de chegar neste ponto.
+    let gcalDiaSemanaAviso: string | undefined;
+    if (restringeDiaSemana && !resolved.umaPorDia) {
+      const noDia = filterSlotsToWeekday(formatted, restringeDiaSemana, (s) => s.iso);
+      if (noDia.length > 0) {
+        formatted = noDia;
+      } else if (formatted.length > 0) {
+        gcalDiaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+      }
     }
     // Persiste a agenda escolhida para o booking/cancelamento usarem a mesma.
     const agendaPatch: Partial<LeadData> = resolved.agendaLabel
@@ -1225,6 +1307,7 @@ export async function execListarHorarios(
       result: JSON.stringify({
         count: formatted.length,
         slots: formatted,
+        ...(gcalDiaSemanaAviso ? { aviso_dia_semana: gcalDiaSemanaAviso } : {}),
         ...(resolved.agendaLabel ? { agenda: resolved.agendaLabel } : {}),
         ...(requestedDateUnavailable
           ? {
@@ -1245,12 +1328,39 @@ export async function execListarHorarios(
       new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
 
     let clSlots = await listClinupSlotsDetailed(ctx.accountId, fmtCl(today), fmtCl(end));
-    if (clSlots.length === 0 && !anchor && diasAFrente == null) {
+    // Amplia quando a janela curta não alcança o que o lead pediu. A condição
+    // antiga (`length === 0 && !anchor`) falhava justamente no caso caro: com
+    // âncora, a busca devolve horários de OUTROS dias — não está vazia — e a
+    // ampliação nunca rodava, então o dia pedido nunca era alcançado.
+    if (
+      shouldWidenSlotWindow({
+        totalSlots: clSlots.length,
+        explicitWindowDays: diasAFrente,
+        requestedDay: anchorKeyRaw,
+        slotsOnRequestedDay: clSlots.filter((s) => s.date === anchorKeyRaw).length,
+        requestedWeekday: restringeDiaSemana,
+        slotsOnRequestedWeekday: filterSlotsToWeekday(clSlots, restringeDiaSemana, (s) => s.start)
+          .length,
+      })
+    ) {
       const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       console.log(
-        `[scheduler] listar_horarios (clinup) conv=${ctx.conversationId}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+        `[scheduler] listar_horarios (clinup) conv=${ctx.conversationId}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${clSlots.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana ?? "-"})`,
       );
       clSlots = await listClinupSlotsDetailed(ctx.accountId, fmtCl(today), fmtCl(wideEnd));
+    }
+
+    // Filtro de DIA DA SEMANA antes do corte de 6 — mesma posição do filtro de
+    // turno. Sem ele, o corte pega os 6 mais próximos (segunda, terça...) e o
+    // sábado que o lead exige nunca aparece, mesmo tendo sido encontrado.
+    let clDiaSemanaAviso: string | undefined;
+    if (restringeDiaSemana) {
+      const noDia = filterSlotsToWeekday(clSlots, restringeDiaSemana, (s) => s.start);
+      if (noDia.length > 0) {
+        clSlots = noDia;
+      } else if (clSlots.length > 0) {
+        clDiaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+      }
     }
 
     const clBounds = periodoParaHoras(resolvedPeriodo);
@@ -1308,6 +1418,7 @@ export async function execListarHorarios(
         count: clLimited.length,
         slots: clLimited,
         ...(clPeriodoAviso ? { aviso_periodo: clPeriodoAviso } : {}),
+        ...(clDiaSemanaAviso ? { aviso_dia_semana: clDiaSemanaAviso } : {}),
         ...(clRequestedDateUnavailable
           ? {
               aviso_data: `SEM VAGA em ${clAnchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${clAnchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${clAnchorKey}).`,
@@ -1344,10 +1455,21 @@ export async function execListarHorarios(
       fmtCe(end),
       ceUnit.unitLabel,
     );
-    if (ceSlots.length === 0 && !anchor && diasAFrente == null) {
+    if (
+      shouldWidenSlotWindow({
+        totalSlots: ceSlots.length,
+        explicitWindowDays: diasAFrente,
+        requestedDay: anchorKeyRaw,
+        slotsOnRequestedDay: ceSlots.filter((s) => (s.start ?? "").slice(0, 10) === anchorKeyRaw)
+          .length,
+        requestedWeekday: restringeDiaSemana,
+        slotsOnRequestedWeekday: filterSlotsToWeekday(ceSlots, restringeDiaSemana, (s) => s.start)
+          .length,
+      })
+    ) {
       const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       console.log(
-        `[scheduler] listar_horarios (clinic experts) conv=${ctx.conversationId}${ceUnit.unitLabel ? ` unidade="${ceUnit.unitLabel}"` : ""}: 0 vaga(s) em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
+        `[scheduler] listar_horarios (clinic experts) conv=${ctx.conversationId}${ceUnit.unitLabel ? ` unidade="${ceUnit.unitLabel}"` : ""}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${ceSlots.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana ?? "-"})`,
       );
       ceSlots = await listClinicExpertsSlots(
         ctx.accountId,
@@ -1356,6 +1478,18 @@ export async function execListarHorarios(
         ceUnit.unitLabel,
       );
     }
+
+    // Filtro de DIA DA SEMANA antes do corte de 6 — ver o ramo do Clinup.
+    let ceDiaSemanaAviso: string | undefined;
+    if (restringeDiaSemana) {
+      const noDia = filterSlotsToWeekday(ceSlots, restringeDiaSemana, (s) => s.start);
+      if (noDia.length > 0) {
+        ceSlots = noDia;
+      } else if (ceSlots.length > 0) {
+        ceDiaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+      }
+    }
+
     const ceBounds = periodoParaHoras(resolvedPeriodo);
     let cePeriodoAviso: string | undefined;
     if (ceBounds) {
@@ -1418,6 +1552,7 @@ export async function execListarHorarios(
         slots: ceLimited,
         ...(ceUnit.unitLabel ? { unidade: ceUnit.unitLabel } : {}),
         ...(cePeriodoAviso ? { aviso_periodo: cePeriodoAviso } : {}),
+        ...(ceDiaSemanaAviso ? { aviso_dia_semana: ceDiaSemanaAviso } : {}),
         ...(ceRequestedDateUnavailable
           ? {
               aviso_data: `SEM VAGA em ${ceAnchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${ceAnchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${ceAnchorKey}).`,
@@ -1450,8 +1585,17 @@ export async function execListarHorarios(
   // (só horários REALMENTE livres), o agente para de ofertar horário ocupado e
   // sempre alcança as próximas vagas de verdade. Só em busca "simples" (o LLM
   // não fixou data nem dias_a_frente).
-  const canExpand = !anchor && diasAFrente == null;
-  if (canExpand && (slots.length === 0 || (!!bounds && inPeriodo(slots).length === 0))) {
+  const canExpand =
+    shouldWidenSlotWindow({
+      totalSlots: slots.length,
+      explicitWindowDays: diasAFrente,
+      requestedDay: anchorKeyRaw,
+      slotsOnRequestedDay: slots.filter((s) => s.localDate === anchorKeyRaw).length,
+      requestedWeekday: restringeDiaSemana,
+      slotsOnRequestedWeekday: filterSlotsToWeekday(slots, restringeDiaSemana, (s) => s.start)
+        .length,
+    }) || (!anchor && diasAFrente == null && !!bounds && inPeriodo(slots).length === 0);
+  if (canExpand) {
     const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     console.log(
       `[scheduler] listar_horarios (clinicorp) conv=${ctx.conversationId}: sem vaga${bounds ? ` no turno (${resolvedPeriodo})` : ""} em ${SLOT_NEAR_WINDOW_DAYS}d — ampliando p/ ${SLOT_WIDE_WINDOW_DAYS}d`,
@@ -1459,6 +1603,17 @@ export async function execListarHorarios(
     clinicorp = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(wideEnd));
     slots = clinicorp.slots;
   }
+  // Filtro de DIA DA SEMANA antes do corte de 6 — ver o ramo do Clinup.
+  let diaSemanaAviso: string | undefined;
+  if (restringeDiaSemana) {
+    const noDia = filterSlotsToWeekday(slots, restringeDiaSemana, (s) => s.start);
+    if (noDia.length > 0) {
+      slots = noDia;
+    } else if (slots.length > 0) {
+      diaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+    }
+  }
+
   // Filtro de TURNO ANTES do corte de 6 (senão o slice pegava só os mais cedo).
   let periodoAviso: string | undefined;
   if (bounds) {
@@ -1578,6 +1733,7 @@ export async function execListarHorarios(
       slots: limited,
       ...avisoFalha,
       ...(periodoAviso ? { aviso_periodo: periodoAviso } : {}),
+      ...(diaSemanaAviso ? { aviso_dia_semana: diaSemanaAviso } : {}),
       ...(requestedDateUnavailable
         ? {
             aviso_data: `SEM VAGA em ${anchorKey}. Os horários abaixo são de OUTRAS datas (as próximas disponíveis). Diga ao lead que ${anchorKey} não tem vaga e ofereça ESTAS datas — NUNCA afirme/confirme a data pedida (${anchorKey}).`,
