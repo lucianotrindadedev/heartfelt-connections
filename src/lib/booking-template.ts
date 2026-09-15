@@ -1035,6 +1035,98 @@ export function looksLikeDecline(text: string): boolean {
  * veio só com amanhã e o agente afirmou que hoje não tinha vaga. A agenda tinha
  * 14 horários livres hoje; a recepção marcou 13:00 na mão nove minutos depois.
  */
+export type WeekdayKey = "dom" | "seg" | "ter" | "qua" | "qui" | "sex" | "sab";
+
+const WEEKDAY_WORD_RE = /\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/;
+const WEEKDAY_STEM_TO_KEY: Record<string, WeekdayKey> = {
+  domingo: "dom",
+  segunda: "seg",
+  terca: "ter",
+  quarta: "qua",
+  quinta: "qui",
+  sexta: "sex",
+  sabado: "sab",
+};
+
+function semAcentoLower(text: string): string {
+  return (text ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase();
+}
+
+/**
+ * O DIA DA SEMANA que o lead citou ("tem que ser no sábado"), quando citou.
+ *
+ * Usa exatamente o mesmo reconhecimento de `requestedDateFromText` — que já
+ * resolve "sábado" para a próxima data — só que devolvendo o dia da semana em
+ * vez da data. É essa diferença que faltava: "sábado" não é UMA data, é uma
+ * RESTRIÇÃO. Quando aquele sábado não tem vaga, o certo é procurar o próximo
+ * sábado, não oferecer a segunda seguinte.
+ *
+ * Caso real (Implanto Master Venda Nova, Wellington 31 99726-9556, 12–14/09):
+ * o lead disse "Tem q ser no sábado" quatro vezes. A âncora resolveu 19/09
+ * (sábado, sem agenda), a janela de 4 dias parou em 23/09, e o próximo sábado
+ * com vaga — 26/09 — ficou 3 dias além do alcance. O agente ofertou segunda e
+ * terça, chamando-as de "sábado", e a recepção acabou marcando 26/09 na mão.
+ */
+export function requestedWeekdayFromText(text: string | null | undefined): WeekdayKey | null {
+  const m = WEEKDAY_WORD_RE.exec(semAcentoLower(text ?? ""));
+  return m ? (WEEKDAY_STEM_TO_KEY[m[1]!] ?? null) : null;
+}
+
+/** Dia da semana (chave curta) de um ISO, no fuso de Brasília. */
+export function weekdayKeyOfIso(iso: string | null | undefined): WeekdayKey | null {
+  const t = (iso ?? "").trim();
+  if (!t) return null;
+  const d = new Date(t.length === 10 ? `${t}T12:00:00-03:00` : t);
+  if (Number.isNaN(d.getTime())) return null;
+  const abbr = new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    timeZone: "America/Sao_Paulo",
+  }).format(d);
+  return (
+    ({ Sun: "dom", Mon: "seg", Tue: "ter", Wed: "qua", Thu: "qui", Fri: "sex", Sat: "sab" } as
+      Record<string, WeekdayKey>)[abbr] ?? null
+  );
+}
+
+/** Mantém só os slots que caem no dia da semana pedido. */
+export function filterSlotsToWeekday<T>(
+  slots: readonly T[],
+  weekday: WeekdayKey | null,
+  isoOf: (slot: T) => string | undefined,
+): T[] {
+  if (!weekday) return [...slots];
+  return slots.filter((s) => weekdayKeyOfIso(isoOf(s)) === weekday);
+}
+
+/**
+ * A janela curta deve ser ampliada para a janela ampla?
+ *
+ * A regra antiga era só "não achei NADA" — e ela desligava junto quando havia
+ * âncora (`!anchor`). As duas coisas somadas produziam o pior caso: o lead pede
+ * um dia, a busca ancora nele, devolve horários de OUTROS dias (então não está
+ * vazia), e a ampliação nunca roda — o dia pedido nunca é alcançado.
+ */
+export function shouldWidenSlotWindow(opts: {
+  totalSlots: number;
+  explicitWindowDays: number | null | undefined;
+  /** Dia (YYYY-MM-DD) que o lead pediu, se pediu. */
+  requestedDay?: string | null;
+  slotsOnRequestedDay?: number;
+  /** Dia da SEMANA pedido, quando o lead falou "sábado" em vez de uma data. */
+  requestedWeekday?: WeekdayKey | null;
+  slotsOnRequestedWeekday?: number;
+}): boolean {
+  // Janela explícita do LLM: ele está fazendo uma busca ampla de propósito.
+  if (opts.explicitWindowDays != null) return false;
+  if (opts.totalSlots === 0) return true;
+  if (opts.requestedWeekday && (opts.slotsOnRequestedWeekday ?? 0) === 0) return true;
+  if (opts.requestedDay && (opts.slotsOnRequestedDay ?? 0) === 0) return true;
+  return false;
+}
+
 export type RequestedDayVerdict = "available" | "no_vacancy" | "not_checked";
 
 export function classifyRequestedDay(
@@ -2014,6 +2106,20 @@ export function scrubInventedTimeOffers(
 
   const reais = (offered ?? []).filter((s) => s?.time_label);
   const minutosReais = new Set(reais.map((s) => minutesOfDayFromLabel(s.time_label!)));
+  // Dias da SEMANA que os slots reais de fato têm. O texto podia trocar o nome
+  // do dia à vontade: o guard comparava só HORÁRIO, e o outro guard
+  // (affirmedDatesFromAssistant) compara só dd/mm — nenhum dos dois olhava a
+  // palavra "sábado"/"segunda". Caso real (Implanto Master Venda Nova,
+  // Wellington 31 99726-9556, 13/09): os slots eram "segunda-feira, 21/09" e o
+  // agente escreveu "sábado, 21/09 às 08:30" — hora real, data real, dia da
+  // semana falso. Passava pelos dois guards.
+  // O dia sai do próprio date_label do slot ("segunda-feira, 21/09"), que é o
+  // rótulo que a busca gerou — a mesma fonte que o texto deveria ter copiado.
+  const diasReais = new Set(
+    reais
+      .map((s) => requestedWeekdayFromText(s.date_label))
+      .filter((k): k is WeekdayKey => !!k),
+  );
 
   /** A frase oferta dia+hora que não podemos sustentar? */
   const ofensiva = (texto: string): boolean => {
@@ -2021,9 +2127,17 @@ export function scrubInventedTimeOffers(
     if (!CONCRETE_TIME_OFFER_RE.test(limpo)) return false;
     // Sem horários reais em mãos, qualquer oferta concreta é inventada.
     if (minutosReais.size === 0) return true;
-    // Com horários reais, só é ofensiva se citar um que não está entre eles.
     const citados = citedTimesInMinutes(limpo);
-    return citados.length > 0 && citados.some((m) => !minutosReais.has(m));
+    // Com horários reais, é ofensiva se citar um que não está entre eles...
+    if (citados.length > 0 && citados.some((m) => !minutosReais.has(m))) return true;
+    // ...ou se rotular o slot com um dia da semana que nenhum slot real tem.
+    // Só vale quando a frase cita um horário REAL — assim "atendemos de segunda
+    // a sexta" (fala de expediente, não oferta) continua fora.
+    if (diasReais.size > 0 && citados.length > 0) {
+      const diaCitado = requestedWeekdayFromText(limpo);
+      if (diaCitado && !diasReais.has(diaCitado)) return true;
+    }
+    return false;
   };
 
   if (!ofensiva(original)) return { reply: original, scrubbed: false };
