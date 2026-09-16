@@ -15,6 +15,7 @@ import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
 import { isOptOutMessage } from "@/lib/opt-out.server";
 import { isPlatformNotice } from "@/lib/platform-notice";
+import { stripQuotePrefix, withQuotePrefix } from "@/lib/conversation-guards";
 import { getGroqApiKey, transcribeAudioFromUrl } from "@/lib/groq.server";
 import { describeImageFromUrl, getOpenAiKey } from "@/lib/openai-vision.server";
 import {
@@ -34,6 +35,7 @@ import {
   getContactChannel,
   loadHelenaAccount,
   loadHelenaContactFromSession,
+  loadHelenaMessageText,
   loadHelenaSession,
   resolveHelenaContactId,
   sendHelenaText,
@@ -101,6 +103,8 @@ interface HelenaContent {
   status?: string;
   details?: HelenaDetails;
   fileId?: string | null;
+  /** Id da mensagem CITADA (reply do WhatsApp). A Helena não manda o texto. */
+  refId?: string | null;
 }
 
 interface HelenaPayload {
@@ -154,6 +158,7 @@ function normalizeHelenaPayload(raw: HelenaPayload): {
         type: flatType ?? "TEXT",
         userId: raw.userId ?? raw.content?.userId,
         details: raw.details ?? raw.content?.details,
+        refId: (raw as { refId?: string | null }).refId ?? raw.content?.refId ?? null,
       },
     };
   }
@@ -202,6 +207,39 @@ function extractQuotedText(content: unknown): string | null {
     if (t) return t;
   }
   return null;
+}
+
+/**
+ * Texto da mensagem citada, a partir do `refId` que a Helena manda num reply.
+ *
+ * Primeiro procura no nosso banco (a mensagem citada costuma ter passado por
+ * este webhook e estar gravada com o mesmo helena_msg_id) — sem custo de rede.
+ * Só se não achar, busca na Helena. Qualquer falha devolve null: a citação é
+ * contexto, nunca pode derrubar a gravação da mensagem.
+ */
+async function resolveQuotedTextByRefId(accountId: string, refId: string): Promise<string | null> {
+  const id = refId.trim();
+  if (!id) return null;
+  try {
+    const { data } = await getSelfhost()
+      .from("messages")
+      .select("content")
+      .eq("meta->>helena_msg_id", id)
+      .limit(1)
+      .maybeSingle();
+    const local = stripQuotePrefix((data?.content as string | null) ?? "").trim();
+    if (local) return local;
+  } catch (e) {
+    console.warn(`[webhook] citação refId=${id}: falha na busca local`, e);
+  }
+  try {
+    const helena = await loadHelenaAccount(accountId);
+    const remote = (await loadHelenaMessageText(helena, id))?.trim();
+    return remote || null;
+  } catch (e) {
+    console.warn(`[webhook] citação refId=${id}: falha na Helena`, e);
+    return null;
+  }
 }
 
 /** Log de diagnóstico: revela o nome do campo de citação se a Helena usar um
@@ -310,6 +348,8 @@ interface ConversationUpsertInput {
   legacyPhone?: string;
   /** Telefone real do lead no WhatsApp (FROM_HUB) — prioridade sobre CRM. */
   inboundLeadPhone?: string | null;
+  /** Mensagem ENVIADA pela clínica (TO_HUB): o remetente é a própria clínica. */
+  isOutbound?: boolean;
 }
 
 interface ConversationUpsertResult {
@@ -361,9 +401,18 @@ async function upsertConversation(
     channel = "whatsapp";
   }
 
+  // Numa mensagem ENVIADA, fromDetails é quem enviou — a PRÓPRIA clínica. Usá-lo
+  // como chave fazia todo envio para contato sem telefone (contato só com o LID
+  // do WhatsApp, "Número privado" na Helena) cair na MESMA conversa, a do número
+  // da clínica. Caso real (Odonto Sorrisos, conversa do 87996030402): 1.724
+  // mensagens de 161 remetentes desde 25/06, com o lead_data de uma única pessoa
+  // — e a IA respondendo estranhos com o agendamento dela (Rodrigo,
+  // 38 99881-0514, 16/09: respondeu "Muito obgd" a um feliz aniversário e ouviu
+  // "para finalizar seu agendamento…"). No envio, a chave sai do contato ou da
+  // sessão, nunca do remetente.
   const conversationPhone = buildConversationKey({
     channel,
-    fromDetails: input.fromDetails ?? input.legacyPhone,
+    fromDetails: input.isOutbound ? null : (input.fromDetails ?? input.legacyPhone),
     instagram,
     messengerId,
     sessionId: input.sessionId,
@@ -405,12 +454,34 @@ async function upsertConversation(
   }
 
   // 2) Busca por phone legado (WhatsApp / migração)
-  const byPhone = await sb
+  //
+  // Esta busca SOBRESCREVE o helena_session_id da conversa encontrada. Era por
+  // aqui que um estranho se ligava a uma conversa alheia: o envio da clínica
+  // achava a conversa pelo telefone, gravava nela a sessão do novo contato, e a
+  // RESPOSTA desse contato vinha pela busca por sessão (passo 1) direto para lá.
+  // Agora só adota a conversa se ela for do MESMO contato da Helena (o id do
+  // contato é estável entre sessões; a sessão muda a cada atendimento). Contato
+  // diferente com a mesma chave ganha conversa própria.
+  const byPhoneRows = await sb
     .from("conversations")
-    .select("id")
+    .select("id, helena_contact_id")
     .eq("agent_id", input.agentId)
     .eq("phone", conversationPhone)
-    .maybeSingle();
+    .order("atualizado_em", { ascending: false })
+    .limit(10);
+  const phoneMatches = (byPhoneRows.data ?? []) as {
+    id: string;
+    helena_contact_id: string | null;
+  }[];
+  const byPhoneMatch = contactId
+    ? phoneMatches.find((r) => !r.helena_contact_id || r.helena_contact_id === contactId)
+    : phoneMatches[0];
+  if (contactId && phoneMatches.length > 0 && !byPhoneMatch) {
+    console.warn(
+      `[webhook] chave ${conversationPhone} já pertence a outro contato da Helena (${phoneMatches.map((r) => r.helena_contact_id).join(",")}) — contato ${contactId} ganha conversa própria`,
+    );
+  }
+  const byPhone = { data: byPhoneMatch ?? null };
 
   if (byPhone.data) {
     const convId = byPhone.data.id as string;
@@ -526,9 +597,20 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // refere (ex.: "01/09/21" respondendo a "e da Maria Alice?"). Se a Helena
         // usar um nome de campo desconhecido, o log revela para ajuste.
         logQuoteFieldsIfAny(c);
-        const quotedText = extractQuotedText(c);
+        // A Helena NÃO manda o texto citado: manda só `refId`, o id da mensagem
+        // original. Nenhum dos nomes de campo que extractQuotedText procura
+        // existe no payload real, então toda resposta citada chegava sem
+        // contexto. Caso real (Odonto Sorrisos, Rodrigo 38 99881-0514, 16/09):
+        // "Muito obgd" citando "Feliz aniversário, RODRIGO!" foi gravado só como
+        // "Muito obgd" — e a IA leu um agradecimento solto no meio de uma oferta
+        // de horário. Confirmado via GET /chat/v1/message/{id}: refId presente.
+        const quotedText =
+          extractQuotedText(c) ??
+          (c.refId && messageContent.trim()
+            ? await resolveQuotedTextByRefId(accountId, c.refId)
+            : null);
         if (quotedText && messageContent.trim()) {
-          messageContent = `[Em resposta à mensagem: "${quotedText.slice(0, 200)}"]\n${messageContent}`;
+          messageContent = withQuotePrefix(quotedText, messageContent);
         }
 
         // Eventos TRACK (rastreamento/status da Helena: entrega, "contato enviou
@@ -699,6 +781,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           fromDetails: fromDetails || legacyPhone,
           legacyPhone,
           inboundLeadPhone,
+          isOutbound,
         });
 
         if (!convId) {
