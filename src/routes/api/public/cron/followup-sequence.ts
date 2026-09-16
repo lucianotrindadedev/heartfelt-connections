@@ -27,6 +27,7 @@ import {
 } from "@/lib/helena.server";
 import { generateContextualFollowup } from "@/lib/agents/followup-context.server";
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
+import { followupHeldByConversationGuards } from "@/lib/conversation-guards";
 import {
   clearStaleConversationLock,
   releaseConversationLock,
@@ -126,6 +127,9 @@ function shouldSkipFollowup(meta: ConversationMeta | null): boolean {
   const ld = meta.lead_data ?? null;
   if (ld && (ld.appointment_id != null || ld.booked_tag_applied === true)) return true;
   if (meta.stage === "CONFIRMED" || meta.stage === "ESCALATED") return true;
+  // Conversa que mistura contatos, ou lead que só agradeceu: cobrar horário
+  // ali é empurrar agendamento em quem não pediu. Ver conversation-guards.
+  if (followupHeldByConversationGuards(meta)) return true;
   return false;
 }
 

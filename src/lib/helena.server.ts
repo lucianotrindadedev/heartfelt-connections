@@ -149,6 +149,29 @@ export async function loadHelenaContactById(
   }
 }
 
+/**
+ * Texto de uma mensagem da Helena pelo id. Usado para resolver a CITAÇÃO de um
+ * reply: o webhook recebe só `refId`, não o texto citado. Mídia sem legenda
+ * devolve null (não há texto a citar).
+ */
+export async function loadHelenaMessageText(
+  account: HelenaAccount,
+  messageId: string,
+): Promise<string | null> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}/chat/v1/message/${encodeURIComponent(messageId)}`, {
+      headers: { Authorization: account.token, accept: "application/json" },
+    });
+    if (!res.ok) return null;
+    const raw = (await res.json()) as { text?: string | null };
+    return typeof raw.text === "string" && raw.text.trim() ? raw.text : null;
+  } catch (e) {
+    console.error("[helena] erro ao carregar mensagem:", e);
+    return null;
+  }
+}
+
 export async function loadHelenaContactFromSession(
   account: HelenaAccount,
   sessionId: string,

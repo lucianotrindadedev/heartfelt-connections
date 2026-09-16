@@ -11,6 +11,7 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { isPlatformNotice } from "@/lib/platform-notice";
+import { detectForeignSender, isCourtesyOnlyBurst } from "@/lib/conversation-guards";
 import { decryptValue } from "@/lib/crypto.server";
 import { buildSlotOfferFallback } from "./slot-offer-fallback";
 import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
@@ -34,6 +35,7 @@ import {
   isCommitmentRequired,
   isPointingGesture,
   isReadyForBooking,
+  lastUserBurst,
   pointingConfirmationReply,
   slotsOfferedInLastTurn,
   type BookingChannelContext,
@@ -233,6 +235,10 @@ async function persistStageAndLeadData(
     stage,
     lead_data: leadData as Record<string, unknown>,
     current_agent: currentAgent,
+    // O lead voltou a conversar e o agente respondeu normalmente: a trava de
+    // cortesia (que segura o follow-up depois de um "obrigado") deixa de valer.
+    // `undefined` some na serialização e a chave sai do meta.
+    courtesy_hold_at: undefined,
   };
   await sb.from("conversations").update({ meta }).eq("id", conversationId);
 }
@@ -499,6 +505,103 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const meta = (conv.data.meta as ConversationMeta | null) ?? null;
     let stage = readStageFromMeta(meta);
     let leadData = readLeadDataFromMeta(meta);
+
+    // ── Trava: quem escreve agora não é o dono desta conversa ─────────────
+    // O lead_data, o estágio e o histórico são de UMA pessoa. Se quem manda a
+    // mensagem agora nunca tinha falado aqui e outra pessoa já falou, responder
+    // é tratar um estranho com o cadastro e o agendamento de outro. Caso real
+    // (Odonto Sorrisos, Rodrigo 38 99881-0514, 16/09): respondeu "Muito obgd" a
+    // um feliz aniversário e a IA, lendo o estágio SLOT_OFFER e os horários de
+    // outra lead, mandou "para finalizar seu agendamento, qual dos dois
+    // horários…". A conversa juntava 161 remetentes desde junho. A causa de
+    // raiz (a chave da conversa) foi corrigida no webhook; esta trava é a rede
+    // para as conversas que JÁ estão misturadas e para qualquer mistura futura.
+    // Silêncio aqui é o comportamento certo: a mensagem fica gravada e visível
+    // para a equipe na Helena, só a IA não responde.
+    {
+      const remetentes = ordered
+        .filter((m) => m.role === "user" && (m.content ?? "").trim())
+        .filter((m) => {
+          const mm = (m.meta ?? {}) as Record<string, unknown>;
+          return (
+            mm.is_echo !== true &&
+            mm.fallback !== true &&
+            mm.platform_notice !== true &&
+            !isPlatformNotice(m.content)
+          );
+        })
+        .map((m) => ({
+          from: ((m.meta ?? {}) as Record<string, unknown>).channel_from as
+            | string
+            | null
+            | undefined,
+        }));
+      const veredito = detectForeignSender(remetentes, normalizeBrazilPhone);
+      if (veredito.foreign) {
+        console.error(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "foreign_sender_blocked",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            current: veredito.current,
+            previous_count: veredito.previous.length,
+            previous_sample: veredito.previous.slice(0, 3),
+            stage,
+          })}`,
+        );
+        await sb
+          .from("conversations")
+          .update({
+            meta: {
+              ...(meta ?? {}),
+              foreign_sender_blocked_at: new Date().toISOString(),
+              foreign_sender_last: veredito.current,
+            },
+          })
+          .eq("id", conversationId);
+        return;
+      }
+    }
+
+    // ── Trava: agradecimento não é resposta de agendamento ────────────────
+    // Em estágio de agendamento, uma rajada que é SÓ cortesia ("Bom dia" +
+    // "Muito obgd") recebia do scheduler a continuação do fluxo — "para
+    // finalizar seu agendamento, qual horário?" — e o follow-up voltava a cobrar
+    // horas depois. Agradecimento fecha a conversa; quem quer agendar volta a
+    // escrever. A detecção é conservadora (isCourtesyOnlyBurst): qualquer número,
+    // pergunta, data, dia da semana ou turno tira a mensagem da trava, então
+    // "obrigada, pode ser às 10h" continua agendando normalmente.
+    if (
+      (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") &&
+      !leadData.appointment_id &&
+      isCourtesyOnlyBurst(lastUserBurst(history))
+    ) {
+      console.log(
+        `[orch] conv=${conversationId} rajada só de cortesia em ${stage} — respondendo sem empurrar agendamento`,
+      );
+      await deliverReply(
+        accountId,
+        agentId,
+        conversationId,
+        "Eu que agradeço! 😊 Qualquer coisa, é só me chamar por aqui.",
+        {
+          agent: "courtesy_guard",
+          courtesy_reply: true,
+          stage_from: stage,
+          stage_to: stage,
+          tools_called: [],
+        },
+        sessionId,
+        effectivePhone ?? conversationPhone,
+      );
+      await sb
+        .from("conversations")
+        .update({ meta: { ...(meta ?? {}), courtesy_hold_at: new Date().toISOString() } })
+        .eq("id", conversationId);
+      return;
+    }
+
     // Poda horários já passados (offered_slots/selected_slot_iso) ANTES de
     // qualquer lógica de slot — evita reofertar horário no passado quando a
     // conversa reativa depois de dias.
