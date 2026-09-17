@@ -33,60 +33,16 @@ import {
   releaseConversationLock,
   tryAcquireConversationLock,
 } from "@/lib/conversation-lock.server";
+import {
+  agentNeedsStaleConversations,
+  planFollowupStep,
+  WHATSAPP_WINDOW_MS,
+} from "@/lib/followup-plan";
 
 function validateCronSecret(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
   if (!secret) return false;
   return request.headers.get("x-cron-secret") === secret;
-}
-
-function delayToMs(value: number, unit: string): number {
-  switch (unit) {
-    case "minutes":
-      return value * 60 * 1000;
-    case "hours":
-      return value * 60 * 60 * 1000;
-    case "days":
-      return value * 24 * 60 * 60 * 1000;
-    default:
-      return value * 60 * 1000;
-  }
-}
-
-const DAY_KEYS = ["dom", "seg", "ter", "qua", "qui", "sex", "sab"];
-function isAllowedNow(
-  windowStart: number | null,
-  windowEnd: number | null,
-  allowedDays: string[] | null,
-  now: Date,
-): boolean {
-  // Tudo em horário de São Paulo
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
-    hour: "numeric",
-    weekday: "short",
-    hour12: false,
-  }).formatToParts(now);
-  const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
-  const weekdayMap: Record<string, string> = {
-    Sun: "dom",
-    Mon: "seg",
-    Tue: "ter",
-    Wed: "qua",
-    Thu: "qui",
-    Fri: "sex",
-    Sat: "sab",
-  };
-  const weekdayShort = parts.find((p) => p.type === "weekday")?.value ?? "";
-  const weekdayKey = weekdayMap[weekdayShort] ?? "";
-
-  if (windowStart !== null && windowEnd !== null) {
-    if (hour < windowStart || hour >= windowEnd) return false;
-  }
-  if (Array.isArray(allowedDays) && allowedDays.length > 0) {
-    if (!allowedDays.includes(weekdayKey)) return false;
-  }
-  return true;
 }
 
 interface ConversationMeta {
@@ -241,11 +197,17 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
           const accountId = agentRow.data.account_id as string;
           const blockedTagsRaw = agentSettings?.blocked_tags ?? null;
 
-          // Busca TODAS as conversas do agente, paginando (não confiar em
-          // .limit() sozinho). Caso real (MB Osasco, 732 conversas): um
-          // .limit(500) sem order() devolvia as 500 mais ANTIGAS — toda
-          // conversa criada depois disso (as mais recentes, justamente as
-          // que mais precisam de follow-up) nunca era sequer avaliada.
+          // Busca as conversas do agente, paginando (não confiar em .limit()
+          // sozinho — caso MB Osasco: .limit(500) sem order() deixava as
+          // recentes de fora). Da MAIS NOVA para a mais antiga: quem acabou de
+          // conversar é quem mais precisa do follow-up e deve ser servido
+          // primeiro quando a cota do tick é disputada.
+          // Sem step com template, conversa parada há mais de 24h nunca envia
+          // nada (WhatsApp só entrega texto livre dentro da janela) — nem
+          // busca. Na Sorriso Saúde eram ~700 de 1.122 conversas por tick.
+          const staleCutoffIso = agentNeedsStaleConversations(agentSteps)
+            ? null
+            : new Date(now.getTime() - WHATSAPP_WINDOW_MS).toISOString();
           const convs: {
             id: string;
             phone: string | null;
@@ -255,11 +217,14 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
           }[] = [];
           const CONV_PAGE_SIZE = 1000;
           for (let from = 0; ; from += CONV_PAGE_SIZE) {
-            const { data: page, error: convErr } = await sb
+            let q = sb
               .from("conversations")
               .select("id, phone, helena_session_id, channel, meta")
-              .eq("agent_id", agentId)
-              .order("criado_em", { ascending: true })
+              .eq("agent_id", agentId);
+            if (staleCutoffIso) q = q.gte("atualizado_em", staleCutoffIso);
+            const { data: page, error: convErr } = await q
+              .order("criado_em", { ascending: false })
+              .order("id", { ascending: true })
               .range(from, from + CONV_PAGE_SIZE - 1);
             if (convErr) {
               console.error(
@@ -324,47 +289,25 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
               // Steps disparados DENTRO do ciclo atual (após a última resposta do lead)
               const { data: alreadySent } = await sb
                 .from("followup_step_runs")
-                .select("step_id, sent_at, status")
+                .select("step_id, sent_at")
                 .eq("conversation_id", convId)
                 .eq("status", "sent")
                 .gt("sent_at", cycleStartAt.toISOString());
-              const sentStepIds = new Set(
-                (alreadySent ?? []).map((r) => r.step_id as string),
-              );
 
-              // Próximo step pendente no ciclo atual
-              const pendingSteps = agentSteps.filter((s) => !sentStepIds.has(s.id));
-              if (pendingSteps.length === 0) continue; // sequência inteira já rodou neste ciclo
-              const nextStep = pendingSteps[0];
-
-              // Anchor a partir do qual contamos o delay:
-              //   - step 1 do ciclo: última msg da IA (lead inativo desde então)
-              //   - step N > 1: último envio bem-sucedido do MESMO ciclo
-              let anchorAt: Date;
-              if (alreadySent && alreadySent.length > 0) {
-                const latestSend = alreadySent
-                  .map((r) => new Date(r.sent_at as string))
-                  .sort((a, b) => b.getTime() - a.getTime())[0];
-                anchorAt = latestSend > lastMsgAt ? latestSend : lastMsgAt;
-              } else {
-                anchorAt = lastMsgAt;
-              }
-
-              const delayMs = delayToMs(nextStep.delay_value, nextStep.delay_unit);
-              const earliestSendAt = new Date(anchorAt.getTime() + delayMs);
-              if (now < earliestSendAt) continue; // ainda não é hora
-
-              // Janela permitida agora?
-              if (
-                !isAllowedNow(
-                  nextStep.window_start_hour,
-                  nextStep.window_end_hour,
-                  nextStep.allowed_days,
-                  now,
-                )
-              ) {
-                continue;
-              }
+              // Delay, horário permitido e janela de 24h do WhatsApp — tudo
+              // decidido ANTES de gastar cota. Só envio de verdade conta.
+              const decision = planFollowupStep({
+                steps: agentSteps,
+                sentInCycle: (alreadySent ?? []) as { step_id: string; sent_at: string }[],
+                lastMsgAt,
+                cycleStartAt,
+                now,
+              });
+              if (decision.kind !== "send_text" && decision.kind !== "send_template") continue;
+              const nextStep = decision.step;
+              const sessionId = (conv.helena_session_id as string | null) ?? null;
+              // Template precisa da sessão Helena pra descobrir o canal.
+              if (decision.kind === "send_template" && !sessionId) continue;
 
               // Teto deste agente atingido neste tick: passa pro PRÓXIMO
               // agente (não para o tick inteiro — outros agentes não podem
@@ -402,7 +345,7 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 // follow-up ignorava a etiqueta e falava com leads pausados.)
                 const block = await checkContactBlockedBySession({
                   accountId,
-                  sessionId: (conv.helena_session_id as string | null) ?? undefined,
+                  sessionId: sessionId ?? undefined,
                   blockedTagsRaw,
                 });
                 if (block.blocked) {
@@ -415,27 +358,12 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
               attempted++;
               agentSent++;
 
-              // ── Janela de 24h do WhatsApp ──────────────────────────────
+              // ── Fora da janela de 24h do WhatsApp → template oficial ────
               // Texto livre só é entregue dentro de 24h da ÚLTIMA msg do lead.
-              // Fora disso (ex.: retorno agendado "me chama amanhã"), o WhatsApp
-              // só entrega TEMPLATE oficial. Então:
-              //   - dentro de 24h  → segue no fluxo de texto (message/contextual);
-              //   - fora de 24h    → envia o template do step (se configurado);
-              //                      sem template, pula (texto livre não entregaria).
-              const WINDOW_24H_MS = 24 * 60 * 60 * 1000;
-              const outsideWindow =
-                now.getTime() - cycleStartAt.getTime() > WINDOW_24H_MS;
-
-              if (outsideWindow) {
-                const templateName = (nextStep.helena_template_name ?? "").trim();
-                const sessionId = (conv.helena_session_id as string | null) ?? null;
-                if (!templateName || !sessionId) {
-                  // Sem template (ou sem sessão) não há como entregar fora das 24h.
-                  console.log(
-                    `[followup-seq] conv ${convId} fora das 24h e sem template — pulando (texto livre não entregaria)`,
-                  );
-                  continue;
-                }
+              // Fora disso (ex.: retorno agendado "me chama amanhã"), só
+              // template. Sem template o planFollowupStep já descartou acima.
+              if (decision.kind === "send_template" && sessionId) {
+                const templateName = decision.templateName;
                 try {
                   const helena = await loadHelenaAccount(accountId);
                   const session = await loadHelenaSession(helena, sessionId).catch(() => null);

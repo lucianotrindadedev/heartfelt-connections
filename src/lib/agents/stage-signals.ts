@@ -439,6 +439,20 @@ export function looksLikeStallReply(reply: string): boolean {
 }
 
 /**
+ * A resposta é uma enrolação que PROMETE CONSULTAR A AGENDA ("deixa eu
+ * verificar a disponibilidade a partir das 15h", "vou ver os horários da
+ * semana que vem", "deixa eu confirmar com a equipe e já te retorno com mais
+ * opções"). Subconjunto de looksLikeStallReply: "vou finalizar seu cadastro" é
+ * enrolação, mas não se resolve buscando horário.
+ */
+export function promisesAvailabilityCheck(reply: string): boolean {
+  if (!looksLikeStallReply(reply)) return false;
+  return /\b(hor[áa]rios?|agenda|disponibilidade|dispon[íi]ve(?:l|is)|op[çc](?:[õo]es|[ãa]o)|vagas?|encaixes?|datas?|dias?|semana|tarde|manh[ãa]|noite|s[áa]bado|domingo|segunda|ter[çc]a|quarta|quinta|sexta)\b/i.test(
+    reply,
+  );
+}
+
+/**
  * O texto faz uma pergunta REAL — ou seja, algo que o lead precisa responder.
  * Um fecho retórico ("…, tá bem?") NÃO conta. Usado para saber "de quem é a
  * vez": com pergunta real, a bola está com o LEAD; sem pergunta, quem deve agir

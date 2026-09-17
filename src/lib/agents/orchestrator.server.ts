@@ -36,6 +36,8 @@ import {
   isPointingGesture,
   isReadyForBooking,
   lastUserBurst,
+  joinLeadIn,
+  addressLineIfAsked,
   pointingConfirmationReply,
   slotsOfferedInLastTurn,
   type BookingChannelContext,
@@ -109,7 +111,15 @@ import {
   detectSignals,
   inferEffectiveStage,
   looksLikeStallReply,
+  hasRealQuestion,
 } from "./stage-signals";
+import { isReplyTooSimilar } from "./reply-similarity";
+import {
+  NEUTRAL_REPEAT_ACK,
+  REPHRASE_PREFIX,
+  SLOT_OFFER_REPEAT_FALLBACK,
+  rephraseRepeatedQuestion,
+} from "./duplicate-fallback";
 
 const MAX_HISTORY = 50;
 
@@ -128,35 +138,6 @@ interface MsgRow {
   role: string;
   content: string | null;
   meta: Record<string, unknown> | null;
-}
-
-/** Normaliza texto para comparação (lowercase, sem pontuação/emoji/espaços extras). */
-function normalizeForSimilarity(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** Compara reply atual com a última mensagem do assistente. Considera duplicado
- *  quando >70% das palavras de uma estão contidas na outra (mesmo splitada em bolhas). */
-function isReplyTooSimilar(current: string, previous: string): boolean {
-  const a = normalizeForSimilarity(current);
-  const b = normalizeForSimilarity(previous);
-  if (!a || !b) return false;
-  if (a === b) return true;
-
-  const wordsA = new Set(a.split(" ").filter((w) => w.length >= 3));
-  const wordsB = new Set(b.split(" ").filter((w) => w.length >= 3));
-  if (wordsA.size < 4) return false; // muito curto pra avaliar
-
-  let matches = 0;
-  for (const w of wordsA) if (wordsB.has(w)) matches++;
-  const overlap = matches / wordsA.size;
-  return overlap >= 0.7;
 }
 
 // ── Persistência stage/lead_data em conversations.meta ────────────────────
@@ -825,6 +806,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       hasBookingIntegration,
     });
     const { lastUserMsg, lastAssistantMsg, slotSelectionTurn, userAcceptedSchedulingProposal } = signals;
+    // Travas que trocam a resposta inteira por um pedido fixo não podem deixar a
+    // pergunta do endereço sem resposta — ver addressLineIfAsked.
+    const withAddressIfAsked = (text: string): string => {
+      const endereco = addressLineIfAsked(lastUserBurst(history), agentSettings.company_address);
+      return endereco ? `${endereco}\n\n${text}` : text;
+    };
 
     // RECEPTION/QUALIFICATION incluídos — o qualifier também oferta horários
     // (ver tryAutoSelectOfferedSlot). A função é no-op sem offered_slots.
@@ -1679,7 +1666,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       );
       if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
         const nextField = missingFields[0]!;
-        reply = `Perfeito, já anotei o horário aqui! 😊\n\n${bookingFieldQuestion(nextField, finalLeadData)}`;
+        reply = withAddressIfAsked(
+          joinLeadIn(
+            "Perfeito, já anotei o horário aqui! 😊",
+            bookingFieldQuestion(nextField, finalLeadData),
+            "\n\n",
+          ),
+        );
         newStage = "NAME_COLLECT";
       } else if (
         finalLeadData.selected_slot_iso &&
@@ -1836,8 +1829,20 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // inconsistentes ("Call agendada", "AVALIAÇÃO AGENDADA ", "VISITA
         // GUIADA") e quebrariam a concordância. "agendar um horário" serve a
         // todos os ramos.
+        //
+        // E não reseta a conversa: "Desculpa, acho que me confundi aqui!" saía
+        // quando a IA só estava refazendo uma pergunta que o lead não respondeu
+        // ("Sim perdi" para "um dente ou mais de um?", "Oi" para "como prefere
+        // que eu te chame?") — Sorriso Saúde, 8 conversas em set/2026. Refaz a
+        // pergunta com outras palavras; se até isso já foi, pede o assunto.
+        const reformulada = rephraseRepeatedQuestion(reply);
+        const jaReformulou = baselineAnterior.startsWith(REPHRASE_PREFIX);
         reply =
-          "Desculpa, acho que me confundi aqui! 😅 Me diz como posso te ajudar: você quer agendar um horário ou tirar alguma dúvida antes?";
+          reformulada && !jaReformulou && !jaRepetiuDuasVezes
+            ? reformulada
+            : reformulada || hasRealQuestion(reply)
+              ? "Me conta com suas palavras o que você está procurando que eu te ajudo por aqui. 😊"
+              : NEUTRAL_REPEAT_ACK;
         newStage = "QUALIFICATION";
       } else if (effectiveStage === "NAME_COLLECT" || stage === "NAME_COLLECT") {
         // A trava não pode TROCAR DE ASSUNTO. Se a repetição é sobre o NOME,
@@ -1870,7 +1875,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         );
         const nomeEhFrase = looksLikeSentenceNotName(finalLeadData.name ?? "");
         if (missingNoLoop.length > 0) {
-          reply = `Desculpa insistir! ${bookingFieldQuestion(missingNoLoop[0]!, finalLeadData)}`;
+          reply = withAddressIfAsked(
+            joinLeadIn("Desculpa insistir!", bookingFieldQuestion(missingNoLoop[0]!, finalLeadData)),
+          );
         } else if (nomeEhFrase) {
           // Nome que é FRASE ("Ja te mandei") passa por getMissingBookingFields
           // (tem 2+ palavras), mas nunca vai virar cadastro de paciente.
@@ -1879,11 +1886,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         } else {
           reply = finalLeadData.selected_slot_iso
             ? "Quase lá! Só me confirma que posso garantir esse horário pra você que eu finalizo o agendamento. 😊"
-            : "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
+            : SLOT_OFFER_REPEAT_FALLBACK;
         }
       } else if (hasBookingIntegration) {
-        reply =
-          "Me confirma só por favor: você quer seguir com o agendamento agora? Posso te mostrar os horários disponíveis.";
+        // Oferta repetida: o lead já viu esses horários e não escolheu. Pedir a
+        // restrição dele, não "quer seguir com o agendamento?" — ver
+        // SLOT_OFFER_REPEAT_FALLBACK.
+        reply = SLOT_OFFER_REPEAT_FALLBACK;
       } else {
         // Agente sem integração de agendamento (turismo, vendas, etc.) — texto
         // neutro que não menciona "agendamento" nem "horários".
@@ -2027,6 +2036,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             (result.telemetry?.false_confirmation_scrubbed as boolean) || undefined,
           chosen_slot_preserved:
             (result.telemetry?.chosen_slot_preserved as boolean) || undefined,
+          // A resposta prometia "vou verificar a agenda" sem tool; o scheduler
+          // buscou de verdade e gerou a resposta de novo.
+          stall_listing_forced:
+            (result.telemetry?.stall_listing_forced as boolean) || undefined,
+          invented_time_offer_scrubbed:
+            (result.telemetry?.invented_time_offer_scrubbed as boolean) || undefined,
         },
         sessionId,
         effectivePhone ?? conversationPhone,

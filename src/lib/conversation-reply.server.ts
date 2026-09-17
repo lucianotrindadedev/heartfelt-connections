@@ -1,5 +1,6 @@
 // Verifica se a última mensagem da conversa ainda é do lead (sem resposta do agente).
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { isPlatformNotice } from "@/lib/platform-notice";
 
 export async function conversationNeedsAgentReply(
   conversationId: string,
@@ -10,7 +11,7 @@ export async function conversationNeedsAgentReply(
   // resposta. Desempate por id mantém a ordem estável em rajadas.
   const { data } = await sb
     .from("messages")
-    .select("role, meta")
+    .select("role, content, meta")
     .eq("conversation_id", conversationId)
     .order("criado_em", { ascending: false })
     .order("id", { ascending: false })
@@ -22,6 +23,15 @@ export async function conversationNeedsAgentReply(
     // Eventos TRACK (status/rastreamento) não são mensagens reais — não podem
     // "esconder" uma mensagem do lead ainda sem resposta nem contar como resposta.
     if (meta?.tipo === "TRACK") continue;
+    // Texto vazio (reação, mensagem apagada) e aviso da plataforma ("*Atenção:*
+    // … não suportada") não são fala do lead: não pedem resposta, mas também
+    // não escondem uma fala real anterior sem resposta. Mesmo filtro do
+    // histórico do LLM. Cada um disparava um turno e a IA "respondia" ao nada
+    // (Sorriso Saúde, Domisalia 02/09 e Luiz Mário 07/09).
+    if (m.role === "user") {
+      const content = (m.content as string | null) ?? "";
+      if (!content.trim() || meta?.platform_notice === true || isPlatformNotice(content)) continue;
+    }
     return m.role === "user";
   }
   return false;

@@ -676,6 +676,55 @@ export function bookingFieldQuestion(field: BookingFieldDef, ld: LeadData): stri
     : `Qual é o sobrenome de ${first}? Preciso do nome completo pro cadastro.`;
 }
 
+/**
+ * Junta uma abertura fixa ("Quase lá! Pra fechar seu horário de X,") com a
+ * pergunta do campo pendente sem emendar duas aberturas. A pergunta padrão do
+ * nome começa com "Perfeito. Para finalizar, …", e a concatenação saía
+ * "…quarta-feira, 16/09 às 08:30, Perfeito. Para finalizar, me envia…" e
+ * "Desculpa insistir! Perfeito. Para finalizar…" (Sorriso Saúde, 14–16/09).
+ */
+export function joinLeadIn(leadIn: string, question: string, sep = " "): string {
+  let q = (question ?? "").trim();
+  for (let i = 0; i < 3; i++) {
+    const next = q
+      .replace(/^(?:perfeito|[óo]timo|certo|beleza|show|maravilha|combinado|entendi|que bom)\s*[.!:]+\s*/i, "")
+      .replace(/^(?:agora|para finalizar|pra finalizar|e agora)\s*[,:]\s*/i, "");
+    if (next === q) break;
+    q = next;
+  }
+  const head = leadIn.trimEnd();
+  if (!q) return head;
+  // Depois de vírgula a frase continua: minúscula — mas só em palavra comum,
+  // nunca no nome do lead ("…às 08:30, Kelly, me confirma…").
+  if (/,$/.test(head) && /^(?:me|preciso|qual|quais|pode|poderia|envia|envie|manda|mande|informe|informa|s[óo]|para|pra|como)\b/i.test(q)) {
+    q = q.charAt(0).toLowerCase() + q.slice(1);
+  } else if (!/,$/.test(head)) {
+    q = q.charAt(0).toUpperCase() + q.slice(1);
+  }
+  return `${head}${sep}${q}`;
+}
+
+const ASKS_ADDRESS_RE =
+  /\b(?:endere[çc]o|localiza[çc][ãa]o|onde\s+(?:fica|[ée]|voc[êe]s\s+ficam|ficam)|aonde\s+fica|fica\s+a?onde|qual\s+(?:o\s+)?bairro|em\s+que\s+bairro|como\s+(?:eu\s+)?chego)\b/i;
+
+/**
+ * Linha com o endereço da clínica quando o lead PERGUNTOU por ele na rajada
+ * atual. As respostas fixas das travas (pedido de sobrenome, "Desculpa
+ * insistir") trocavam o texto inteiro do modelo e a pergunta ficava sem
+ * resposta. Caso real (Sorriso Saúde, Ana 27 99865-5084, 14–16/09): escolheu
+ * "Quarta às 08:30 e onde fica a clínica?", perguntou de novo "Mas aonde fica
+ * a Clínica?" e só recebeu pedidos de nome — nunca agendou.
+ */
+export function addressLineIfAsked(
+  burst: readonly string[],
+  companyAddress: string | null | undefined,
+): string {
+  const endereco = (companyAddress ?? "").trim();
+  if (!endereco) return "";
+  if (!burst.some((m) => ASKS_ADDRESS_RE.test(m ?? ""))) return "";
+  return `📍 Nosso endereço: ${endereco}`;
+}
+
 // ── Preflight pre-criar_agendamento ─────────────────────────────────────────
 //
 // Ultima barreira ANTES de chamar criar_agendamento. Detecta campos suspeitos
@@ -1599,6 +1648,12 @@ export function looksLikeSentenceNotName(text: string): boolean {
   if (VERBO_CONJUGADO_RE.test(t)) return true;
   // Negação/adversativa iniciando a frase: "não quinta", "mas eu queria...".
   if (/^(n[ãa]o|nem|mas|porque|por que|s[óo]|hj|j[áa])(?!\p{L})/iu.test(t)) return true;
+  // Intensificador abrindo a frase, ou comentário de PREÇO: "Muito salgado"
+  // virou o nome do lead e a IA respondeu "Entendo, Muito Salgado" (Sorriso
+  // Saúde, 14/09). Nenhum nome começa com "Muito"/"Bem"/"Super", e "caro"/
+  // "barato" não são sobrenome.
+  if (/^(muit[oa]s?|mto|mt|bem|super|meio|t[ãa]o|bastante|demais)(?!\p{L})/iu.test(t)) return true;
+  if (/(?<!\p{L})(car[oa]s?|barat[oa]s?|pre[çc]os?|valor(?:es)?|or[çc]amentos?)(?!\p{L})/iu.test(t)) return true;
   // Afirmação curta ("tá bem", "ok", "beleza") — ANCORADA na mensagem inteira,
   // para não reprovar um nome que por acaso contenha a palavra.
   if (
@@ -1951,7 +2006,10 @@ function weekOrWeekdayTargetBrt(t: string, now: number): string | null {
     // de semana/mês porque "daqui a 2 semanas" cita "semanas" mas é contagem.
     const byCount = relativeCountDateBrt(semNorm, now);
     if (byCount) return byCount;
-    if (/\b(?:proxima\s+semana|semana\s+que\s+vem|semana\s+seguinte)\b/.test(semNorm)) {
+    // "na outra semana" também: é como o lead diz "não esta, a seguinte".
+    // Caso real (Sorriso Saúde, 03/09): "Na outra semana entao" não ancorava
+    // nada e a IA reofertou a mesma quarta 09/09 que a lead tinha recusado.
+    if (/\b(?:(?:proxima|outra)\s+semana|semana\s+que\s+vem|semana\s+seguinte)\b/.test(semNorm)) {
       return nextWeekMondayBrt(now);
     }
     if (/\b(?:proximo\s+mes|mes\s+que\s+vem|mes\s+seguinte)\b/.test(semNorm)) {
@@ -2055,6 +2113,12 @@ const TIME_RANGE_RE =
 const CONCRETE_TIME_OFFER_RE =
   /\b(?:segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|amanh[ãa]|hoje)(?:-feira)?[^.!?\n]{0,40}?\s[àa]s\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)?\b/i;
 
+/** Oferta em LISTA, sem dia na mesma frase: "Tenho 14:00 ou 14:30",
+ *  "Consigo 09:30 ou 10:00". Exige o formato HH:MM — "tenho 2 filhos" ou
+ *  "consigo às 9 da manhã?" (fala do lead citada) não entram. */
+const LISTED_TIME_OFFER_RE =
+  /\b(?:tenho|temos|consigo|dispon[íi]ve(?:l|is)|vagas?|encaixes?|op[çc](?:[õo]es|[ãa]o))\b[^.!?\n]{0,60}?\b\d{1,2}:\d{2}\b/i;
+
 /** Horários citados dentro de uma frase, em minutos do dia: "9h" → 540,
  *  "9h30" → 570, "às 14" → 840, "10:30" → 630. Faixas de funcionamento já saem
  *  antes (TIME_RANGE_RE), então "das 8h às 18h" não entra aqui. */
@@ -2068,6 +2132,97 @@ function citedTimesInMinutes(sentence: string): number[] {
     if (h >= 0 && h <= 23 && min >= 0 && min <= 59) out.push(h * 60 + min);
   }
   return out;
+}
+
+/**
+ * O lead DIGITOU uma hora e o horário escolhido para ele é OUTRO?
+ *
+ * Caso real (Sorriso Saúde, Kelly 27 99910-2126, 09/09): ela respondeu
+ * "As 14:30" e a escolha automática ficou com 24/09 às 08:30 — o único horário
+ * real daquele dia (o agente tinha inventado 14:00/14:30). O resolvedor por LLM
+ * aplicou a regra "escolha pelo dia quando só há um horário nele" por cima da
+ * hora que ela escreveu.
+ *
+ * Compara em ciclo de 12h: "5 da tarde" é citado como 5:00 e casa com 17:00.
+ * Sem hora digitada não há contradição (escolha por ordem ou por dia segue
+ * valendo).
+ */
+export function leadTimeContradictsSlot(burst: readonly string[], slotIso: string): boolean {
+  const d = new Date(slotIso);
+  if (isNaN(d.getTime())) return false;
+  const [hh, mm] = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .format(d)
+    .split(":")
+    .map(Number);
+  const doSlot = ((hh! % 24) * 60 + mm!) % 720;
+  const citados = burst.flatMap((m) => citedTimesInMinutes((m ?? "").replace(TIME_RANGE_RE, "")));
+  if (citados.length === 0) return false;
+  return !citados.some((c) => c % 720 === doSlot);
+}
+
+/**
+ * O agente REPETIU o horário escolhido e pediu um dado de cadastro ("Pra fechar
+ * seu horário de quarta-feira, 09/09 às 09:30, me confirma seu sobrenome?"), e
+ * o lead respondeu sem recusar nem pedir outro dia/hora. Isso É a confirmação.
+ *
+ * O juiz de intenção por LLM lia só "Carla Azevedo Alves Ribeiro" como última
+ * mensagem, concluía "não confirmou o horário", segurava o agendamento e zerava
+ * a escolha — o lead recebia a oferta de novo logo depois de mandar o nome.
+ * Casos reais (Sorriso Saúde): Carla 07/09, Osvaldina 12/09, Arlindo 17/09.
+ *
+ * Também exige que a escolha ANTERIOR (a rajada antes dessa fala do agente)
+ * não contradiga a hora do slot: se o agente repetiu um horário errado (Kelly,
+ * "As 14:30" → "…24/09 às 08:30"), a resposta com o nome não confirma nada.
+ */
+export function leadAnsweredFieldAfterSlotRestated(
+  history: { role: "user" | "assistant"; content: string }[],
+  slotIso: string,
+): boolean {
+  const ddmm = ddmmInBrt(slotIso);
+  if (!ddmm) return false;
+  const hhmm = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(slotIso));
+
+  let i = history.length - 1;
+  const burst: string[] = [];
+  while (i >= 0 && history[i]!.role === "user") burst.unshift(history[i--]!.content);
+  if (burst.length === 0 || i < 0) return false;
+  const agente = history[i]!.content ?? "";
+
+  const citaSlot =
+    affirmedDatesFromAssistant([agente]).has(ddmm) &&
+    new RegExp(`\\b${hhmm.replace(/^0/, "0?")}\\b`).test(agente);
+  const pedeCadastro =
+    /\b(nome|sobrenome|cpf|nascimento|whats\s*app|telefone|celular|e-?mail)\b/i.test(agente);
+  if (!citaSlot || !pedeCadastro) return false;
+
+  const recusa = burst.some(
+    (m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()),
+  );
+  if (recusa) return false;
+  if (leadTimeContradictsSlot(burst, slotIso)) return false;
+  const slotDay = slotDayBrt(slotIso);
+  if (burst.some((m) => {
+    const d = requestedDateFromText(m);
+    return !!d && d !== slotDay;
+  })) {
+    return false;
+  }
+
+  const antes: string[] = [];
+  let j = i - 1;
+  while (j >= 0 && history[j]!.role === "user") antes.unshift(history[j--]!.content);
+  if (antes.length > 0 && leadTimeContradictsSlot(antes, slotIso)) return false;
+  return true;
 }
 
 /** Slot ofertado, no mínimo que este arquivo precisa ler. */
@@ -2121,15 +2276,36 @@ export function scrubInventedTimeOffers(
       .filter((k): k is WeekdayKey => !!k),
   );
 
+  // Par DATA+HORA. Comparar só a hora deixava passar um horário real de OUTRO
+  // dia. Caso real (Sorriso Saúde, Kelly 27 99910-2126, 09/09): "consigo abrir
+  // um encaixe na tarde de quinta-feira, 24/09. Tenho 14:00 ou 14:30" — sem
+  // nenhuma busca no turno e sem tarde na agenda de quinta. A lead respondeu
+  // "As 14:30" e o sistema escolheu 24/09 às 08:30. Só vale quando a resposta
+  // inteira cita UMA data (com duas, não dá pra saber qual hora é de qual dia).
+  const datasNaResposta = affirmedDatesFromAssistant([original]);
+  const dataUnica = datasNaResposta.size === 1 ? [...datasNaResposta][0]! : null;
+  const reaisComData = reais.filter((s) => absoluteDdMmFromText(s.date_label ?? ""));
+  const minutosNaDataUnica = dataUnica
+    ? new Set(
+        reaisComData
+          .filter((s) => absoluteDdMmFromText(s.date_label ?? "") === dataUnica)
+          .map((s) => minutesOfDayFromLabel(s.time_label!)),
+      )
+    : null;
+
   /** A frase oferta dia+hora que não podemos sustentar? */
   const ofensiva = (texto: string): boolean => {
     const limpo = texto.replace(TIME_RANGE_RE, "");
-    if (!CONCRETE_TIME_OFFER_RE.test(limpo)) return false;
+    if (!CONCRETE_TIME_OFFER_RE.test(limpo) && !LISTED_TIME_OFFER_RE.test(limpo)) return false;
     // Sem horários reais em mãos, qualquer oferta concreta é inventada.
     if (minutosReais.size === 0) return true;
     const citados = citedTimesInMinutes(limpo);
     // Com horários reais, é ofensiva se citar um que não está entre eles...
     if (citados.length > 0 && citados.some((m) => !minutosReais.has(m))) return true;
+    // ...ou um que existe, mas não no dia que a resposta anunciou.
+    if (minutosNaDataUnica && reaisComData.length > 0 && citados.length > 0) {
+      if (citados.some((m) => !minutosNaDataUnica.has(m))) return true;
+    }
     // ...ou se rotular o slot com um dia da semana que nenhum slot real tem.
     // Só vale quando a frase cita um horário REAL — assim "atendemos de segunda
     // a sexta" (fala de expediente, não oferta) continua fora.
@@ -2411,6 +2587,29 @@ function targetDateFromText(t: string): string | null {
   return porSemana ?? soDia;
 }
 
+const FORWARD_WEEK_OR_MONTH =
+  "(?:(?:proxim[ao]|outra)\\s+semana|semana\\s+que\\s+vem|semana\\s+seguinte|proximo\\s+mes|mes\\s+que\\s+vem)";
+
+/**
+ * "Essa semana não dá mais, vou deixar pra semana que vem": a negação é da
+ * semana ATUAL e o pedido é a seguinte. O portão de indisponibilidade
+ * (mentionsUnavailability) descartava a frase inteira e a busca ancorava em
+ * hoje — a IA reofertava sexta 11/09 para quem tinha acabado de recusar a
+ * semana. Caso real (Sorriso Saúde, Jona, 10/09).
+ *
+ * Só vale sem dia da semana citado (aí quem manda é o dia) e quando a própria
+ * referência adiante não está negada ("semana que vem não posso").
+ */
+function forwardWeekOrMonthRequest(t: string): string | null {
+  const semNorm = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/.test(semNorm)) return null;
+  if (!new RegExp(`\\b${FORWARD_WEEK_OR_MONTH}\\b`).test(semNorm)) return null;
+  if (!mentionsUnavailability(semNorm)) return null; // sem negação o caminho normal já resolve
+  if (new RegExp(`\\b${FORWARD_WEEK_OR_MONTH}\\b[^,.;!?]{0,20}\\bnao\\b`).test(semNorm)) return null;
+  if (new RegExp(`\\bnao\\b[^,.;!?]{0,25}\\b${FORWARD_WEEK_OR_MONTH}\\b`).test(semNorm)) return null;
+  return weekOrWeekdayTargetBrt(semNorm, Date.now());
+}
+
 /**
  * Data (YYYY-MM-DD BRT) que o lead PEDIU numa mensagem, se houver: dia da
  * semana ("quinta", "quinta-feira"), relativo ("amanhã", "hoje") ou absoluto
@@ -2423,6 +2622,8 @@ function targetDateFromText(t: string): string | null {
 export function requestedDateFromText(text: string): string | null {
   const t = (text ?? "").trim().toLowerCase();
   if (!t) return null;
+  const semanaAdiante = forwardWeekOrMonthRequest(t);
+  if (semanaAdiante) return semanaAdiante;
   if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
   // Data de NASCIMENTO completa ("15/03/1990", "15 de março de 1990") é resposta
   // de cadastro, não pedido de dia. requestedDateFromHistory varre o histórico
@@ -2637,7 +2838,8 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
   if (!t.trim()) return null;
   const present: Array<{ key: "manha" | "tarde" | "noite"; re: string; idx: number }> = [];
   const m = t.search(/\bmanh[aã]/);
-  const ta = t.search(/\btarde/);
+  // "atarde" (colado, comum no celular): "Quinta feira atarde tem".
+  const ta = t.search(/\ba?tarde/);
   const n = t.search(/\bnoite/);
   if (m >= 0) present.push({ key: "manha", re: "manh[ãa]", idx: m });
   if (ta >= 0) present.push({ key: "tarde", re: "tarde", idx: ta });
@@ -2695,7 +2897,7 @@ export function requestedHoraFromText(text: string): number | null {
   // "16h"/"16 horas"/"16:00" (sufixo de hora obrigatório sem "às") OU
   // "5 da tarde" (o turno logo depois já indica que o número é hora).
   const m = t.match(
-    /\b(?:[àa]s\s*(\d{1,2})(?:\s*h(?:oras?)?)?|(\d{1,2})\s*(?:h(?:oras?)?|:00)|(\d{1,2})(?=\s*d[aeo]\s*(?:manh[ãa]|tarde|noite)))\b/,
+    /\b(?:[àa]s\s*(\d{1,2})(?:\s*h(?:oras?)?)?|(\d{1,2})\s*(?:h(?:oras?)?|:00)|(\d{1,2})(?=(?:\s*e\s*(?:meia|quinze))?\s*d[aeo]\s*(?:manh[ãa]|tarde|noite)))\b/,
   );
   if (!m) return null;
   const h = Number(m[1] ?? m[2] ?? m[3]);
@@ -2703,7 +2905,8 @@ export function requestedHoraFromText(text: string): number | null {
 
   // Turno dito logo APÓS a hora ("4 horas da tarde", "7 da noite").
   const after = t.slice((m.index ?? 0) + m[0].length);
-  const periodo = after.match(/^\s*d[aeo]\s*(manh[ãa]|tarde|noite)/)?.[1];
+  // "5 e meia da tarde": o "e meia" fica entre a hora e o turno.
+  const periodo = after.match(/^(?:\s*e\s*(?:meia|quinze))?\s*d[aeo]\s*(manh[ãa]|tarde|noite)/)?.[1];
   if (periodo) {
     if (periodo.startsWith("manh")) return h === 12 ? 0 : h; // "12 da manhã" = meia-noite
     if (periodo === "noite" && h === 12) return 0; // "12 da noite" = meia-noite
@@ -3387,6 +3590,26 @@ export function pointingConfirmationReply(spokenSlots: OfferedSlot[]): string | 
 }
 
 export function tryAutoSelectOfferedSlot(
+  stage: string,
+  leadData: LeadData,
+  history: { role: "user" | "assistant"; content: string }[],
+): Partial<LeadData> {
+  const patch = autoSelectOfferedSlotInner(stage, leadData, history);
+  // Nunca marca uma hora diferente da que o lead digitou — ver
+  // leadTimeContradictsSlot. Sem escolha, o agente reoferta.
+  if (
+    patch.selected_slot_iso &&
+    leadTimeContradictsSlot(
+      lastUserBurst(history).map((m) => m.trim()),
+      patch.selected_slot_iso,
+    )
+  ) {
+    return {};
+  }
+  return patch;
+}
+
+function autoSelectOfferedSlotInner(
   stage: string,
   leadData: LeadData,
   history: { role: "user" | "assistant"; content: string }[],
