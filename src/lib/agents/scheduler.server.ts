@@ -76,6 +76,7 @@ import { normalizeBrazilPhone } from "@/lib/conversation-channel.server";
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import { stripLlmForbiddenFields } from "./lead-patch-guard";
+import { promisesAvailabilityCheck } from "./stage-signals";
 import {
   classifyBookingError,
   parseBookingFailure,
@@ -123,6 +124,10 @@ import {
   patchFromSlot,
   mentionsUnavailability,
   leadRequestedUnofferedDate,
+  leadTimeContradictsSlot,
+  leadAnsweredFieldAfterSlotRestated,
+  joinLeadIn,
+  addressLineIfAsked,
   requestedDateFromText,
   requestedPeriodoFromText,
   looksLikeSentenceNotName,
@@ -2129,6 +2134,14 @@ async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
 
   const idx = await resolveSlotChoiceLLM(ctx, candidates, lastUser);
   if (idx == null) return {};
+  // A LLM pode escolher "pelo dia" por cima da hora que o lead escreveu (Kelly:
+  // "As 14:30" → 08:30). Hora digitada diferente = não é essa a escolha.
+  if (leadTimeContradictsSlot(burst, candidates[idx]!.iso)) {
+    console.warn(
+      `[scheduler] resolvedor escolheu ${candidates[idx]!.iso} mas o lead digitou outra hora conv=${ctx.conversationId} — descartando`,
+    );
+    return {};
+  }
   return patchFromSlot(candidates[idx]!);
 }
 
@@ -2397,7 +2410,20 @@ async function execCriarAgendamento(
   // com a conversa inteira confirma que o paciente quer ESTE dia e horário. É
   // por aqui que passam as três falhas recorrentes (agendar recusado, agendar
   // dia errado, agendar sem confirmação). Fail-open no erro de infra.
-  if (!ctx.dryRun) {
+  // Exceção: o agente acabou de repetir ESTE horário pedindo um dado de
+  // cadastro e o lead respondeu o dado — a confirmação já está na conversa e o
+  // juiz, lendo só "Carla Azevedo Alves Ribeiro", segurava o agendamento. Ver
+  // leadAnsweredFieldAfterSlotRestated.
+  const confirmadoPeloCadastro = leadAnsweredFieldAfterSlotRestated(
+    ctx.history,
+    ld.selected_slot_iso,
+  );
+  if (confirmadoPeloCadastro) {
+    console.log(
+      `[scheduler] intenção confirmada pelo cadastro conv=${ctx.conversationId} slot=${ld.selected_slot_iso} — juiz LLM dispensado`,
+    );
+  }
+  if (!ctx.dryRun && !confirmadoPeloCadastro) {
     const intent = await verifyBookingIntentLLM(ctx, ld.selected_slot_iso);
     if (!intent.ok) {
       console.warn(
@@ -3261,6 +3287,16 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
 
 const MAX_TOOL_LOOPS = 6;
 
+/** Nomes (e aliases) da tool de consulta de agenda — ver o switch do tool loop. */
+const LISTAR_HORARIOS_TOOL_NAMES = new Set([
+  "listar_horarios",
+  "listar_horarios_clinicorp",
+  "listar_horarios_google_calendar",
+  "listar_horarios_clinup",
+  "clinup_buscar_horarios",
+  "listar_horarios_clinic_experts",
+]);
+
 export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult> {
   // RAG com Gate: modelo barato decide se a msg precisa de busca.
   const lastUserMsg = [...ctx.history].reverse().find((m) => m.role === "user")?.content ?? "";
@@ -3677,10 +3713,20 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         getBookingFieldsForChannel(ctx.agentSettings, channelCtxFields),
         ctx.leadData,
       );
-      reply =
+      const pedido =
         missing.length > 0
-          ? `Quase lá! Pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label}, ${bookingFieldQuestion(missing[0]!, ctx.leadData)}`
+          ? joinLeadIn(
+              `Quase lá! Pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label},`,
+              bookingFieldQuestion(missing[0]!, ctx.leadData),
+            )
           : `Só falta confirmar pra fechar seu horário de ${chosenSlot.date_label} às ${chosenSlot.time_label}. Posso confirmar? 😊`;
+      // O texto do modelo (que respondia a pergunta do lead) é descartado aqui;
+      // o endereço, a pergunta mais comum junto da escolha, não pode sumir.
+      const endereco = addressLineIfAsked(
+        lastUserBurst(ctx.history),
+        ctx.agentSettings.company_address,
+      );
+      reply = endereco ? `${endereco}\n\n${pedido}` : pedido;
       // Mantém o slot escolhido (não limpa) — o stage segue na coleta.
       if (outStage === "CONFIRMED") outStage = "NAME_COLLECT";
       outPatch = { ...outPatch, appointment_id: undefined };
@@ -3851,6 +3897,94 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       : "Me envia seu nome completo (nome e sobrenome), por favor? Preciso dele pra registrar seu cadastro e finalizar o agendamento.";
     outStage = "NAME_COLLECT";
     mergedTelemetry.incomplete_name_blocked = true;
+  }
+
+  // ── "Vou verificar os horários" sem ter verificado ─────────────────────────
+  // O modelo do tool loop não chamou listar_horarios, e o modelo da resposta
+  // prometeu ir buscar ("deixa eu verificar a partir das 15h", "vou ver a
+  // semana que vem"). A promessa nunca se cumpria: a trava anti-stall do
+  // orquestrador trocava o texto pela lista ANTIGA — justamente os horários que
+  // o lead tinha acabado de recusar. Casos reais (Sorriso Saúde, set/2026):
+  // Adriana pediu "a partir das 15h" 4 vezes e recebeu 13:00/13:30 com 15:00
+  // livre na agenda; Jona pediu "semana que vem" e recebeu a sexta desta semana.
+  // Aqui a busca acontece de verdade — execListarHorarios já extrai dia, turno e
+  // hora pedidos do histórico — e a resposta é gerada de novo com as vagas reais.
+  const listedThisTurn = toolsCalled.some((t) => LISTAR_HORARIOS_TOOL_NAMES.has(t));
+  const selectedIso = ctx.leadData.selected_slot_iso;
+  if (
+    hasBookingIntegration(ctx) &&
+    !ctx.leadData.appointment_id &&
+    !(outPatch as Partial<LeadData>).appointment_id &&
+    !invalidNameBlocked &&
+    !incompleteNameBlocked &&
+    outStage !== "ESCALATED" &&
+    !listedThisTurn &&
+    promisesAvailabilityCheck(reply) &&
+    (!selectedIso || isAskingDifferentDay(selectedIso, requestedDateFromHistory(ctx.history)))
+  ) {
+    const listing = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
+    toolsCalled.push("listar_horarios");
+    if (listing.patch) {
+      ctx.leadData = mergeLeadDataPatch(ctx.leadData, listing.patch);
+      outPatch = mergeLeadDataPatch(outPatch as LeadData, listing.patch);
+    }
+    const pedidoDoLead = lastUserMsg.slice(0, 300);
+    const retryBase =
+      buildDynamicSystemPrompt(ctx) +
+      `\n\n# RESULTADO listar_horarios (busca feita AGORA pelo sistema)\n${listing.result}\n` +
+      `A busca na agenda JÁ FOI FEITA — NÃO diga que vai verificar, buscar ou retornar depois. ` +
+      `A última mensagem do lead foi: "${pedidoDoLead}". Ofereça, dos horários acima, os que atendem ao que ele pediu (dia, turno, "a partir de X horas"). ` +
+      `Se NENHUM atende, diga isso com honestidade e ofereça os mais próximos do pedido. ` +
+      `📅 COPIE date_label e time_label EXATAMENTE como estão acima. next_stage=SLOT_OFFER.`;
+    const retryDynamic = extras ? retryBase + "\n\n" + extras : retryBase;
+    try {
+      const { result: rRes, response: rResp } =
+        await callLlmStructuredWithFallback<SchedulerJsonResult>(
+          ctx.orKey,
+          {
+            model: ctx.model,
+            systemCached: cached,
+            systemDynamic: retryDynamic,
+            messages: [
+              ...workingMessages,
+              {
+                role: "user",
+                content:
+                  "Os horários reais já foram buscados (veja o resultado no sistema). Gere a resposta final ao lead em JSON conforme o schema, já oferecendo os horários.",
+              },
+            ],
+            maxTokens: ctx.maxTokens,
+            temperature: ctx.temperature,
+            modelTemperatures: ctx.modelTemperatures,
+            enableCaching: ctx.model.startsWith("anthropic/"),
+            toolChoice: "none",
+          },
+          (raw) => parseAgentJson(ctx, raw),
+          ctx.fallbackModels,
+        );
+      totalTokensIn += rResp.tokensIn;
+      totalTokensOut += rResp.tokensOut;
+      totalCostUsd += rResp.costUsd;
+      reply = rRes.reply;
+      outStage = (rRes.next_stage as Stage | undefined) ?? "SLOT_OFFER";
+      outPatch = mergeLeadDataPatch(
+        outPatch as LeadData,
+        stripNullishFields(
+          stripLlmForbiddenFields((rRes.lead_data_patch ?? {}) as Record<string, unknown>),
+        ) as Partial<LeadData>,
+      );
+      mergedTelemetry.stall_listing_forced = true;
+      console.warn(
+        `[scheduler] resposta prometia verificar a agenda sem tool conv=${ctx.conversationId} — busca feita e resposta regenerada`,
+      );
+    } catch (e) {
+      // Sem a regeneração, a trava anti-stall do orquestrador ainda troca o
+      // texto — agora com offered_slots já atualizado pela busca acima.
+      console.error(
+        `[scheduler] regeneração pós-busca falhou conv=${ctx.conversationId}:`,
+        e instanceof Error ? e.message : e,
+      );
+    }
   }
 
   // ── Trava de confirmação falsa ────────────────────────────────────────────

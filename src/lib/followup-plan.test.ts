@@ -61,10 +61,16 @@ describe("planFollowupStep", () => {
       now: NOW,
     };
     expect(
-      planFollowupStep({ ...base, sentInCycle: [{ step_id: "s1", sent_at: minutesAgo(120).toISOString() }] }),
+      planFollowupStep({
+        ...base,
+        sentInCycle: [{ step_id: "s1", sent_at: minutesAgo(120).toISOString() }],
+      }),
     ).toMatchObject({ kind: "wait", step: { id: "s2" } });
     expect(
-      planFollowupStep({ ...base, sentInCycle: [{ step_id: "s1", sent_at: minutesAgo(301).toISOString() }] }),
+      planFollowupStep({
+        ...base,
+        sentInCycle: [{ step_id: "s1", sent_at: minutesAgo(301).toISOString() }],
+      }),
     ).toMatchObject({ kind: "send_text", step: { id: "s2" } });
   });
 
@@ -153,8 +159,13 @@ describe("agentNeedsStaleConversations", () => {
   it("só precisa varrer conversas paradas quando algum step tem template", () => {
     expect(agentNeedsStaleConversations(STEPS)).toBe(false);
     expect(
-      agentNeedsStaleConversations([...STEPS, step({ id: "t", ordem: 3, helena_template_name: "x" })]),
+      agentNeedsStaleConversations([
+        ...STEPS,
+        step({ id: "t", ordem: 3, helena_template_name: "x" }),
+      ]),
     ).toBe(true);
-    expect(agentNeedsStaleConversations([step({ id: "b", ordem: 1, helena_template_name: "  " })])).toBe(false);
+    expect(
+      agentNeedsStaleConversations([step({ id: "b", ordem: 1, helena_template_name: "  " })]),
+    ).toBe(false);
   });
 });

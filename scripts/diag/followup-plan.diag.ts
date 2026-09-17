@@ -11,7 +11,11 @@ function loadEnv() {
     if (!line || line.startsWith("#") || !line.includes("=")) continue;
     const i = line.indexOf("=");
     const k = line.slice(0, i).trim();
-    if (!process.env[k]) process.env[k] = line.slice(i + 1).trim().replace(/^["']|["']$/g, "");
+    if (!process.env[k])
+      process.env[k] = line
+        .slice(i + 1)
+        .trim()
+        .replace(/^["']|["']$/g, "");
   }
 }
 loadEnv();
@@ -42,12 +46,34 @@ describe("followup-plan", () => {
       const count: Record<string, number> = {};
       for (const c of convs ?? []) {
         const meta = (c.meta ?? {}) as { stage?: string; lead_data?: { appointment_id?: unknown } };
-        if (meta.lead_data?.appointment_id != null || ["CONFIRMED", "ESCALATED"].includes(meta.stage ?? "")) continue;
-        const { data: last } = await sb.from("messages").select("role, criado_em").eq("conversation_id", c.id).order("criado_em", { ascending: false }).limit(1).maybeSingle();
+        if (
+          meta.lead_data?.appointment_id != null ||
+          ["CONFIRMED", "ESCALATED"].includes(meta.stage ?? "")
+        )
+          continue;
+        const { data: last } = await sb
+          .from("messages")
+          .select("role, criado_em")
+          .eq("conversation_id", c.id)
+          .order("criado_em", { ascending: false })
+          .limit(1)
+          .maybeSingle();
         if (!last || last.role === "user") continue;
-        const { data: lu } = await sb.from("messages").select("criado_em").eq("conversation_id", c.id).eq("role", "user").order("criado_em", { ascending: false }).limit(1).maybeSingle();
+        const { data: lu } = await sb
+          .from("messages")
+          .select("criado_em")
+          .eq("conversation_id", c.id)
+          .eq("role", "user")
+          .order("criado_em", { ascending: false })
+          .limit(1)
+          .maybeSingle();
         const cycleStartAt = lu ? new Date(lu.criado_em as string) : new Date(0);
-        const { data: sent } = await sb.from("followup_step_runs").select("step_id, sent_at").eq("conversation_id", c.id).eq("status", "sent").gt("sent_at", cycleStartAt.toISOString());
+        const { data: sent } = await sb
+          .from("followup_step_runs")
+          .select("step_id, sent_at")
+          .eq("conversation_id", c.id)
+          .eq("status", "sent")
+          .gt("sent_at", cycleStartAt.toISOString());
         const d = plan.planFollowupStep({
           steps: agentSteps,
           sentInCycle: (sent ?? []) as plan.PlanSentRun[],
