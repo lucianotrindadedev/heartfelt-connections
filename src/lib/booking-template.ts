@@ -327,9 +327,15 @@ export function captureLeadPhoneFromHistory(
  */
 function tagGateKeys(settings: Record<string, string>): string[] {
   const explicit = settings.tag_gate_field?.trim();
-  if (explicit) return explicit.split(",").map((k) => k.trim()).filter(Boolean);
+  if (explicit)
+    return explicit
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean);
   // Automático: campo(s) de data de nascimento do fluxo (escola).
-  return getBookingFields(settings).filter(isDateFieldKey).map((f) => f.key);
+  return getBookingFields(settings)
+    .filter(isDateFieldKey)
+    .map((f) => f.key);
 }
 
 /**
@@ -337,10 +343,7 @@ function tagGateKeys(settings: Record<string, string>): string[] {
  * pode). Para chaves que parecem data (birth/nasc/data), exige que o valor
  * pareça uma data válida — não basta estar preenchido com lixo.
  */
-export function tagGateMissingField(
-  settings: Record<string, string>,
-  ld: LeadData,
-): string | null {
+export function tagGateMissingField(settings: Record<string, string>, ld: LeadData): string | null {
   for (const key of tagGateKeys(settings)) {
     const value = (key === "name" ? ld.name : ld.custom_fields?.[key]) ?? "";
     const v = String(value).trim();
@@ -359,8 +362,19 @@ export function tagGateMissingField(
 // — clínicas e agentes de festa seguem com a etiquetagem normal pelo LLM.
 
 const MONTHS_PT: Record<string, number> = {
-  janeiro: 1, fevereiro: 2, marco: 3, "março": 3, abril: 4, maio: 5, junho: 6,
-  julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12,
+  janeiro: 1,
+  fevereiro: 2,
+  marco: 3,
+  março: 3,
+  abril: 4,
+  maio: 5,
+  junho: 6,
+  julho: 7,
+  agosto: 8,
+  setembro: 9,
+  outubro: 10,
+  novembro: 11,
+  dezembro: 12,
 };
 
 /** Extrai {year, month, day} de uma data de nascimento em formatos comuns. */
@@ -447,10 +461,7 @@ export function agentUsesTurmaClassifier(settings: Record<string, string>): bool
  * do campo de data dos booking fields (ou custom_fields.child_birth_date) e
  * classifica. Só atua se o agente tiver turma_auto ligado.
  */
-export function turmaTagForLead(
-  settings: Record<string, string>,
-  ld: LeadData,
-): string | null {
+export function turmaTagForLead(settings: Record<string, string>, ld: LeadData): string | null {
   if (!agentUsesTurmaClassifier(settings)) return null;
   const dateField = getBookingFields(settings).find(isDateFieldKey);
   const birth =
@@ -555,11 +566,7 @@ Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp).
   return "";
 }
 
-function getFieldValue(
-  key: string,
-  mapsTo: "name" | undefined,
-  ld: LeadData,
-): string | undefined {
+function getFieldValue(key: string, mapsTo: "name" | undefined, ld: LeadData): string | undefined {
   if (mapsTo === "name" || key === "name") {
     return ld.name?.trim() || undefined;
   }
@@ -572,15 +579,30 @@ function getFieldValue(
 // Partículas de nome composto ("Ana DE Souza", "João DOS Santos"): sozinhas não
 // são sobrenome. Sem esta lista, "Ana de" passaria como nome completo.
 const NAME_PARTICLES = new Set([
-  "de", "da", "do", "das", "dos", "e", "di", "del", "della", "du", "van", "von",
-  "la", "le", "los", "san", "santa", "y", "bin", "el",
+  "de",
+  "da",
+  "do",
+  "das",
+  "dos",
+  "e",
+  "di",
+  "del",
+  "della",
+  "du",
+  "van",
+  "von",
+  "la",
+  "le",
+  "los",
+  "san",
+  "santa",
+  "y",
+  "bin",
+  "el",
 ]);
 
 function stripAccentsLower(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "");
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
 /**
@@ -687,7 +709,10 @@ export function joinLeadIn(leadIn: string, question: string, sep = " "): string 
   let q = (question ?? "").trim();
   for (let i = 0; i < 3; i++) {
     const next = q
-      .replace(/^(?:perfeito|[óo]timo|certo|beleza|show|maravilha|combinado|entendi|que bom)\s*[.!:]+\s*/i, "")
+      .replace(
+        /^(?:perfeito|[óo]timo|certo|beleza|show|maravilha|combinado|entendi|que bom)\s*[.!:]+\s*/i,
+        "",
+      )
       .replace(/^(?:agora|para finalizar|pra finalizar|e agora)\s*[,:]\s*/i, "");
     if (next === q) break;
     q = next;
@@ -696,7 +721,12 @@ export function joinLeadIn(leadIn: string, question: string, sep = " "): string 
   if (!q) return head;
   // Depois de vírgula a frase continua: minúscula — mas só em palavra comum,
   // nunca no nome do lead ("…às 08:30, Kelly, me confirma…").
-  if (/,$/.test(head) && /^(?:me|preciso|qual|quais|pode|poderia|envia|envie|manda|mande|informe|informa|s[óo]|para|pra|como)\b/i.test(q)) {
+  if (
+    /,$/.test(head) &&
+    /^(?:me|preciso|qual|quais|pode|poderia|envia|envie|manda|mande|informe|informa|s[óo]|para|pra|como)\b/i.test(
+      q,
+    )
+  ) {
     q = q.charAt(0).toLowerCase() + q.slice(1);
   } else if (!/,$/.test(head)) {
     q = q.charAt(0).toUpperCase() + q.slice(1);
@@ -778,10 +808,7 @@ function isDateFieldKey(field: BookingFieldDef): boolean {
   );
 }
 
-export function preflightBookingFields(
-  fields: BookingFieldDef[],
-  ld: LeadData,
-): PreflightResult {
+export function preflightBookingFields(fields: BookingFieldDef[], ld: LeadData): PreflightResult {
   const issues: PreflightIssue[] = [];
 
   for (const f of fields) {
@@ -872,7 +899,9 @@ export function buildBookingFieldsPromptBlock(fields: BookingFieldDef[], ld: Lea
     .join("\n");
 
   const missing = getMissingBookingFields(fields, ld);
-  const missingLines = missing.map((f) => `- ${f.key}: "${bookingFieldQuestion(f, ld)}"`).join("\n");
+  const missingLines = missing
+    .map((f) => `- ${f.key}: "${bookingFieldQuestion(f, ld)}"`)
+    .join("\n");
   const fullNameFields = fields.filter(requiresFullName);
 
   return `# CAMPOS OBRIGATÓRIOS ANTES DO AGENDAMENTO
@@ -1086,7 +1115,87 @@ export function looksLikeDecline(text: string): boolean {
  */
 export type WeekdayKey = "dom" | "seg" | "ter" | "qua" | "qui" | "sex" | "sab";
 
-const WEEKDAY_WORD_RE = /\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/;
+// A palavra de dia da semana, com o "-feira" (ou " feira") que pode vir junto.
+// Varre TODAS as ocorrências: quando a primeira não é pedido de dia, a seguinte
+// ainda pode ser ("trabalho de segunda a sexta, mas posso quarta").
+const WEEKDAY_SCAN_RE =
+  /\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)\b(\s*-\s*feira|\s+feira)?/g;
+
+// Substantivo logo depois transforma a palavra em ORDINAL, não em dia da
+// semana. Lista tirada das falas reais dos leads (120 dias de histórico) mais
+// os casos óbvios da mesma família.
+const ORDINAL_DEPOIS_RE =
+  /^(?:opiniao|opinioes|via|vias|vez|vezes|serie|series|rua|ruas|parte|partes|etapa|etapas|fase|fases|chance|chances|tentativa|tentativas|sessao|sessoes|consulta|consultas|avaliacao|avaliacoes|opcao|opcoes|dose|doses|parcela|parcelas|porta|portas|casa|linha|coluna|posicao|colocacao|turma)\b/;
+
+// "de segunda A sexta" é FAIXA, não pedido de dia — e muitas vezes é o oposto
+// ("trabalho de segunda a sexta" = não posso nesses dias). Exige outro DIA
+// depois do "a": "segunda a tarde" (segunda à tarde) segue sendo pedido.
+const WEEKDAY_RANGE_RE =
+  /^(?:a|ate)\s+(?:domingo|segunda|terca|quarta|quinta|sexta|sabado)\b(?:\s*-\s*feira|\s+feira)?/;
+
+/**
+ * O dia da semana que o lead pediu — ou null quando a palavra apareceu sem ser
+ * pedido de dia.
+ *
+ * Caso real (Clínica Bomfim, Milene 21 99004-9579, 21/09/2026): ela escreveu
+ * "Preciso de uma segunda opinião". O reconhecimento antigo
+ * — /\b(...|segunda|...)(?:-?feira)?\b/, com o "-feira" OPCIONAL — leu isso
+ * como segunda-feira. Virou RESTRIÇÃO de dia: a busca passou a ofertar só
+ * segundas, 21/09 (a âncora, uma segunda) não tinha vaga, e a próxima segunda
+ * com vaga era 28/09. A lead ouviu "dois horários na próxima semana" com
+ * 22/09 (5 vagas), 23/09 (11) e 24/09 (12) livres na agenda.
+ *
+ * Não é caso isolado: 29 conversas em 90 dias, 12 contas — "segunda opinião",
+ * "já é a segunda vez", "moro na segunda rua", "minha filha está na quarta
+ * série". A Clínica Bomfim lidera com 9 justamente porque o posicionamento
+ * dela atrai lead de segunda opinião.
+ *
+ * As regras, nesta ordem:
+ *   1. FAIXA ("de segunda a sexta") não é pedido — pula os dois dias.
+ *   2. "-feira" / " feira" explícito é sempre dia da semana.
+ *   3. domingo e sábado nunca viram ordinal em português — sempre valem.
+ *   4. palavra solta só vale se não vier seguida de substantivo que a torna
+ *      ordinal.
+ *
+ * Continua valendo o que já funcionava: "quarta" sozinha (resposta de uma
+ * palavra), "pode ser sábado", "ser na terça", "segunda à tarde" e o "tem q ser
+ * no sábado" do Wellington (Implanto Master, 12–14/09) que originou a restrição.
+ */
+export function matchWeekdayRequest(textoSemAcentoLower: string): WeekdayKey | null {
+  const t = textoSemAcentoLower;
+  WEEKDAY_SCAN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = WEEKDAY_SCAN_RE.exec(t)) !== null) {
+    const stem = m[1]!;
+    const temFeira = !!m[2];
+    const resto = t.slice(m.index + m[0].length);
+    // Para a FAIXA, só espaço é pulado. Vírgula quebra a faixa: "quinta-feira,
+    // a segunda parte do clareamento" pede QUINTA — quem lê ", a segunda" como
+    // intervalo pula a quinta e acaba em sexta (caso real, clareamento).
+    const depoisFaixa = resto.replace(/^[ \t]+/, "");
+    // Para o ORDINAL, pontuação é ruído ("segunda: opinião").
+    const depois = resto.replace(/^[\s,:;!?.]+/, "");
+
+    const faixa = WEEKDAY_RANGE_RE.exec(depoisFaixa);
+    // "segunda a sexta" é faixa; "quinta-feira a segunda PARTE" não é — o outro
+    // lado tem que ser um dia de verdade, não um ordinal.
+    if (
+      faixa &&
+      !ORDINAL_DEPOIS_RE.test(depoisFaixa.slice(faixa[0].length).replace(/^[\s,:;!?.]+/, ""))
+    ) {
+      // Pula também o dia do outro lado do intervalo.
+      WEEKDAY_SCAN_RE.lastIndex =
+        m.index + m[0].length + (resto.length - depoisFaixa.length) + faixa[0].length;
+      continue;
+    }
+    if (!temFeira && stem !== "domingo" && stem !== "sabado" && ORDINAL_DEPOIS_RE.test(depois)) {
+      continue;
+    }
+    return WEEKDAY_STEM_TO_KEY[stem] ?? null;
+  }
+  return null;
+}
+
 const WEEKDAY_STEM_TO_KEY: Record<string, WeekdayKey> = {
   domingo: "dom",
   segunda: "seg",
@@ -1098,10 +1207,7 @@ const WEEKDAY_STEM_TO_KEY: Record<string, WeekdayKey> = {
 };
 
 function semAcentoLower(text: string): string {
-  return (text ?? "")
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase();
+  return (text ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 }
 
 /**
@@ -1120,8 +1226,7 @@ function semAcentoLower(text: string): string {
  * terça, chamando-as de "sábado", e a recepção acabou marcando 26/09 na mão.
  */
 export function requestedWeekdayFromText(text: string | null | undefined): WeekdayKey | null {
-  const m = WEEKDAY_WORD_RE.exec(semAcentoLower(text ?? ""));
-  return m ? (WEEKDAY_STEM_TO_KEY[m[1]!] ?? null) : null;
+  return matchWeekdayRequest(semAcentoLower(text ?? ""));
 }
 
 /** Dia da semana (chave curta) de um ISO, no fuso de Brasília. */
@@ -1135,8 +1240,17 @@ export function weekdayKeyOfIso(iso: string | null | undefined): WeekdayKey | nu
     timeZone: "America/Sao_Paulo",
   }).format(d);
   return (
-    ({ Sun: "dom", Mon: "seg", Tue: "ter", Wed: "qua", Thu: "qui", Fri: "sex", Sat: "sab" } as
-      Record<string, WeekdayKey>)[abbr] ?? null
+    (
+      {
+        Sun: "dom",
+        Mon: "seg",
+        Tue: "ter",
+        Wed: "qua",
+        Thu: "qui",
+        Fri: "sex",
+        Sat: "sab",
+      } as Record<string, WeekdayKey>
+    )[abbr] ?? null
   );
 }
 
@@ -1213,14 +1327,14 @@ export function isBareGratitude(text: string | null | undefined): boolean {
  * respondeu só "Sua visita já está confirmada para 21/07 às 11:00".
  */
 export function signalsCannotAttendOrChange(text: string): boolean {
-  const t = (text ?? "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "");
+  const t = (text ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   if (!t.trim()) return false;
 
   // Impossibilidade de comparecer
-  if (/\bnao\s+(vou\s+conseguir|vou\s+poder|vou|consigo|poderei|posso|da\s+pra|da\s+para)\b/.test(t)) return true;
+  if (
+    /\bnao\s+(vou\s+conseguir|vou\s+poder|vou|consigo|poderei|posso|da\s+pra|da\s+para)\b/.test(t)
+  )
+    return true;
   if (/\bnao\s+(vai|da|dara|vou)\s+(dar|ficar|rolar|dar\s+certo)\b/.test(t)) return true;
   if (/\bnao\s+vai\s+(ficar|dar|rolar)\b/.test(t)) return true;
   if (/\b(logistica|imprevisto|complicou|apertad[oa]|em\s+cima)\b/.test(t)) return true;
@@ -1229,11 +1343,17 @@ export function signalsCannotAttendOrChange(text: string): boolean {
   if (/\bcancel(ar|a|amento|ei|o)?\b/.test(t)) return true;
 
   // Remarcar / mudar / outro dia-horário
-  if (/\b(remarcar|reagendar|adiar|transferir|mudar|trocar|outro\s+(dia|hor[a]rio)|outra\s+data)\b/.test(t)) return true;
+  if (
+    /\b(remarcar|reagendar|adiar|transferir|mudar|trocar|outro\s+(dia|hor[a]rio)|outra\s+data)\b/.test(
+      t,
+    )
+  )
+    return true;
 
   // Repensar / consultar cônjuge
   if (/\bvou\s+(pensar|repensar)\b/.test(t)) return true;
-  if (/\b(preciso|deixa\s+eu|melhor\s+eu)\s+(pensar|repensar|ver\s+direitinho|ver\s+com)\b/.test(t)) return true;
+  if (/\b(preciso|deixa\s+eu|melhor\s+eu)\s+(pensar|repensar|ver\s+direitinho|ver\s+com)\b/.test(t))
+    return true;
   if (/\bnao\s+sei\s+se\s+(vou|consigo|da|conseguirei)\b/.test(t)) return true;
   if (/\bano\s+que\s+vem\b/.test(t) && /\b(pensar|ver|so\s+vamos|so\s+vou)\b/.test(t)) return true;
 
@@ -1261,7 +1381,9 @@ export function looksLikeGratitudeOrClosing(text: string): boolean {
     return true;
   }
   // Contém bênção.
-  if (/\bdeus\s+(te\s+|lhe\s+|vos\s+)?(abencoe|abencoa|abencoou|proteja|ilumine|guarde)\b/.test(t)) {
+  if (
+    /\bdeus\s+(te\s+|lhe\s+|vos\s+)?(abencoe|abencoa|abencoou|proteja|ilumine|guarde)\b/.test(t)
+  ) {
     return true;
   }
   if (/\bque\s+deus\b/.test(t)) return true;
@@ -1361,12 +1483,7 @@ export function normalizeLeadDataForBooking(
   let birth: string | undefined = cf.child_birth_date?.trim();
   let guardians: string | undefined = cf.guardians?.trim();
 
-  if (
-    childName &&
-    birth === childName &&
-    guardians &&
-    looksLikeBirthDate(guardians)
-  ) {
+  if (childName && birth === childName && guardians && looksLikeBirthDate(guardians)) {
     cf.child_birth_date = guardians;
     delete cf.guardians;
     birth = cf.child_birth_date;
@@ -1438,7 +1555,10 @@ export function renderBookingTemplate(
   opts?: { preserveNewlines?: boolean },
 ): string {
   let out = template;
-  out = out.replace(/\{custom\.([a-zA-Z0-9_]+)\}/g, (_, key: string) => vars[`custom.${key}`] ?? "");
+  out = out.replace(
+    /\{custom\.([a-zA-Z0-9_]+)\}/g,
+    (_, key: string) => vars[`custom.${key}`] ?? "",
+  );
 
   const standardKeys = Object.keys(vars)
     .filter((k) => !k.startsWith("custom."))
@@ -1653,7 +1773,8 @@ export function looksLikeSentenceNotName(text: string): boolean {
   // Saúde, 14/09). Nenhum nome começa com "Muito"/"Bem"/"Super", e "caro"/
   // "barato" não são sobrenome.
   if (/^(muit[oa]s?|mto|mt|bem|super|meio|t[ãa]o|bastante|demais)(?!\p{L})/iu.test(t)) return true;
-  if (/(?<!\p{L})(car[oa]s?|barat[oa]s?|pre[çc]os?|valor(?:es)?|or[çc]amentos?)(?!\p{L})/iu.test(t)) return true;
+  if (/(?<!\p{L})(car[oa]s?|barat[oa]s?|pre[çc]os?|valor(?:es)?|or[çc]amentos?)(?!\p{L})/iu.test(t))
+    return true;
   // Afirmação curta ("tá bem", "ok", "beleza") — ANCORADA na mensagem inteira,
   // para não reprovar um nome que por acaso contenha a palavra.
   if (
@@ -1698,7 +1819,9 @@ export function isReadyForBooking(
     opts.channel != null
       ? { channel: opts.channel, effectivePhone: opts.effectivePhone ?? null }
       : undefined;
-  if (getMissingBookingFields(getBookingFieldsForChannel(settings, channelCtx), leadData).length > 0) {
+  if (
+    getMissingBookingFields(getBookingFieldsForChannel(settings, channelCtx), leadData).length > 0
+  ) {
     return false;
   }
   if (isCommitmentRequired(settings) && !leadData.commitment_confirmed) return false;
@@ -1883,9 +2006,8 @@ function nextWeekMondayBrt(nowMs: number): string {
     timeZone: "America/Sao_Paulo",
   }).format(new Date(nowMs));
   const isoDow =
-    ({ Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 } as Record<string, number>)[
-      abbr
-    ] ?? 1;
+    ({ Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 } as Record<string, number>)[abbr] ??
+    1;
   return dateInBrt(new Date(nowMs + (8 - isoDow) * DAY));
 }
 
@@ -2025,12 +2147,14 @@ function weekOrWeekdayTargetBrt(t: string, now: number): string | null {
   // reais (Clínica Bomfim, 10/07, leads Michele e Sandro): ambos pediram um
   // dia da semana diferente do ofertado e foram agendados no dia ERRADO sem
   // nunca terem confirmado isso.
+  // MESMO reconhecimento de requestedWeekdayFromText. Antes havia uma cópia do
+  // regex aqui — as duas leituras podiam divergir, e divergiam: "segunda
+  // opinião" virava tanto o DIA (seg) quanto a DATA (a próxima segunda).
   const normalized = t.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  const weekdayMatch = normalized.match(
-    /\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/,
-  );
-  if (weekdayMatch && WEEKDAY_STEMS.includes(weekdayMatch[1]!)) {
-    return nextWeekdayDateBrt(weekdayMatch[1]!, now);
+  const weekdayKey = matchWeekdayRequest(normalized);
+  if (weekdayKey) {
+    const stem = WEEKDAY_STEMS.find((w) => WEEKDAY_STEM_TO_KEY[w] === weekdayKey);
+    if (stem) return nextWeekdayDateBrt(stem, now);
   }
   return null;
 }
@@ -2122,7 +2246,8 @@ const LISTED_TIME_OFFER_RE =
 /** Horários citados dentro de uma frase, em minutos do dia: "9h" → 540,
  *  "9h30" → 570, "às 14" → 840, "10:30" → 630. Faixas de funcionamento já saem
  *  antes (TIME_RANGE_RE), então "das 8h às 18h" não entra aqui. */
-const CITED_TIME_RE = /(?:[àa]s\s*)?(\d{1,2})(?::(\d{2})|h(\d{2})|h)(?![\d:])|[àa]s\s*(\d{1,2})\b/gi;
+const CITED_TIME_RE =
+  /(?:[àa]s\s*)?(\d{1,2})(?::(\d{2})|h(\d{2})|h)(?![\d:])|[àa]s\s*(\d{1,2})\b/gi;
 
 function citedTimesInMinutes(sentence: string): number[] {
   const out: number[] = [];
@@ -2205,16 +2330,16 @@ export function leadAnsweredFieldAfterSlotRestated(
     /\b(nome|sobrenome|cpf|nascimento|whats\s*app|telefone|celular|e-?mail)\b/i.test(agente);
   if (!citaSlot || !pedeCadastro) return false;
 
-  const recusa = burst.some(
-    (m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()),
-  );
+  const recusa = burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()));
   if (recusa) return false;
   if (leadTimeContradictsSlot(burst, slotIso)) return false;
   const slotDay = slotDayBrt(slotIso);
-  if (burst.some((m) => {
-    const d = requestedDateFromText(m);
-    return !!d && d !== slotDay;
-  })) {
+  if (
+    burst.some((m) => {
+      const d = requestedDateFromText(m);
+      return !!d && d !== slotDay;
+    })
+  ) {
     return false;
   }
 
@@ -2271,9 +2396,7 @@ export function scrubInventedTimeOffers(
   // O dia sai do próprio date_label do slot ("segunda-feira, 21/09"), que é o
   // rótulo que a busca gerou — a mesma fonte que o texto deveria ter copiado.
   const diasReais = new Set(
-    reais
-      .map((s) => requestedWeekdayFromText(s.date_label))
-      .filter((k): k is WeekdayKey => !!k),
+    reais.map((s) => requestedWeekdayFromText(s.date_label)).filter((k): k is WeekdayKey => !!k),
   );
 
   // Par DATA+HORA. Comparar só a hora deixava passar um horário real de OUTRO
@@ -2494,7 +2617,9 @@ function absoluteComMesBrt(t: string, nowMs: number): string | null {
   // matchAll (e não match) porque a primeira ocorrência de "<número> <palavra>"
   // pode não ser mês ("12 horas", "2 semanas") — seguimos procurando.
   const semAcc = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
-  for (const mt of semAcc.matchAll(/(?<!\d)(\d{1,2})\s*(?:de\s+)?([a-z]+)(?:\s+de\s+(\d{2,4}))?/g)) {
+  for (const mt of semAcc.matchAll(
+    /(?<!\d)(\d{1,2})\s*(?:de\s+)?([a-z]+)(?:\s+de\s+(\d{2,4}))?/g,
+  )) {
     const mes = MONTHS_PT[mt[2]!];
     const d = Number(mt[1]);
     if (!mes || d < 1 || d > 31) continue;
@@ -2548,9 +2673,10 @@ function diaDaSemanaBrt(iso: string): number {
     timeZone: "America/Sao_Paulo",
     weekday: "short",
   }).format(d);
-  return ({ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 } as Record<string, number>)[
-    abbr
-  ] ?? -1;
+  return (
+    ({ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 } as Record<string, number>)[abbr] ??
+    -1
+  );
 }
 
 function targetDateFromText(t: string): string | null {
@@ -2602,11 +2728,14 @@ const FORWARD_WEEK_OR_MONTH =
  */
 function forwardWeekOrMonthRequest(t: string): string | null {
   const semNorm = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
-  if (/\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/.test(semNorm)) return null;
+  if (/\b(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:-?feira)?\b/.test(semNorm))
+    return null;
   if (!new RegExp(`\\b${FORWARD_WEEK_OR_MONTH}\\b`).test(semNorm)) return null;
   if (!mentionsUnavailability(semNorm)) return null; // sem negação o caminho normal já resolve
-  if (new RegExp(`\\b${FORWARD_WEEK_OR_MONTH}\\b[^,.;!?]{0,20}\\bnao\\b`).test(semNorm)) return null;
-  if (new RegExp(`\\bnao\\b[^,.;!?]{0,25}\\b${FORWARD_WEEK_OR_MONTH}\\b`).test(semNorm)) return null;
+  if (new RegExp(`\\b${FORWARD_WEEK_OR_MONTH}\\b[^,.;!?]{0,20}\\bnao\\b`).test(semNorm))
+    return null;
+  if (new RegExp(`\\bnao\\b[^,.;!?]{0,25}\\b${FORWARD_WEEK_OR_MONTH}\\b`).test(semNorm))
+    return null;
   return weekOrWeekdayTargetBrt(semNorm, Date.now());
 }
 
@@ -2723,7 +2852,9 @@ export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
 function periodoExcluido(t: string, palavra: string): boolean {
   const p = palavra; // "manh[ãa]" | "tarde" | "noite"
   return (
-    new RegExp(`(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`).test(t) ||
+    new RegExp(
+      `(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`,
+    ).test(t) ||
     new RegExp(`${p}[^,.;]*\\bn[ãa]o\\b`).test(t) ||
     new RegExp(`\\bn[ãa]o\\b[^,.;]*(?:posso|consigo|d[áa]|vou|tenho)?[^,.;]*${p}`).test(t)
   );
@@ -2819,7 +2950,10 @@ const SAUDACAO_RE = /\bbo(?:a|as)\s*-?\s*(?:tardes?|noites?)\b/g;
  */
 const MARCOS_DO_DIA: Array<{ key: "manha" | "tarde" | "noite"; src: string }> = [
   // → TARDE
-  { key: "tarde", src: String.raw`(?:depois|ap[oó]s|passad[oa])\s+(?:(?:d[oe]|[oa])\s+)?almo[cç]o` },
+  {
+    key: "tarde",
+    src: String.raw`(?:depois|ap[oó]s|passad[oa])\s+(?:(?:d[oe]|[oa])\s+)?almo[cç]o`,
+  },
   { key: "tarde", src: String.raw`p[oó]s[-\s]*almo[cç]o` },
   { key: "tarde", src: String.raw`(?:depois|ap[oó]s)\s+(?:de\s+)?(?:que\s+)?(?:eu\s+)?almo[cç]ar` },
   { key: "tarde", src: String.raw`(?:depois|ap[oó]s)\s+(?:(?:d[oe]|[oa])\s+)?meio[-\s]?dia` },
@@ -2906,7 +3040,9 @@ export function requestedHoraFromText(text: string): number | null {
   // Turno dito logo APÓS a hora ("4 horas da tarde", "7 da noite").
   const after = t.slice((m.index ?? 0) + m[0].length);
   // "5 e meia da tarde": o "e meia" fica entre a hora e o turno.
-  const periodo = after.match(/^(?:\s*e\s*(?:meia|quinze))?\s*d[aeo]\s*(manh[ãa]|tarde|noite)/)?.[1];
+  const periodo = after.match(
+    /^(?:\s*e\s*(?:meia|quinze))?\s*d[aeo]\s*(manh[ãa]|tarde|noite)/,
+  )?.[1];
   if (periodo) {
     if (periodo.startsWith("manh")) return h === 12 ? 0 : h; // "12 da manhã" = meia-noite
     if (periodo === "noite" && h === 12) return 0; // "12 da noite" = meia-noite
@@ -3138,7 +3274,14 @@ function pickSlotByPreference(
   // continua selecionando: é uma decisão anterior, tomada sobre o caso Wagner
   // (21 99401-9696), e tem teste próprio. Mesmo princípio, escopo diferente —
   // mexer nela exige medição à parte.
-  if (!userTime && targetDate && !wantMorning && !wantAfternoon && !wantEvening && filtered.length > 1) {
+  if (
+    !userTime &&
+    targetDate &&
+    !wantMorning &&
+    !wantAfternoon &&
+    !wantEvening &&
+    filtered.length > 1
+  ) {
     return null;
   }
 
@@ -3221,11 +3364,7 @@ export function sanitizeLeadDataPatch(
  * por isso não serve para separar dois slots do MESMO horário em dias distintos.
  */
 function slotDayMentionedInText(slot: OfferedSlot, text: string): boolean {
-  const semAcento = (s: string) =>
-    s
-      .normalize("NFD")
-      .replace(/[̀-ͯ]/g, "")
-      .toLowerCase();
+  const semAcento = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const hay = semAcento(text);
 
   const ddmm = slot.date_label.match(/\b(\d{1,2}\/\d{1,2})\b/)?.[1];
@@ -3469,7 +3608,11 @@ export function isSlotAcceptanceMessage(text: string): boolean {
   // Só vale para palavras INEQUÍVOCAS de fechamento (não "pode"/"vamos", que
   // aparecem em pergunta) e no INÍCIO da mensagem. Recusa e indisponibilidade
   // já foram barradas no topo da função.
-  if (/^(confirmad[oa]|confirmo|confirmar|fechado|combinado|isso mesmo|pode confirmar|pode marcar|pode agendar)\b/i.test(t)) {
+  if (
+    /^(confirmad[oa]|confirmo|confirmar|fechado|combinado|isso mesmo|pode confirmar|pode marcar|pode agendar)\b/i.test(
+      t,
+    )
+  ) {
     return true;
   }
   if (FIRST_ORDINAL_RE.test(t)) return true;
@@ -3526,8 +3669,23 @@ const PONTEIRO_RE = /[☝⬆]️?[\u{1F3FB}-\u{1F3FF}]?|\u{1F446}[\u{1F3FB}-\u{1
 // Palavras que, ao lado do emoji, não acrescentam informação de escolha.
 // "primeiro"/"segundo" NÃO entram: são ordinais e têm caminho próprio.
 const PONTEIRO_FILLER = new Set([
-  "esse", "essa", "este", "esta", "isso", "aquele", "aquela",
-  "o", "a", "os", "as", "esses", "essas", "sim", "ok", "eh", "e",
+  "esse",
+  "essa",
+  "este",
+  "esta",
+  "isso",
+  "aquele",
+  "aquela",
+  "o",
+  "a",
+  "os",
+  "as",
+  "esses",
+  "essas",
+  "sim",
+  "ok",
+  "eh",
+  "e",
 ]);
 
 /**
@@ -3623,7 +3781,13 @@ function autoSelectOfferedSlotInner(
   // MF Beauty Teresópolis, IG @olucianodev). É seguro nos estágios iniciais:
   // só seleciona se offered_slots existir (veio de listar_horarios de verdade)
   // e a última mensagem do lead casar com um horário ofertado.
-  const AUTO_SELECT_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "NAME_COLLECT", "BOOKING"];
+  const AUTO_SELECT_STAGES = [
+    "RECEPTION",
+    "QUALIFICATION",
+    "SLOT_OFFER",
+    "NAME_COLLECT",
+    "BOOKING",
+  ];
   if (!AUTO_SELECT_STAGES.includes(stage)) return {};
 
   const slots = leadData.offered_slots ?? [];
@@ -4123,5 +4287,11 @@ export function tryAutoCaptureBookingAnswer(
     .join("\n");
   if (!assistantText.trim()) return {};
 
-  return captureBookingAnswer(history[lastUserIdx]!.content, assistantText, leadData, fields, channelCtx);
+  return captureBookingAnswer(
+    history[lastUserIdx]!.content,
+    assistantText,
+    leadData,
+    fields,
+    channelCtx,
+  );
 }
