@@ -4,6 +4,7 @@
 import type { LeadData } from "@/lib/agents/stage";
 import type { AgentContext } from "@/lib/agents/context";
 import type { ConversationChannel } from "@/lib/conversation-channel.server";
+import { stripQuotePrefix } from "./quote-prefix";
 
 export interface BookingFieldDef {
   /** Chave em lead_data.custom_fields (ou "name" para lead_data.name). */
@@ -1226,7 +1227,7 @@ function semAcentoLower(text: string): string {
  * terça, chamando-as de "sábado", e a recepção acabou marcando 26/09 na mão.
  */
 export function requestedWeekdayFromText(text: string | null | undefined): WeekdayKey | null {
-  return matchWeekdayRequest(semAcentoLower(text ?? ""));
+  return matchWeekdayRequest(semAcentoLower(stripQuotePrefix(text)));
 }
 
 /** Dia da semana (chave curta) de um ISO, no fuso de Brasília. */
@@ -1307,7 +1308,7 @@ export function classifyRequestedDay(
 }
 
 export function isBareGratitude(text: string | null | undefined): boolean {
-  const t = (text ?? "")
+  const t = stripQuotePrefix(text)
     .trim()
     .toLowerCase()
     .normalize("NFD")
@@ -2161,7 +2162,7 @@ function weekOrWeekdayTargetBrt(t: string, now: number): string | null {
 
 /** Lead falando de turno/dia — preferência de horário, não resposta de campo nem nome. */
 export function looksLikeSchedulingPreference(text: string): boolean {
-  const t = text.trim().toLowerCase();
+  const t = stripQuotePrefix(text).trim().toLowerCase();
   if (!t) return false;
   // Data de nascimento (dd/mm/yyyy) tem prioridade — nunca classifica como preferencia.
   if (looksLikeBirthDate(text)) return false;
@@ -2749,7 +2750,7 @@ function forwardWeekOrMonthRequest(t: string): string | null {
  * um dia DIFERENTE do pedido.
  */
 export function requestedDateFromText(text: string): string | null {
-  const t = (text ?? "").trim().toLowerCase();
+  const t = stripQuotePrefix(text).trim().toLowerCase();
   if (!t) return null;
   const semanaAdiante = forwardWeekOrMonthRequest(t);
   if (semanaAdiante) return semanaAdiante;
@@ -2968,7 +2969,9 @@ const MARCOS_DO_DIA: Array<{ key: "manha" | "tarde" | "noite"; src: string }> = 
 export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noite" | null {
   // Só a ocorrência da saudação sai — "Boa tarde, prefiro de tarde" continua
   // sendo tarde.
-  const t = (text ?? "").toLowerCase().replace(SAUDACAO_RE, (s) => " ".repeat(s.length));
+  const t = stripQuotePrefix(text)
+    .toLowerCase()
+    .replace(SAUDACAO_RE, (s) => " ".repeat(s.length));
   if (!t.trim()) return null;
   const present: Array<{ key: "manha" | "tarde" | "noite"; re: string; idx: number }> = [];
   const m = t.search(/\bmanh[aã]/);
@@ -3025,7 +3028,7 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
  * 09:45 e 10:30; a clínica teve de resolver por telefone.
  */
 export function requestedHoraFromText(text: string): number | null {
-  const t = (text ?? "").toLowerCase();
+  const t = stripQuotePrefix(text).toLowerCase();
   if (!t) return null;
   // "às 16", "as 16 horas" (o "às" já indica hora, sufixo opcional) OU
   // "16h"/"16 horas"/"16:00" (sufixo de hora obrigatório sem "às") OU
@@ -3582,7 +3585,7 @@ const FIRST_ORDINAL_RE = ordinalRe(1);
 const SECOND_ORDINAL_RE = ordinalRe(2);
 
 export function isSlotAcceptanceMessage(text: string): boolean {
-  const t = text.trim().toLowerCase();
+  const t = stripQuotePrefix(text).trim().toLowerCase();
   // Recusa ("nenhum dos 2") ou indisponibilidade ("só largo às 18:00") NUNCA é
   // aceite de horário, mesmo contendo um padrão HH:MM — sem este guard o
   // fallback de horário solto (normalizeTimeLabel, no fim da função) lia
@@ -3752,13 +3755,27 @@ export function tryAutoSelectOfferedSlot(
   leadData: LeadData,
   history: { role: "user" | "assistant"; content: string }[],
 ): Partial<LeadData> {
-  const patch = autoSelectOfferedSlotInner(stage, leadData, history);
+  // A citação do WhatsApp sai ANTES de qualquer leitura — e aqui ela é mais
+  // perigosa do que na âncora de data, porque o trecho citado costuma ser a
+  // OFERTA inteira do agente ("sexta-feira, 18/09 às 10:30 ou às 14:00").
+  //
+  // Sem isto, medido: citar a oferta e responder só "Ok" selecionava 10:30 —
+  // um horário que o lead nunca escolheu; citar a oferta e dizer "as 14h"
+  // selecionava 10:30 (o primeiro horário da citação vencia o do lead); e
+  // citar uma oferta ANTIGA dizendo "pode ser as 10:30" não selecionava nada.
+  //
+  // Só as falas do LEAD são limpas: o contexto do assistente (recentAssistant
+  // Context, lastAssistantTurnText) precisa continuar inteiro.
+  const historyLimpo = history.map((m) =>
+    m.role === "user" ? { ...m, content: stripQuotePrefix(m.content) } : m,
+  );
+  const patch = autoSelectOfferedSlotInner(stage, leadData, historyLimpo);
   // Nunca marca uma hora diferente da que o lead digitou — ver
   // leadTimeContradictsSlot. Sem escolha, o agente reoferta.
   if (
     patch.selected_slot_iso &&
     leadTimeContradictsSlot(
-      lastUserBurst(history).map((m) => m.trim()),
+      lastUserBurst(historyLimpo).map((m) => m.trim()),
       patch.selected_slot_iso,
     )
   ) {

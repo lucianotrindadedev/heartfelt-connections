@@ -17,27 +17,10 @@ import {
   requestedPeriodoFromText,
   requestedWeekdayFromText,
 } from "./booking-template";
+export { stripQuotePrefix, withQuotePrefix } from "./quote-prefix";
+import { stripQuotePrefix } from "./quote-prefix";
 
 // ── Citação (reply do WhatsApp) ─────────────────────────────────────────────
-
-const QUOTE_PREFIX_START = '[Em resposta à mensagem: "';
-const QUOTE_PREFIX_END = '"]\n';
-
-/**
- * Prefixo que o webhook injeta quando o lead responde CITANDO uma mensagem. Fica
- * num lugar só para quem grava e quem lê (ver stripQuotePrefix) concordarem.
- */
-export function withQuotePrefix(quotedText: string, message: string): string {
-  return `${QUOTE_PREFIX_START}${quotedText.slice(0, 200)}${QUOTE_PREFIX_END}${message}`;
-}
-
-/** A mensagem sem o prefixo de citação — o que o lead de fato escreveu. */
-export function stripQuotePrefix(text: string | null | undefined): string {
-  const t = text ?? "";
-  if (!t.startsWith(QUOTE_PREFIX_START)) return t;
-  const end = t.indexOf(QUOTE_PREFIX_END, QUOTE_PREFIX_START.length);
-  return end < 0 ? t : t.slice(end + QUOTE_PREFIX_END.length);
-}
 
 // ── Remetente estranho à conversa ───────────────────────────────────────────
 
