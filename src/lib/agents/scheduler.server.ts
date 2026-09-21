@@ -49,14 +49,8 @@ import {
   NOT_SCHEDULED_SYNONYMS,
   SCHEDULED_SYNONYMS,
 } from "@/lib/helena-tags.server";
-import {
-  searchKnowledge,
-  formatChunksAsContext,
-} from "@/lib/knowledge/retrieval.server";
-import {
-  sendMediaBySlug,
-  getAvailableMediaForPrompt,
-} from "./send-media.server";
+import { searchKnowledge, formatChunksAsContext } from "@/lib/knowledge/retrieval.server";
+import { sendMediaBySlug, getAvailableMediaForPrompt } from "./send-media.server";
 import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
 import {
   buildConsultarPlanilhaTool,
@@ -136,6 +130,7 @@ import {
   extractCompanionAppointmentNote,
   requestedHoraFromText,
   rankSlotsByRequestedHour,
+  limitarComVariedadeDeTurno,
   scrubInventedTimeOffers,
   minutesOfDayFromLabel,
   affirmedDatesFromAssistant,
@@ -225,9 +220,7 @@ async function applyUnidadeTag(ctx: AgentContext): Promise<void> {
       // existentes, então basta não mandar currentTags stale aqui.
     );
     if (res.ok) {
-      console.log(
-        `[scheduler] tag de unidade aplicada conv=${ctx.conversationId}: "${res.tag}"`,
-      );
+      console.log(`[scheduler] tag de unidade aplicada conv=${ctx.conversationId}: "${res.tag}"`);
     } else if (res.reason === "not_found") {
       console.warn(
         `[scheduler] tag de unidade "${unidade}" não existe no CRM conv=${ctx.conversationId} — crie a etiqueta na Helena com esse nome para o lead ser etiquetado por unidade`,
@@ -331,9 +324,7 @@ const leadDataPatchShape = {
 const UnifiedResultSchema = z.object({
   reply: z.string().min(1, "Reply não pode ser vazio"),
   next_stage: z.enum(UNIFIED_VALID_STAGES).optional(),
-  lead_data_patch: z
-    .object({ ...leadDataPatchShape, interest: z.string().nullish() })
-    .nullish(),
+  lead_data_patch: z.object({ ...leadDataPatchShape, interest: z.string().nullish() }).nullish(),
   reasoning: z.string().optional(),
 });
 
@@ -384,7 +375,7 @@ const SCHEDULER_TOOLS: LlmTool[] = [
         "Procura paciente no Clinicorp/Clinic Experts pelo telefone do lead — o do contexto ou o que ele informou na conversa. " +
         "Use UMA vez no início de NAME_COLLECT para evitar duplicar cadastro. " +
         "Retorna {patient_id, name} se encontrado, ou {found: false}. " +
-        "{found: false, reason: \"no_phone\"} = ainda não há telefone nenhum (Instagram/Messenger antes de o lead informar) — peça o WhatsApp e chame de novo depois.",
+        '{found: false, reason: "no_phone"} = ainda não há telefone nenhum (Instagram/Messenger antes de o lead informar) — peça o WhatsApp e chame de novo depois.',
       parameters: {
         type: "object",
         properties: {},
@@ -461,7 +452,7 @@ const SCHEDULER_TOOLS: LlmTool[] = [
       description:
         "Cancela o agendamento ATIVO do lead e REINICIA a oferta de horários para marcar um novo. " +
         "Use quando o lead quiser MUDAR a data/horário do agendamento existente. Após esta tool, " +
-        "ofereça novos horários (chame listar_horarios) e use next_stage=\"SLOT_OFFER\". " +
+        'ofereça novos horários (chame listar_horarios) e use next_stage="SLOT_OFFER". ' +
         "Retorna {ok, cancelled, reoffer:true} ou {ok:false, error}.",
       parameters: { type: "object", properties: {}, required: [] },
     },
@@ -798,7 +789,11 @@ function buildClinicorpCaseNotesFallback(ld: LeadData): string {
   if (interest && !notes.toLowerCase().includes(interest.toLowerCase())) {
     segs.push(`Interesse: ${interest}`);
   }
-  let s = segs.join(" — ").replace(/\s*\n+\s*/g, "; ").replace(/\s{2,}/g, " ").trim();
+  let s = segs
+    .join(" — ")
+    .replace(/\s*\n+\s*/g, "; ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
   if (s.length > 150) s = s.slice(0, 149).trimEnd() + "…";
   return s;
 }
@@ -923,7 +918,10 @@ function formatClinupSlot(s: ClinupRangeSlot): {
  *  primeiros caracteres). */
 function parseDataAlvoBrt(dataAlvo?: string): Date | null {
   if (!dataAlvo || typeof dataAlvo !== "string") return null;
-  const m = dataAlvo.trim().slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const m = dataAlvo
+    .trim()
+    .slice(0, 10)
+    .match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
   const d = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00-03:00`);
   return isNaN(d.getTime()) ? null : d;
@@ -1020,11 +1018,7 @@ const SLOT_WIDE_WINDOW_DAYS = 60;
 /** Faixa de horas (hora local BRT) de um turno pedido pelo lead. Fronteiras
  *  alinhadas ao pickSlotByPreference: manhã <12, tarde 12–18, noite ≥18. */
 function periodoParaHoras(periodo?: string): { min: number; max: number } | null {
-  const p = (periodo ?? "")
-    .toLowerCase()
-    .trim()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, ""); // remove acentos (manhã → manha)
+  const p = (periodo ?? "").toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g, ""); // remove acentos (manhã → manha)
   switch (p) {
     case "manha":
       return { min: 0, max: 12 };
@@ -1103,9 +1097,7 @@ export async function execListarHorarios(
   // dias_a_frente). Com dias_a_frente explícito o LLM está fazendo uma busca
   // ampla de propósito (ex.: achar alternativas) — respeita isso.
   const resolvedDataAlvo =
-    dataAlvo ??
-    (diasAFrente == null ? requestedDateFromHistory(ctx.history) : null) ??
-    undefined;
+    dataAlvo ?? (diasAFrente == null ? requestedDateFromHistory(ctx.history) : null) ?? undefined;
   if (!dataAlvo && resolvedDataAlvo) {
     console.log(
       `[scheduler] listar_horarios conv=${ctx.conversationId}: data_alvo ausente do LLM — ancorando no dia pedido pelo lead (${resolvedDataAlvo})`,
@@ -1168,11 +1160,9 @@ export async function execListarHorarios(
     }
     // Duração: específica da agenda (multi-agenda) ou a global do agente.
     const duracao =
-      resolved.duracaoMinutos ??
-      (Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40);
+      resolved.duracaoMinutos ?? (Number(ctx.agentSettings.duracao_consulta_minutos ?? "40") || 40);
     // Horários liberados: específicos da agenda ou os globais do agente.
-    const businessHoursJson =
-      resolved.businessHoursJson ?? ctx.agentSettings.business_hours_json;
+    const businessHoursJson = resolved.businessHoursJson ?? ctx.agentSettings.business_hours_json;
     // Modo "uma por dia" (festas): sem data_alvo, amplia a janela padrão para
     // alcançar os próximos dias livres (festas costumam ser semanas à frente).
     const gcalEnd =
@@ -1194,10 +1184,12 @@ export async function execListarHorarios(
           // Turno pedido (manhã/tarde/noite): filtra ANTES do corte de 6 para a
           // tarde não cair fora quando a manhã tem vagas. Festas ("uma por dia")
           // não têm turno — não aplica.
-          periodoHoras: resolved.umaPorDia ? undefined : periodoParaHoras(resolvedPeriodo) ?? undefined,
+          periodoHoras: resolved.umaPorDia
+            ? undefined
+            : (periodoParaHoras(resolvedPeriodo) ?? undefined),
           // Hora exata pedida ("perto das 16h"): prioriza os horários próximos
           // dela antes do corte de 6. Festas ("uma por dia") não têm hora pedida.
-          horaPreferida: resolved.umaPorDia ? undefined : resolvedHora ?? undefined,
+          horaPreferida: resolved.umaPorDia ? undefined : (resolvedHora ?? undefined),
           umaPorDia: resolved.umaPorDia,
           umaPorDiaDias: resolved.diasUmaPorDia,
           bufferMinutos: resolved.bufferMinutos,
@@ -1227,9 +1219,7 @@ export async function execListarHorarios(
           .length,
       })
     ) {
-      const wideEnd = new Date(
-        today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
-      );
+      const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       console.log(
         `[scheduler] listar_horarios conv=${ctx.conversationId}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${formatted.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana ?? "-"})`,
       );
@@ -1382,13 +1372,21 @@ export async function execListarHorarios(
       }
     }
 
-    const clLimited = rankSlotsByRequestedHour(
+    // Corte com VARIEDADE de turno: as N mais proximas podem ser todas do
+    // mesmo turno, e ai uma conta que manda ofertar em contraturno (Bomfim:
+    // "sempre 2 horarios, um pela manha e um a tarde") nao tem como cumprir.
+    // Quando o lead PEDIU turno, respeita o pedido e corta direto.
+    const clRanked = rankSlotsByRequestedHour(
       clSlots,
       resolvedHora,
       (s) => minutesOfDayFromLabel(s.time.slice(0, 5)),
       (s) => s.date,
+    );
+    const clLimited = (
+      clBounds
+        ? clRanked.slice(0, 6)
+        : limitarComVariedadeDeTurno(clRanked, 6, (x) => minutesOfDayFromLabel(x.time.slice(0, 5)))
     )
-      .slice(0, 6)
       .sort((a, b) => a.start.localeCompare(b.start))
       .map(formatClinupSlot);
 
@@ -1511,13 +1509,21 @@ export async function execListarHorarios(
     // Prioriza a hora pedida ANTES do corte de 6 (senão o slice pega sempre as
     // vagas mais cedo do turno e "prefiro perto das 16h" nunca é alcançado),
     // reordenando cronologicamente só na saída — igual ao Clinicorp.
-    const ceLimited = rankSlotsByRequestedHour(
+    // Corte com VARIEDADE de turno: as N mais proximas podem ser todas do
+    // mesmo turno, e ai uma conta que manda ofertar em contraturno (Bomfim:
+    // "sempre 2 horarios, um pela manha e um a tarde") nao tem como cumprir.
+    // Quando o lead PEDIU turno, respeita o pedido e corta direto.
+    const ceRanked = rankSlotsByRequestedHour(
       ceSlots,
       resolvedHora,
       (s) => minutesOfDayFromLabel(s.fromTime),
       (s) => s.localDate,
+    );
+    const ceLimited = (
+      ceBounds
+        ? ceRanked.slice(0, 6)
+        : limitarComVariedadeDeTurno(ceRanked, 6, (x) => minutesOfDayFromLabel(x.fromTime))
     )
-      .slice(0, 6)
       .sort((a, b) => a.start.localeCompare(b.start))
       .map(formatCeSlot);
     if (ceLimited.length === 0) {
@@ -1599,7 +1605,8 @@ export async function execListarHorarios(
       requestedWeekday: restringeDiaSemana,
       slotsOnRequestedWeekday: filterSlotsToWeekday(slots, restringeDiaSemana, (s) => s.start)
         .length,
-    }) || (!anchor && diasAFrente == null && !!bounds && inPeriodo(slots).length === 0);
+    }) ||
+    (!anchor && diasAFrente == null && !!bounds && inPeriodo(slots).length === 0);
   if (canExpand) {
     const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     console.log(
@@ -1641,8 +1648,15 @@ export async function execListarHorarios(
     (s) => minutesOfDayFromLabel(s.fromTime),
     (s) => s.localDate,
   );
-  const limited = ranked
-    .slice(0, 6)
+  // Corte com VARIEDADE de turno: as N mais proximas podem ser todas do
+  // mesmo turno, e ai uma conta que manda ofertar em contraturno (Bomfim:
+  // "sempre 2 horarios, um pela manha e um a tarde") nao tem como cumprir.
+  // Quando o lead PEDIU turno, respeita o pedido e corta direto.
+  const limited = (
+    bounds
+      ? ranked.slice(0, 6)
+      : limitarComVariedadeDeTurno(ranked, 6, (x) => minutesOfDayFromLabel(x.fromTime))
+  )
     .sort((a, b) => a.start.localeCompare(b.start))
     .map(formatSlot);
   // Data pedida (anchor) sem vaga, mas há vaga em OUTRAS datas: avisa o modelo
@@ -1981,9 +1995,7 @@ async function resolveSlotChoiceLLM(
   candidates: NonNullable<LeadData["offered_slots"]>,
   lastUser: string,
 ): Promise<number | null> {
-  const lista = candidates
-    .map((s, i) => `${i}: ${s.date_label} às ${s.time_label}`)
-    .join("\n");
+  const lista = candidates.map((s, i) => `${i}: ${s.date_label} às ${s.time_label}`).join("\n");
 
   try {
     const { result } = await callLlmStructuredWithFallback<z.infer<typeof SLOT_CHOICE_SCHEMA>>(
@@ -2084,9 +2096,7 @@ async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
     .filter(Boolean);
 
   if ((ctx.leadData.selected_slot_iso ?? "").trim()) {
-    if (
-      burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()))
-    ) {
+    if (burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()))) {
       console.log(
         `[scheduler] lead recusou o horário escolhido conv=${ctx.conversationId} iso=${ctx.leadData.selected_slot_iso} — limpando a escolha p/ reofertar`,
       );
@@ -2162,10 +2172,7 @@ export function isSlotNotOffered(
   return !offeredSlots.some((s) => s.iso === sel);
 }
 
-async function execCriarAgendamento(
-  ctx: AgentContext,
-  agendaLabel?: string,
-): Promise<ToolOutcome> {
+async function execCriarAgendamento(ctx: AgentContext, agendaLabel?: string): Promise<ToolOutcome> {
   const ld = ctx.leadData;
 
   // GUARD DE IDEMPOTENCIA — bug "agendamento duplo" (27/05/2026):
@@ -2298,8 +2305,7 @@ async function execCriarAgendamento(
       result: JSON.stringify({
         ok: false,
         error_kind: "slot_not_offered",
-        error:
-          `O horário ${slotHumanLabel(ld.selected_slot_iso)} NÃO está na lista de horários realmente disponíveis desta agenda — não existe ou é de uma oferta antiga. NÃO agende esse horário e NÃO invente horários. Chame listar_horarios e ofereça ao lead APENAS os horários exatos que a ferramenta retornar.`,
+        error: `O horário ${slotHumanLabel(ld.selected_slot_iso)} NÃO está na lista de horários realmente disponíveis desta agenda — não existe ou é de uma oferta antiga. NÃO agende esse horário e NÃO invente horários. Chame listar_horarios e ofereça ao lead APENAS os horários exatos que a ferramenta retornar.`,
       }),
       // Zera a escolha velha/fantasma para forçar nova listagem real.
       patch: { selected_slot_iso: CLEARED_SLOT },
@@ -2692,7 +2698,12 @@ async function execCancelarAgendamento(
 
   if (ctx.dryRun) {
     return {
-      result: JSON.stringify({ ok: true, cancelled: true, dry_run: true, reoffer: !!opts?.reoffer }),
+      result: JSON.stringify({
+        ok: true,
+        cancelled: true,
+        dry_run: true,
+        reoffer: !!opts?.reoffer,
+      }),
       patch: clearPatch,
     };
   }
@@ -3006,7 +3017,10 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
 
   const ld = ctx.leadData;
   const offeredSlotsText = (ld.offered_slots ?? [])
-    .map((s) => `  • ${s.date_label} ${s.time_label} (iso=${s.iso}, dentist_person_id=${s.dentist_person_id ?? "?"})`)
+    .map(
+      (s) =>
+        `  • ${s.date_label} ${s.time_label} (iso=${s.iso}, dentist_person_id=${s.dentist_person_id ?? "?"})`,
+    )
     .join("\n");
 
   const channelCtx = { channel: ctx.channel, effectivePhone: ctx.effectivePhone };
@@ -3080,27 +3094,32 @@ ${JSON.stringify(
 )}
 
 ${fieldsBlock ? `${fieldsBlock}\n\n` : ""}${(() => {
-  const missing = getMissingBookingFields(bookingFields, ld);
-  if (missing.length === 0) return "";
-  const f = missing[0]!;
-  const lastUser = [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim();
-  const savePath =
-    f.maps_to === "name" || f.key === "name"
-      ? "lead_data_patch.name"
-      : `lead_data_patch.custom_fields.${f.key}`;
-  return `# PRÓXIMO CAMPO A COLETAR
+    const missing = getMissingBookingFields(bookingFields, ld);
+    if (missing.length === 0) return "";
+    const f = missing[0]!;
+    const lastUser = [...ctx.history]
+      .reverse()
+      .find((m) => m.role === "user")
+      ?.content?.trim();
+    const savePath =
+      f.maps_to === "name" || f.key === "name"
+        ? "lead_data_patch.name"
+        : `lead_data_patch.custom_fields.${f.key}`;
+    return `# PRÓXIMO CAMPO A COLETAR
 Campo pendente: ${f.key} — pergunta sugerida: "${bookingFieldQuestion(f, ld)}"
 ${lastUser ? `- Última mensagem do lead: "${lastUser.slice(0, 120)}"` : ""}
 - Se essa mensagem já responde o campo, salve em ${savePath} e avance para o próximo campo (não repita a pergunta).
 - Só faça a pergunta sugerida se o campo ainda estiver vazio após analisar a última mensagem do lead.`;
-})()}
+  })()}
 
 ${offeredSlotsText ? `# SLOTS JÁ OFERECIDOS NESTE CICLO\n${offeredSlotsText}\n` : ""}${
     ld.selected_slot_iso
       ? `\n# HORÁRIO JÁ ESCOLHIDO PELO LEAD\nselected_slot_iso=${ld.selected_slot_iso}\nNÃO chame listar_horarios de novo. Confirme este horário ao lead e colete os campos pendentes.\n`
       : ""
   }${
-    ctx.stage === "CONFIRMED" && ld.booked_slot_iso && new Date(ld.booked_slot_iso).getTime() < now.getTime()
+    ctx.stage === "CONFIRMED" &&
+    ld.booked_slot_iso &&
+    new Date(ld.booked_slot_iso).getTime() < now.getTime()
       ? `\n# ATENÇÃO: O AGENDAMENTO REGISTRADO JÁ PASSOU\nbooked_slot_iso=${ld.booked_slot_iso} é ANTERIOR a agora (${todayIso}) — essa visita JÁ ACONTECEU. Se o lead escreve de novo pedindo para "confirmar" uma consulta, é porque está falando de algo NOVO (ex.: um retorno/procedimento sugerido durante a visita anterior) que AINDA NÃO está registrado no sistema — NÃO existe outro appointment_id. NUNCA reafirme o horário antigo (ex.: "confirmado para ontem às Xh") como se respondesse à pergunta dele — isso não faz sentido e confunde o lead. Diga que vai verificar com a equipe os detalhes dessa nova consulta e use next_stage="ESCALATED" com lead_data_patch.escalation_reason explicando a situação (não há registro do novo agendamento sugerido).\n`
       : ""
   }
@@ -3167,11 +3186,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   // já estão completos (ex.: nome coletado antes), agendamos NO MESMO turno —
   // sem "aguarde um instante". O isReadyForBooking/preflight ainda barram se
   // faltar algo. tryAutoSelectOfferedSlot já opera em SLOT_OFFER.
-  if (
-    ctx.stage !== "BOOKING" &&
-    ctx.stage !== "NAME_COLLECT" &&
-    ctx.stage !== "SLOT_OFFER"
-  ) {
+  if (ctx.stage !== "BOOKING" && ctx.stage !== "NAME_COLLECT" && ctx.stage !== "SLOT_OFFER") {
     return { patch: {}, toolsCalled: [] };
   }
 
@@ -3233,9 +3248,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
         values_preview: preflight.issues.map((i) => i.value.slice(0, 80)),
       })}`,
     );
-    const dirtyFields = allFields.filter((f) =>
-      preflight.issues.some((i) => i.key === f.key),
-    );
+    const dirtyFields = allFields.filter((f) => preflight.issues.some((i) => i.key === f.key));
     const cleanedLead = clearBookingFields(ctx.leadData, dirtyFields);
     ctx.leadData = cleanedLead;
     return {
@@ -3260,9 +3273,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
   // deixava a falha técnica passar como se fosse conflito silencioso.
   const failure = parseBookingFailure(toolResult);
   if (failure?.kind === "conflict") {
-    console.warn(
-      `[scheduler] slot indisponível conv=${ctx.conversationId} — atualizando horários`,
-    );
+    console.warn(`[scheduler] slot indisponível conv=${ctx.conversationId} — atualizando horários`);
     // Poda o slot que falhou de offered_slots (nunca re-ofertá-lo) e limpa a escolha.
     const failedIso = ctx.leadData.selected_slot_iso;
     ctx.leadData.offered_slots = pruneOfferedSlot(ctx.leadData.offered_slots, failedIso);
@@ -3391,16 +3402,17 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       ? autoBooking.toolResult
       : undefined;
   if (autoBooking.toolResult) {
-    baseDynamic += `\n\n# RESULTADO criar_agendamento (automático)\n${autoBooking.toolResult}\n` +
+    baseDynamic +=
+      `\n\n# RESULTADO criar_agendamento (automático)\n${autoBooking.toolResult}\n` +
       (ctx.leadData.appointment_id
         ? "Evento criado na agenda. Confirme ao lead e use next_stage=CONFIRMED."
         : invalidNameBlocked
           ? "O nome informado NÃO é um nome de pessoa válido. NÃO agende e NÃO ofereça horários. Peça gentilmente o NOME COMPLETO do paciente (nome e sobrenome) para finalizar. next_stage=NAME_COLLECT."
           : incompleteNameBlocked
-          ? "O nome tem só o PRIMEIRO nome — falta o SOBRENOME. NÃO agende e NÃO ofereça horários. Chame o lead pelo primeiro nome e peça só o sobrenome (ex.: \"Ana, me confirma seu sobrenome?\"). Ao receber, guarde o nome INTEIRO (primeiro + sobrenome) em lead_data_patch.name. next_stage=NAME_COLLECT."
-          : isGuardHoldFailure(autoBooking.toolResult)
-          ? "O agendamento foi SEGURADO de propósito (veja error_kind e a instrução no resultado acima). NÃO houve problema técnico e NÃO houve indisponibilidade — não diga nenhuma das duas coisas ao lead. Siga exatamente a instrução do resultado e responda ao que o lead realmente pediu."
-          : 'Falha ao registrar o agendamento. NÃO confirme. Se o resultado indicar error_kind="conflict" (horário ocupado), peça desculpas e ofereça OUTRO horário (nunca o que falhou). Se error_kind="technical" (falha ao registrar, horário segue livre), NÃO diga que ficou indisponível: peça desculpas por um problema técnico momentâneo e diga que já vai tentar registrar de novo.');
+            ? 'O nome tem só o PRIMEIRO nome — falta o SOBRENOME. NÃO agende e NÃO ofereça horários. Chame o lead pelo primeiro nome e peça só o sobrenome (ex.: "Ana, me confirma seu sobrenome?"). Ao receber, guarde o nome INTEIRO (primeiro + sobrenome) em lead_data_patch.name. next_stage=NAME_COLLECT.'
+            : isGuardHoldFailure(autoBooking.toolResult)
+              ? "O agendamento foi SEGURADO de propósito (veja error_kind e a instrução no resultado acima). NÃO houve problema técnico e NÃO houve indisponibilidade — não diga nenhuma das duas coisas ao lead. Siga exatamente a instrução do resultado e responda ao que o lead realmente pediu."
+              : 'Falha ao registrar o agendamento. NÃO confirme. Se o resultado indicar error_kind="conflict" (horário ocupado), peça desculpas e ofereça OUTRO horário (nunca o que falhou). Se error_kind="technical" (falha ao registrar, horário segue livre), NÃO diga que ficou indisponível: peça desculpas por um problema técnico momentâneo e diga que já vai tentar registrar de novo.');
   }
 
   const dynamic = extras ? baseDynamic + "\n\n" + extras : baseDynamic;
@@ -3425,17 +3437,21 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Loop de tools: GPT-4.1 mini (toolModel) — Gemini costuma falhar em function calling.
   // Resposta final ao lead continua em ctx.model (Gemini Flash Lite).
   for (let loop = 0; loop < MAX_TOOL_LOOPS; loop++) {
-    const turn = await callLlmWithFallback(ctx.orKey, {
-      model: ctx.toolModel,
-      systemCached: cached,
-      systemDynamic: dynamic,
-      messages: workingMessages,
-      tools: buildSchedulerTools(ctx),
-      toolChoice: "auto",
-      maxTokens: ctx.maxTokens,
-      temperature: Math.min(ctx.temperature, 0.4),
-      enableCaching: false,
-    }, ctx.toolFallbackModels);
+    const turn = await callLlmWithFallback(
+      ctx.orKey,
+      {
+        model: ctx.toolModel,
+        systemCached: cached,
+        systemDynamic: dynamic,
+        messages: workingMessages,
+        tools: buildSchedulerTools(ctx),
+        toolChoice: "auto",
+        maxTokens: ctx.maxTokens,
+        temperature: Math.min(ctx.temperature, 0.4),
+        enableCaching: false,
+      },
+      ctx.toolFallbackModels,
+    );
 
     if (loop === 0) {
       console.log(
@@ -3624,29 +3640,30 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const finalBaseDynamic = buildDynamicSystemPrompt(ctx); // reflete patches acumulados
   const finalDynamic = extras ? finalBaseDynamic + "\n\n" + extras : finalBaseDynamic;
   console.log(`[scheduler] reply JSON model=${ctx.model} stage=${ctx.stage}`);
-  const { result, response: finalResponse } = await callLlmStructuredWithFallback<SchedulerJsonResult>(
-    ctx.orKey,
-    {
-      model: ctx.model,
-      systemCached: cached,
-      systemDynamic: finalDynamic,
-      messages: [
-        ...workingMessages,
-        {
-          role: "user",
-          content:
-            "Com base no histórico e nas tools executadas, gere a resposta final em JSON conforme o schema instruído.",
-        },
-      ],
-      maxTokens: ctx.maxTokens,
-      temperature: ctx.temperature,
-      modelTemperatures: ctx.modelTemperatures,
-      enableCaching: ctx.model.startsWith("anthropic/"),
-      toolChoice: "none",
-    },
-    (raw) => parseAgentJson(ctx, raw),
-    ctx.fallbackModels,
-  );
+  const { result, response: finalResponse } =
+    await callLlmStructuredWithFallback<SchedulerJsonResult>(
+      ctx.orKey,
+      {
+        model: ctx.model,
+        systemCached: cached,
+        systemDynamic: finalDynamic,
+        messages: [
+          ...workingMessages,
+          {
+            role: "user",
+            content:
+              "Com base no histórico e nas tools executadas, gere a resposta final em JSON conforme o schema instruído.",
+          },
+        ],
+        maxTokens: ctx.maxTokens,
+        temperature: ctx.temperature,
+        modelTemperatures: ctx.modelTemperatures,
+        enableCaching: ctx.model.startsWith("anthropic/"),
+        toolChoice: "none",
+      },
+      (raw) => parseAgentJson(ctx, raw),
+      ctx.fallbackModels,
+    );
 
   totalTokensIn += finalResponse.tokensIn;
   totalTokensOut += finalResponse.tokensOut;
@@ -3680,12 +3697,12 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // nunca ofertado) → "concluído com sucesso" sem nenhum agendamento criado.
   // Chamado nos DOIS pontos de retorno (validation-only + retorno final).
   const scrubFalseConfirmation = (): void => {
-    const apptId =
-      ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
+    const apptId = ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
     if (apptId || outStage === "ESCALATED" || !claimsBookingConfirmed(reply)) return;
     const realSlots = pruneOfferedSlot(
-      ((outPatch as Partial<LeadData>).offered_slots ??
-        ctx.leadData.offered_slots) as OfferedSlotLike[] | undefined,
+      ((outPatch as Partial<LeadData>).offered_slots ?? ctx.leadData.offered_slots) as
+        | OfferedSlotLike[]
+        | undefined,
       undefined,
     );
 
@@ -3790,7 +3807,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         incompleteNameBlocked = true;
       }
       bookingValidationOnly =
-        isValidationOnlyFailure(lateBooking.toolResult) || isGuardHoldFailure(lateBooking.toolResult);
+        isValidationOnlyFailure(lateBooking.toolResult) ||
+        isGuardHoldFailure(lateBooking.toolResult);
       const lf = parseBookingFailure(lateBooking.toolResult);
       if (lf) {
         bookingFailureKind = lf.kind;
@@ -3857,8 +3875,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   if (lastBookingFailureResult) {
     const em = lastBookingFailureResult.match(/"error"\s*:\s*"((?:[^"\\]|\\.)*)"/);
     const ek = lastBookingFailureResult.match(/"error_kind"\s*:\s*"([^"]+)"/);
-    if (em && mergedTelemetry.booking_error == null) mergedTelemetry.booking_error = em[1].slice(0, 300);
-    if (ek && mergedTelemetry.booking_error_kind == null) mergedTelemetry.booking_error_kind = ek[1];
+    if (em && mergedTelemetry.booking_error == null)
+      mergedTelemetry.booking_error = em[1].slice(0, 300);
+    if (ek && mergedTelemetry.booking_error_kind == null)
+      mergedTelemetry.booking_error_kind = ek[1];
     if (ctx.leadData.selected_slot_iso && mergedTelemetry.booking_failed_slot == null) {
       mergedTelemetry.booking_failed_slot = ctx.leadData.selected_slot_iso;
     }

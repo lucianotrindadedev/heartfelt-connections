@@ -3121,6 +3121,74 @@ export function rankSlotsByRequestedHour<T>(
   }
   return out;
 }
+/** Turno de um horário, pelos minutos do dia. Fronteiras iguais às de
+ *  periodoParaHoras/pickSlotByPreference: manhã <12, tarde 12–18, noite ≥18. */
+export type TurnoSlot = "manha" | "tarde" | "noite";
+export function turnoDeMinutos(minutos: number): TurnoSlot {
+  if (minutos < 12 * 60) return "manha";
+  if (minutos < 18 * 60) return "tarde";
+  return "noite";
+}
+
+/**
+ * Corta a lista mantendo pelo menos um horário de CADA turno disponível.
+ *
+ * O corte antigo (`.slice(0, limite)`) pegava as N vagas mais próximas, e elas
+ * podem ser todas do mesmo turno. Caso real (Clínica Bomfim, Milene
+ * 21 99004-9579, 21/09/2026): a janela próxima tinha 22/09 às 13:00, 15:30,
+ * 16:00, 16:30, 17:00 e 23/09 às 13:00 — seis vagas, TODAS à tarde, com
+ * 24/09 livre de manhã (09:00, 10:30, 11:00, 11:30) dentro da mesma janela.
+ *
+ * O prompt da conta manda ofertar "sempre 2 horários, em contraturno: um pela
+ * manhã e um à tarde". Com uma lista só de tarde isso é impossível de cumprir:
+ * ou o agente quebra a instrução, ou vai buscar mais longe.
+ *
+ * Aqui a proximidade continua mandando — a lista é preenchida na ordem do
+ * ranking. A diferença é que, se algum turno presente nos slots ficou de fora,
+ * a última vaga do turno MAIS repetido cede o lugar para a primeira vaga
+ * (portanto a mais próxima) desse turno ausente.
+ *
+ * Quando o lead PEDIU um turno ("de manhã"), a variedade não se aplica: a
+ * lista já vem filtrada e injetar outro turno contrariaria o pedido dele.
+ */
+export function limitarComVariedadeDeTurno<T>(
+  ranked: readonly T[],
+  limite: number,
+  minutosDoDia: (slot: T) => number,
+): T[] {
+  const escolhidos = ranked.slice(0, limite);
+  if (ranked.length <= limite) return [...escolhidos];
+
+  const turnoDe = (s: T) => turnoDeMinutos(minutosDoDia(s));
+  const presentes = new Set(ranked.map(turnoDe));
+  if (presentes.size <= 1) return [...escolhidos];
+
+  for (const turno of presentes) {
+    if (escolhidos.some((s) => turnoDe(s) === turno)) continue;
+    const candidato = ranked.find((s) => turnoDe(s) === turno);
+    if (!candidato) continue;
+
+    // Tira do turno mais repetido, pela última posição (a menos próxima).
+    const contagem = new Map<TurnoSlot, number>();
+    for (const s of escolhidos) contagem.set(turnoDe(s), (contagem.get(turnoDe(s)) ?? 0) + 1);
+    let alvo: TurnoSlot | null = null;
+    let maior = 1; // nunca esvazia um turno que só tem um representante
+    for (const [t, n] of contagem) {
+      if (n > maior) {
+        maior = n;
+        alvo = t;
+      }
+    }
+    if (!alvo) break;
+    for (let i = escolhidos.length - 1; i >= 0; i--) {
+      if (turnoDe(escolhidos[i]!) === alvo) {
+        escolhidos[i] = candidato;
+        break;
+      }
+    }
+  }
+  return escolhidos;
+}
 
 /** "16:45" / "16h45" / "9:00" → minutos do dia (1005, 1005, 540). -1 se inválido. */
 export function minutesOfDayFromLabel(label: string): number {
