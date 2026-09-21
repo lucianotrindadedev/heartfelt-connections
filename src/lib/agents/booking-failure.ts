@@ -250,6 +250,25 @@ export function claimsBookingConfirmed(reply: string | undefined | null): boolea
 export const TECH_RETRY_REPLY =
   "Puxa, tive um probleminha técnico aqui pra registrar sua reserva agora. 😕 Me dá só um instantinho que já vou tentar de novo e te confirmo, tá?";
 
+/**
+ * A resposta é o aviso determinístico de retry técnico?
+ *
+ * TECH_RETRY_REPLY contém "só um instantinho", que é exatamente o padrão que a
+ * trava anti-enrolação (looksLikeStallReply) caça. Resultado real (Odonto
+ * Sorrisos, Rosa Maria 87 99996-1903, 19/09): o create falhou, o scheduler
+ * gerou o aviso honesto — e o orquestrador o classificou como enrolação e
+ * trocou por "Quase lá! Só me confirma que posso garantir esse horário".
+ * A lead respondeu "Sim" achando que faltava confirmação dela; a 2ª tentativa
+ * falhou igual e a conversa escalou. O aviso ficou só no meta
+ * (reply_llm_original), nunca chegou à lead.
+ *
+ * Este texto não é promessa vazia do modelo: é fala fixa do nosso código e a
+ * nova tentativa acontece de fato no turno seguinte. Fica isento da trava.
+ */
+export function isTechRetryReply(reply: string): boolean {
+  return reply.includes(TECH_RETRY_REPLY);
+}
+
 /** Falha TÉCNICA persistente: escala para um humano concluir (não fica em loop). */
 export const TECH_ESCALATE_REPLY =
   "Puxa, tive uma dificuldade técnica aqui pra concluir sua reserva. 😕 Já vou pedir pra uma pessoa do nosso time finalizar seu agendamento e te confirmar rapidinho, tá bom?";

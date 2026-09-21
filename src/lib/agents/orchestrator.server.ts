@@ -114,6 +114,7 @@ import {
   hasRealQuestion,
 } from "./stage-signals";
 import { isReplyTooSimilar } from "./reply-similarity";
+import { isTechRetryReply } from "./booking-failure";
 import {
   NEUTRAL_REPEAT_ACK,
   REPHRASE_PREFIX,
@@ -1644,7 +1645,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       !finalLeadData.appointment_id &&
       !appointmentJustCancelled &&
       inBookingStage &&
-      looksLikeStallReply(reply)
+      looksLikeStallReply(reply) &&
+      // O aviso de retry técnico é fala nossa e verdadeira — não é enrolação
+      // do modelo. Sem esta isenção a trava o engolia e a lead recebia
+      // "Quase lá! Só me confirma..." no lugar (ver isTechRetryReply).
+      !isTechRetryReply(reply)
     ) {
       stallReplyBlocked = true;
       console.warn(
