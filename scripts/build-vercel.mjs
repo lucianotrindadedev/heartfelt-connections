@@ -28,19 +28,35 @@ import { join, resolve } from "path";
 import { build as esbuild } from "esbuild";
 
 // Commit do build — injetado no bundle do servidor (define abaixo) e exposto em
-// /api/health. Deixa de ser adivinhação saber QUAL versão está no ar. Ordem:
-// SOURCE_COMMIT (Coolify/CI) → git rev-parse local → "unknown".
+// /api/health. Deixa de ser adivinhação saber QUAL versão está no ar.
+//
+// Ordem: SOURCE_COMMIT (build arg da Coolify — precisa estar DECLARADO com ARG
+// no Dockerfile, senão não chega aqui) → git rev-parse local (funciona só fora
+// do Docker: .git está no .dockerignore e a imagem slim não tem git) → falha.
 function resolveBuildCommit() {
-  const env = process.env.SOURCE_COMMIT || process.env.COOLIFY_GIT_COMMIT_SHA || process.env.GIT_COMMIT;
-  if (env && env.trim()) return env.trim().slice(0, 12);
+  for (const nome of ["SOURCE_COMMIT", "COOLIFY_GIT_COMMIT_SHA", "GIT_COMMIT"]) {
+    const v = process.env[nome];
+    if (v && v.trim()) return { commit: v.trim().slice(0, 12), fonte: nome };
+  }
   try {
-    return execSync("git rev-parse --short=12 HEAD", { encoding: "utf8" }).trim();
+    return {
+      commit: execSync("git rev-parse --short=12 HEAD", { encoding: "utf8" }).trim(),
+      fonte: "git rev-parse",
+    };
   } catch {
-    return "unknown";
+    return { commit: "unknown", fonte: "nenhuma" };
   }
 }
-const BUILD_COMMIT = resolveBuildCommit();
-console.log(`🏷️   Build commit: ${BUILD_COMMIT}`);
+const { commit: BUILD_COMMIT, fonte: COMMIT_FONTE } = resolveBuildCommit();
+if (BUILD_COMMIT === "unknown") {
+  // Barulhento de propósito: um "unknown" silencioso custou um dia de trabalho
+  // — confirmar o PR #49 virou sondagem contra a API do Clinicorp porque
+  // /api/health não sabia dizer que versão estava no ar.
+  console.warn("⚠️   Build commit NAO resolvido — /api/health vai responder commit=unknown.");
+  console.warn("    No Docker/Coolify: declare `ARG SOURCE_COMMIT` no Dockerfile.");
+} else {
+  console.log(`🏷️   Build commit: ${BUILD_COMMIT} (fonte: ${COMMIT_FONTE})`);
+}
 
 // --external-deps (build:coolify): NÃO bundla jsdom/pdf-parse — eles leem arquivos
 // (default-stylesheet.css) e usam import.meta.url em runtime, o que quebra quando
