@@ -387,6 +387,41 @@ export const saveClinicorpConfig = createServerFn({ method: "POST" })
     if (category_id !== undefined) patch.category_id = category_id || null;
     if (category_description !== undefined) patch.category_description = category_description || null;
     if (category_color !== undefined) patch.category_color = category_color || null;
+
+    // Confere a categoria contra o que a Clinicorp lista AGORA. Sem isto, uma
+    // descrição que a Clinicorp não reconhece só aparece semanas depois, como
+    // falha técnica no meio da conversa do lead (Odonto Sorrisos, 24/08 a
+    // 19/09: 300 conversas, zero agendamentos). Falar na hora de salvar é o
+    // único momento em que o dono da conta pode corrigir sem custo.
+    //
+    // A validação NÃO bloqueia se a própria consulta falhar (token/API fora do
+    // ar): aí o problema é outro e travar o save só atrapalharia.
+    const descricaoNova = patch.category_description as string | null | undefined;
+    if (descricaoNova) {
+      const { listClinicorpCategories } = await import("@/lib/tools/clinicorp.server");
+      let categorias: { id: string; description: string; color: string }[] | null = null;
+      try {
+        categorias = await listClinicorpCategories(accountId);
+      } catch (e) {
+        console.warn("[clinicorp] não deu pra validar a categoria ao salvar:", e);
+      }
+      if (categorias && categorias.length > 0) {
+        const { resolveClinicorpCategory } = await import("@/lib/tools/clinicorp.server");
+        const r = resolveClinicorpCategory(categorias, descricaoNova);
+        if (!r.ok) {
+          throw new Error(
+            `A categoria "${descricaoNova}" não existe na agenda da Clinicorp. Disponíveis: ${r.disponiveis.join(", ")}.`,
+          );
+        }
+        if (r.ajustada) {
+          console.warn(
+            `[clinicorp] categoria ${JSON.stringify(descricaoNova)} ajustada para ${JSON.stringify(r.description)}`,
+          );
+          patch.category_description = r.description;
+          if (!category_color) patch.category_color = r.color;
+        }
+      }
+    }
     if (api_token) patch.api_token_enc = await encryptValue(api_token);
 
     // IMPORTANTE: checar o erro. Antes o upsert era "fire-and-forget" e uma

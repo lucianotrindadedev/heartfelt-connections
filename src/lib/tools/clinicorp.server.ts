@@ -154,6 +154,60 @@ export async function listClinicorpCategories(
     .filter((c) => c.description);
 }
 
+/**
+ * O create rejeitou a Categoria de Agendamento enviada?
+ *
+ * Caso real (Odonto Sorrisos, 24/08 a 19/09): TODA criação voltava
+ * `400 {"Error":400,"Message":"CategoryDescription não encontrada: Avaliação"}`
+ * mesmo com a categoria existindo em `list_categories` — byte a byte igual, na
+ * mesma unidade, usada por 38 agendamentos criados pela própria UI do Clinicorp.
+ * A única outra conta que envia categoria usa "LEADS" (ASCII puro) e nunca
+ * falhou: o create do Clinicorp não casa descrição com acento.
+ *
+ * Foram 300 conversas e ZERO agendamentos em quase um mês por causa da COR do
+ * evento na agenda. Agenda com a cor errada é melhor que lead perdido — ver o
+ * reenvio sem categoria em createClinicorpAppointment.
+ */
+/** Resultado da conferência da categoria escolhida contra a lista do Clinicorp. */
+export type ClinicorpCategoryResolution =
+  | { ok: true; description: string; color: string | null; ajustada: boolean }
+  | { ok: false; disponiveis: string[] };
+
+/**
+ * Confere a Categoria de Agendamento escolhida contra o que o Clinicorp lista.
+ *
+ * Diferença só de caixa ou espaço é corrigida para a string exata deles — o
+ * create casa por texto, então "avaliação " e "Avaliação" não são a mesma
+ * coisa para a API. Descrição que não existe volta com as disponíveis, para o
+ * dono da conta corrigir na hora de salvar em vez de descobrir semanas depois
+ * no meio da conversa de um lead.
+ */
+export function resolveClinicorpCategory(
+  categorias: ClinicorpCategory[],
+  descricao: string,
+): ClinicorpCategoryResolution {
+  const exata = categorias.find((c) => c.description === descricao);
+  if (exata) {
+    return { ok: true, description: exata.description, color: exata.color || null, ajustada: false };
+  }
+  const aproximada = categorias.find(
+    (c) => c.description.trim().toLowerCase() === descricao.trim().toLowerCase(),
+  );
+  if (aproximada) {
+    return {
+      ok: true,
+      description: aproximada.description,
+      color: aproximada.color || null,
+      ajustada: true,
+    };
+  }
+  return { ok: false, disponiveis: categorias.map((c) => c.description) };
+}
+
+export function isCategoryNotFoundError(responseBody: string): boolean {
+  return /CategoryDescription\s+n[ãa]o\s+encontrada/i.test(responseBody);
+}
+
 // ── Horários disponíveis ───────────────────────────────────────────────────
 
 export interface ClinicorpSlot {
@@ -956,6 +1010,8 @@ export async function createClinicorpAppointment(
   const MAX_ATTEMPTS = 2;
   let apptId: string | number = "";
   let apptDt: string = params.datetime;
+  // Reenvio sem categoria: acontece no máximo uma vez por create.
+  let categoriaRemovida = false;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const res = await fetchClinicorp(
@@ -970,6 +1026,27 @@ export async function createClinicorpAppointment(
     if (!res.ok) {
       const msg = `Clinicorp create appointment failed: ${res.status} — ${rawBody.slice(0, 300)}`;
       console.error(`[clinicorp] tentativa ${attempt}/${MAX_ATTEMPTS}:`, msg);
+
+      // Categoria recusada pelo Clinicorp: reenvia SEM os campos de categoria.
+      // O agendamento sai sem a cor configurada, o que é incomparavelmente
+      // melhor que perder o lead (ver isCategoryNotFoundError).
+      if (
+        !categoriaRemovida &&
+        isCategoryNotFoundError(rawBody) &&
+        (body.CategoryDescription !== undefined || body.CategoryColor !== undefined)
+      ) {
+        console.warn(
+          `[clinicorp] categoria ${JSON.stringify(body.CategoryDescription)} recusada pelo create — reenviando sem categoria`,
+        );
+        delete body.CategoryDescription;
+        delete body.CategoryColor;
+        categoriaRemovida = true;
+        // Não consome tentativa: o POST recusado não chegou a criar nada e o
+        // reenvio leva um corpo diferente. Só ocorre uma vez (categoriaRemovida).
+        attempt--;
+        continue;
+      }
+
       if (attempt < MAX_ATTEMPTS) continue;
       throw new Error(msg);
     }
