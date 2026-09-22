@@ -120,6 +120,8 @@ import {
   leadRequestedUnofferedDate,
   leadTimeContradictsSlot,
   leadAnsweredFieldAfterSlotRestated,
+  mentionsScheduleConflict,
+  withChosenSlotAllowed,
   joinLeadIn,
   addressLineIfAsked,
   requestedDateFromText,
@@ -2125,7 +2127,16 @@ async function autoSelectSlot(ctx: AgentContext): Promise<Partial<LeadData>> {
 
   // Recusa/indisponibilidade NUNCA vai para a LLM — os guards determinísticos
   // que impedem "só largo às 18:00" de virar agendamento continuam mandando.
-  if (burst.some((m) => looksLikeDecline(m) || mentionsUnavailability(m.toLowerCase()))) {
+  // "Pela manhã tenho compromisso" / "quarta já tenho compromisso": indisponibilidade
+  // sem a palavra "não" — nunca vai para a LLM escolher (ver mentionsScheduleConflict).
+  if (
+    burst.some(
+      (m) =>
+        looksLikeDecline(m) ||
+        mentionsUnavailability(m.toLowerCase()) ||
+        mentionsScheduleConflict(m),
+    )
+  ) {
     return {};
   }
 
@@ -3930,7 +3941,15 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // Aqui a busca acontece de verdade — execListarHorarios já extrai dia, turno e
   // hora pedidos do histórico — e a resposta é gerada de novo com as vagas reais.
   const listedThisTurn = toolsCalled.some((t) => LISTAR_HORARIOS_TOOL_NAMES.has(t));
-  const selectedIso = ctx.leadData.selected_slot_iso;
+  // Sem porta extra de "é outro dia?": quando a promessa é de consultar a
+  // agenda, a consulta tem que acontecer. execListarHorarios já devolve só o
+  // horário escolhido quando o lead não está pedindo outro dia, então o caso
+  // "já escolheu" continua barato e sem reoferta. Caso real (Sorriso Saúde,
+  // Marcelene 22/09 17:32): a IA disse "deixa eu confirmar esse horário com a
+  // equipe e já te retorno" e a busca não rodou — a trava do orquestrador
+  // respondeu com um horário velho e a lead cobrou a contradição.
+  const promessaDeAgenda = promisesAvailabilityCheck(reply);
+  if (promessaDeAgenda && listedThisTurn) mergedTelemetry.stall_listing_skipped = "ja_listou";
   if (
     hasBookingIntegration(ctx) &&
     !ctx.leadData.appointment_id &&
@@ -3939,8 +3958,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     !incompleteNameBlocked &&
     outStage !== "ESCALATED" &&
     !listedThisTurn &&
-    promisesAvailabilityCheck(reply) &&
-    (!selectedIso || isAskingDifferentDay(selectedIso, requestedDateFromHistory(ctx.history)))
+    promessaDeAgenda
   ) {
     const listing = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
     toolsCalled.push("listar_horarios");
@@ -4184,17 +4202,24 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // ── Oferta com horário FORA da agenda ──────────────────────────────────────
   // O turn ofertou "quarta às 9h" mas a agenda devolveu 08:00/08:30: o lead
   // recebe um horário que não existe e a resposta dele nunca casa com nenhum
-  // slot (a auto-seleção não acha), travando a conversa. Roda só no momento de
-  // OFERTA — sem agendamento criado e sem slot já escolhido — porque depois
-  // disso citar o horário escolhido/agendado é legítimo mesmo que ele já tenha
-  // saído de offered_slots. Mesma trava do qualifier; ver scrubInventedTimeOffers.
+  // slot (a auto-seleção não acha), travando a conversa. Mesma trava do
+  // qualifier; ver scrubInventedTimeOffers.
+  //
+  // Roda TAMBÉM com slot já escolhido: citar o horário escolhido é legítimo (por
+  // isso ele entra na lista de permitidos), mas ofertar OUTRO horário inventado
+  // não. Era esse o furo — caso real (Sorriso Saúde, Marcelene 27 99703-3358,
+  // 22/09 14:33): com 23/09 08:30 selecionado por engano, a IA ofertou "quinta,
+  // 24/09 às 14:00 ou 14:30" sem nenhuma busca (a agenda de quinta não tem
+  // tarde), o follow-up repetiu o horário inventado e o agendamento nunca fechou.
   const jaTemAppt = ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
-  const jaEscolheu =
-    (outPatch as Partial<LeadData>).selected_slot_iso ?? ctx.leadData.selected_slot_iso;
-  if (!jaTemAppt && !jaEscolheu && outStage !== "ESCALATED") {
+  const jaEscolheu = ((outPatch as Partial<LeadData>).selected_slot_iso ??
+    ctx.leadData.selected_slot_iso ??
+    "") as string;
+  if (!jaTemAppt && outStage !== "ESCALATED") {
     const ofertados = ((outPatch as Partial<LeadData>).offered_slots ??
       ctx.leadData.offered_slots) as OfferedSlotLike[] | undefined;
-    const scrubOferta = scrubInventedTimeOffers(reply, ofertados);
+    const permitidos = withChosenSlotAllowed(ofertados, jaEscolheu);
+    const scrubOferta = scrubInventedTimeOffers(reply, permitidos);
     if (scrubOferta.scrubbed) {
       reply = scrubOferta.reply;
       mergedTelemetry.invented_time_offer_scrubbed = true;

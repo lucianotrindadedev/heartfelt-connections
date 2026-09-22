@@ -38,6 +38,7 @@ import {
   lastUserBurst,
   joinLeadIn,
   addressLineIfAsked,
+  signalsRefusalOrComplaint,
   pointingConfirmationReply,
   slotsOfferedInLastTurn,
   type BookingChannelContext,
@@ -338,14 +339,18 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // 1. Conversa + agente
   const conv = await sb
     .from("conversations")
-    .select("id, phone, helena_session_id, agent_id, meta, lead_phone, channel, channel_identifier, helena_contact_id")
+    .select(
+      "id, phone, helena_session_id, agent_id, meta, lead_phone, channel, channel_identifier, helena_contact_id",
+    )
     .eq("id", conversationId)
     .single();
   if (conv.error || !conv.data) throw new Error("Conversa não encontrada");
 
   const agent = await sb
     .from("agents")
-    .select("id, account_id, ativo, nome, system_prompt, llm_model_override, debounce_segundos, settings")
+    .select(
+      "id, account_id, ativo, nome, system_prompt, llm_model_override, debounce_segundos, settings",
+    )
     .eq("id", conv.data.agent_id)
     .single();
   if (agent.error || !agent.data) throw new Error("Agente não encontrado");
@@ -396,7 +401,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   // 3. LLM config + secret
   const llm = await sb
     .from("account_llm_config")
-    .select("default_model, max_tokens, temperature, model_temperatures, fallback_models, rag_gate_model, tool_model")
+    .select(
+      "default_model, max_tokens, temperature, model_temperatures, fallback_models, rag_gate_model, tool_model",
+    )
     .eq("account_id", accountId)
     .single();
   const secrets = await sb
@@ -728,20 +735,18 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Profissionais do Clinic Experts (a API não expõe expediente próprio — a
     // config já guarda uuid/name/duracao/business_hours_json de cada um).
     const clinicExpertsProfessionals = clinicExpertsCfg.data?.ativo
-      ? (
-          (Array.isArray(clinicExpertsCfg.data.professionals)
-            ? (clinicExpertsCfg.data.professionals as Record<string, unknown>[])
-            : []
-          )
-            .map((p) => ({
-              uuid: String(p.uuid ?? ""),
-              name: String(p.name ?? ""),
-              duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
-              businessHoursJson:
-                typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
-            }))
-            .filter((p) => p.uuid)
+      ? (Array.isArray(clinicExpertsCfg.data.professionals)
+          ? (clinicExpertsCfg.data.professionals as Record<string, unknown>[])
+          : []
         )
+          .map((p) => ({
+            uuid: String(p.uuid ?? ""),
+            name: String(p.name ?? ""),
+            duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+            businessHoursJson:
+              typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
+          }))
+          .filter((p) => p.uuid)
       : [];
 
     // Unidades do Clinic Experts (multi-unidade). Vazio = unidade única
@@ -749,38 +754,34 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // dos labels) nas tools — mesmo contrato do multi-agenda Google. Sem
     // tokens aqui: só metadados pra prompt/diagnóstico.
     const clinicExpertsUnidades = clinicExpertsCfg.data?.ativo
-      ? (
-          (Array.isArray((clinicExpertsCfg.data as { unidades?: unknown }).unidades)
-            ? ((clinicExpertsCfg.data as { unidades: Record<string, unknown>[] }).unidades)
-            : []
-          )
-            .map((u) => ({
-              label: String(u.label ?? "").trim(),
-              descricao: typeof u.descricao === "string" && u.descricao ? u.descricao : undefined,
-              professionalsCount: Array.isArray(u.professionals) ? u.professionals.length : 0,
-            }))
-            .filter((u) => u.label)
+      ? (Array.isArray((clinicExpertsCfg.data as { unidades?: unknown }).unidades)
+          ? (clinicExpertsCfg.data as { unidades: Record<string, unknown>[] }).unidades
+          : []
         )
+          .map((u) => ({
+            label: String(u.label ?? "").trim(),
+            descricao: typeof u.descricao === "string" && u.descricao ? u.descricao : undefined,
+            professionalsCount: Array.isArray(u.professionals) ? u.professionals.length : 0,
+          }))
+          .filter((u) => u.label)
       : [];
 
     // Profissionais habilitados no Clinup. Só é usado para diagnosticar
     // "0 horários" (nenhum habilitado vs agenda cheia) — o id do profissional
     // viaja no próprio slot ofertado, o LLM nunca escolhe.
     const clinupProfessionals = clinupCfg.data?.ativo
-      ? (
-          (Array.isArray((clinupCfg.data as { professionals?: unknown }).professionals)
-            ? ((clinupCfg.data as { professionals: Record<string, unknown>[] }).professionals)
-            : []
-          )
-            .map((p) => ({
-              id: String(p.id ?? ""),
-              name: String(p.name ?? ""),
-              duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
-              businessHoursJson:
-                typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
-            }))
-            .filter((p) => p.id)
+      ? (Array.isArray((clinupCfg.data as { professionals?: unknown }).professionals)
+          ? (clinupCfg.data as { professionals: Record<string, unknown>[] }).professionals
+          : []
         )
+          .map((p) => ({
+            id: String(p.id ?? ""),
+            name: String(p.name ?? ""),
+            duracaoMinutos: typeof p.duracao_minutos === "number" ? p.duracao_minutos : undefined,
+            businessHoursJson:
+              typeof p.business_hours_json === "string" ? p.business_hours_json : undefined,
+          }))
+          .filter((p) => p.id)
       : [];
 
     // Planilhas Google consultáveis. Conectar sem cadastrar planilha não vale
@@ -806,7 +807,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       history,
       hasBookingIntegration,
     });
-    const { lastUserMsg, lastAssistantMsg, slotSelectionTurn, userAcceptedSchedulingProposal } = signals;
+    const { lastUserMsg, lastAssistantMsg, slotSelectionTurn, userAcceptedSchedulingProposal } =
+      signals;
     // Travas que trocam a resposta inteira por um pedido fixo não podem deixar a
     // pergunta do endereço sem resposta — ver addressLineIfAsked.
     const withAddressIfAsked = (text: string): string => {
@@ -945,23 +947,21 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         ((llm.data as Record<string, unknown> | null)?.qualifier_model as string | undefined) ??
         (llm.data?.default_model as string | undefined) ??
         DEFAULT_QUALIFIER_MODEL,
-      qualifierFallbackModels:
-        (llm.data?.fallback_models as string[] | undefined) ??
-        [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
-      toolModel:
-        (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
-      toolFallbackModels:
-        (llm.data?.fallback_models as string[] | undefined) ??
-        [...DEFAULT_TOOL_FALLBACK_MODELS],
-      fallbackModels:
-        (llm.data?.fallback_models as string[] | undefined) ??
-        ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],
-      ragGateModel:
-        (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
+      qualifierFallbackModels: (llm.data?.fallback_models as string[] | undefined) ?? [
+        ...DEFAULT_QUALIFIER_FALLBACK_MODELS,
+      ],
+      toolModel: (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
+      toolFallbackModels: (llm.data?.fallback_models as string[] | undefined) ?? [
+        ...DEFAULT_TOOL_FALLBACK_MODELS,
+      ],
+      fallbackModels: (llm.data?.fallback_models as string[] | undefined) ?? [
+        "openai/gpt-4o-mini",
+        "anthropic/claude-haiku-4.5",
+      ],
+      ragGateModel: (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
       maxTokens: (llm.data?.max_tokens as number | undefined) ?? 1024,
       temperature: (llm.data?.temperature as number | undefined) ?? 0.5,
-      modelTemperatures:
-        (llm.data?.model_temperatures as Record<string, number> | undefined) ?? {},
+      modelTemperatures: (llm.data?.model_temperatures as Record<string, number> | undefined) ?? {},
       orKey,
       integrations: {
         clinicorp: !!clinicorpCfg.data?.ativo,
@@ -1003,10 +1003,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // etiquetada — o lead entraria no CRM sem turma e o guard de idempotência
     // reaplicaria tag errada. Portar isso para o modo unificado é trabalho
     // próprio; até lá, essas contas seguem no fluxo dividido.
-    const unifiedRequested =
-      (agentSettings.agent_mode ?? "").trim().toLowerCase() === "unified";
-    const unifiedBlockedByTurma =
-      unifiedRequested && agentUsesTurmaClassifier(agentSettings);
+    const unifiedRequested = (agentSettings.agent_mode ?? "").trim().toLowerCase() === "unified";
+    const unifiedBlockedByTurma = unifiedRequested && agentUsesTurmaClassifier(agentSettings);
     const unifiedMode = unifiedRequested && hasBookingIntegration && !unifiedBlockedByTurma;
     if (unifiedRequested && !unifiedMode) {
       console.warn(
@@ -1048,11 +1046,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // tool), a resposta dele já serve e não gastamos uma segunda chamada.
         const proposedStage = isStage(result.next_stage) ? result.next_stage : ctx.stage;
         const handsOffToScheduler =
-          routeForStage(clampStageForBooking(proposedStage, hasBookingIntegration)) ===
-          "scheduler";
+          routeForStage(clampStageForBooking(proposedStage, hasBookingIntegration)) === "scheduler";
         const qualifierOfferedRealSlots =
           (result.tools_called ?? []).includes("listar_horarios") &&
-          ((result.lead_data_patch?.offered_slots?.length ?? 0) > 0);
+          (result.lead_data_patch?.offered_slots?.length ?? 0) > 0;
         // Enrolação ("vou verificar a agenda") sem repasse proposto: o guard
         // anti-stall lá embaixo salvaria com um texto genérico. Melhor deixar o
         // scheduler responder de verdade.
@@ -1209,9 +1206,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         })}`,
       );
     }
-    const patch = stripNullishFields(
-      sanitized as Record<string, unknown>,
-    ) as Partial<LeadData>;
+    const patch = stripNullishFields(sanitized as Record<string, unknown>) as Partial<LeadData>;
     const newLeadData: LeadData = normalizeLeadDataForBooking(
       mergeLeadDataPatch(leadData, patch as Partial<LeadData>),
       { fallbackGuardianName: helenaContact?.name },
@@ -1294,8 +1289,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     }
 
     // Transição com→sem appointment_id = cancelamento efetivado neste turn.
-    const appointmentJustCancelled =
-      hadAppointmentBefore && !finalLeadData.appointment_id;
+    const appointmentJustCancelled = hadAppointmentBefore && !finalLeadData.appointment_id;
 
     // No repasse em cascata quem "estava rodando" era o scheduler no
     // handoffStage — é dele que a transição parte.
@@ -1639,11 +1633,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // agente unificado respondeu "Deixa eu verificar os horários disponíveis"
       // sem chamar a tool em 2 de 3 provedores.
       unifiedMode;
+    // Lead que ACABOU de recusar ou reclamar não recebe oferta de horário: as
+    // saídas desta trava são todas de agendamento. Nesse caso a resposta do
+    // modelo (acolhimento) fica de pé. Ver signalsRefusalOrComplaint.
+    const leadRecusouOuReclamou = lastUserBurst(history).some((m) => signalsRefusalOrComplaint(m));
     if (
       !falseBookingClaimBlocked &&
       hasBookingIntegration &&
       !finalLeadData.appointment_id &&
       !appointmentJustCancelled &&
+      !leadRecusouOuReclamou &&
       inBookingStage &&
       looksLikeStallReply(reply) &&
       // O aviso de retry técnico é fala nossa e verdadeira — não é enrolação
@@ -1685,8 +1684,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         !finalLeadData.commitment_confirmed
       ) {
         reply =
-          defaultCommitmentQuestion(agentSettings) ||
-          "Posso confirmar esse horário pra você?";
+          defaultCommitmentQuestion(agentSettings) || "Posso confirmar esse horário pra você?";
         newStage = "NAME_COLLECT";
       } else if (finalLeadData.selected_slot_iso) {
         // Tudo coletado: o agendamento determinístico deveria ter criado o evento.
@@ -1881,7 +1879,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         const nomeEhFrase = looksLikeSentenceNotName(finalLeadData.name ?? "");
         if (missingNoLoop.length > 0) {
           reply = withAddressIfAsked(
-            joinLeadIn("Desculpa insistir!", bookingFieldQuestion(missingNoLoop[0]!, finalLeadData)),
+            joinLeadIn(
+              "Desculpa insistir!",
+              bookingFieldQuestion(missingNoLoop[0]!, finalLeadData),
+            ),
           );
         } else if (nomeEhFrase) {
           // Nome que é FRASE ("Ja te mandei") passa por getMissingBookingFields
@@ -1896,8 +1897,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       } else if (hasBookingIntegration) {
         // Oferta repetida: o lead já viu esses horários e não escolheu. Pedir a
         // restrição dele, não "quer seguir com o agendamento?" — ver
-        // SLOT_OFFER_REPEAT_FALLBACK.
-        reply = SLOT_OFFER_REPEAT_FALLBACK;
+        // SLOT_OFFER_REPEAT_FALLBACK. Depois de uma recusa/reclamação, nem isso:
+        // insistir em horário ali queima o lead de vez.
+        reply = leadRecusouOuReclamou ? NEUTRAL_REPEAT_ACK : SLOT_OFFER_REPEAT_FALLBACK;
       } else {
         // Agente sem integração de agendamento (turismo, vendas, etc.) — texto
         // neutro que não menciona "agendamento" nem "horários".
@@ -2001,8 +2003,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           // o que impediu de saber qual palavra disparou o false_booking_claim
           // no caso Odonto Sorrisos (87 99625-9078). Guardamos o original para
           // conseguir auditar o gatilho depois.
-          reply_llm_original:
-            reply !== result.reply ? result.reply.slice(0, 400) : undefined,
+          reply_llm_original: reply !== result.reply ? result.reply.slice(0, 400) : undefined,
           false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
           confirmed_objection_blocked: confirmedObjectionBlocked || undefined,
           stall_reply_blocked: stallReplyBlocked || undefined,
@@ -2039,12 +2040,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           // ("a trava não rodou"). Caso real (Costa Lima Recreio, 21 98542-7519).
           false_confirmation_scrubbed:
             (result.telemetry?.false_confirmation_scrubbed as boolean) || undefined,
-          chosen_slot_preserved:
-            (result.telemetry?.chosen_slot_preserved as boolean) || undefined,
+          chosen_slot_preserved: (result.telemetry?.chosen_slot_preserved as boolean) || undefined,
           // A resposta prometia "vou verificar a agenda" sem tool; o scheduler
           // buscou de verdade e gerou a resposta de novo.
-          stall_listing_forced:
-            (result.telemetry?.stall_listing_forced as boolean) || undefined,
+          stall_listing_forced: (result.telemetry?.stall_listing_forced as boolean) || undefined,
           invented_time_offer_scrubbed:
             (result.telemetry?.invented_time_offer_scrubbed as boolean) || undefined,
         },
@@ -2127,7 +2126,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             "(sem nome)",
           phone: recordPhone(finalLeadData),
           datetimeIso: justBooked
-            ? (finalLeadData.selected_slot_iso as string | undefined) ?? ""
+            ? ((finalLeadData.selected_slot_iso as string | undefined) ?? "")
             : slotIsoBefore,
           appointmentLabel,
           agenda: selectedAgenda,
@@ -2185,7 +2184,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         });
       }
     }
-
   } finally {
     await releaseConversationLock(conversationId);
 
@@ -2198,16 +2196,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       .gt("criado_em", turnStartedAt)
       .limit(1);
     if (newer.data && newer.data.length > 0) {
-      const debounceSec = Math.min(
-        5,
-        (agent.data.debounce_segundos as number | null) ?? 20,
-      );
+      const debounceSec = Math.min(5, (agent.data.debounce_segundos as number | null) ?? 20);
       console.log(
         `[orch] nova mensagem durante turn — reagendando em ${debounceSec}s ${conversationId}`,
       );
-      const { scheduleConversationAgentTurn } = await import(
-        "@/lib/schedule-agent-turn.server"
-      );
+      const { scheduleConversationAgentTurn } = await import("@/lib/schedule-agent-turn.server");
       scheduleConversationAgentTurn(conversationId, debounceSec, 0);
     }
   }

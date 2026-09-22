@@ -1095,6 +1095,34 @@ export function looksLikeDecline(text: string): boolean {
 }
 
 /**
+ * Ruptura ou reclamação DENTRO de uma mensagem longa: "tô fora", "quero
+ * distância daí", "fizeram um serviço péssimo", "nunca mais". looksLikeDecline
+ * é ancorado na mensagem inteira (de propósito: ele limpa o horário escolhido)
+ * e não pega esses casos.
+ *
+ * Serve para as travas NÃO empurrarem horário em quem acabou de recusar. Caso
+ * real (Sorriso Saúde, 27 99874-4428, 21/09): "Tô fora, foi com vcs que eu
+ * gastei o que não podia, fizeram um serviço péssimo... quero distância daí" —
+ * o modelo respondeu acolhendo, e a trava anti-stall trocou o texto por
+ * "Tenho estes horários disponíveis: segunda-feira, 21/09 às 10:30 ou 11:00".
+ */
+export function signalsRefusalOrComplaint(text: string): boolean {
+  const t = (text ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (!t.trim()) return false;
+  return (
+    /\b(?:to|tou|estou)\s+fora\b/.test(t) ||
+    /\bquero\s+dist[au]ncia\b/.test(t) ||
+    /\bn[au]o\s+quero\s+(?:mais|nada|saber)\b/.test(t) ||
+    /\bn[au]o\s+tenho\s+(?:mais\s+)?interesse\b/.test(t) ||
+    /\bdesisto\b|\bdesisti\b/.test(t) ||
+    /\bnunca\s+mais\b/.test(t) ||
+    /\bpessim[ao]\b|\bhorr[ia]vel\b/.test(t) ||
+    /\bprocon\b|\bprocessar\b|\bna\s+justica\b/.test(t) ||
+    /\bme\s+arrependi\b/.test(t)
+  );
+}
+
+/**
  * Agradecimento SECO: a mensagem inteira é só "obrigado"/"obrigada" (com ou sem
  * pontuação). É o subconjunto de looksLikeDecline que significa educação, não
  * recusa — "Obrigada" mandado no meio de uma escolha de horário não é o mesmo
@@ -1762,6 +1790,45 @@ const VERBO_CONJUGADO_RE = B(
  * aceitar uma frase como nome grava lixo no cadastro do paciente e trava o
  * agendamento. Na dúvida, rejeita.
  */
+/** Palavras que, sozinhas ou combinadas, nunca formam o nome de alguém. */
+const PRONOMES_E_CONFIRMACOES = new Set([
+  "esse",
+  "essa",
+  "esses",
+  "essas",
+  "este",
+  "esta",
+  "isso",
+  "isto",
+  "aquele",
+  "aquela",
+  "aquilo",
+  "ai",
+  "aqui",
+  "la",
+  "mesmo",
+  "mesma",
+  "sim",
+  "nao",
+  "ok",
+  "certo",
+  "claro",
+  "tudo",
+  "bem",
+  "e",
+  "eh",
+  "o",
+  "a",
+  "os",
+  "as",
+  "de",
+  "do",
+  "da",
+  "meu",
+  "minha",
+  "eu",
+]);
+
 export function looksLikeSentenceNotName(text: string): boolean {
   const t = (text ?? "").trim();
   if (!t) return false;
@@ -1776,6 +1843,20 @@ export function looksLikeSentenceNotName(text: string): boolean {
   if (/^(muit[oa]s?|mto|mt|bem|super|meio|t[ãa]o|bastante|demais)(?!\p{L})/iu.test(t)) return true;
   if (/(?<!\p{L})(car[oa]s?|barat[oa]s?|pre[çc]os?|valor(?:es)?|or[çc]amentos?)(?!\p{L})/iu.test(t))
     return true;
+  // Fala SOBRE o nome em vez de dar o nome: "Esse nome mesmo", "meu nome",
+  // "Nome privado" (contato mascarado do Facebook).
+  if (/(?<!\p{L})nomes?(?!\p{L})/iu.test(t)) return true;
+  // Só pronomes/confirmações: "Esse E isso", "é isso mesmo", "esse aí".
+  // Caso real (Sorriso Saúde, 27 99874-4428, 21/09): a IA passou a conversa
+  // inteira chamando o lead de "Esse" e pediu "Esse, me confirma seu sobrenome?".
+  const palavras = t
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  if (palavras.length > 0 && palavras.every((w) => PRONOMES_E_CONFIRMACOES.has(w))) return true;
   // Afirmação curta ("tá bem", "ok", "beleza") — ANCORADA na mensagem inteira,
   // para não reprovar um nome que por acaso contenha a palavra.
   if (
@@ -2351,6 +2432,36 @@ export function leadAnsweredFieldAfterSlotRestated(
   return true;
 }
 
+/**
+ * Lista de horários "legítimos de citar" = os ofertados + o que o lead já
+ * escolheu (que pode ter saído de offered_slots depois de uma nova busca).
+ * Usada para o scrub de oferta inventada continuar valendo depois da escolha.
+ */
+export function withChosenSlotAllowed(
+  offered: OfferedTimeLike[] | null | undefined,
+  chosenIso: string | null | undefined,
+): OfferedTimeLike[] {
+  const base = [...(offered ?? [])];
+  const iso = (chosenIso ?? "").trim();
+  if (!iso) return base;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return base;
+  const time_label = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+  if (base.some((s) => s.time_label === time_label)) return base;
+  // Rótulo no mesmo formato dos slots reais ("quarta-feira, 23/09"): esta lista
+  // também alimenta o texto de re-oferta do scrub, que vai para o lead.
+  const diaSemana = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "long",
+  }).format(d);
+  return [...base, { date_label: `${diaSemana}, ${ddmmInBrt(iso)}`, time_label }];
+}
+
 /** Slot ofertado, no mínimo que este arquivo precisa ler. */
 type OfferedTimeLike = { date_label?: string; time_label?: string };
 
@@ -2850,15 +2961,96 @@ export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
  * o desejo. "trabalho de manhã", "de manhã não dá", "não posso de manhã" → a
  * manhã está EXCLUÍDA. Usado para desambiguar quando a frase cita dois turnos.
  */
-function periodoExcluido(t: string, palavra: string): boolean {
-  const p = palavra; // "manh[ãa]" | "tarde" | "noite"
+/**
+ * Janela que NÃO atravessa outra palavra de turno.
+ *
+ * Sem isso, "Na parte da manhã pode marcar qualquer dia, que eu só trabalho na
+ * parte da tarde" (fala real) excluía a MANHÃ: a janela ia de "manhã" até
+ * "trabalho", passando por cima da "tarde" que era o alvo do impedimento. A
+ * lead pedia manhã e recebia tarde.
+ */
+// A fronteira de palavra importa: "amanhã" contém "manh" e NÃO é turno. Sem o
+// \b, a janela parava em todo "amanhã" da frase e o impedimento nunca alcançava
+// o turno ("Amanhã não posso... só posso pela manhã" quebrava no meio).
+const SEM_OUTRO_TURNO = "(?:(?!\\bmanh|\\btarde|\\bnoite)[^])";
+
+/**
+ * Substantivo que, SOZINHO, já denuncia impedimento — sem precisar do verbo
+ * gatilho de COMPROMISSO_SRC ("só trabalho na parte da tarde", "tenho aula à
+ * tarde").
+ *
+ * Deliberadamente SEM "consulta" e "exame": numa clínica, "quero a consulta de
+ * manhã" é pedido. Esses dois só valem com o verbo, via COMPROMISSO_SRC
+ * ("tenho consulta").
+ */
+const IMPEDIMENTO_SOLTO =
+  "trabalh\\w*|ocupad\\w*|aula|curso|escola|faculdad\\w*|estud\\w*|expediente|plant[ãa]o";
+
+/** A cláusula isolada mostra ESTE turno como impedimento? */
+function clausulaImpede(clausula: string, p: string): boolean {
+  const J20 = `${SEM_OUTRO_TURNO}{0,20}`;
+  const J30 = `${SEM_OUTRO_TURNO}{0,30}`;
+  const S = IMPEDIMENTO_SOLTO;
   return (
     new RegExp(
       `(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`,
-    ).test(t) ||
-    new RegExp(`${p}[^,.;]*\\bn[ãa]o\\b`).test(t) ||
-    new RegExp(`\\bn[ãa]o\\b[^,.;]*(?:posso|consigo|d[áa]|vou|tenho)?[^,.;]*${p}`).test(t)
+    ).test(clausula) ||
+    // Ordem invertida: "de manhã eu trabalho".
+    new RegExp(`${p}${J20}(?:${S})`).test(clausula) ||
+    // Substantivo solto antes do turno: "só trabalho na parte da tarde".
+    new RegExp(`\\b(?:${S})\\b${J30}${p}`).test(clausula) ||
+    // Compromisso marcado NO turno citado: "pela manhã tenho compromisso".
+    new RegExp(`${p}${J30}${COMPROMISSO_SRC}`).test(clausula) ||
+    new RegExp(`${COMPROMISSO_SRC}${J30}${p}`).test(clausula) ||
+    new RegExp(`${p}${SEM_OUTRO_TURNO}*\\bn[ãa]o\\b`).test(clausula) ||
+    new RegExp(
+      `\\bn[ãa]o\\b${SEM_OUTRO_TURNO}*(?:posso|consigo|d[áa]|vou|tenho)?${SEM_OUTRO_TURNO}*${p}`,
+    ).test(clausula)
   );
+}
+
+/**
+ * O turno aparece SÓ em cláusula de impedimento, nunca como pedido?
+ *
+ * Testa cláusula a cláusula, não o texto inteiro. A diferença aparece em
+ * mensagem longa — transcrição de áudio vem com pouca pontuação e os dois
+ * assuntos juntos:
+ *
+ *   "Eu prefiro ser atendido pela manhã. Se não puder na terça-feira pela
+ *    manhã, embora não seja minha preferência, eu iria na sexta..."
+ *
+ * Varrendo o texto todo, o "não puder" da segunda frase apagava o pedido
+ * explícito da primeira, e o lead ficava sem filtro nenhum. Basta UMA cláusula
+ * pedindo o turno para ele valer.
+ */
+function periodoExcluido(t: string, palavra: string): boolean {
+  const p = palavra; // "manh[ãa]" | "tarde" | "noite"
+  const ocorre = new RegExp(p);
+  const clausulas = t.split(/[,.;!?\n]+/).filter((c) => ocorre.test(c));
+  if (clausulas.length === 0) return false;
+  return clausulas.every((c) => clausulaImpede(c, p));
+}
+
+/** Núcleo de "já tenho algo marcado" usado pelos dois detectores abaixo. */
+const COMPROMISSO_SRC =
+  "(?:tenho|tem|estarei|estou\\s+com|vou\\s+ter|j[áa]\\s+tenho)\\s*(?:(?:um[a]?|outr[ao]|algum[a]?|meu|minha)\\s+)?(?:compromisso|m[ée]dico|m[ée]dica|consulta|exame|reuni[ãa]o|viagem|trabalho|aula|curso|dentista|fisioterapia)";
+
+/**
+ * O lead diz que JÁ TEM COMPROMISSO no dia/turno em questão ("pela manhã tenho
+ * compromisso", "quarta já tenho compromisso", "amanhã eu tenho médico"). É
+ * indisponibilidade — mas sem a palavra "não", então mentionsUnavailability
+ * não pegava e a frase virava escolha de horário.
+ *
+ * Caso real (Sorriso Saúde, Marcelene 27 99703-3358, 22/09): ofertado
+ * "quarta-feira, 23/09 às 08:30 ou 09:00", ela respondeu "Pela manhã tenho
+ * compromisso" e o sistema SELECIONOU 08:30 — o horário que ela acabara de
+ * descartar. A conversa virou meia hora de contradição e ela perguntou
+ * "uma hora você fala que tem 14h30, outra hora não tem e agora tem. Resolve aí".
+ */
+export function mentionsScheduleConflict(text: string): boolean {
+  const t = (text ?? "").toLowerCase();
+  if (!t.trim()) return false;
+  return new RegExp(COMPROMISSO_SRC).test(t);
 }
 
 /**
@@ -3001,14 +3193,24 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
   }
 
   if (present.length === 0) return null;
-  if (present.length === 1) return present[0]!.key;
+  // Um turno só TAMBÉM passa pelo filtro de exclusão: "pela manhã tenho
+  // compromisso" / "estou trabalhando de manhã" citam a manhã como o horário
+  // IMPOSSÍVEL. Antes, com um único turno na frase, a exclusão era pulada e a
+  // busca filtrava justamente o turno descartado (Sorriso Saúde, Marcelene,
+  // 22/09).
+  if (present.length === 1) {
+    return periodoExcluido(t, present[0]!.re) ? null : present[0]!.key;
+  }
 
   // Dois+ turnos: remove os que estão em cláusula de trabalho/negação.
   const restantes = present.filter((p) => !periodoExcluido(t, p.re));
   if (restantes.length === 1) return restantes[0]!.key;
-  const pool = restantes.length > 0 ? restantes : present;
+  // TODOS excluídos ("de manhã trabalho e à tarde tenho aula"): não há turno
+  // pedido. Devolver um deles ofertava justamente o que o lead acabou de
+  // recusar; sem filtro, a busca oferta o horário mais próximo.
+  if (restantes.length === 0) return null;
   // Ainda ambíguo: o último turno citado costuma ser o operativo.
-  return pool.reduce((a, b) => (b.idx > a.idx ? b : a)).key;
+  return restantes.reduce((a, b) => (b.idx > a.idx ? b : a)).key;
 }
 
 /**
@@ -3838,17 +4040,14 @@ export function tryAutoSelectOfferedSlot(
     m.role === "user" ? { ...m, content: stripQuotePrefix(m.content) } : m,
   );
   const patch = autoSelectOfferedSlotInner(stage, leadData, historyLimpo);
+  if (!patch.selected_slot_iso) return patch;
+  const burst = lastUserBurst(historyLimpo).map((m) => m.trim());
   // Nunca marca uma hora diferente da que o lead digitou — ver
   // leadTimeContradictsSlot. Sem escolha, o agente reoferta.
-  if (
-    patch.selected_slot_iso &&
-    leadTimeContradictsSlot(
-      lastUserBurst(historyLimpo).map((m) => m.trim()),
-      patch.selected_slot_iso,
-    )
-  ) {
-    return {};
-  }
+  if (leadTimeContradictsSlot(burst, patch.selected_slot_iso)) return {};
+  // "Pela manhã tenho compromisso" não é escolha de horário — ver
+  // mentionsScheduleConflict.
+  if (burst.some((m) => mentionsScheduleConflict(m))) return {};
   return patch;
 }
 
@@ -4229,8 +4428,9 @@ function captureBookingAnswer(
   if (looksLikeIntentMessage(lastUser)) return {};
 
   if (field.maps_to === "name" || field.key === "name") {
-    if (!looksLikePersonName(lastUser)) return {};
-    return { name: mergePartialName(leadData.name, lastUser, field) };
+    const nome = stripNameIntroduction(lastUser);
+    if (!looksLikePersonName(nome)) return {};
+    return { name: mergePartialName(leadData.name, nome, field) };
   }
 
   // Campos de nome (crianca / responsaveis) exigem que o conteudo
@@ -4249,6 +4449,28 @@ function captureBookingAnswer(
       [field.key]: lastUser,
     },
   };
+}
+
+/**
+ * Tira a apresentação antes do nome: "Meu nome é Jéssica" → "Jéssica",
+ * "me chamo Ana Souza" → "Ana Souza", "sou o Carlos" → "Carlos".
+ *
+ * Sem isso a frase inteira ia para o cadastro do paciente — em produção havia
+ * 12 pacientes cadastrados como "Meu nome é <fulano>". E, com a regra que
+ * passou a recusar texto que fala SOBRE o nome, a resposta certa do lead
+ * viraria uma repergunta.
+ *
+ * Só remove do INÍCIO: "Pra que meu nome" e "Deunice meu nome" continuam
+ * recusados (o agente repergunta) em vez de virar um nome torto.
+ */
+export function stripNameIntroduction(text: string): string {
+  const t = (text ?? "").trim();
+  if (!t) return t;
+  const semIntro = t.replace(
+    /^(?:ol[áa]|oi|bom dia|boa tarde|boa noite)?[\s,!.]*(?:(?:o\s+)?meu\s+nome\s*(?:completo\s*)?(?:[ée]h?|:)?|me\s+chamo|pode\s+(?:me\s+)?chamar\s+(?:de\s+)?|sou\s+(?:o|a)\b|aqui\s+[ée]\s+(?:o|a)\b|nome\s*:)\s*/i,
+    "",
+  );
+  return semIntro.trim() || t;
 }
 
 /**

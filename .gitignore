@@ -48,3 +48,4 @@ heart-felt-connections-test/
 
 # Saídas dos diagnósticos de agenda (scripts/diag) — nunca versionar
 scripts/diag/last-*.txt
+scripts/diag/_baseline-tmp.ts
