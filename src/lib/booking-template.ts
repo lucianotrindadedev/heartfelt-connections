@@ -2355,6 +2355,39 @@ export function leadAnsweredFieldAfterSlotRestated(
 type OfferedTimeLike = { date_label?: string; time_label?: string };
 
 /**
+ * O scrub de oferta inventada deve rodar neste turn?
+ *
+ * Ele existe para o momento da OFERTA. Depois que o lead já escolheu, ou que o
+ * agendamento existe, citar aquele horário é legítimo mesmo que ele já tenha
+ * saído de offered_slots — por isso o guard se desliga nesses casos.
+ *
+ * O que NÃO pode desligar é uma escolha feita AGORA, no mesmo turn, por
+ * heurística. Caso real (Sorriso Saúde, Marcelene 27 99703-3358, 22/09/2026):
+ * ela escreveu "Pela manhã tenho compromisso", a leitura de turno entendeu
+ * PEDIDO de manhã e a auto-seleção marcou 08:30 — o horário em que ela
+ * justamente não podia. Com selected_slot_iso preenchido no patch do turn, o
+ * guard foi pulado, e a resposta seguinte — "consigo abrir um encaixe na parte
+ * da tarde. Tenho quinta-feira, 24/09 às 14:00 ou 14:30", com tools_called=[]
+ * — chegou à lead. Nenhum daqueles horários existia na agenda: ela aceitou
+ * 14:30, mandou o nome e o agendamento morreu em "selected_slot_iso ausente".
+ *
+ * Por isso `escolhaAnterior` é só o que já estava em lead_data ANTES do turn.
+ * Citar o horário recém-escolhido continua passando pelo scrub sem problema:
+ * ele saiu de offered_slots, que é exatamente contra o que o scrub compara.
+ */
+export function deveRodarScrubDeOferta(params: {
+  appointmentId?: string | number | null;
+  /** selected_slot_iso que JÁ existia antes deste turn (nunca o do patch). */
+  escolhaAnterior?: string | null;
+  stage: string;
+}): boolean {
+  if (params.appointmentId) return false;
+  if (params.escolhaAnterior) return false;
+  if (params.stage === "ESCALATED") return false;
+  return true;
+}
+
+/**
  * Remove de uma resposta ofertas de dia+horário que o agente NÃO pode sustentar.
  *
  * Dois cenários, um mesmo estrago (o lead recebe um horário que não existe):
@@ -2850,15 +2883,75 @@ export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
  * o desejo. "trabalho de manhã", "de manhã não dá", "não posso de manhã" → a
  * manhã está EXCLUÍDA. Usado para desambiguar quando a frase cita dois turnos.
  */
-function periodoExcluido(t: string, palavra: string): boolean {
-  const p = palavra; // "manh[ãa]" | "tarde" | "noite"
+/**
+ * O turno aparece numa cláusula de IMPEDIMENTO, não de pedido?
+ *
+ * Três formas, porque o lead diz isso de todo jeito:
+ *   • o impedimento vem ANTES  — "trabalho de manhã", "tenho aula à tarde"
+ *   • o impedimento vem DEPOIS — "pela manhã tenho compromisso",
+ *                                "de manhã to no trabalho"
+ *   • negação explícita        — "de manhã não posso", "manhã não dá pra mim"
+ *
+ * A lista de substantivos é deliberadamente curta e NÃO inclui "consulta" nem
+ * "exame": numa clínica, "quero a consulta de manhã" é pedido, não impedimento.
+ */
+/**
+ * Substantivos que denunciam IMPEDIMENTO. Curta de propósito e sem "consulta"
+ * nem "exame": numa clínica, "quero a consulta de manhã" é pedido, não
+ * impedimento.
+ */
+const IMPEDIMENTO_SUBST =
+  "trabalh\\w*|ocupad\\w*|compromisso|aula|curso|escola|faculdad\\w*|estud\\w*|reuni[ãa]o|servi[çc]o|expediente|plant[ãa]o";
+
+/**
+ * Janela que NÃO atravessa outra palavra de turno.
+ *
+ * Sem isso, "eu trabalho de manha só posso de tarde" (fala real, Costa Lima
+ * Madureira) tinha a tarde excluída: a janela ia de "trabalho" até "tarde"
+ * passando por cima do "manha" que era o verdadeiro alvo do impedimento.
+ */
+const SEM_OUTRO_TURNO = "(?:(?!manh|tarde|noite)[^]){0,40}";
+
+/** A cláusula isolada mostra ESTE turno como impedimento? */
+function clausulaImpede(clausula: string, p: string): boolean {
+  const S = IMPEDIMENTO_SUBST;
+  const J = SEM_OUTRO_TURNO;
   return (
+    // "trabalho de manhã", "aula à tarde" — impedimento colado, antes do turno
     new RegExp(
       `(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`,
-    ).test(t) ||
-    new RegExp(`${p}[^,.;]*\\bn[ãa]o\\b`).test(t) ||
-    new RegExp(`\\bn[ãa]o\\b[^,.;]*(?:posso|consigo|d[áa]|vou|tenho)?[^,.;]*${p}`).test(t)
+    ).test(clausula) ||
+    // "pela manhã tenho compromisso", "de manhã to no trabalho"
+    new RegExp(`${p}${J}\\b(?:${S})\\b`).test(clausula) ||
+    new RegExp(`\\b(?:${S})\\b${J}${p}`).test(clausula) ||
+    // negação dos dois lados, sem atravessar outro turno
+    new RegExp(`${p}${J}\\bn[ãa]o\\b`).test(clausula) ||
+    new RegExp(`\\bn[ãa]o\\b${J}${p}`).test(clausula)
   );
+}
+
+/**
+ * O turno aparece SÓ em cláusula de impedimento, nunca como pedido?
+ *
+ * Testa cláusula a cláusula, não o texto inteiro. A diferença importa em
+ * mensagem longa — transcrição de áudio costuma vir sem pontuação generosa e
+ * com os dois assuntos juntos:
+ *
+ *   "Eu prefiro ser atendido pela manhã. Se não puder na terça-feira pela
+ *    manhã, embora não seja minha preferência, eu iria na sexta..."
+ *
+ * Varrendo o texto todo, o "não puder" da segunda frase apagaria o pedido
+ * explícito da primeira. Basta UMA cláusula pedindo o turno para ele valer.
+ *
+ * Caso que motivou a trava (Sorriso Saúde, Marcelene 27 99703-3358, 22/09):
+ * "Pela manhã tenho compromisso" — cláusula única, impedimento — vira null.
+ */
+function periodoExcluido(t: string, palavra: string): boolean {
+  const p = palavra; // "manh[ãa]" | "tarde" | "noite"
+  const ocorre = new RegExp(p);
+  const clausulas = t.split(/[,.;!?\n]+/).filter((c) => ocorre.test(c));
+  if (clausulas.length === 0) return false;
+  return clausulas.every((c) => clausulaImpede(c, p));
 }
 
 /**
@@ -3001,14 +3094,27 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
   }
 
   if (present.length === 0) return null;
-  if (present.length === 1) return present[0]!.key;
+
+  // Turno ÚNICO citado: antes voltava direto, sem olhar se era pedido ou
+  // impedimento. Era esse o caminho da Marcelene (Sorriso Saúde,
+  // 27 99703-3358, 22/09): "Pela manhã tenho compromisso" virava periodo=manha,
+  // a escolha automática marcou 08:30 — o horário em que ela NÃO podia — e a
+  // busca seguinte passou a filtrar pela manhã, o oposto do que ela precisava.
+  //
+  // Devolve null, não o turno oposto: "de manhã não posso" não diz se ela quer
+  // tarde ou noite. Sem preferência, a busca não filtra e oferta o mais próximo.
+  if (present.length === 1) {
+    return periodoExcluido(t, present[0]!.re) ? null : present[0]!.key;
+  }
 
   // Dois+ turnos: remove os que estão em cláusula de trabalho/negação.
   const restantes = present.filter((p) => !periodoExcluido(t, p.re));
   if (restantes.length === 1) return restantes[0]!.key;
-  const pool = restantes.length > 0 ? restantes : present;
+  // TODOS excluídos ("de manhã trabalho e à tarde tenho aula"): não há turno
+  // pedido — devolver um deles seria ofertar justamente o que ele recusou.
+  if (restantes.length === 0) return null;
   // Ainda ambíguo: o último turno citado costuma ser o operativo.
-  return pool.reduce((a, b) => (b.idx > a.idx ? b : a)).key;
+  return restantes.reduce((a, b) => (b.idx > a.idx ? b : a)).key;
 }
 
 /**

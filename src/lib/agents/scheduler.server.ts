@@ -132,6 +132,7 @@ import {
   rankSlotsByRequestedHour,
   limitarComVariedadeDeTurno,
   scrubInventedTimeOffers,
+  deveRodarScrubDeOferta,
   minutesOfDayFromLabel,
   affirmedDatesFromAssistant,
   ddmmInBrt,
@@ -4188,10 +4189,14 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // OFERTA — sem agendamento criado e sem slot já escolhido — porque depois
   // disso citar o horário escolhido/agendado é legítimo mesmo que ele já tenha
   // saído de offered_slots. Mesma trava do qualifier; ver scrubInventedTimeOffers.
-  const jaTemAppt = ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
-  const jaEscolheu =
-    (outPatch as Partial<LeadData>).selected_slot_iso ?? ctx.leadData.selected_slot_iso;
-  if (!jaTemAppt && !jaEscolheu && outStage !== "ESCALATED") {
+  // Ver deveRodarScrubDeOferta: o gate olha a escolha ANTERIOR ao turn, nunca
+  // a que acabou de ser feita por heuristica.
+  const rodaScrub = deveRodarScrubDeOferta({
+    appointmentId: ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id,
+    escolhaAnterior: ctx.leadData.selected_slot_iso,
+    stage: outStage,
+  });
+  if (rodaScrub) {
     const ofertados = ((outPatch as Partial<LeadData>).offered_slots ??
       ctx.leadData.offered_slots) as OfferedSlotLike[] | undefined;
     const scrubOferta = scrubInventedTimeOffers(reply, ofertados);
