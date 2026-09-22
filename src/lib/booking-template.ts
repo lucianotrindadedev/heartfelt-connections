@@ -2961,27 +2961,79 @@ export function affirmedDatesFromAssistant(texts: string[]): Set<string> {
  * o desejo. "trabalho de manhã", "de manhã não dá", "não posso de manhã" → a
  * manhã está EXCLUÍDA. Usado para desambiguar quando a frase cita dois turnos.
  */
-function periodoExcluido(t: string, palavra: string): boolean {
-  const p = palavra; // "manh[ãa]" | "tarde" | "noite"
+/**
+ * Janela que NÃO atravessa outra palavra de turno.
+ *
+ * Sem isso, "Na parte da manhã pode marcar qualquer dia, que eu só trabalho na
+ * parte da tarde" (fala real) excluía a MANHÃ: a janela ia de "manhã" até
+ * "trabalho", passando por cima da "tarde" que era o alvo do impedimento. A
+ * lead pedia manhã e recebia tarde.
+ */
+// A fronteira de palavra importa: "amanhã" contém "manh" e NÃO é turno. Sem o
+// \b, a janela parava em todo "amanhã" da frase e o impedimento nunca alcançava
+// o turno ("Amanhã não posso... só posso pela manhã" quebrava no meio).
+const SEM_OUTRO_TURNO = "(?:(?!\\bmanh|\\btarde|\\bnoite)[^])";
+
+/**
+ * Substantivo que, SOZINHO, já denuncia impedimento — sem precisar do verbo
+ * gatilho de COMPROMISSO_SRC ("só trabalho na parte da tarde", "tenho aula à
+ * tarde").
+ *
+ * Deliberadamente SEM "consulta" e "exame": numa clínica, "quero a consulta de
+ * manhã" é pedido. Esses dois só valem com o verbo, via COMPROMISSO_SRC
+ * ("tenho consulta").
+ */
+const IMPEDIMENTO_SOLTO =
+  "trabalh\\w*|ocupad\\w*|aula|curso|escola|faculdad\\w*|estud\\w*|expediente|plant[ãa]o";
+
+/** A cláusula isolada mostra ESTE turno como impedimento? */
+function clausulaImpede(clausula: string, p: string): boolean {
+  const J20 = `${SEM_OUTRO_TURNO}{0,20}`;
+  const J30 = `${SEM_OUTRO_TURNO}{0,30}`;
+  const S = IMPEDIMENTO_SOLTO;
   return (
     new RegExp(
       `(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`,
-    ).test(t) ||
+    ).test(clausula) ||
     // Ordem invertida: "de manhã eu trabalho".
-    new RegExp(`${p}[^,.;!?]{0,20}(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)`).test(t) ||
-    // Compromisso marcado NO turno citado: "pela manhã tenho compromisso",
-    // "de manhã tenho médico". É indisponibilidade, não preferência — ver
-    // mentionsScheduleConflict.
-    new RegExp(`${p}[^,.;!?]{0,30}${COMPROMISSO_SRC}`).test(t) ||
-    new RegExp(`${COMPROMISSO_SRC}[^,.;!?]{0,30}${p}`).test(t) ||
-    new RegExp(`${p}[^,.;]*\\bn[ãa]o\\b`).test(t) ||
-    new RegExp(`\\bn[ãa]o\\b[^,.;]*(?:posso|consigo|d[áa]|vou|tenho)?[^,.;]*${p}`).test(t)
+    new RegExp(`${p}${J20}(?:${S})`).test(clausula) ||
+    // Substantivo solto antes do turno: "só trabalho na parte da tarde".
+    new RegExp(`\\b(?:${S})\\b${J30}${p}`).test(clausula) ||
+    // Compromisso marcado NO turno citado: "pela manhã tenho compromisso".
+    new RegExp(`${p}${J30}${COMPROMISSO_SRC}`).test(clausula) ||
+    new RegExp(`${COMPROMISSO_SRC}${J30}${p}`).test(clausula) ||
+    new RegExp(`${p}${SEM_OUTRO_TURNO}*\\bn[ãa]o\\b`).test(clausula) ||
+    new RegExp(
+      `\\bn[ãa]o\\b${SEM_OUTRO_TURNO}*(?:posso|consigo|d[áa]|vou|tenho)?${SEM_OUTRO_TURNO}*${p}`,
+    ).test(clausula)
   );
+}
+
+/**
+ * O turno aparece SÓ em cláusula de impedimento, nunca como pedido?
+ *
+ * Testa cláusula a cláusula, não o texto inteiro. A diferença aparece em
+ * mensagem longa — transcrição de áudio vem com pouca pontuação e os dois
+ * assuntos juntos:
+ *
+ *   "Eu prefiro ser atendido pela manhã. Se não puder na terça-feira pela
+ *    manhã, embora não seja minha preferência, eu iria na sexta..."
+ *
+ * Varrendo o texto todo, o "não puder" da segunda frase apagava o pedido
+ * explícito da primeira, e o lead ficava sem filtro nenhum. Basta UMA cláusula
+ * pedindo o turno para ele valer.
+ */
+function periodoExcluido(t: string, palavra: string): boolean {
+  const p = palavra; // "manh[ãa]" | "tarde" | "noite"
+  const ocorre = new RegExp(p);
+  const clausulas = t.split(/[,.;!?\n]+/).filter((c) => ocorre.test(c));
+  if (clausulas.length === 0) return false;
+  return clausulas.every((c) => clausulaImpede(c, p));
 }
 
 /** Núcleo de "já tenho algo marcado" usado pelos dois detectores abaixo. */
 const COMPROMISSO_SRC =
-  "(?:tenho|tem|estarei|estou\\s+com|vou\\s+ter|j[áa]\\s+tenho)\\s*(?:um[a]?\\s+)?(?:compromisso|m[ée]dico|m[ée]dica|consulta|exame|reuni[ãa]o|viagem|trabalho|aula|curso|dentista|fisioterapia)";
+  "(?:tenho|tem|estarei|estou\\s+com|vou\\s+ter|j[áa]\\s+tenho)\\s*(?:(?:um[a]?|outr[ao]|algum[a]?|meu|minha)\\s+)?(?:compromisso|m[ée]dico|m[ée]dica|consulta|exame|reuni[ãa]o|viagem|trabalho|aula|curso|dentista|fisioterapia)";
 
 /**
  * O lead diz que JÁ TEM COMPROMISSO no dia/turno em questão ("pela manhã tenho
@@ -3153,9 +3205,12 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
   // Dois+ turnos: remove os que estão em cláusula de trabalho/negação.
   const restantes = present.filter((p) => !periodoExcluido(t, p.re));
   if (restantes.length === 1) return restantes[0]!.key;
-  const pool = restantes.length > 0 ? restantes : present;
+  // TODOS excluídos ("de manhã trabalho e à tarde tenho aula"): não há turno
+  // pedido. Devolver um deles ofertava justamente o que o lead acabou de
+  // recusar; sem filtro, a busca oferta o horário mais próximo.
+  if (restantes.length === 0) return null;
   // Ainda ambíguo: o último turno citado costuma ser o operativo.
-  return pool.reduce((a, b) => (b.idx > a.idx ? b : a)).key;
+  return restantes.reduce((a, b) => (b.idx > a.idx ? b : a)).key;
 }
 
 /**
