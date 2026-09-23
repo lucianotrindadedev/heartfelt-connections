@@ -2212,6 +2212,51 @@ describe("CPF no pipeline de booking", () => {
   });
 });
 
+describe("scrubInventedTimeOffers — oferta em lista vertical (Odonto Sorrisos, 87 99136-6644, 23/09)", () => {
+  const reply =
+    "Perfeito! Tenho dois horários na segunda-feira, 28/09 que ficam bem distribuídos no dia:\n\n" +
+    "🕐 08:00 da manhã\n🕐 18:00 à noite\n\nQual fica melhor para você?";
+  const seg = (hs: string[]) =>
+    hs.map((h) => ({ date_label: "segunda-feira, 28/09", time_label: h }));
+
+  it("corta a lista quando um dos horários não é real e oferta os reais", () => {
+    const out = scrubInventedTimeOffers(reply, seg(["08:00", "13:00"]));
+    expect(out.scrubbed).toBe(true);
+    expect(out.reply).not.toContain("18:00");
+    expect(out.reply).not.toContain("Tenho dois horários");
+    expect(out.reply).toContain("Perfeito!");
+    expect(out.reply).toContain("segunda-feira, 28/09 às 08:00 ou segunda-feira, 28/09 às 13:00");
+  });
+
+  it("lista com horários todos reais passa intacta", () => {
+    const out = scrubInventedTimeOffers(reply, seg(["08:00", "18:00"]));
+    expect(out).toEqual({ reply, scrubbed: false });
+  });
+
+  it("sem agenda em mãos, qualquer lista de horários é inventada", () => {
+    const out = scrubInventedTimeOffers(reply);
+    expect(out.scrubbed).toBe(true);
+    expect(out.reply).not.toContain("08:00");
+  });
+
+  it("dia da semana da lista que nenhum slot real tem", () => {
+    const out = scrubInventedTimeOffers(
+      "Tenho estas opções para sábado:\n- 08:00\n- 18:00",
+      [
+        { date_label: "segunda-feira, 28/09", time_label: "08:00" },
+        { date_label: "segunda-feira, 28/09", time_label: "18:00" },
+      ],
+    );
+    expect(out.scrubbed).toBe(true);
+  });
+
+  it("NÃO dispara em horário de funcionamento listado", () => {
+    expect(
+      scrubInventedTimeOffers("Temos atendimento de segunda a sábado:\n🕐 das 08:00 às 19:00").scrubbed,
+    ).toBe(false);
+  });
+});
+
 describe("scrubInventedTimeOffers — qualifier oferta horário sem ter agenda (Costa Lima Recreio 18/07)", () => {
   it("corta a oferta inventada, preserva o pitch e fecha com pergunta neutra", () => {
     const reply =
