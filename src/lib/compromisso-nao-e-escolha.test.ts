@@ -114,8 +114,17 @@ describe("nome do lead", () => {
     ["sou o Carlos", "Carlos"],
     ["Nome: Pedro Silva", "Pedro Silva"],
     ["Oi, meu nome completo é Marcelene Borges", "Marcelene Borges"],
+    // Nomes reais de produção que agora seriam reprovados como frase ("Eu ...").
+    ["Eu me chamo claudeth", "claudeth"],
+    ["Eu sou o Jonathan", "Jonathan"],
+    ["Eu já sou Ademilza", "Ademilza"],
   ])("extrai o nome de %s", (msg, esperado) => {
     expect(stripNameIntroduction(msg)).toBe(esperado);
+  });
+
+  it("'Eu sou de <lugar>' não vira nome", () => {
+    expect(looksLikeSentenceNotName(stripNameIntroduction("Eu sou de SC"))).toBe(true);
+    expect(looksLikeSentenceNotName(stripNameIntroduction("Eu sou da Bahia"))).toBe(true);
   });
 
   it("nome normal passa intacto", () => {

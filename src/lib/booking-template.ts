@@ -1836,6 +1836,14 @@ export function looksLikeSentenceNotName(text: string): boolean {
   if (VERBO_CONJUGADO_RE.test(t)) return true;
   // Negação/adversativa iniciando a frase: "não quinta", "mas eu queria...".
   if (/^(n[ãa]o|nem|mas|porque|por que|s[óo]|hj|j[áa])(?!\p{L})/iu.test(t)) return true;
+  // Frase que abre com sujeito/conjunção/preposição ("Eu sofri um acidente",
+  // "E quebrei 2 dentes", "É muito longe", "Em Japeri") ou que traz artigo
+  // indefinido ("um acidente"). Nenhum nome começa assim nem leva "um/uma".
+  // Caso real (Bomfim, Alex, 21 97394-6031, 21/09): o lead disse "Alex", a IA
+  // perguntou o nome de novo junto com a queixa, e "Eu sofri um acidente"
+  // SUBSTITUIU o primeiro nome — o verbo "sofri" não estava na lista abaixo.
+  if (/^(eu|[eé]|em|no|na|pra|para|pro)(?!\p{L})/iu.test(t)) return true;
+  if (B("um|uma|uns|umas").test(t)) return true;
   // Intensificador abrindo a frase, ou comentário de PREÇO: "Muito salgado"
   // virou o nome do lead e a IA respondeu "Entendo, Muito Salgado" (Sorriso
   // Saúde, 14/09). Nenhum nome começa com "Muito"/"Bem"/"Super", e "caro"/
@@ -4539,7 +4547,7 @@ export function stripNameIntroduction(text: string): string {
   const t = (text ?? "").trim();
   if (!t) return t;
   const semIntro = t.replace(
-    /^(?:ol[áa]|oi|bom dia|boa tarde|boa noite)?[\s,!.]*(?:(?:o\s+)?meu\s+nome\s*(?:completo\s*)?(?:[ée]h?|:)?|me\s+chamo|pode\s+(?:me\s+)?chamar\s+(?:de\s+)?|sou\s+(?:o|a)\b|aqui\s+[ée]\s+(?:o|a)\b|nome\s*:)\s*/i,
+    /^(?:ol[áa]|oi|bom dia|boa tarde|boa noite)?[\s,!.]*(?:(?:o\s+)?meu\s+nome\s*(?:completo\s*)?(?:[ée]h?|:)?|(?:eu\s+)?me\s+chamo|eu\s+(?:j[áa]\s+)?sou\s+(?:(?:o|a)\s+|(?!(?:de|da|do|das|dos|daqui|em|no|na)(?![\p{L}])))|pode\s+(?:me\s+)?chamar\s+(?:de\s+)?|sou\s+(?:o|a)\b|aqui\s+[ée]\s+(?:o|a)\b|nome\s*:)\s*/iu,
     "",
   );
   return semIntro.trim() || t;
