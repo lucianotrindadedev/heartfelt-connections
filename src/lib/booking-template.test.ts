@@ -1532,6 +1532,24 @@ describe("backfillBookingFieldsFromHistory", () => {
     expect(patch.custom_fields?.guardians).toBe("Luciano e Carolina");
   });
 
+  it("queixa respondida à repergunta do nome não substitui o primeiro nome (caso Alex, Bomfim)", () => {
+    const history = [
+      { role: "assistant" as const, content: "Agora, para iniciarmos seu atendimento, informe por favor:\nSeu nome\nE o que está acontecendo com o seu sorriso no momento?" },
+      { role: "user" as const, content: "Mais eu estou querendo fazer uma avaliação como faço" },
+      { role: "user" as const, content: "Alex" },
+      { role: "assistant" as const, content: "Perfeito! Vou te explicar como funciona. Mas antes, me conta seu nome e o que está acontecendo com seu sorriso no momento, tudo bem?" },
+      { role: "user" as const, content: "Eu sofri um acidente" },
+      { role: "assistant" as const, content: "Entendi, Alex. Poxa, sinto muito por isso." },
+      { role: "user" as const, content: "E quebrei 2 dente e perdi um e está me incomodando" },
+    ];
+    const settings = {
+      booking_fields_json: JSON.stringify([
+        { key: "name", label: "Nome", question: "Perfeito. Para finalizar, me envia por favor seu nome completo?", required: true, maps_to: "name" },
+      ]),
+    };
+    expect(backfillBookingFieldsFromHistory({}, history, settings).name).toBe("Alex");
+  });
+
   it("ignora historico vazio", () => {
     expect(backfillBookingFieldsFromHistory({}, [], SCHOOL_SETTINGS)).toEqual({});
   });
@@ -2436,6 +2454,11 @@ describe("looksLikeSentenceNotName", () => {
     "Hoje não consigo",
     "Só na próxima  semana",
     "Tá bem",
+    // Caso Alex (Bomfim, 21 97394-6031): queixa e local viravam o nome.
+    "Eu sofri um acidente",
+    "E quebrei 2 dente e perdi um e está me incomodando",
+    "É muito longe dá minha casa",
+    "Em Japeri",
   ];
   for (const f of FRASES) {
     it(`rejeita: ${JSON.stringify(f.slice(0, 34))}`, () => {
@@ -2454,6 +2477,11 @@ describe("looksLikeSentenceNotName", () => {
     "Ana Beatriz do Nascimento",
     "José Carlos",
     "Neymar Junior",
+    "Alex",
+    "Eunice Nascimento",
+    "Emerson da Silva",
+    "Nathalia Pereira",
+    "Édson Arantes",
   ];
   for (const n of NOMES) {
     it(`aceita nome real: ${JSON.stringify(n)}`, () => {
