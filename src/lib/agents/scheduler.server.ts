@@ -25,6 +25,7 @@ import {
   findGoogleCalendarEventsByPhone,
   activeWeekdayKeys,
   diaSemanaChave,
+  parseDisponibilidadeFromSettings,
   type GCalSlot,
 } from "@/lib/tools/google-calendar.server";
 import {
@@ -135,6 +136,8 @@ import {
   requestedHoraFromText,
   rankSlotsByRequestedHour,
   limitarComVariedadeDeTurno,
+  primeiroDaManhaEDaTarde,
+  type AlmocoDoDia,
   scrubInventedTimeOffers,
   minutesOfDayFromLabel,
   affirmedDatesFromAssistant,
@@ -1057,6 +1060,35 @@ export function turnoDaBusca(
  *  buildQualifierTools: dar a consulta de agenda ao qualifier faz o repasse
  *  perdido degradar pra "horário real com 1 turno de atraso" em vez de
  *  "enrolação sem horário nenhum". Nada aqui escreve na agenda. */
+/** Agente configurado para ofertar sempre a 1ª vaga da manhã + a 1ª da tarde
+ *  (settings.oferta_primeiro_manha_tarde = "true"). Ver primeiroDaManhaEDaTarde. */
+function ofertaPrimeiroManhaTarde(ctx: AgentContext): boolean {
+  return String(ctx.agentSettings.oferta_primeiro_manha_tarde ?? "").trim().toLowerCase() === "true";
+}
+
+const DIA_COMPLETO: Record<string, string> = {
+  dom: "domingo",
+  seg: "segunda",
+  ter: "terca",
+  qua: "quarta",
+  qui: "quinta",
+  sex: "sexta",
+  sab: "sabado",
+};
+
+/** Almoço do dia (YYYY-MM-DD) segundo o business_hours_json do agente: o vão
+ *  entre o 1º e o 2º bloco do expediente. null = dia sem almoço cadastrado. */
+function almocoDoDia(ctx: AgentContext, localDate: string): AlmocoDoDia | null {
+  const dia = DIA_COMPLETO[weekdayKeyOfIso(localDate) ?? ""];
+  const blocos = dia
+    ? parseDisponibilidadeFromSettings(ctx.agentSettings.business_hours_json)[dia]
+    : undefined;
+  if (!blocos || blocos.length < 2) return null;
+  const inicio = minutesOfDayFromLabel(blocos[0]!.fim);
+  const fim = minutesOfDayFromLabel(blocos[1]!.inicio);
+  return inicio >= 0 && fim > inicio ? { inicio, fim } : null;
+}
+
 export async function execListarHorarios(
   ctx: AgentContext,
   diasAFrente?: number,
@@ -1684,10 +1716,22 @@ export async function execListarHorarios(
   // mesmo turno, e ai uma conta que manda ofertar em contraturno (Bomfim:
   // "sempre 2 horarios, um pela manha e um a tarde") nao tem como cumprir.
   // Quando o lead PEDIU turno, respeita o pedido e corta direto.
+  // Par fixo "1ª manhã + 1ª tarde" (configuração do agente). Só quando o lead
+  // não pediu turno nem hora — aí vale o pedido dele e a lista normal.
+  const parFixo =
+    ofertaPrimeiroManhaTarde(ctx) && !bounds && resolvedHora == null
+      ? primeiroDaManhaEDaTarde(
+          [...slots].sort((a, b) => a.start.localeCompare(b.start)),
+          (x) => minutesOfDayFromLabel(x.fromTime),
+          (x) => almocoDoDia(ctx, x.localDate),
+        )
+      : null;
   const limited = (
-    bounds
-      ? ranked.slice(0, 6)
-      : limitarComVariedadeDeTurno(ranked, 6, (x) => minutesOfDayFromLabel(x.fromTime))
+    parFixo
+      ? [...parFixo]
+      : bounds
+        ? ranked.slice(0, 6)
+        : limitarComVariedadeDeTurno(ranked, 6, (x) => minutesOfDayFromLabel(x.fromTime))
   )
     .sort((a, b) => a.start.localeCompare(b.start))
     .map(formatSlot);
@@ -1782,6 +1826,12 @@ export async function execListarHorarios(
     result: JSON.stringify({
       count: limited.length,
       slots: limited,
+      ...(parFixo
+        ? {
+            instrucao_oferta:
+              "Ofereça EXATAMENTE estes 2 horários (o primeiro da manhã e o primeiro da tarde), copiando date_label e time_label. Não troque, não acrescente outro horário.",
+          }
+        : {}),
       ...avisoFalha,
       ...(periodoAviso ? { aviso_periodo: periodoAviso } : {}),
       ...(diaSemanaAviso ? { aviso_dia_semana: diaSemanaAviso } : {}),
