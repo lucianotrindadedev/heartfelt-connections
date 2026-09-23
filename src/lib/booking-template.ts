@@ -3214,6 +3214,78 @@ export function requestedPeriodoFromText(text: string): "manha" | "tarde" | "noi
 }
 
 /**
+ * Resumo dos argumentos de uma tool call, para o meta da mensagem.
+ *
+ * Sem isto, um turno ERRADO vindo do modelo era indiagnosticavel depois do
+ * fato: o meta guardava tools_called=["listar_horarios"] e mais nada. O caso
+ * da Goreth (Sorriso Saude, 27 98800-0072, 23/09) so foi fechado por
+ * reproducao e eliminacao — rodando a busca com periodo=manha e periodo=tarde
+ * ate bater com o que a lead recebeu. Gravar os argumentos torna isso leitura
+ * direta do banco.
+ *
+ * Truncado de proposito: serve para diagnostico, nao para auditoria.
+ */
+export function resumeToolArgs(nome: string, argsJson: string): string {
+  let args: Record<string, unknown> = {};
+  try {
+    const p = JSON.parse(argsJson || "{}");
+    if (p && typeof p === "object") args = p as Record<string, unknown>;
+  } catch {
+    return `${nome}(<args ilegiveis>)`;
+  }
+  const partes = Object.entries(args)
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(
+      ([k, v]) => `${k}=${typeof v === "string" ? v.slice(0, 40) : JSON.stringify(v).slice(0, 40)}`,
+    );
+  return `${nome}(${partes.join(" ")})`;
+}
+
+/**
+ * Qual turno a busca deve usar: o que o modelo passou, ou o que o lead pediu?
+ *
+ * O lead vence quando os dois discordam — simétrico ao que já se faz com
+ * `data_alvo` e com o dia da semana, onde o pedido do lead tem precedência
+ * sobre o palpite do modelo.
+ *
+ * Caso real (Sorriso Saúde, Goreth 27 98800-0072, 23/09/2026 08:06): ela
+ * escreveu "Prefiro na,quarta ,q,vem, a tarde". O modelo chamou listar_horarios
+ * com periodo="manha", recebeu 08:30/09:00/09:30/10:00/10:30/11:00 — a busca
+ * respondeu certo à pergunta errada — e concluiu: "verifiquei aqui e pela tarde
+ * a agenda está fechada nos próximos dias". A quarta 30/09 tinha 8 vagas de
+ * tarde, até 16:30. Reproduzido: com periodo="tarde" a mesma chamada devolve
+ * 12:00, 13:30, 14:00, 14:30, 15:00, 15:30.
+ *
+ * O fallback antigo só cobria o modelo OMITIR o turno (`periodo ?? doLead`);
+ * um turno ERRADO passava por cima do lead. A mesma frase apareceu com outros
+ * leads da conta no mesmo período — 27 98837-6103 (22/09) e a Marcelene
+ * 27 99703-3358 (22/09) ouviram "a agenda da tarde está fechada nos próximos
+ * dias" com a tarde aberta.
+ */
+export function resolvePeriodoBusca(params: {
+  /** O que o LLM passou na tool call. */
+  doModelo?: string | null;
+  /** O que o lead pediu, lido do histórico. */
+  doLead?: "manha" | "tarde" | "noite" | null;
+}): {
+  periodo: "manha" | "tarde" | "noite" | undefined;
+  /** Por que esse turno — alimenta o log e a telemetria. */
+  origem: "modelo" | "lead" | "lead_sobrepos_modelo" | "nenhum";
+} {
+  const modelo = (params.doModelo ?? "").trim().toLowerCase();
+  const valido = modelo === "manha" || modelo === "tarde" || modelo === "noite";
+  const doModelo = valido ? (modelo as "manha" | "tarde" | "noite") : undefined;
+  const doLead = params.doLead ?? undefined;
+
+  if (doModelo && doLead && doModelo !== doLead) {
+    return { periodo: doLead, origem: "lead_sobrepos_modelo" };
+  }
+  if (doModelo) return { periodo: doModelo, origem: "modelo" };
+  if (doLead) return { periodo: doLead, origem: "lead" };
+  return { periodo: undefined, origem: "nenhum" };
+}
+
+/**
  * Hora exata (0-23) que o lead PEDIU numa mensagem, ou null. Exige sufixo de
  * hora explícito ("16h", "16 horas", "16:00") para não casar números soltos
  * de data ("dia 23"). Usada pelo scheduler para priorizar, dentro do turno

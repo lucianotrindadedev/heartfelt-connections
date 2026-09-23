@@ -18,7 +18,7 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
-import { execListarHorarios } from "./scheduler.server";
+import { execListarHorarios, turnoDaBusca } from "./scheduler.server";
 import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
 import {
   buildConsultarPlanilhaTool,
@@ -32,6 +32,7 @@ import {
   buildChannelPhonePromptBlock,
   mergeLeadDataPatch,
   scrubInventedTimeOffers,
+  resumeToolArgs,
   tagGateMissingField,
   turmaTagsForLead,
   turmaTagCandidates,
@@ -45,14 +46,8 @@ import {
   getInterestCandidateTagNames,
   NOT_SCHEDULED_SYNONYMS,
 } from "@/lib/helena-tags.server";
-import {
-  searchKnowledge,
-  formatChunksAsContext,
-} from "@/lib/knowledge/retrieval.server";
-import {
-  sendMediaBySlug,
-  getAvailableMediaForPrompt,
-} from "./send-media.server";
+import { searchKnowledge, formatChunksAsContext } from "@/lib/knowledge/retrieval.server";
+import { sendMediaBySlug, getAvailableMediaForPrompt } from "./send-media.server";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -115,7 +110,8 @@ const QUALIFIER_TOOLS: LlmTool[] = [
           },
           caption: {
             type: "string",
-            description: "Legenda opcional que acompanha o arquivo (ex: 'Aqui está nossa localização!')",
+            description:
+              "Legenda opcional que acompanha o arquivo (ex: 'Aqui está nossa localização!')",
           },
         },
         required: ["slug"],
@@ -262,7 +258,6 @@ async function applyTurmaTagDeterministic(ctx: AgentContext): Promise<string | n
   }
   return joined;
 }
-
 
 /**
  * Aplica a tag inicial de "lead recebido / não agendado" no primeiro contato.
@@ -539,11 +534,16 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
   // OU já temos UTM Content (que sempre carrega o interesse da campanha).
   const firstUserMsg = ctx.history.find((m) => m.role === "user")?.content ?? "";
   const m1Trimmed = firstUserMsg.trim().toLowerCase();
-  const isGreetingOnly = /^(oi|ola|olá|bom dia|boa tarde|boa noite|hey|opa|e aí|eai|tudo bem\??)[!.\s]*$/i.test(m1Trimmed);
-  const hasIntentWords = /\b(quero|gostaria|preciso|to com|tô com|estou com|sobre|interesse|informaç|matric|preço|valor|horário|horario|orçament|orcament|consulta|atend|servic|servi[çc]o|curso|aula)\b/i.test(m1Trimmed);
+  const isGreetingOnly =
+    /^(oi|ola|olá|bom dia|boa tarde|boa noite|hey|opa|e aí|eai|tudo bem\??)[!.\s]*$/i.test(
+      m1Trimmed,
+    );
+  const hasIntentWords =
+    /\b(quero|gostaria|preciso|to com|tô com|estou com|sobre|interesse|informaç|matric|preço|valor|horário|horario|orçament|orcament|consulta|atend|servic|servi[çc]o|curso|aula)\b/i.test(
+      m1Trimmed,
+    );
   const hasExplicitInterestInM1 =
-    !!utm?.content ||
-    (m1Trimmed.length >= 20 && !isGreetingOnly && hasIntentWords);
+    !!utm?.content || (m1Trimmed.length >= 20 && !isGreetingOnly && hasIntentWords);
 
   const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
   const ownerPromptDominant = !!(ctx.basePrompt && ctx.basePrompt.trim());
@@ -578,7 +578,16 @@ Se o lead disser que NÃO pode falar agora e pedir para ser contatado DEPOIS
 ("me chama amanhã", "fala comigo semana que vem", "só consigo segunda à tarde"):
 - Responda educadamente confirmando que você retorna na data combinada.
 - Calcule a data/hora em ISO 8601 com fuso -03:00 a partir de "Agora (BRT)" acima
-  (ex.: "amanhã às 15h" → "${(() => { const d = new Date(Date.now() + 86400000); const p = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" }).format(d); return `${p}T15:00:00-03:00`; })()}"; "semana que vem" sem hora → escolha um horário comercial, ex.: 10:00).
+  (ex.: "amanhã às 15h" → "${(() => {
+    const d = new Date(Date.now() + 86400000);
+    const p = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+    return `${p}T15:00:00-03:00`;
+  })()}"; "semana que vem" sem hora → escolha um horário comercial, ex.: 10:00).
 - Preencha lead_data_patch.retomar_em com essa data e retorno_motivo com o pedido
   em 1 frase. Isso PAUSA os follow-ups automáticos até a data combinada.
 NÃO preencha retomar_em quando o lead quer MARCAR consulta (isso é o fluxo de
@@ -694,7 +703,10 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     // Exclui as blocked_tags do agente (status como "Paciente") das candidatas
     // de INTERESSE — a IA só decide interesse, nunca status do contato.
     const blockedRaw = (ctx.agentSettings as Record<string, string>).blocked_tags ?? "";
-    const blocked = blockedRaw.split(/[,;\n]/).map((t) => t.trim()).filter(Boolean);
+    const blocked = blockedRaw
+      .split(/[,;\n]/)
+      .map((t) => t.trim())
+      .filter(Boolean);
     candidateTags = await getInterestCandidateTagNames(helena, blocked);
   } catch (e) {
     console.warn("[qualifier] falha ao listar tags Helena:", e);
@@ -764,6 +776,9 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
 
   let workingMessages: LlmMessage[] = [...history];
   const toolsCalled: string[] = [];
+  // Argumentos das tool calls, para diagnostico no meta (ver resumeToolArgs).
+  const toolArgs: string[] = [];
+  const turnosConsultados = new Set<string>();
   let accumulatedPatch: Partial<LeadData> = mergeLeadDataPatch(
     { initial_tag_applied: initialTagApplied } as LeadData,
     backfillPatch,
@@ -797,8 +812,12 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   const cycleCount = ctx.history.filter((m) => m.role === "user").length;
   const firstUserMsg = ctx.history.find((m) => m.role === "user")?.content ?? "";
   const m1Lower = firstUserMsg.trim().toLowerCase();
-  const isGreetingOnly = /^(oi|ola|olá|bom dia|boa tarde|boa noite|hey|opa|e aí|eai|tudo bem\??)[!.\s]*$/i.test(m1Lower);
-  const hasIntentWords = /\b(quero|gostaria|preciso|to com|tô com|estou com|sobre|interesse|informaç|matric|preço|valor|horário|horario|orçament|orcament|consulta|atend|servic|servi[çc]o|curso|aula)\b/i.test(m1Lower);
+  const isGreetingOnly =
+    /^(oi|ola|olá|bom dia|boa tarde|boa noite|hey|opa|e aí|eai|tudo bem\??)[!.\s]*$/i.test(m1Lower);
+  const hasIntentWords =
+    /\b(quero|gostaria|preciso|to com|tô com|estou com|sobre|interesse|informaç|matric|preço|valor|horário|horario|orçament|orcament|consulta|atend|servic|servi[çc]o|curso|aula)\b/i.test(
+      m1Lower,
+    );
   const hasExplicitInterestInM1 =
     !!ctx.helenaContact?.utm?.content ||
     (m1Lower.length >= 20 && !isGreetingOnly && hasIntentWords);
@@ -809,22 +828,28 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   // do 1º ciclo continua valendo inteira.
   const priceQuestionInM1 =
     ctx.integrations.googleSheets &&
-    /pre[çc]o|valor(es)?|quanto\s+(custa|fica|sai)|custa\s+quanto|or[çc]amento|tabela/i.test(m1Lower);
+    /pre[çc]o|valor(es)?|quanto\s+(custa|fica|sai)|custa\s+quanto|or[çc]amento|tabela/i.test(
+      m1Lower,
+    );
   const allowTools = cycleCount > 1 || hasExplicitInterestInM1 || priceQuestionInM1;
 
   for (let loop = 0; loop < MAX_TOOL_LOOPS && allowTools; loop++) {
-    const turn = await callLlmWithFallback(ctx.orKey, {
-      model: ctx.qualifierModel,
-      systemCached: cached,
-      systemDynamic: dynamic,
-      messages: workingMessages,
-      tools: buildQualifierTools(ctx),
-      toolChoice: "auto",
-      maxTokens: ctx.maxTokens,
-      temperature: ctx.temperature,
-      modelTemperatures: ctx.modelTemperatures,
-      enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
-    }, ctx.qualifierFallbackModels);
+    const turn = await callLlmWithFallback(
+      ctx.orKey,
+      {
+        model: ctx.qualifierModel,
+        systemCached: cached,
+        systemDynamic: dynamic,
+        messages: workingMessages,
+        tools: buildQualifierTools(ctx),
+        toolChoice: "auto",
+        maxTokens: ctx.maxTokens,
+        temperature: ctx.temperature,
+        modelTemperatures: ctx.modelTemperatures,
+        enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
+      },
+      ctx.qualifierFallbackModels,
+    );
 
     totalTokensIn += turn.tokensIn;
     totalTokensOut += turn.tokensOut;
@@ -875,14 +900,18 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
         );
         outcome = {
           result: JSON.stringify(
-            res.ok
-              ? { ok: true, media_title: res.media_title }
-              : { ok: false, error: res.error },
+            res.ok ? { ok: true, media_title: res.media_title } : { ok: false, error: res.error },
           ),
         };
       }
 
       toolsCalled.push(tc.function.name);
+      toolArgs.push(resumeToolArgs(tc.function.name, tc.function.arguments ?? "{}"));
+      if (tc.function.name === "listar_horarios") {
+        turnosConsultados.add(
+          turnoDaBusca(ctx, typeof args.periodo === "string" ? args.periodo : undefined) ?? "todos",
+        );
+      }
       if (outcome.patch) {
         accumulatedPatch = { ...accumulatedPatch, ...outcome.patch };
         ctx.leadData = { ...ctx.leadData, ...outcome.patch };
@@ -898,33 +927,33 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   }
 
   // Resposta final estruturada (sem tools) — com fallback.
-  const { result, response: finalResponse } = await callLlmStructuredWithFallback<QualifierJsonResult>(
-    ctx.orKey,
-    {
-      model: ctx.qualifierModel,
-      systemCached: cached,
-      systemDynamic: dynamic,
-      messages:
-        workingMessages.length === history.length
-          ? // não houve tools — chama direto pedindo JSON
-            [...history]
-          : [
-              ...workingMessages,
-              {
-                role: "user",
-                content:
-                  "Gere agora a resposta final em JSON conforme o schema instruído.",
-              },
-            ],
-      maxTokens: ctx.maxTokens,
-      temperature: ctx.temperature,
-      modelTemperatures: ctx.modelTemperatures,
-      enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
-      toolChoice: "none",
-    },
-    (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
-    ctx.qualifierFallbackModels,
-  );
+  const { result, response: finalResponse } =
+    await callLlmStructuredWithFallback<QualifierJsonResult>(
+      ctx.orKey,
+      {
+        model: ctx.qualifierModel,
+        systemCached: cached,
+        systemDynamic: dynamic,
+        messages:
+          workingMessages.length === history.length
+            ? // não houve tools — chama direto pedindo JSON
+              [...history]
+            : [
+                ...workingMessages,
+                {
+                  role: "user",
+                  content: "Gere agora a resposta final em JSON conforme o schema instruído.",
+                },
+              ],
+        maxTokens: ctx.maxTokens,
+        temperature: ctx.temperature,
+        modelTemperatures: ctx.modelTemperatures,
+        enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
+        toolChoice: "none",
+      },
+      (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
+      ctx.qualifierFallbackModels,
+    );
 
   totalTokensIn += finalResponse.tokensIn;
   totalTokensOut += finalResponse.tokensOut;
@@ -939,9 +968,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   // notificação/{{interest}} e o sync de "interesse mudou" do Leads360, além
   // de fazer o guard de idempotência (interest === turma calculada) falhar e
   // reaplicar a tag toda hora. Caso real (Maple Bear Osasco, 09/07).
-  const llmPatch = stripNullishFields(
-    (result.lead_data_patch ?? {}) as Record<string, unknown>,
-  );
+  const llmPatch = stripNullishFields((result.lead_data_patch ?? {}) as Record<string, unknown>);
   if (agentUsesTurmaClassifier(ctx.agentSettings)) {
     delete llmPatch.interest;
   }
@@ -986,6 +1013,12 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     tokens_in: totalTokensIn,
     tokens_out: totalTokensOut,
     cost_usd: totalCostUsd,
-    telemetry: inventedOfferScrubbed ? { invented_time_offer_scrubbed: true } : undefined,
+    telemetry: (() => {
+      const t: Record<string, unknown> = {};
+      if (inventedOfferScrubbed) t.invented_time_offer_scrubbed = true;
+      if (toolArgs.length > 0) t.tool_args = toolArgs.join(" | ").slice(0, 600);
+      if (turnosConsultados.size > 0) t.slot_listing_turnos = [...turnosConsultados].join(",");
+      return Object.keys(t).length > 0 ? t : undefined;
+    })(),
   };
 }
