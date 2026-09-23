@@ -17,7 +17,7 @@ import { buildSlotOfferFallback } from "./slot-offer-fallback";
 import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
 import {
   closedAgendaSafeReply,
-  turnoNegadoComVagaEmMaos,
+  turnoNegadoSemProva,
   unfoundedClosedAgendaClaim,
 } from "./closed-agenda-claim";
 import { activeWeekdayKeys } from "@/lib/tools/google-calendar.server";
@@ -1481,9 +1481,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // a agenda ja devolveu vaga NAQUELE turno, negar o turno e demonstravelmente
     // falso — ver turnoNegadoComVagaEmMaos.
     if (!falseBookingClaimBlocked && hasBookingIntegration) {
-      const negou = turnoNegadoComVagaEmMaos({
+      const negou = turnoNegadoSemProva({
         reply,
         offeredSlots: finalLeadData.offered_slots ?? [],
+        turnosConsultados: String(result.telemetry?.slot_listing_turnos ?? "")
+          .split(",")
+          .filter(Boolean),
       });
       if (negou) {
         turnoNegadoBlocked = true;
@@ -1493,6 +1496,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             conv: conversationId,
             account: accountId,
             agent: agentId,
+            motivo: negou.motivo,
             turno: negou.turno,
             dia: negou.diaIso,
           })}`,

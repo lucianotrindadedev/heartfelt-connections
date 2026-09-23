@@ -284,47 +284,71 @@ function turnoDoRotulo(label: string | null | undefined): "manha" | "tarde" | "n
   return "noite";
 }
 
+export type TurnoNegadoMotivo =
+  /** A agenda devolveu vaga NESSE turno — a negativa é demonstravelmente falsa. */
+  | "tem_vaga_no_turno"
+  /** O turno negado não foi consultado neste turn — não há como saber. */
+  | "turno_nao_consultado";
+
+export interface TurnoNegadoResult {
+  motivo: TurnoNegadoMotivo;
+  turno: "manha" | "tarde" | "noite";
+  /** Dia (YYYY-MM-DD BRT) de uma vaga desse turno, quando existe. */
+  diaIso: string;
+}
+
 /**
- * A frase afirma que um TURNO está fechado, tendo vaga nesse turno em mãos?
+ * A frase nega um TURNO sem ter o que sustente a negativa?
  *
- * O guard de dia usa o expediente como prova, e por isso ignora frases sobre
+ * O guard de DIA usa o expediente como prova e por isso ignora frases sobre
  * fatia do dia (FATIA_DO_DIA): business_hours_json é diário e não tem o que
  * dizer sobre manhã ou tarde. Essa exclusão é necessária — sem ela, 6 dos 24
  * bloqueios da varredura de produção eram indevidos.
  *
- * Mas existe UMA prova disponível para turno, e ela não vem do expediente: os
- * próprios horários em mãos. Se a agenda devolveu vaga de tarde e o agente diz
- * que a tarde está fechada, isso é falso sem precisar de mais nada.
+ * Para turno existem duas provas, nenhuma vinda do expediente:
  *
- * Caso real (Sorriso Saúde, 23/09): três leads em uma semana ouviram "pela
- * tarde a agenda está fechada nos próximos dias" com a tarde aberta de 13:30 a
- * 16:30 em terça, quarta e quinta. A causa primária era o modelo consultar a
- * agenda com periodo="manha" (ver resolvePeriodoBusca); esta trava é a rede
- * embaixo — quando a busca traz a tarde, negá-la fica bloqueado.
+ *   1. os horários EM MÃOS — se a agenda devolveu tarde, negar a tarde é falso;
+ *   2. o que foi CONSULTADO — negar um turno que ninguém perguntou à agenda é
+ *      afirmar um fato sem fonte, o mesmo erro de fundo do guard de dia.
  *
- * Depende de a busca ter perguntado pelo turno certo: se a lista só tem manhã,
- * não há o que contradizer. É rede, não conserto.
+ * Caso real (Sorriso Saúde, Goreth 27 98800-0072, 23/09/2026): ela pediu a
+ * tarde, o modelo consultou a agenda com periodo="manha", recebeu só manhã e
+ * respondeu "pela tarde a agenda está fechada nos próximos dias". A quarta
+ * 30/09 tinha 8 vagas de tarde. A prova 1 não pegaria — a lista não tinha
+ * tarde nenhuma, justamente porque a pergunta foi outra. É a prova 2 que pega.
+ *
+ * `turnosConsultados` vem da telemetria do turn ("todos" = busca sem filtro,
+ * que cobre qualquer turno). Vazio significa que nenhuma busca rodou — e aí
+ * qualquer negativa de turno é infundada.
  */
-export function turnoNegadoComVagaEmMaos(input: {
+export function turnoNegadoSemProva(input: {
   reply: string;
   offeredSlots: { iso?: string | null; date_label?: string | null; time_label?: string | null }[];
-}): { turno: "manha" | "tarde" | "noite"; diaIso: string } | null {
+  /** Turnos realmente consultados neste turn; "todos" = sem filtro. */
+  turnosConsultados: string[];
+}): TurnoNegadoResult | null {
   const slots = input.offeredSlots ?? [];
-  if (slots.length === 0) return null;
+  const consultados = new Set(input.turnosConsultados ?? []);
 
   for (const f of frases((input.reply ?? "").toLowerCase())) {
     if (!afirmaFechamento(f) && !afirmaFaltaDeVaga(f)) continue;
     const m = TURNO_AFIRMADO.exec(f);
     if (!m) continue;
     const turno = (m[1]!.startsWith("manh") ? "manha" : m[1]!) as "manha" | "tarde" | "noite";
+
+    // Prova 1: a própria agenda contradiz.
     const comVaga = slots.find((s) => turnoDoRotulo(s.time_label) === turno);
     if (comVaga) {
-      return { turno, diaIso: (comVaga.iso ?? "").slice(0, 10) };
+      return { motivo: "tem_vaga_no_turno", turno, diaIso: (comVaga.iso ?? "").slice(0, 10) };
+    }
+
+    // Prova 2: ninguém perguntou por esse turno.
+    if (!consultados.has("todos") && !consultados.has(turno)) {
+      return { motivo: "turno_nao_consultado", turno, diaIso: (slots[0]?.iso ?? "").slice(0, 10) };
     }
   }
   return null;
 }
-
 /** "quarta-feira, 12/08" a partir de YYYY-MM-DD. "" se inválido. */
 export function rotuloDoDiaBrt(diaIso: string): string {
   const chave = chaveDoDiaBrt(diaIso);

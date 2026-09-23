@@ -18,7 +18,7 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
-import { execListarHorarios } from "./scheduler.server";
+import { execListarHorarios, turnoDaBusca } from "./scheduler.server";
 import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
 import {
   buildConsultarPlanilhaTool,
@@ -778,6 +778,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   const toolsCalled: string[] = [];
   // Argumentos das tool calls, para diagnostico no meta (ver resumeToolArgs).
   const toolArgs: string[] = [];
+  const turnosConsultados = new Set<string>();
   let accumulatedPatch: Partial<LeadData> = mergeLeadDataPatch(
     { initial_tag_applied: initialTagApplied } as LeadData,
     backfillPatch,
@@ -906,6 +907,11 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
 
       toolsCalled.push(tc.function.name);
       toolArgs.push(resumeToolArgs(tc.function.name, tc.function.arguments ?? "{}"));
+      if (tc.function.name === "listar_horarios") {
+        turnosConsultados.add(
+          turnoDaBusca(ctx, typeof args.periodo === "string" ? args.periodo : undefined) ?? "todos",
+        );
+      }
       if (outcome.patch) {
         accumulatedPatch = { ...accumulatedPatch, ...outcome.patch };
         ctx.leadData = { ...ctx.leadData, ...outcome.patch };
@@ -1011,6 +1017,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       const t: Record<string, unknown> = {};
       if (inventedOfferScrubbed) t.invented_time_offer_scrubbed = true;
       if (toolArgs.length > 0) t.tool_args = toolArgs.join(" | ").slice(0, 600);
+      if (turnosConsultados.size > 0) t.slot_listing_turnos = [...turnosConsultados].join(",");
       return Object.keys(t).length > 0 ? t : undefined;
     })(),
   };

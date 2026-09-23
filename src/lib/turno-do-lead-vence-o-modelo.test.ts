@@ -23,7 +23,7 @@
 import { describe, expect, it } from "vitest";
 
 import { resolvePeriodoBusca, resumeToolArgs } from "./booking-template";
-import { turnoNegadoComVagaEmMaos } from "./agents/closed-agenda-claim";
+import { turnoNegadoSemProva } from "./agents/closed-agenda-claim";
 
 describe("resolvePeriodoBusca", () => {
   it("REGRESSÃO: turno errado do modelo não vence o do lead", () => {
@@ -78,64 +78,87 @@ describe("resumeToolArgs", () => {
   });
 });
 
-describe("turnoNegadoComVagaEmMaos", () => {
+describe("turnoNegadoSemProva", () => {
   const TARDE = [
     { iso: "2026-09-30T13:30:00-03:00", date_label: "quarta-feira, 30/09", time_label: "13:30" },
     { iso: "2026-09-30T14:00:00-03:00", date_label: "quarta-feira, 30/09", time_label: "14:00" },
   ];
   const MANHA = [
     { iso: "2026-09-30T08:30:00-03:00", date_label: "quarta-feira, 30/09", time_label: "08:30" },
+    { iso: "2026-09-30T09:00:00-03:00", date_label: "quarta-feira, 30/09", time_label: "09:00" },
   ];
+  const NEGA_TARDE =
+    "Goreth, verifiquei aqui e pela tarde a agenda está fechada nos próximos dias.";
 
-  it("REGRESSÃO: negar a tarde com vaga de tarde em mãos é bloqueado", () => {
-    const r = turnoNegadoComVagaEmMaos({
-      reply: "Goreth, verifiquei aqui e pela tarde a agenda está fechada nos próximos dias.",
+  it("prova 1: negar a tarde com vaga de tarde em mãos", () => {
+    const r = turnoNegadoSemProva({
+      reply: NEGA_TARDE,
       offeredSlots: TARDE,
+      turnosConsultados: ["tarde"],
     });
+    expect(r?.motivo).toBe("tem_vaga_no_turno");
     expect(r?.turno).toBe("tarde");
     expect(r?.diaIso).toBe("2026-09-30");
   });
 
-  it("a variante que apareceu com outra lead na mesma semana", () => {
-    expect(
-      turnoNegadoComVagaEmMaos({
-        reply: "Verifiquei aqui e a agenda da tarde está fechada nos próximos dias.",
-        offeredSlots: TARDE,
-      })?.turno,
-    ).toBe("tarde");
+  it("prova 2 — O CASO DA GORETH: nega a tarde tendo consultado só a manhã", () => {
+    // É este o caso que a primeira versão desta trava NÃO pegava: a lista não
+    // tinha tarde nenhuma, justamente porque a pergunta feita à agenda foi
+    // outra. Sem olhar o que foi consultado, não havia o que contradizer.
+    const r = turnoNegadoSemProva({
+      reply: NEGA_TARDE,
+      offeredSlots: MANHA,
+      turnosConsultados: ["manha"],
+    });
+    expect(r?.motivo).toBe("turno_nao_consultado");
+    expect(r?.turno).toBe("tarde");
   });
 
-  it("sem vaga NAQUELE turno em mãos, não há o que contradizer", () => {
-    // É rede, não conserto: se a busca só trouxe manhã, a trava não opina.
+  it("prova 2: negar turno sem ter consultado NADA", () => {
     expect(
-      turnoNegadoComVagaEmMaos({
-        reply: "pela tarde a agenda está fechada nos próximos dias",
+      turnoNegadoSemProva({ reply: NEGA_TARDE, offeredSlots: [], turnosConsultados: [] })?.motivo,
+    ).toBe("turno_nao_consultado");
+  });
+
+  it("negativa FUNDADA passa: consultou a tarde e não veio vaga", () => {
+    // Segunda e sexta a agenda da conta realmente fecha à tarde — dizer isso
+    // depois de perguntar é legítimo e não pode ser bloqueado.
+    expect(
+      turnoNegadoSemProva({
+        reply: NEGA_TARDE,
         offeredSlots: MANHA,
+        turnosConsultados: ["tarde", "manha"],
       }),
     ).toBeNull();
+  });
+
+  it('busca sem filtro ("todos") cobre qualquer turno', () => {
     expect(
-      turnoNegadoComVagaEmMaos({
-        reply: "pela tarde a agenda está fechada",
-        offeredSlots: [],
+      turnoNegadoSemProva({
+        reply: NEGA_TARDE,
+        offeredSlots: MANHA,
+        turnosConsultados: ["todos"],
       }),
     ).toBeNull();
   });
 
   it("oferta legítima de tarde não é bloqueada", () => {
     expect(
-      turnoNegadoComVagaEmMaos({
+      turnoNegadoSemProva({
         reply: "Tenho quarta-feira, 30/09 às 13:30 ou às 14:00 pela tarde. Qual fica melhor?",
         offeredSlots: TARDE,
+        turnosConsultados: ["tarde"],
       }),
     ).toBeNull();
   });
 
-  it("negar a MANHÃ tendo só tarde em mãos também não é bloqueado", () => {
+  it("a variante que apareceu com outra lead na mesma semana", () => {
     expect(
-      turnoNegadoComVagaEmMaos({
-        reply: "pela manhã não tenho vaga nos próximos dias",
-        offeredSlots: TARDE,
-      }),
-    ).toBeNull();
+      turnoNegadoSemProva({
+        reply: "Verifiquei aqui e a agenda da tarde está fechada nos próximos dias.",
+        offeredSlots: MANHA,
+        turnosConsultados: ["manha"],
+      })?.motivo,
+    ).toBe("turno_nao_consultado");
   });
 });

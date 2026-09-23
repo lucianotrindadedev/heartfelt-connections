@@ -1035,6 +1035,24 @@ function periodoParaHoras(periodo?: string): { min: number; max: number } | null
   }
 }
 
+/**
+ * Qual turno a busca de horarios vai usar neste turn.
+ *
+ * Exportada porque DOIS lugares precisam da mesma resposta: a propria busca,
+ * e o registro do que foi consultado (telemetria + guard de turno negado).
+ * Se cada um calculasse por conta, o guard poderia bloquear com base num
+ * turno diferente do que foi realmente perguntado a agenda.
+ */
+export function turnoDaBusca(
+  ctx: AgentContext,
+  periodoDoModelo?: string | null,
+): "manha" | "tarde" | "noite" | undefined {
+  return resolvePeriodoBusca({
+    doModelo: periodoDoModelo,
+    doLead: requestedPeriodoFromHistory(ctx.history),
+  }).periodo;
+}
+
 /** Exportada porque o QUALIFIER também a usa (read-only). Ver
  *  buildQualifierTools: dar a consulta de agenda ao qualifier faz o repasse
  *  perdido degradar pra "horário real com 1 turno de atraso" em vez de
@@ -1121,6 +1139,8 @@ export async function execListarHorarios(
     doModelo: periodo,
     doLead: requestedPeriodoFromHistory(ctx.history),
   });
+  // Mesmo resultado que turnoDaBusca(ctx, periodo) — a funcao exportada existe
+  // para quem precisa saber o turno SEM disparar a busca.
   const resolvedPeriodo = turno.periodo;
   if (turno.origem === "lead") {
     console.log(
@@ -3362,6 +3382,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const toolsCalled: string[] = [...slotListing.toolsCalled];
   // Argumentos das tool calls, para diagnostico no meta (ver resumeToolArgs).
   const toolArgs: string[] = [];
+  // Turnos que a agenda foi REALMENTE consultada neste turn ("todos" = sem
+  // filtro). Alimenta o guard de turno negado — ver turnoNegadoSemConsulta.
+  const turnosConsultados = new Set<string>();
   if (Object.keys(slotListing.patch).length > 0) {
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotListing.patch);
     baseDynamic = buildDynamicSystemPrompt(ctx);
@@ -3383,6 +3406,11 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const autoBooking = await tryDeterministicBooking(ctx);
   accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, autoBooking.patch);
   toolsCalled.push(...autoBooking.toolsCalled);
+  // A re-listagem apos conflito acontece dentro de tryDeterministicBooking, que
+  // nao enxerga turnosConsultados — registra aqui, pelo mesmo helper.
+  if (autoBooking.toolsCalled.includes("listar_horarios")) {
+    turnosConsultados.add(turnoDaBusca(ctx) ?? "todos");
+  }
   if (Object.keys(autoBooking.patch).length > 0) {
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, autoBooking.patch);
     baseDynamic = buildDynamicSystemPrompt(ctx);
@@ -3586,6 +3614,17 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
 
       toolsCalled.push(tc.function.name);
       toolArgs.push(resumeToolArgs(tc.function.name, tc.function.arguments ?? "{}"));
+      if (tc.function.name === "listar_horarios") {
+        let pArg: string | undefined;
+        try {
+          pArg = (JSON.parse(tc.function.arguments || "{}") as Record<string, unknown>).periodo as
+            | string
+            | undefined;
+        } catch {
+          pArg = undefined;
+        }
+        turnosConsultados.add(turnoDaBusca(ctx, pArg) ?? "todos");
+      }
       if (outcome.patch) {
         accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, outcome.patch);
         ctx.leadData = mergeLeadDataPatch(ctx.leadData, outcome.patch);
@@ -3975,6 +4014,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   ) {
     const listing = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
     toolsCalled.push("listar_horarios");
+    turnosConsultados.add(turnoDaBusca(ctx) ?? "todos");
     if (listing.patch) {
       ctx.leadData = mergeLeadDataPatch(ctx.leadData, listing.patch);
       outPatch = mergeLeadDataPatch(outPatch as LeadData, listing.patch);
@@ -4098,6 +4138,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         cost_usd: totalCostUsd,
         telemetry: (() => {
           if (toolArgs.length > 0) mergedTelemetry.tool_args = toolArgs.join(" | ").slice(0, 600);
+          if (turnosConsultados.size > 0)
+            mergedTelemetry.slot_listing_turnos = [...turnosConsultados].join(",");
           return Object.keys(mergedTelemetry).length > 0 ? mergedTelemetry : undefined;
         })(),
       };
@@ -4156,6 +4198,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           outPatch = mergeLeadDataPatch(outPatch as LeadData, refresh.patch);
         }
         toolsCalled.push("listar_horarios");
+        turnosConsultados.add(turnoDaBusca(ctx) ?? "todos");
         remaining = pruneOfferedSlot(ctx.leadData.offered_slots, failedIso);
       }
       reply = buildConflictReply(remaining);
@@ -4246,6 +4289,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   }
 
   if (toolArgs.length > 0) mergedTelemetry.tool_args = toolArgs.join(" | ").slice(0, 600);
+  if (turnosConsultados.size > 0)
+    mergedTelemetry.slot_listing_turnos = [...turnosConsultados].join(",");
   return {
     reply,
     next_stage: outStage,
