@@ -2333,6 +2333,20 @@ const CONCRETE_TIME_OFFER_RE =
 const LISTED_TIME_OFFER_RE =
   /\b(?:tenho|temos|consigo|dispon[íi]ve(?:l|is)|vagas?|encaixes?|op[çc](?:[õo]es|[ãa]o))\b[^.!?\n]{0,60}?\b\d{1,2}:\d{2}\b/i;
 
+/** Palavra que anuncia oferta ("Tenho dois horários:", "Opções disponíveis:"). */
+const OFFER_CUE_RE =
+  /\b(?:tenho|temos|consigo|dispon[íi]ve(?:l|is)|vagas?|encaixes?|op[çc](?:[õo]es|[ãa]o))\b/i;
+
+/** Item de lista que é só um horário: "🕐 08:00 da manhã", "- 14:30",
+ *  "• 9h30 (quinta)". Tirando marcador/emoji do início, a linha COMEÇA pelo
+ *  horário, cita um só e é curta — texto corrido com hora no meio não conta. */
+function isListedTimeLine(line: string): boolean {
+  const item = line.replace(/^[^\p{L}\p{N}]+/u, "");
+  if (item.length > 50) return false;
+  if (!/^\d{1,2}(?::\d{2}|h\d{0,2})(?![\d:])/i.test(item)) return false;
+  return citedTimesInMinutes(item).length === 1;
+}
+
 /** Horários citados dentro de uma frase, em minutos do dia: "9h" → 540,
  *  "9h30" → 570, "às 14" → 840, "10:30" → 630. Faixas de funcionamento já saem
  *  antes (TIME_RANGE_RE), então "das 8h às 18h" não entra aqui. */
@@ -2559,7 +2573,43 @@ export function scrubInventedTimeOffers(
     return false;
   };
 
-  if (!ofensiva(original)) return { reply: original, scrubbed: false };
+  // Oferta em LISTA VERTICAL: o anúncio numa linha e um horário por linha
+  // abaixo. As duas regex de oferta param na quebra de linha, então nenhuma
+  // frase isolada parecia oferta e o horário passava sem checagem. Caso real
+  // (Odonto Sorrisos, 87 99136-6644, 23/09): "Tenho dois horários na
+  // segunda-feira, 28/09 que ficam bem distribuídos no dia:" + "🕐 08:00 da
+  // manhã" + "🕐 18:00 à noite".
+  const lines = original.split("\n");
+  const listaOfensiva = ((): { line: number; col: number } | null => {
+    for (let i = 0; i < lines.length; i++) {
+      const intro = lines[i]!.replace(TIME_RANGE_RE, "");
+      if (!OFFER_CUE_RE.test(intro) || citedTimesInMinutes(intro).length > 0) continue;
+      const itens: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const linha = lines[j]!.replace(TIME_RANGE_RE, "");
+        if (!linha.trim()) continue;
+        if (!isListedTimeLine(linha)) break;
+        itens.push(linha);
+      }
+      if (itens.length === 0) continue;
+      const citados = itens.flatMap(citedTimesInMinutes);
+      const bloco = [intro, ...itens].join(" ");
+      const diaCitado = requestedWeekdayFromText(bloco);
+      const invalida =
+        minutosReais.size === 0 ||
+        citados.some((m) => !minutosReais.has(m)) ||
+        (!!minutosNaDataUnica &&
+          reaisComData.length > 0 &&
+          citados.some((m) => !minutosNaDataUnica.has(m))) ||
+        (diasReais.size > 0 && !!diaCitado && !diasReais.has(diaCitado));
+      if (!invalida) continue;
+      const frase = lines[i]!.split(/(?<=[.!?…])\s+/).find((f) => OFFER_CUE_RE.test(f)) ?? lines[i]!;
+      return { line: i, col: Math.max(0, lines[i]!.indexOf(frase)) };
+    }
+    return null;
+  })();
+
+  if (!ofensiva(original) && !listaOfensiva) return { reply: original, scrubbed: false };
 
   const fechamento = reais.length
     ? `Os horários que consigo são ${reais
@@ -2568,7 +2618,6 @@ export function scrubInventedTimeOffers(
         .join(" ou ")}. Qual deles fica melhor pra você? 😊`
     : NEUTRAL_SLOT_PREFERENCE_QUESTION;
 
-  const lines = original.split("\n");
   let cutLine = -1;
   let cutCol = -1;
   outer: for (let i = 0; i < lines.length; i++) {
@@ -2579,6 +2628,16 @@ export function scrubInventedTimeOffers(
         break outer;
       }
     }
+  }
+  // Corta no que vier PRIMEIRO: a frase ofensora ou o anúncio da lista.
+  if (
+    listaOfensiva &&
+    (cutLine === -1 ||
+      listaOfensiva.line < cutLine ||
+      (listaOfensiva.line === cutLine && listaOfensiva.col < cutCol))
+  ) {
+    cutLine = listaOfensiva.line;
+    cutCol = listaOfensiva.col;
   }
   // Detectou no texto inteiro mas não numa frase isolada (quebra atípica):
   // fail-safe corta tudo e fica só o fechamento.
