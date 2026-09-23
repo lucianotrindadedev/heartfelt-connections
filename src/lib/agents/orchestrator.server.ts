@@ -15,7 +15,11 @@ import { detectForeignSender, isCourtesyOnlyBurst } from "@/lib/conversation-gua
 import { decryptValue } from "@/lib/crypto.server";
 import { buildSlotOfferFallback } from "./slot-offer-fallback";
 import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
-import { closedAgendaSafeReply, unfoundedClosedAgendaClaim } from "./closed-agenda-claim";
+import {
+  closedAgendaSafeReply,
+  turnoNegadoComVagaEmMaos,
+  unfoundedClosedAgendaClaim,
+} from "./closed-agenda-claim";
 import { activeWeekdayKeys } from "@/lib/tools/google-calendar.server";
 import {
   normalizeBrazilPhone,
@@ -1471,7 +1475,32 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // dia útil pode ser agenda cheia, feriado, ou busca ancorada no dia errado.
     // "Não tenho vaga" segue livre, salvo quando contradiz a própria agenda.
     let closedAgendaClaimBlocked = false;
+    let turnoNegadoBlocked = false;
+    // Rede para TURNO: o guard de dia ignora frases sobre manha/tarde de
+    // proposito (o expediente e diario e nao fala de fatia do dia). Mas quando
+    // a agenda ja devolveu vaga NAQUELE turno, negar o turno e demonstravelmente
+    // falso — ver turnoNegadoComVagaEmMaos.
     if (!falseBookingClaimBlocked && hasBookingIntegration) {
+      const negou = turnoNegadoComVagaEmMaos({
+        reply,
+        offeredSlots: finalLeadData.offered_slots ?? [],
+      });
+      if (negou) {
+        turnoNegadoBlocked = true;
+        console.warn(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "turno_negado_com_vaga",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            turno: negou.turno,
+            dia: negou.diaIso,
+          })}`,
+        );
+        reply = closedAgendaSafeReply(negou.diaIso, finalLeadData.offered_slots ?? []);
+      }
+    }
+    if (!falseBookingClaimBlocked && !turnoNegadoBlocked && hasBookingIntegration) {
       const semProva = unfoundedClosedAgendaClaim({
         reply,
         lastUserMsg,
@@ -1999,6 +2028,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           pointing_gesture_confirm_asked: pointingConfirmAsked || undefined,
           false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
           closed_agenda_claim_blocked: closedAgendaClaimBlocked || undefined,
+          turno_negado_com_vaga_blocked: turnoNegadoBlocked || undefined,
           // Quando um guard TROCA o texto, a resposta original do LLM some — foi
           // o que impediu de saber qual palavra disparou o false_booking_claim
           // no caso Odonto Sorrisos (87 99625-9078). Guardamos o original para
@@ -2046,6 +2076,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           stall_listing_forced: (result.telemetry?.stall_listing_forced as boolean) || undefined,
           invented_time_offer_scrubbed:
             (result.telemetry?.invented_time_offer_scrubbed as boolean) || undefined,
+          // Argumentos das tool calls. Sem eles, um `periodo` errado vindo do
+          // modelo so era diagnosticavel por reproducao e eliminacao — foi o
+          // que custou o caso da Goreth (Sorriso Saude, 27 98800-0072, 23/09).
+          tool_args: (result.telemetry?.tool_args as string) || undefined,
         },
         sessionId,
         effectivePhone ?? conversationPhone,

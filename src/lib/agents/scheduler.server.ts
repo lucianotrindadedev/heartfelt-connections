@@ -111,6 +111,8 @@ import {
   classifyRequestedDay,
   filterSlotsToWeekday,
   requestedWeekdayFromText,
+  resolvePeriodoBusca,
+  resumeToolArgs,
   shouldWidenSlotWindow,
   weekdayKeyOfIso,
   type WeekdayKey,
@@ -1115,10 +1117,18 @@ export async function execListarHorarios(
   // turno numa mensagem recente ("de manhã"), filtra por ele — senão o corte
   // das 6 vagas mais próximas pode trazer só um turno e o agente diz "não tem
   // de manhã" com a manhã livre (ver requestedPeriodoFromHistory).
-  const resolvedPeriodo = periodo ?? requestedPeriodoFromHistory(ctx.history) ?? undefined;
-  if (!periodo && resolvedPeriodo) {
+  const turno = resolvePeriodoBusca({
+    doModelo: periodo,
+    doLead: requestedPeriodoFromHistory(ctx.history),
+  });
+  const resolvedPeriodo = turno.periodo;
+  if (turno.origem === "lead") {
     console.log(
       `[scheduler] listar_horarios conv=${ctx.conversationId}: periodo ausente do LLM — usando o turno pedido pelo lead (${resolvedPeriodo})`,
+    );
+  } else if (turno.origem === "lead_sobrepos_modelo") {
+    console.warn(
+      `[scheduler] listar_horarios conv=${ctx.conversationId}: o LLM pediu periodo=${periodo} mas o lead pediu ${resolvedPeriodo} — vale o lead (ver resolvePeriodoBusca)`,
     );
   }
   // Hora exata pedida pelo lead ("16h", "às 16 horas"): usada para priorizar,
@@ -3350,6 +3360,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   const slotListing = await ensureOfferedSlots(ctx);
   let accumulatedPatch: Partial<LeadData> = slotListing.patch;
   const toolsCalled: string[] = [...slotListing.toolsCalled];
+  // Argumentos das tool calls, para diagnostico no meta (ver resumeToolArgs).
+  const toolArgs: string[] = [];
   if (Object.keys(slotListing.patch).length > 0) {
     ctx.leadData = mergeLeadDataPatch(ctx.leadData, slotListing.patch);
     baseDynamic = buildDynamicSystemPrompt(ctx);
@@ -3573,6 +3585,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       }
 
       toolsCalled.push(tc.function.name);
+      toolArgs.push(resumeToolArgs(tc.function.name, tc.function.arguments ?? "{}"));
       if (outcome.patch) {
         accumulatedPatch = mergeLeadDataPatch(accumulatedPatch as LeadData, outcome.patch);
         ctx.leadData = mergeLeadDataPatch(ctx.leadData, outcome.patch);
@@ -4083,7 +4096,10 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         tokens_in: totalTokensIn,
         tokens_out: totalTokensOut,
         cost_usd: totalCostUsd,
-        telemetry: Object.keys(mergedTelemetry).length > 0 ? mergedTelemetry : undefined,
+        telemetry: (() => {
+          if (toolArgs.length > 0) mergedTelemetry.tool_args = toolArgs.join(" | ").slice(0, 600);
+          return Object.keys(mergedTelemetry).length > 0 ? mergedTelemetry : undefined;
+        })(),
       };
     }
 
@@ -4229,6 +4245,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     }
   }
 
+  if (toolArgs.length > 0) mergedTelemetry.tool_args = toolArgs.join(" | ").slice(0, 600);
   return {
     reply,
     next_stage: outStage,

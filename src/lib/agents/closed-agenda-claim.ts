@@ -71,10 +71,7 @@ function frases(t: string): string[] {
 /** "sábados" → "sábado". O agente fala no plural o tempo todo ("não atendemos
  *  aos sábados") e o resolvedor de data só entende o singular. */
 function singularizaDias(t: string): string {
-  return t.replace(
-    /\b(domingo|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado)s\b/g,
-    "$1",
-  );
+  return t.replace(/\b(domingo|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado)s\b/g, "$1");
 }
 
 const STEMS_DIA = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"];
@@ -114,9 +111,7 @@ function afirmaFechamento(f: string): boolean {
     if (/\b(?:estamos|est[áa]|ficamos|fica|fic[áa]mos)\s+fechad[oa]s?\b/.test(f)) return true;
     // 1ª pessoa do plural: o sujeito é sempre a clínica.
     // "não atendemos aos sábados", "não abrimos", "não funcionamos".
-    if (
-      /\bn[ãa]o\s+(?:\w+\s+){0,2}?(?:atendemos|abrimos|funcionamos|trabalhamos)\b/.test(f)
-    ) {
+    if (/\bn[ãa]o\s+(?:\w+\s+){0,2}?(?:atendemos|abrimos|funcionamos|trabalhamos)\b/.test(f)) {
       return true;
     }
     // 3ª pessoa: só quando o sujeito NOMEADO é a clínica. Sem esta amarra,
@@ -159,9 +154,7 @@ function afirmaFaltaDeVaga(f: string): boolean {
     // um horário específico: "esse horário acabou de ficar indisponível 😕 Mas
     // consigo te encaixar terça 11/08 às 15:15" é real, correto, e não é uma
     // afirmação sobre o dia — bloquear trocaria uma resposta boa pela do guard.
-    if (
-      /\b(?:agenda|dia)\b[^,;]{0,30}?\b(?:lotad[oa]s?|cheia|completa|esgotad[oa]s?)\b/.test(f)
-    ) {
+    if (/\b(?:agenda|dia)\b[^,;]{0,30}?\b(?:lotad[oa]s?|cheia|completa|esgotad[oa]s?)\b/.test(f)) {
       return true;
     }
     if (/\b(?:hor[áa]rios?|vagas?)\b[^,;]{0,25}?\b(?:esgotaram|esgotou)\b/.test(f)) return true;
@@ -268,6 +261,66 @@ export function unfoundedClosedAgendaClaim(
       return { motivo: "expediente_diz_que_abre", diaIso };
     }
     // Expediente confirma que o dia é fechado — a afirmação é verdadeira.
+  }
+  return null;
+}
+
+/** Qual turno a frase afirma estar fechado, se afirma algum. */
+const TURNO_AFIRMADO = /\b(?:de|pela|pel[ao]|à|a|na|no)?\s*(manh[ãa]|tarde|noite)\b/;
+
+/** Minutos do dia de um "HH:MM". -1 quando não dá para ler. */
+function minutosDoRotulo(label: string | null | undefined): number {
+  const m = /^(\d{1,2}):(\d{2})/.exec((label ?? "").trim());
+  if (!m) return -1;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
+/** manhã <12, tarde 12–18, noite ≥18 — mesmas fronteiras do resto do sistema. */
+function turnoDoRotulo(label: string | null | undefined): "manha" | "tarde" | "noite" | null {
+  const min = minutosDoRotulo(label);
+  if (min < 0) return null;
+  if (min < 12 * 60) return "manha";
+  if (min < 18 * 60) return "tarde";
+  return "noite";
+}
+
+/**
+ * A frase afirma que um TURNO está fechado, tendo vaga nesse turno em mãos?
+ *
+ * O guard de dia usa o expediente como prova, e por isso ignora frases sobre
+ * fatia do dia (FATIA_DO_DIA): business_hours_json é diário e não tem o que
+ * dizer sobre manhã ou tarde. Essa exclusão é necessária — sem ela, 6 dos 24
+ * bloqueios da varredura de produção eram indevidos.
+ *
+ * Mas existe UMA prova disponível para turno, e ela não vem do expediente: os
+ * próprios horários em mãos. Se a agenda devolveu vaga de tarde e o agente diz
+ * que a tarde está fechada, isso é falso sem precisar de mais nada.
+ *
+ * Caso real (Sorriso Saúde, 23/09): três leads em uma semana ouviram "pela
+ * tarde a agenda está fechada nos próximos dias" com a tarde aberta de 13:30 a
+ * 16:30 em terça, quarta e quinta. A causa primária era o modelo consultar a
+ * agenda com periodo="manha" (ver resolvePeriodoBusca); esta trava é a rede
+ * embaixo — quando a busca traz a tarde, negá-la fica bloqueado.
+ *
+ * Depende de a busca ter perguntado pelo turno certo: se a lista só tem manhã,
+ * não há o que contradizer. É rede, não conserto.
+ */
+export function turnoNegadoComVagaEmMaos(input: {
+  reply: string;
+  offeredSlots: { iso?: string | null; date_label?: string | null; time_label?: string | null }[];
+}): { turno: "manha" | "tarde" | "noite"; diaIso: string } | null {
+  const slots = input.offeredSlots ?? [];
+  if (slots.length === 0) return null;
+
+  for (const f of frases((input.reply ?? "").toLowerCase())) {
+    if (!afirmaFechamento(f) && !afirmaFaltaDeVaga(f)) continue;
+    const m = TURNO_AFIRMADO.exec(f);
+    if (!m) continue;
+    const turno = (m[1]!.startsWith("manh") ? "manha" : m[1]!) as "manha" | "tarde" | "noite";
+    const comVaga = slots.find((s) => turnoDoRotulo(s.time_label) === turno);
+    if (comVaga) {
+      return { turno, diaIso: (comVaga.iso ?? "").slice(0, 10) };
+    }
   }
   return null;
 }
