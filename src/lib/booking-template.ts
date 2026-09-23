@@ -3472,6 +3472,50 @@ export function limitarComVariedadeDeTurno<T>(
   return escolhidos;
 }
 
+/** Intervalo de almoço de um dia, em minutos do dia ([inicio, fim)). */
+export interface AlmocoDoDia {
+  inicio: number;
+  fim: number;
+}
+
+/**
+ * Par fixo de oferta: o PRIMEIRO horário livre da manhã e o PRIMEIRO da tarde.
+ *
+ * Contas que ligam `oferta_primeiro_manha_tarde` não deixam a escolha do par
+ * para o modelo. Caso real (Odonto Sorrisos, 87 99136-6644, 23/09): com a
+ * lista de 6 vagas em mãos e o prompt pedindo "contraturno", o modelo ofertou
+ * "08:00 da manhã / 18:00 à noite" — os dois extremos do dia — em vez de
+ * 08:00 e o primeiro horário da tarde.
+ *
+ * Manhã termina no início do almoço e tarde começa no FIM do almoço do dia
+ * (business_hours_json); o que cai dentro do almoço não entra no par, mesmo
+ * que a agenda externa mostre como livre. Sem almoço cadastrado, a divisa é
+ * 12:00. Os dois podem ser de dias diferentes (o mais próximo de cada turno).
+ *
+ * `slots` precisa vir em ordem cronológica. Devolve null quando falta um dos
+ * turnos — aí quem chama segue com a lista normal.
+ */
+export function primeiroDaManhaEDaTarde<T>(
+  slots: readonly T[],
+  minutosDoDia: (slot: T) => number,
+  almocoDoDia: (slot: T) => AlmocoDoDia | null,
+): [T, T] | null {
+  let manha: T | undefined;
+  let tarde: T | undefined;
+  for (const s of slots) {
+    const m = minutosDoDia(s);
+    if (m < 0) continue;
+    const almoco = almocoDoDia(s);
+    const fimManha = almoco?.inicio ?? 12 * 60;
+    const inicioTarde = almoco?.fim ?? 12 * 60;
+    if (!manha && m < fimManha) manha = s;
+    else if (!tarde && m >= inicioTarde) tarde = s;
+    if (manha && tarde) break;
+  }
+  if (!manha || !tarde) return null;
+  return slots.indexOf(manha) < slots.indexOf(tarde) ? [manha, tarde] : [tarde, manha];
+}
+
 /** "16:45" / "16h45" / "9:00" → minutos do dia (1005, 1005, 540). -1 se inválido. */
 export function minutesOfDayFromLabel(label: string): number {
   const m = /(\d{1,2})[:h.](\d{2})/.exec(label ?? "");
