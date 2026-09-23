@@ -3,6 +3,7 @@
 // para conferência humana. Roda sem agenda (offered vazio) — o pior caso: toda
 // lista de horários detectada vira "inventada". O que importa conferir é se o
 // que passou a ser detectado é mesmo OFERTA (e não expediente, endereço etc.).
+// TODAS=1 inclui as respostas de uma linha só.
 //   BASE=origin/main npx vitest run --config scripts/diag/vitest.diag.config.ts scripts/diag/guard-lista-corpus.diag.ts
 import { execSync } from "node:child_process";
 import fs from "node:fs";
@@ -34,11 +35,11 @@ describe("guard lista", () => {
     const textos = new Map<string, string>();
     for (let from = 0; ; from += 1000) {
       const { data, error } = await sb.from("messages").select("id, content, meta")
-        .eq("role", "assistant").like("content", "%:%").gte("criado_em", desde).range(from, from + 999);
+        .eq("role", "assistant").like("content", "%:%").gte("criado_em", desde).order("id").range(from, from + 999);
       if (error) throw error;
       for (const m of (data ?? []) as { id: string; content: string; meta: Record<string, unknown> | null }[]) {
         if (m.meta?.origem !== "agente") continue;
-        if (/\n/.test(m.content ?? "")) textos.set(m.id, m.content);
+        if (process.env.TODAS || /\n/.test(m.content ?? "")) textos.set(m.id, m.content);
       }
       if (!data || data.length < 1000) break;
     }
@@ -50,7 +51,7 @@ describe("guard lista", () => {
       if (n) novos++; else perdidos++;
       casos.push(`${n ? "PASSOU A DETECTAR" : "DEIXOU DE DETECTAR"}  ${id}\n   ${t.replace(/\n/g, " ⏎ ").slice(0, 400)}`);
     }
-    log(`respostas multi-linha com ':' (60d, origem agente) = ${textos.size}`);
+    log(`respostas ${process.env.TODAS ? "(todas)" : "multi-linha"} com ':' (60d, origem agente) = ${textos.size}`);
     log(`passou a detectar = ${novos}   deixou de detectar = ${perdidos}\n`);
     for (const c of casos) log(c + "\n");
     expect(true).toBe(true);

@@ -2250,6 +2250,18 @@ describe("scrubInventedTimeOffers — oferta em lista vertical (Odonto Sorrisos,
     expect(out.scrubbed).toBe(true);
   });
 
+  it("NÃO dispara em expediente sem 'das' ('Sábado: 08:00 às 13:00')", () => {
+    const expediente = "Nosso horário de funcionamento:\nSeg a Sex: 08:00 às 19:00\nSábado: 08:00 às 13:00";
+    expect(scrubInventedTimeOffers(expediente).scrubbed).toBe(false);
+    expect(scrubInventedTimeOffers("Atendemos segunda a sexta 8h até 18h e sábado 08:00 - 12:00.").scrubbed).toBe(
+      false,
+    );
+  });
+
+  it("faixa CURTA sem 'das' ainda é oferta e continua conferida", () => {
+    expect(scrubInventedTimeOffers("Tenho quinta-feira 14:00 às 14:40, pode ser?").scrubbed).toBe(true);
+  });
+
   it("NÃO dispara em horário de funcionamento listado", () => {
     expect(
       scrubInventedTimeOffers("Temos atendimento de segunda a sábado:\n🕐 das 08:00 às 19:00").scrubbed,
