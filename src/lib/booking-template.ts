@@ -2321,6 +2321,27 @@ export const NEUTRAL_SLOT_PREFERENCE_QUESTION =
 const TIME_RANGE_RE =
   /\bd[ae]s?\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)?\s*(?:[àa]s|at[ée])\s*\d{1,2}(?::\d{2}|h(?:\d{2})?)?/gi;
 
+/** Faixa SEM "das" ("08:00 às 13:00", "8h até 12h", "08:00 - 19:00"). */
+const BARE_TIME_RANGE_RE =
+  /(?<![\d:])(\d{1,2})(?::(\d{2})|h(\d{2})?)\s*(?:[àa]s|at[ée]|-|–)\s*(\d{1,2})(?::(\d{2})|h(\d{2})?)?(?![\d:])/gi;
+
+/**
+ * Tira do texto as faixas de expediente antes de procurar oferta.
+ *
+ * Com "das" a faixa sai sempre (TIME_RANGE_RE). Sem "das", só quando dura 2h
+ * ou mais: expediente se mede em horas, e um horário de consulta ofertado como
+ * faixa ("14:00 às 14:40") continua sendo conferido. Caso real: o expediente
+ * "Sábado: 08:00 às 13:00" era lido como "sábado às 13" (oferta inventada) e a
+ * trava cortava a resposta.
+ */
+function semFaixaDeHorario(texto: string): string {
+  return texto.replace(TIME_RANGE_RE, "").replace(BARE_TIME_RANGE_RE, (faixa, h1, m1, m1h, h2, m2, m2h) => {
+    const ini = Number(h1) * 60 + Number(m1 ?? m1h ?? 0);
+    const fim = Number(h2) * 60 + Number(m2 ?? m2h ?? 0);
+    return Number(h2) <= 23 && fim - ini >= 120 ? "" : faixa;
+  });
+}
+
 /** Oferta CONCRETA de dia+horário ("segunda às 14h", "amanhã às 10:30").
  *  Atenção: \b não funciona antes de acento em JS ("à" ∉ \w) — por isso o
  *  "às" é ancorado por \s, não \b. */
@@ -2552,7 +2573,7 @@ export function scrubInventedTimeOffers(
 
   /** A frase oferta dia+hora que não podemos sustentar? */
   const ofensiva = (texto: string): boolean => {
-    const limpo = texto.replace(TIME_RANGE_RE, "");
+    const limpo = semFaixaDeHorario(texto);
     if (!CONCRETE_TIME_OFFER_RE.test(limpo) && !LISTED_TIME_OFFER_RE.test(limpo)) return false;
     // Sem horários reais em mãos, qualquer oferta concreta é inventada.
     if (minutosReais.size === 0) return true;
@@ -2582,11 +2603,11 @@ export function scrubInventedTimeOffers(
   const lines = original.split("\n");
   const listaOfensiva = ((): { line: number; col: number } | null => {
     for (let i = 0; i < lines.length; i++) {
-      const intro = lines[i]!.replace(TIME_RANGE_RE, "");
+      const intro = semFaixaDeHorario(lines[i]!);
       if (!OFFER_CUE_RE.test(intro) || citedTimesInMinutes(intro).length > 0) continue;
       const itens: string[] = [];
       for (let j = i + 1; j < lines.length; j++) {
-        const linha = lines[j]!.replace(TIME_RANGE_RE, "");
+        const linha = semFaixaDeHorario(lines[j]!);
         if (!linha.trim()) continue;
         if (!isListedTimeLine(linha)) break;
         itens.push(linha);
