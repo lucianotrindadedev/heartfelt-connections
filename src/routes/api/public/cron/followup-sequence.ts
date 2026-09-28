@@ -291,7 +291,8 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                 .from("followup_step_runs")
                 .select("step_id, sent_at")
                 .eq("conversation_id", convId)
-                .eq("status", "sent")
+                // "skipped" = passo concluído sem envio (ver followup-guard.ts).
+                .in("status", ["sent", "skipped"])
                 .gt("sent_at", cycleStartAt.toISOString());
 
               // Delay, horário permitido e janela de 24h do WhatsApp — tudo
@@ -335,7 +336,7 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                   .select("step_id")
                   .eq("conversation_id", convId)
                   .eq("step_id", nextStep.id)
-                  .eq("status", "sent")
+                  .in("status", ["sent", "skipped"])
                   .gt("sent_at", cycleStartAt.toISOString())
                   .limit(1);
                 if (justSent && justSent.length > 0) continue;
@@ -447,6 +448,24 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                       "Reengaje o lead de forma humana e personalizada.",
                     stepOrdem: nextStep.ordem,
                   });
+                  // Texto que não pode ir ao lead (o modelo falou com a equipe
+                  // ou pediu PULAR): não envia e marca o passo como PULADO —
+                  // "failed" faria o próximo tick regerar a cada minuto, e o
+                  // modelo tende a repetir a recusa. Ver followup-guard.ts.
+                  if (ctxResult.veredito.action === "skip") {
+                    console.warn(
+                      `[followup-seq] conv ${convId} step ${nextStep.ordem} pulado: ${ctxResult.veredito.reason}`,
+                    );
+                    await sb.from("followup_step_runs").insert({
+                      step_id: nextStep.id,
+                      conversation_id: convId,
+                      agent_id: agentId,
+                      message_sent: ctxResult.reply.slice(0, 2000),
+                      status: "skipped",
+                      error: ctxResult.veredito.reason.slice(0, 500),
+                    });
+                    continue;
+                  }
                   messageText = ctxResult.reply;
                 } catch (e) {
                   const msg = e instanceof Error ? e.message : String(e);

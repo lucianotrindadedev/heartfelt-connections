@@ -172,7 +172,7 @@ export const Route = createFileRoute("/api/public/diag/followup")({
             .from("followup_step_runs")
             .select("step_id, sent_at, status")
             .eq("conversation_id", conv.id)
-            .eq("status", "sent")
+            .in("status", ["sent", "skipped"]) // igual ao cron (ver followup-guard.ts)
             .gt("sent_at", cycleStartAt.toISOString());
           const sentIds = new Set((alreadySent ?? []).map((r: any) => r.step_id));
           const pending = agentSteps.filter((s) => !sentIds.has(s.id));
