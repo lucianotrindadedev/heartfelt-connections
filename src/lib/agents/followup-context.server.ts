@@ -7,6 +7,11 @@
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
 import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
+import {
+  avaliarTextoDoFollowup,
+  FOLLOWUP_SKIP_TOKEN,
+  type FollowupVeredito,
+} from "@/lib/followup-guard";
 import { callLlmWithFallback, type LlmMessage } from "./llm.server";
 
 interface FollowupContextInput {
@@ -19,6 +24,9 @@ interface FollowupContextInput {
 
 interface FollowupContextOutput {
   reply: string;
+  /** Se o texto pode ir ao lead — ver avaliarTextoDoFollowup. Quem chama NÃO
+   *  envia quando action="skip". */
+  veredito: FollowupVeredito;
   model: string;
   tokens_in: number;
   tokens_out: number;
@@ -95,14 +103,24 @@ soar como cobrança.
 
 # REGRAS
 
+0. O texto que você escrever é enviado DIRETO ao lead pelo WhatsApp, palavra por
+   palavra. Você fala SEMPRE com o lead — nunca com a equipe, com o sistema ou
+   sobre estas instruções. Nunca peça histórico, contexto ou informações a
+   ninguém: o histórico que existe é o que está acima, e ele basta.
 1. Gere APENAS uma mensagem curta (1-3 frases, máximo 250 caracteres).
-2. Use o histórico para personalizar — referencie algo da conversa, não genérico.
+2. Se a conversa trouxer algo concreto (nome, interesse, dor, dúvida), use para
+   personalizar. Se não trouxer (ex.: o lead só mandou um link ou uma saudação),
+   faça uma pergunta simples e acolhedora sobre o que ele procura — isso está
+   certo, não é "genérico demais".
 3. Termine com uma pergunta aberta que estimule resposta.
 4. Mantenha o tom já estabelecido nas suas mensagens anteriores (não fique
    formal de repente se foi descontraído antes, e vice-versa).
 5. NUNCA peça desculpa por "incomodar" nem use palavras como "perdão", "desculpe".
 6. NUNCA mande lembretes do tipo "lembre-se que..." — soa robótico.
 7. Não mencione que é "follow-up" nem que o lead "não respondeu".
+8. Se NÃO deve haver mensagem — o lead pediu para parar, disse que não tem
+   interesse, a conversa foi encerrada ou a pessoa não é um paciente/cliente —
+   responda exatamente ${FOLLOWUP_SKIP_TOKEN} (só essa palavra) e nada mais.
 
 # INSTRUÇÃO ESPECÍFICA DESTE FOLLOW-UP (definida pelo dono do agente)
 
@@ -114,8 +132,8 @@ ${basePrompt.slice(0, 3000)}
 
 # FORMATO DE SAÍDA
 
-Responda APENAS com o texto da mensagem que será enviada. Sem JSON, sem
-prefixos, sem "Resposta:", apenas o texto.`;
+Responda APENAS com o texto da mensagem que será enviada ao lead (ou
+${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto.`;
 
   // 5. Chama LLM via callLlmWithFallback — ele já faz: retry com budget MAIOR
   //    quando finish_reason=length (modelos com reasoning, ex.: gemini-flash,
@@ -126,10 +144,13 @@ prefixos, sem "Resposta:", apenas o texto.`;
     ...history,
     {
       role: "user",
+      // Instrução interna, não fala do lead. Antes era "(Sistema: ... Gere o
+      // follow-up #N)" e, quando decidia não cumprir, o modelo respondia ao
+      // "sistema" pedindo o histórico — e isso ia para o lead (ver
+      // followup-guard.ts).
       content:
-        "(Sistema: o lead não respondeu desde sua última mensagem. Gere agora APENAS o texto do follow-up #" +
-        input.stepOrdem +
-        ".)",
+        `[Instrução interna — não é o lead falando.] Escreva agora a próxima mensagem para o lead, ` +
+        `exatamente como ela será enviada a ele no WhatsApp (ou ${FOLLOWUP_SKIP_TOKEN}).`,
     },
   ];
 
@@ -156,6 +177,7 @@ prefixos, sem "Resposta:", apenas o texto.`;
 
   return {
     reply,
+    veredito: avaliarTextoDoFollowup(reply),
     model: turn.modelUsed,
     tokens_in: turn.tokensIn,
     tokens_out: turn.tokensOut,
