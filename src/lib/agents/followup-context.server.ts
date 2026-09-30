@@ -15,6 +15,7 @@ import {
   recorteSemValores,
   type FollowupVeredito,
 } from "@/lib/followup-guard";
+import { limparMarcadoresDeModelo } from "@/lib/placeholder-guard";
 import { listClinicExpertsUnidades } from "@/lib/tools/clinic-experts.server";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { callLlmWithFallback, type LlmMessage } from "./llm.server";
@@ -197,8 +198,20 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
     model === DEFAULT_AUX_FALLBACK_MODEL ? [] : [DEFAULT_AUX_FALLBACK_MODEL],
   );
 
-  const reply = (turn.content ?? "").trim();
-  if (!reply) throw new Error("LLM retornou resposta vazia.");
+  const bruto = (turn.content ?? "").trim();
+  if (!bruto) throw new Error("LLM retornou resposta vazia.");
+  // "[Nome]", "[endereço da clínica]"... copiados do prompt: preenche o nome ou
+  // tira (ver placeholder-guard). Caso real: Costa Lima, "Fica em [endereço da
+  // clínica]!" num follow-up de 29/09.
+  const { data: conv } = await sb
+    .from("conversations")
+    .select("meta")
+    .eq("id", input.conversationId)
+    .maybeSingle();
+  const nomeDoLead =
+    ((conv?.meta as { lead_data?: { name?: string } } | null)?.lead_data?.name as string | undefined) ??
+    null;
+  const reply = limparMarcadoresDeModelo(bruto, nomeDoLead).texto;
   // Salvaguarda: se ainda truncou mesmo após o retry de budget maior, descarta.
   if (turn.finishReason === "length") {
     throw new Error(

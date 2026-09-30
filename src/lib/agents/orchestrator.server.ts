@@ -57,6 +57,7 @@ import {
   tryAutoCaptureBookingAnswer,
   tryAutoSelectOfferedSlot,
 } from "@/lib/booking-template";
+import { limparMarcadoresDeModelo } from "@/lib/placeholder-guard";
 import {
   DEFAULT_LLM_MODEL,
   DEFAULT_QUALIFIER_FALLBACK_MODELS,
@@ -1998,6 +1999,23 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       `[orch] persist conv=${conversationId} stage=${newStage} custom_fields=${cfKeys || "(vazio)"}`,
     );
 
+    // Marcador de modelo copiado do prompt ("[Nome]", "[valor a confirmar]"):
+    // preenche o nome se já soubermos, senão tira — nunca vai "[Nome]" pro lead.
+    // Caso real: Odonto Carioca Campo Grande, 21 96554-7833 (ver placeholder-guard).
+    const limpezaMarcadores = limparMarcadoresDeModelo(reply, finalLeadData.name);
+    if (limpezaMarcadores.marcadores.length > 0) {
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "marcador_de_modelo_removido",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          marcadores: limpezaMarcadores.marcadores,
+        })}`,
+      );
+      reply = limpezaMarcadores.texto || "Me conta um pouquinho mais pra eu te ajudar certinho? 😊";
+    }
+
     // 12. Persiste e entrega
     await persistStageAndLeadData(conversationId, meta, newStage, finalLeadData, route);
 
@@ -2033,6 +2051,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           false_booking_claim_blocked: falseBookingClaimBlocked || undefined,
           closed_agenda_claim_blocked: closedAgendaClaimBlocked || undefined,
           turno_negado_com_vaga_blocked: turnoNegadoBlocked || undefined,
+          marcadores_de_modelo_removidos:
+            limpezaMarcadores.marcadores.length > 0 ? limpezaMarcadores.marcadores : undefined,
           // Quando um guard TROCA o texto, a resposta original do LLM some — foi
           // o que impediu de saber qual palavra disparou o false_booking_claim
           // no caso Odonto Sorrisos (87 99625-9078). Guardamos o original para
