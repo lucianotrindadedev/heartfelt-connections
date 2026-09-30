@@ -26,6 +26,7 @@ import {
   execConsultarPlanilha,
 } from "./sheets.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
+import { agendaUnicaDoAgente, linhaDiasFechados } from "@/lib/followup-guard";
 import {
   agentUsesTurmaClassifier,
   backfillBookingFieldsFromHistory,
@@ -488,7 +489,7 @@ ${
 - Profissional principal: ${s.doctor_name || "(não informado)"}
 - Endereço: ${s.company_address || "(não informado)"}
 - Horário: ${s.business_hours || "(não informado)"}
-- Diferenciais: ${s.featured_services || "(não informado)"}
+${agendaUnicaDoAgente(ctx) ? linhaDiasFechados(s.business_hours_json) : ""}- Diferenciais: ${s.featured_services || "(não informado)"}
 
 ${buildOwnerStylePromptBlock()}
 

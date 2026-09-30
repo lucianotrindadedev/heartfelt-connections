@@ -9,10 +9,15 @@ import { decryptValue } from "@/lib/crypto.server";
 import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
 import {
   avaliarTextoDoFollowup,
+  diasFechadosDoExpediente,
   FOLLOWUP_SKIP_TOKEN,
+  NOME_POR_EXTENSO,
+  recorteSemValores,
   type FollowupVeredito,
 } from "@/lib/followup-guard";
 import { limparMarcadoresDeModelo } from "@/lib/placeholder-guard";
+import { listClinicExpertsUnidades } from "@/lib/tools/clinic-experts.server";
+import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { callLlmWithFallback, type LlmMessage } from "./llm.server";
 
 interface FollowupContextInput {
@@ -73,6 +78,21 @@ export async function generateContextualFollowup(
 
   const basePrompt = (agent.data.system_prompt as string) || "";
   const settings = (agent.data.settings as Record<string, string> | null) ?? {};
+  // Com várias agendas/unidades, cada uma tem o próprio expediente e o do agente
+  // não vale: a Central MF Beauty marca sábado fechado e tem 16 agendamentos em
+  // sábado (unidades Clinic Experts). Nesses casos a trava de dia fechado não roda.
+  const [agendasGcal, unidadesCe] = await Promise.all([
+    listAccountAgendas(input.accountId),
+    listClinicExpertsUnidades(input.accountId),
+  ]);
+  const agendaUnica = agendasGcal.length < 2 && unidadesCe.length < 2;
+  const diasFechados = agendaUnica ? diasFechadosDoExpediente(settings.business_hours_json) : [];
+  // O follow-up só vê um recorte do prompt da clínica e sem as regras de QUANDO
+  // cada valor vale. Linhas com valor saem do recorte: na Bomfim o recorte
+  // começava pela trava da emergência com "O valor de investimento da consulta
+  // é R$ 275,00" literal, e o modelo mandou isso para quem pediria a Consulta
+  // de Diagnóstico (cortesia). Ver followup-guard.ts.
+  const contextoDoAgente = recorteSemValores(basePrompt, 3000);
 
   // 3. Histórico da conversa (últimas 20 mensagens)
   const msgs = await sb
@@ -122,6 +142,17 @@ soar como cobrança.
 8. Se NÃO deve haver mensagem — o lead pediu para parar, disse que não tem
    interesse, a conversa foi encerrada ou a pessoa não é um paciente/cliente —
    responda exatamente ${FOLLOWUP_SKIP_TOKEN} (só essa palavra) e nada mais.
+9. 🚫 NUNCA cite valor, preço, "investimento", desconto ou parcelamento — nem
+   se o lead perguntou. Você não tem a tabela de preços nem sabe qual tipo de
+   consulta vale para ele. Se o lead perguntou de valor/pagamento, diga só que
+   a equipe explica tudo na consulta, e pergunte se pode seguir com o agendamento.
+10. 🚫 NUNCA ofereça dia, horário ou data, nem diga que agendou/vai agendar. Você
+    não tem acesso à agenda. Para avançar, pergunte se pode mostrar os horários
+    disponíveis — quem busca a agenda é o atendimento, depois que o lead responder.${
+      diasFechados.length
+        ? `\n11. A clínica NÃO atende: ${diasFechados.map((d) => NOME_POR_EXTENSO[d] ?? d).join(", ")}. Nunca cite esses dias, nem repetindo o que o lead disse.`
+        : ""
+    }
 
 # INSTRUÇÃO ESPECÍFICA DESTE FOLLOW-UP (definida pelo dono do agente)
 
@@ -129,7 +160,7 @@ ${input.stepInstruction}
 
 # CONTEXTO DO AGENTE (resumido)
 
-${basePrompt.slice(0, 3000)}
+${contextoDoAgente}
 
 # FORMATO DE SAÍDA
 
@@ -190,7 +221,7 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
 
   return {
     reply,
-    veredito: avaliarTextoDoFollowup(reply),
+    veredito: avaliarTextoDoFollowup(reply, { diasFechados }),
     model: turn.modelUsed,
     tokens_in: turn.tokensIn,
     tokens_out: turn.tokensOut,
