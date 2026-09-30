@@ -70,6 +70,7 @@ import {
 import { normalizeBrazilPhone } from "@/lib/conversation-channel.server";
 import { decideRagNeed } from "./rag-gate.server";
 import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
+import { agendaUnicaDoAgente, linhaDiasFechados } from "@/lib/followup-guard";
 import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import { promisesAvailabilityCheck } from "./stage-signals";
 import {
@@ -3085,7 +3086,7 @@ Campos válidos em lead_data_patch:
 
 - Endereço: ${s.company_address || "(não informado)"}
 - Horário de funcionamento: ${s.business_hours || "(não informado)"}
-- Profissional / referência: ${s.doctor_name || s.contact_person_name || "(não informado)"}
+${agendaUnicaDoAgente(ctx) ? linhaDiasFechados(s.business_hours_json) : ""}- Profissional / referência: ${s.doctor_name || s.contact_person_name || "(não informado)"}
 
 ${buildOwnerStylePromptBlock()}`;
 }
