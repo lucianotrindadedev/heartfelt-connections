@@ -29,6 +29,10 @@ import {
  * O resolver procura no CRM da conta qual desses está cadastrado.
  */
 export const NOT_SCHEDULED_SYNONYMS = [
+  // Primeira opção quando existe no CRM: conversa nova entra como "Novo Lead"
+  // (pedido do Luciano, 05/10). Só Doutor Equilíbrio e SpaçoIn têm essa
+  // etiqueta, e nenhuma das duas tem "não agendado" — nas demais contas nada muda.
+  "Novo Lead",
   "N/A Não Agendado",
   "N/A",
   "NA",
@@ -73,11 +77,13 @@ const SYSTEM_TAG_KEYWORDS = [
 ];
 
 function normalize(s: string): string {
-  return (s ?? "")
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .trim()
-    .toLowerCase();
+  return (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+}
+
+/** Nome de etiqueta (já normalizado) com negação: "não agendado", "n/a",
+ *  "nao compareceu", "sem resposta". */
+export function temNegacao(normalizado: string): boolean {
+  return /(?:^|[^a-z])(?:nao|n\/a|na|sem)(?:[^a-z]|$)/.test(normalizado);
 }
 
 /** Cache curto (memo no processo) das tags por conta, para evitar GET a cada turn. */
@@ -107,18 +113,23 @@ export async function resolveTagName(
   const excluded = new Set((excludeExact ?? []).map(normalize));
 
   // 1. Match exato (case-insensitive + sem acento)
-  const exact = tags.find(
-    (t) => normalize(t.name) === target && !excluded.has(normalize(t.name)),
-  );
+  const exact = tags.find((t) => normalize(t.name) === target && !excluded.has(normalize(t.name)));
   if (exact) return exact.name;
 
   // 2. Match por contém (mais permissivo) — pega o mais curto, evita ambiguidade.
   //    `excluded` evita falsos positivos por substring (ex: o sinônimo
   //    "Agendado" casaria com a tag "N/A Não Agendado", que contém "agendado").
+  //    E a negação tem que estar dos DOIS lados: sem isso o sinônimo
+  //    "N/A Não Agendado" contém a tag "AGENDADO" e a etiqueta INICIAL de "não
+  //    agendado" virava "AGENDADO" — todo lead novo da Doutor Equilíbrio
+  //    (CRM: Novo Lead, AGENDADO, IA Agendou...) era marcado como agendado na
+  //    primeira resposta (05/10).
+  const negaAlvo = temNegacao(target);
   const partial = tags
     .filter((t) => {
       const n = normalize(t.name);
       if (excluded.has(n)) return false;
+      if (temNegacao(n) !== negaAlvo) return false;
       return n.includes(target) || target.includes(n);
     })
     .sort((a, b) => a.name.length - b.name.length);
