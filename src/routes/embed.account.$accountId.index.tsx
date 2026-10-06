@@ -4955,8 +4955,8 @@ function TemplatesModal({
     }
     if (Object.keys(settingsToSave).length > 0) {
       try {
-        const merged = { ...agentSettings, ...settingsToSave };
-        await updateAgentFn({ data: { accountId, settings: merged } });
+        // Só os campos do template — o servidor mescla com o que já existe.
+        await updateAgentFn({ data: { accountId, settings: settingsToSave } });
         qc.invalidateQueries({ queryKey: ["agent", accountId] });
       } catch {
         // Non-fatal: settings save failure doesn't block template application
@@ -6220,7 +6220,13 @@ function AgentSettingsView({
         },
       });
       await updateVoice({ data: { accountId, elevenlabs_voice_id: voiceId || null } });
-      await updateAgentFn({ data: { accountId, debounce_segundos: debounce, settings } });
+      // Só as chaves que MUDARAM desde que o painel abriu. Mandar o objeto inteiro
+      // sobrescrevia com o retrato antigo o que outras telas gravaram nesse meio
+      // tempo (filtro de profissional do warm-up, modo teste...).
+      const alteradas = Object.fromEntries(
+        Object.entries(settings).filter(([k, v]) => agentSettings[k] !== v),
+      );
+      await updateAgentFn({ data: { accountId, debounce_segundos: debounce, settings: alteradas } });
     },
     onSuccess: () => {
       toast.success("Configurações salvas.");

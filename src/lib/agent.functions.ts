@@ -202,10 +202,19 @@ export const updateAgent = createServerFn({ method: "POST" })
     if (data.system_prompt !== undefined) patch.system_prompt = data.system_prompt;
     if (data.llm_model_override !== undefined) patch.llm_model_override = data.llm_model_override;
     if (data.debounce_segundos !== undefined) patch.debounce_segundos = data.debounce_segundos;
-    if (data.settings !== undefined) patch.settings = data.settings;
-    if (Object.keys(patch).length === 0) return { ok: true };
-    const { error } = await sb.from("agents").update(patch).eq("id", agentId);
-    if (error) throw new Error(error.message);
+    if (Object.keys(patch).length > 0) {
+      const { error } = await sb.from("agents").update(patch).eq("id", agentId);
+      if (error) throw new Error(error.message);
+    }
+    // settings é MESCLADO, nunca substituído. Chaves gravadas por outras telas
+    // (warmup_prof_ids, test_mode, ...) não vêm no objeto do painel geral — o
+    // update antigo trocava o settings inteiro e as apagava. Caso real (Sorriso
+    // Saúde, out/2026): o filtro "warm-up só da agenda do avaliador" sumiu e os
+    // lembretes passaram a sair para TODAS as agendas (Sônia Regina Reis, 06/10,
+    // consulta de prótese com outro profissional).
+    if (data.settings !== undefined && Object.keys(data.settings).length > 0) {
+      await mergeSettingsInto(agentId, data.settings);
+    }
     return { ok: true };
   });
 
@@ -217,22 +226,21 @@ export const mergeAgentSettings = createServerFn({ method: "POST" })
       .parse(d)
   )
   .handler(async ({ data }) => {
-    const sb = getSelfhost();
     const agentId = await ensureAccountOrThrow(data.accountId);
-    // Use jsonb || operator to merge without overwriting unrelated keys
-    const { error } = await sb.rpc("merge_agent_settings", {
-      p_agent_id: agentId,
-      p_patch: data.settings,
-    });
-    if (error) {
-      // Fallback: read current settings, merge, write back
-      const { data: cur } = await sb.from("agents").select("settings").eq("id", agentId).single();
-      const merged = { ...(cur?.settings as Record<string, string> ?? {}), ...data.settings };
-      const { error: e2 } = await sb.from("agents").update({ settings: merged }).eq("id", agentId);
-      if (e2) throw new Error(e2.message);
-    }
+    await mergeSettingsInto(agentId, data.settings);
     return { ok: true };
   });
+
+/** Mescla `patch` no settings do agente sem tocar nas demais chaves. */
+async function mergeSettingsInto(agentId: string, patch: Record<string, string>): Promise<void> {
+  const sb = getSelfhost();
+  // Lê, mescla e grava. (A RPC merge_agent_settings que o código antigo tentava
+  // primeiro não existe no banco — conferido em 06/10; toda chamada caía aqui.)
+  const { data: cur } = await sb.from("agents").select("settings").eq("id", agentId).single();
+  const merged = { ...((cur?.settings as Record<string, string>) ?? {}), ...patch };
+  const { error: e2 } = await sb.from("agents").update({ settings: merged }).eq("id", agentId);
+  if (e2) throw new Error(e2.message);
+}
 
 export const updateLlmConfig = createServerFn({ method: "POST" })
   .inputValidator((d) =>
