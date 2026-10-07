@@ -16,6 +16,12 @@ import {
   type FollowupVeredito,
 } from "@/lib/followup-guard";
 import { limparMarcadoresDeModelo } from "@/lib/placeholder-guard";
+import {
+  isHumanStaffMessage,
+  labelHumanStaff,
+  stripHumanStaffLabel,
+  type HistoryMsg,
+} from "@/lib/agents/human-messages";
 import { listClinicExpertsUnidades } from "@/lib/tools/clinic-experts.server";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { callLlmWithFallback, type LlmMessage } from "./llm.server";
@@ -97,19 +103,20 @@ export async function generateContextualFollowup(
   // 3. Histórico da conversa (últimas 20 mensagens)
   const msgs = await sb
     .from("messages")
-    .select("role, content, criado_em")
+    .select("role, content, meta, criado_em")
     .eq("conversation_id", input.conversationId)
     .order("criado_em", { ascending: false })
     .limit(20);
-  const history =
-    msgs.data
-      ?.slice()
-      .reverse()
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({
-        role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
-        content: (m.content as string) || "",
-      })) ?? [];
+  const ordenadas = ((msgs.data ?? []) as HistoryMsg[]).slice().reverse();
+  // Fala da atendente vai rotulada, como no turno do agente (human-messages.ts):
+  // sem isso o follow-up "corrige" o que a equipe combinou com o lead.
+  const history = ordenadas
+    .map((m, i) => ({ m, humana: isHumanStaffMessage(ordenadas, i) }))
+    .filter(({ m }) => m.role === "user" || m.role === "assistant")
+    .map(({ m, humana }) => ({
+      role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
+      content: humana ? labelHumanStaff(m.content ?? "") : (m.content as string) || "",
+    }));
 
   if (history.length === 0) {
     throw new Error("Conversa sem histórico — não é possível gerar follow-up contextual.");
@@ -211,7 +218,7 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
   const nomeDoLead =
     ((conv?.meta as { lead_data?: { name?: string } } | null)?.lead_data?.name as string | undefined) ??
     null;
-  const reply = limparMarcadoresDeModelo(bruto, nomeDoLead).texto;
+  const reply = stripHumanStaffLabel(limparMarcadoresDeModelo(bruto, nomeDoLead).texto);
   // Salvaguarda: se ainda truncou mesmo após o retry de budget maior, descarta.
   if (turn.finishReason === "length") {
     throw new Error(
