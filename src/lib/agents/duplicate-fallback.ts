@@ -52,3 +52,28 @@ export const NEUTRAL_REPEAT_ACK = "Combinado! Qualquer coisa, é só me chamar p
  */
 export const SLOT_OFFER_REPEAT_FALLBACK =
   "Entendi! Pra eu não te oferecer de novo um horário que não dá: me diz qual dia da semana e qual horário ficam bons pra você que eu procuro na agenda. 😊";
+
+/**
+ * A repetição bloqueada é do CADASTRO — então a trava pede o campo que falta (ou
+ * a confirmação), nunca "me diz qual dia da semana". Vale em NAME_COLLECT e
+ * também em BOOKING com horário JÁ escolhido: o preflight que barra um campo
+ * deixa o estágio em BOOKING, e o texto de oferta de horário fazia o lead achar
+ * que o horário que ele escolheu tinha caído.
+ *
+ * Caso real (Maple Bear Guarujá, 13 98200-8544, 07/10): o pai escolheu sábado
+ * 10/10 às 10:00, mandou os responsáveis e a trava respondeu 5x "Pra eu não te
+ * oferecer de novo um horário que não dá: me diz qual dia da semana…".
+ *
+ * Em BOOKING, recusa/reclamação do lead fica de fora: insistir no cadastro de
+ * quem disse "não quero mais" queima o lead (o chamador responde neutro).
+ */
+export function repeticaoEhDoCadastro(o: {
+  stage: string;
+  effectiveStage: string;
+  selectedSlotIso?: string | null;
+  leadRecusouOuReclamou?: boolean;
+}): boolean {
+  if (o.stage === "NAME_COLLECT" || o.effectiveStage === "NAME_COLLECT") return true;
+  if (o.leadRecusouOuReclamou) return false;
+  return !!o.selectedSlotIso && (o.stage === "BOOKING" || o.effectiveStage === "BOOKING");
+}

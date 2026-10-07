@@ -126,6 +126,7 @@ import {
   REPHRASE_PREFIX,
   SLOT_OFFER_REPEAT_FALLBACK,
   rephraseRepeatedQuestion,
+  repeticaoEhDoCadastro,
 } from "./duplicate-fallback";
 
 const MAX_HISTORY = 50;
@@ -1881,7 +1882,16 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
               ? "Me conta com suas palavras o que você está procurando que eu te ajudo por aqui. 😊"
               : NEUTRAL_REPEAT_ACK;
         newStage = "QUALIFICATION";
-      } else if (effectiveStage === "NAME_COLLECT" || stage === "NAME_COLLECT") {
+      } else if (
+        repeticaoEhDoCadastro({
+          stage,
+          effectiveStage,
+          selectedSlotIso: finalLeadData.selected_slot_iso,
+          leadRecusouOuReclamou,
+        })
+      ) {
+        // Inclui BOOKING com horário já escolhido — ver repeticaoEhDoCadastro.
+        //
         // A trava não pode TROCAR DE ASSUNTO. Se a repetição é sobre o NOME,
         // perguntar "quer seguir com o agendamento?" faz o lead achar que
         // voltou à estaca zero — ele já escolheu o horário.

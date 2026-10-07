@@ -662,7 +662,14 @@ export function getMissingBookingFields(
       f.key.includes("respons") ||
       f.maps_to === "name" ||
       f.key === "name";
-    if (isNameField && looksLikeIntentMessage(v)) return true;
+    // Responsáveis: frase é checada por NOME — a lista inteira com vírgula
+    // ("Ana Souza, João Lima") cairia como frase no classificador de 1 nome.
+    if (
+      isNameField &&
+      (isGuardiansField(f) ? guardiansLookLikeIntent(v) : looksLikeIntentMessage(v))
+    ) {
+      return true;
+    }
     // Nome sem SOBRENOME conta como MISSING — o agente pergunta o resto do nome
     // antes de agendar, em vez de criar o cadastro do paciente só com "Ana".
     // Com o agendamento JÁ criado não reabrimos o assunto: cobrar sobrenome de
@@ -851,8 +858,15 @@ export function preflightBookingFields(fields: BookingFieldDef[], ld: LeadData):
         issues.push({ key: f.key, value: v, reason: "scheduling_text_in_name" });
         continue;
       }
-      const wordCount = v.split(/\s+/).filter(Boolean).length;
-      if (wordCount > 6) {
+      // Responsáveis são VÁRIAS pessoas: o limite vale para CADA nome, não para
+      // a lista inteira (ver splitGuardianNames). "Marcelo Santos da Silva e
+      // Thaís Gonçalves da Silva" tem 9 palavras e é exatamente o que pedimos.
+      const nomes = isGuardiansField(f) ? splitGuardianNames(v) : [v];
+      if (nomes.length === 0) {
+        issues.push({ key: f.key, value: v, reason: "intent_message_in_name" });
+        continue;
+      }
+      if (nomes.some((n) => n.split(/\s+/).filter(Boolean).length > 6)) {
         issues.push({ key: f.key, value: v, reason: "too_many_words_in_name" });
         continue;
       }
@@ -1455,6 +1469,56 @@ function isGuardiansField(field: BookingFieldDef): boolean {
   return k.includes("guardian") || k.includes("respons") || l.includes("respons");
 }
 
+function isGuardiansKey(key: string): boolean {
+  const k = key.toLowerCase();
+  return k.includes("guardian") || k.includes("respons");
+}
+
+/**
+ * Separa o campo "Responsáveis" em um nome por pessoa. O campo é o ÚNICO de
+ * nome que guarda VÁRIAS pessoas, e as regras de nome (limite de palavras,
+ * "parece frase") foram calibradas para UMA. Aplicadas ao texto inteiro,
+ * recusavam justamente o lead que fez tudo certo.
+ *
+ * Caso real (Maple Bear Guarujá, 13 98200-8544, 07/10): o pai mandou
+ * "Marcelo Santos da Silva\nThaís Gonçalves da Silva" — 8 palavras. O preflight
+ * (limite 6) apagou o campo e a IA pediu os responsáveis de novo; ele reenviou
+ * os mesmos nomes OITO vezes em 20 minutos, até a consultora assumir.
+ *
+ * Tira o rótulo que o lead (ou a própria IA) põe na frente ("Responsáveis: …",
+ * "os responsáveis são …", "Mãe: …") e corta em quebra de linha, vírgula, ";",
+ * "/", "&", "+" e " e ".
+ */
+export function splitGuardianNames(text: string): string[] {
+  const semRotulo = text
+    .trim()
+    .replace(
+      /^(?:(?:os|as|o|a)\s+)?respons[aá]ve(?:l|is)\b\s*(?:(?:s[aã]o|[ée])(?=[\s:]))?\s*[:\-–]?\s*/i,
+      "",
+    );
+  return semRotulo
+    .split(/\s*(?:\r?\n|[,;/&+])\s*|\s+e\s+/i)
+    .map((p) =>
+      p
+        .replace(/^(?:pai|m[ãa]e)\s*[:\-–]\s*/i, "")
+        .replace(/[.!]+$/, "")
+        .trim(),
+    )
+    .filter(Boolean);
+}
+
+/** Valor de "Responsáveis" que é frase/pergunta, não lista de nomes. */
+function guardiansLookLikeIntent(text: string): boolean {
+  const nomes = splitGuardianNames(text);
+  return nomes.length === 0 || nomes.some((n) => looksLikeIntentMessage(n));
+}
+
+/** ["Ana Souza", "João Lima", "Rita"] → "Ana Souza, João Lima e Rita". */
+function joinGuardianNames(nomes: string[]): string {
+  if (nomes.length <= 1) return nomes[0] ?? "";
+  return `${nomes.slice(0, -1).join(", ")} e ${nomes[nomes.length - 1]}`;
+}
+
 function isChildNameField(field: BookingFieldDef): boolean {
   return field.key === "child_name" || field.label.toLowerCase().includes("criança");
 }
@@ -1678,7 +1742,7 @@ export function resolveBookingLeadName(leadData: LeadData): string | undefined {
   if (leadData.name?.trim()) return leadData.name.trim();
   const guardians = leadData.custom_fields?.guardians?.trim();
   if (guardians) {
-    const first = guardians.split(/[,;/]|(?:\s+e\s+)/i)[0]?.trim();
+    const first = splitGuardianNames(guardians)[0];
     if (first) return first;
   }
   return leadData.custom_fields?.child_name?.trim() || undefined;
@@ -3799,7 +3863,9 @@ export function sanitizeLeadDataPatch(
         k.includes("guardian") ||
         k.includes("respons") ||
         k === "name";
-      if (isNameField && looksLikeIntentMessage(v)) continue;
+      if (isNameField && (isGuardiansKey(k) ? guardiansLookLikeIntent(v) : looksLikeIntentMessage(v))) {
+        continue;
+      }
 
       cleaned[k] = v;
     }
@@ -4628,6 +4694,25 @@ function captureBookingAnswer(
     return {};
   }
 
+  // Responsáveis: cada pessoa tem que parecer nome — a lista inteira passa do
+  // limite de palavras de UM nome (ver splitGuardianNames). Grava a lista
+  // normalizada ("Marcelo Santos da Silva e Thaís Gonçalves da Silva"), sem o
+  // rótulo "Responsáveis:" e sem a quebra de linha.
+  if (isGuardiansField(field)) {
+    if (guardiansLookLikeIntent(lastUser)) return {};
+    const nomes = splitGuardianNames(lastUser);
+    if (!nomes.every(looksLikePersonName)) return {};
+    return {
+      custom_fields: {
+        [field.key]: mergePartialName(
+          leadData.custom_fields?.[field.key],
+          joinGuardianNames(nomes),
+          field,
+        ),
+      },
+    };
+  }
+
   // Mensagens de saudacao/intencao nao sao resposta de campo de cadastro.
   if (looksLikeIntentMessage(lastUser)) return {};
 
@@ -4637,9 +4722,8 @@ function captureBookingAnswer(
     return { name: mergePartialName(leadData.name, nome, field) };
   }
 
-  // Campos de nome (crianca / responsaveis) exigem que o conteudo
-  // pareca nome de pessoa — nao texto livre.
-  if (isChildNameField(field) || isGuardiansField(field)) {
+  // Criança: o conteúdo tem que parecer nome de pessoa — não texto livre.
+  if (isChildNameField(field)) {
     if (!looksLikePersonName(lastUser)) return {};
     return {
       custom_fields: {
