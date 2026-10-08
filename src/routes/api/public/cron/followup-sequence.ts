@@ -28,6 +28,7 @@ import {
 import { generateContextualFollowup } from "@/lib/agents/followup-context.server";
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import { followupHeldByConversationGuards } from "@/lib/conversation-guards";
+import { lastSpeakerIsHumanStaff, type HistoryMsg } from "@/lib/agents/human-messages";
 import {
   clearStaleConversationLock,
   releaseConversationLock,
@@ -268,6 +269,21 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
               // Se a última msg é do user → lead acabou de responder, reinicia o ciclo
               // (não envia agora; quando IA responder e ele ficar inativo de novo, começa do step 1).
               if (lastMsg.role === "user") continue;
+
+              // A atendente falou por último → a conversa é dela; o follow-up
+              // não atropela o que ela combinou (ver lastSpeakerIsHumanStaff).
+              // Só consulta o histórico quando a última msg pode ser dela.
+              if ((lastMsg.meta as Record<string, unknown> | null)?.origem !== "agente") {
+                const { data: recentes } = await sb
+                  .from("messages")
+                  .select("role, content, meta, criado_em")
+                  .eq("conversation_id", convId)
+                  .order("criado_em", { ascending: false })
+                  .limit(30);
+                if (lastSpeakerIsHumanStaff(((recentes ?? []) as HistoryMsg[]).slice().reverse())) {
+                  continue;
+                }
+              }
 
               const lastMsgAt = new Date(lastMsg.criado_em as string);
 

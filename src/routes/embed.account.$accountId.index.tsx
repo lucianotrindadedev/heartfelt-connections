@@ -3,7 +3,7 @@ import { helenaAutomationWebhookUrl } from "@/lib/app-base-url";
 import { joinAba, splitAba } from "@/lib/sheets-range";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { Fragment, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Color } from "@tiptap/extension-color";
@@ -1046,38 +1046,57 @@ function BusinessHoursEditor({
         <tbody>
           {BH_DAYS.map((d, idx) => {
             const row = schedule[d.key];
+            // Dia ATIVO sem início ou fim não gera janela nenhuma: o parser
+            // (parseDisponibilidadeFromSettings) o trata como desligado, mas o
+            // switch continua "Ativo" — a clínica acha que abre, a IA diz que
+            // não abre. Caso real (Sorriamed, 21 95948-9650, 07/10): sábado
+            // "08:00–" sem fim; a IA afirmou "a gente não abre aos sábados"
+            // enquanto a atendente marcava a consulta num sábado.
+            const faltando = row.active
+              ? [!row.start && "início", !row.end && "fim"].filter(Boolean)
+              : [];
             return (
-              <tr
-                key={d.key}
-                className={`border-b border-slate-100 last:border-0 transition-colors ${row.active ? "bg-white" : "bg-slate-50/60"} ${idx % 2 === 0 ? "" : "bg-slate-50/30"}`}
-              >
-                <td className="px-3 py-2">
-                  <span className={`font-medium ${row.active ? "text-slate-800" : "text-slate-400"}`}>
-                    {d.label}
-                  </span>
-                </td>
-                <td className="px-3 py-2 text-center">
-                  <Switch
-                    checked={row.active}
-                    onCheckedChange={(v) => update(d.key, "active", v)}
-                  />
-                </td>
-                {(["start", "lunch_start", "lunch_end", "end"] as const).map((field) => (
-                  <td key={field} className="px-2 py-2 text-center">
-                    <input
-                      type="time"
-                      value={row[field] as string}
-                      onChange={(e) => update(d.key, field, e.target.value)}
-                      disabled={!row.active}
-                      className={`w-24 rounded-lg border px-2 py-1.5 text-center text-xs outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20 ${
-                        row.active
-                          ? "border-slate-200 bg-white text-slate-800 hover:border-slate-300"
-                          : "border-slate-100 bg-transparent text-slate-300 cursor-not-allowed"
-                      }`}
+              <Fragment key={d.key}>
+                <tr
+                  className={`border-b border-slate-100 last:border-0 transition-colors ${row.active ? "bg-white" : "bg-slate-50/60"} ${idx % 2 === 0 ? "" : "bg-slate-50/30"}`}
+                >
+                  <td className="px-3 py-2">
+                    <span className={`font-medium ${row.active ? "text-slate-800" : "text-slate-400"}`}>
+                      {d.label}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-center">
+                    <Switch
+                      checked={row.active}
+                      onCheckedChange={(v) => update(d.key, "active", v)}
                     />
                   </td>
-                ))}
-              </tr>
+                  {(["start", "lunch_start", "lunch_end", "end"] as const).map((field) => (
+                    <td key={field} className="px-2 py-2 text-center">
+                      <input
+                        type="time"
+                        value={row[field] as string}
+                        onChange={(e) => update(d.key, field, e.target.value)}
+                        disabled={!row.active}
+                        className={`w-24 rounded-lg border px-2 py-1.5 text-center text-xs outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20 ${
+                          row.active
+                            ? "border-slate-200 bg-white text-slate-800 hover:border-slate-300"
+                            : "border-slate-100 bg-transparent text-slate-300 cursor-not-allowed"
+                        }`}
+                      />
+                    </td>
+                  ))}
+                </tr>
+                {faltando.length > 0 && (
+                  <tr className="border-b border-amber-100 bg-amber-50">
+                    <td colSpan={6} className="px-3 py-2 text-[12px] text-amber-900">
+                      ⚠️ {d.label} está ativo, mas sem horário de <b>{faltando.join(" e ")}</b>. Sem
+                      ele, o sistema trata este dia como <b>desligado</b> (a IA não oferece
+                      horários nele). Preencha o horário ou desative o dia.
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             );
           })}
         </tbody>

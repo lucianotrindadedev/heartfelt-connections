@@ -120,6 +120,7 @@ import {
   hasRealQuestion,
 } from "./stage-signals";
 import { isReplyTooSimilar } from "./reply-similarity";
+import { isHumanStaffMessage, labelHumanStaff, stripHumanStaffLabel } from "./human-messages";
 import { isTechRetryReply } from "./booking-failure";
 import {
   NEUTRAL_REPEAT_ACK,
@@ -146,6 +147,7 @@ interface MsgRow {
   role: string;
   content: string | null;
   meta: Record<string, unknown> | null;
+  criado_em?: string | null;
 }
 
 // ── Persistência stage/lead_data em conversations.meta ────────────────────
@@ -431,7 +433,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // 5. Histórico (filtra fallbacks)
     const msgs = await sb
       .from("messages")
-      .select("role, content, meta")
+      .select("role, content, meta, criado_em")
       .eq("conversation_id", conversationId)
       // Desempate por id: em rajadas com mesmo criado_em a ordem fica estável.
       .order("criado_em", { ascending: false })
@@ -452,7 +454,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // a mesma pergunta de nome saiu 4x seguidas, ignorando 3 perguntas diretas
     // do lead, sem nenhum duplicate_reply_blocked no meta.
     const agentReplies: string[] = [];
-    for (const m of ordered) {
+    for (const [idx, m] of ordered.entries()) {
       if (m.meta && (m.meta as Record<string, unknown>).fallback === true) continue;
       // Eco/loopback da Helena (mensagem que a própria plataforma enviou e voltou
       // pelo webhook). Marcado is_echo=true no webhook e na limpeza — nunca entra
@@ -472,7 +474,14 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       if (isPlatformNotice(m.content)) continue;
       if (m.role === "user") history.push({ role: "user", content: m.content ?? "" });
       else if (m.role === "assistant") {
-        history.push({ role: "assistant", content: m.content ?? "" });
+        // Fala da ATENDENTE vai rotulada: sem isso o LLM a lê como fala dele e
+        // "se corrige" por algo que não disse — ver human-messages.ts.
+        history.push({
+          role: "assistant",
+          content: isHumanStaffMessage(ordered, idx)
+            ? labelHumanStaff(m.content ?? "")
+            : (m.content ?? ""),
+        });
         if ((m.meta as Record<string, unknown> | null)?.origem === "agente") {
           agentReplies.push(m.content ?? "");
         }
@@ -1360,7 +1369,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    let reply = result.reply;
+    // O rótulo da fala da atendente (labelHumanStaff) nunca sai para o lead.
+    let reply = stripHumanStaffLabel(result.reply);
     // Flags de telemetria do turn (vao para meta da mensagem + agent_runs).
     let duplicateReplyBlocked = false;
     let falseBookingClaimBlocked = false;
