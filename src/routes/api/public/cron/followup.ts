@@ -3,6 +3,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { loadHelenaAccount, sendHelenaText } from "@/lib/helena.server";
+import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 
 function validateCronSecret(request: Request): boolean {
@@ -112,6 +113,7 @@ export const Route = createFileRoute("/api/public/cron/followup")({
             const phone =
               (conv.data.lead_phone as string | null) ?? (conv.data.phone as string);
 
+            const sendStartedAt = new Date();
             const sendRes = await sendHelenaText(helena, { phone, text: prompt, sessionId });
 
             if (sendRes.ok) {
@@ -122,6 +124,7 @@ export const Route = createFileRoute("/api/public/cron/followup")({
                 content: prompt,
                 meta: { origem: "agente", tipo: "followup", numero_followup: nFu + 1 },
               });
+              await markEchoesReceivedBeforeSend(sb, convId, [prompt], sendStartedAt);
 
               // Atualiza estado
               await sb.from("conversation_state").update({
