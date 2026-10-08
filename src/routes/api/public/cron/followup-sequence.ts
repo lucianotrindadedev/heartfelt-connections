@@ -29,6 +29,7 @@ import { generateContextualFollowup } from "@/lib/agents/followup-context.server
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import { followupHeldByConversationGuards } from "@/lib/conversation-guards";
 import { lastSpeakerIsHumanStaff, type HistoryMsg } from "@/lib/agents/human-messages";
+import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 import {
   clearStaleConversationLock,
   releaseConversationLock,
@@ -498,6 +499,7 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
               }
 
               // Envia pelo Helena
+              const sendStartedAt = new Date();
               try {
                 const helena = await loadHelenaAccount(accountId);
                 const sendRes = await sendHelenaText(helena, {
@@ -540,6 +542,7 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                   followup_mode: nextStep.mode,
                 },
               });
+              await markEchoesReceivedBeforeSend(sb, convId, [messageText], sendStartedAt);
               await sb.from("followup_step_runs").insert({
                 step_id: nextStep.id,
                 conversation_id: convId,

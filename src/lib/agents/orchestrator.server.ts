@@ -121,6 +121,7 @@ import {
 } from "./stage-signals";
 import { isReplyTooSimilar } from "./reply-similarity";
 import { isHumanStaffMessage, labelHumanStaff, stripHumanStaffLabel } from "./human-messages";
+import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 import { isTechRetryReply } from "./booking-failure";
 import {
   NEUTRAL_REPEAT_ACK,
@@ -269,6 +270,8 @@ async function deliverReply(
   // retornava 200 mas NÃO entregava ao WhatsApp em respostas multi-bolha — a
   // resposta do agente "sumia" enquanto o follow-up chegava. As pausas entre
   // partes (>=1,2s) já mantêm as bolhas separadas sem precisar do /sync.
+  // Antes da 1ª bolha: só o que chegar depois disto pode ser eco nosso.
+  const sendStartedAt = new Date();
   let sentCount = 0;
   for (let i = 0; i < parts.length; i++) {
     if (i > 0) {
@@ -324,6 +327,14 @@ async function deliverReply(
       split_cost_usd: splitCost.costUsd || undefined,
     },
   });
+  // Os ecos das bolhas chegaram enquanto enviávamos — antes de esta resposta
+  // existir no banco, então o anti-eco do webhook não os reconheceu.
+  await markEchoesReceivedBeforeSend(
+    sb,
+    conversationId,
+    [stripProtectedMarkers(reply), ...parts],
+    sendStartedAt,
+  );
 
   // Mantém agentId/agent_run para retrocompat (UI mostra esse insight).
   await sb.from("agent_runs").insert({

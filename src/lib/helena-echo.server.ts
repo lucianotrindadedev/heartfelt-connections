@@ -99,3 +99,51 @@ export function classifyEchoAgainstOwnSends(
   // atendente: grava, mas marcado como eco.
   return short ? "suspect" : hit("confirmed");
 }
+
+/** Mensagem gravada ANTES da nossa — candidata a eco antecipado. */
+export interface EarlyEchoCandidate {
+  id: string;
+  role: string;
+  content: string | null;
+  meta: Record<string, unknown> | null;
+}
+
+/**
+ * Ecos que chegaram ANTES de a nossa mensagem ser gravada.
+ *
+ * O agente grava a resposta só depois de enviar a última bolha, e a Helena
+ * reentrega cada bolha em ~1s. O anti-eco do webhook compara com o que já está
+ * gravado — e a resposta ainda não está. Medido em produção (7 dias até
+ * 07/10/2026): 6.960 ecos gravados como fala da atendente (≈45% de todos os
+ * assistant/humano) e 39 gravados como fala do LEAD, sem `is_echo`. Caso real
+ * (Sorriamed, 21 95948-9650, 07/10): o eco de "a gente não abre aos sábados"
+ * ficou gravado como se a atendente tivesse escrito.
+ *
+ * `candidates` são só as mensagens gravadas DEPOIS do início do envio — a fala
+ * real que estamos respondendo veio antes e nunca entra aqui.
+ *
+ * `ownTexts`: a mensagem inteira e cada bolha EXATAMENTE como foi enviada (o
+ * splitter pode reescrever o texto).
+ *
+ * Diferente de `classifyEchoAgainstOwnSends`, o containment é SÓ num sentido:
+ * o eco é a nossa mensagem ou um pedaço dela. Texto que CONTÉM a nossa mensagem
+ * é, no máximo, o lead citando a gente ("[Em resposta à mensagem: …]") — fala
+ * real. E do lead só conta cópia EXATA de uma bolha: apagar a fala do lead é o
+ * erro mais caro (some do histórico do LLM).
+ */
+export function earlyEchoIds(ownTexts: string[], candidates: EarlyEchoCandidate[]): string[] {
+  const owns = ownTexts.map(normalizeEcho).filter(Boolean);
+  if (owns.length === 0) return [];
+  return candidates
+    .filter((c) => {
+      if (c.meta?.is_echo === true) return false;
+      const fromLead = c.role === "user";
+      const fromStaff = c.role === "assistant" && c.meta?.origem === "humano";
+      if (!fromLead && !fromStaff) return false;
+      const target = normalizeEcho(c.content);
+      if (!target) return false;
+      if (fromLead) return target.length >= SHORT_TEXT_LEN && owns.includes(target);
+      return owns.some((own) => own.includes(target));
+    })
+    .map((c) => c.id);
+}

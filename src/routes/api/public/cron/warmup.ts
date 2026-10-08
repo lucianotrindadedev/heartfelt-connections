@@ -4,6 +4,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { listClinicorpUpcomingAppointments } from "@/lib/tools/clinicorp.server";
 import { loadHelenaAccount, sendHelenaText } from "@/lib/helena.server";
+import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 
 function validateCronSecret(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -162,6 +163,7 @@ export const Route = createFileRoute("/api/public/cron/warmup")({
                 .replace(/\{\{data_consulta\}\}/gi, apptTime.toLocaleDateString("pt-BR"))
                 .replace(/\{\{hora_consulta\}\}/gi, apptTime.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
 
+              const sendStartedAt = new Date();
               const sendRes = await sendHelenaText(helena, {
                 phone: appt.phone,
                 text,
@@ -181,6 +183,7 @@ export const Route = createFileRoute("/api/public/cron/warmup")({
                     appointment_id: appt.id,
                   },
                 });
+                await markEchoesReceivedBeforeSend(sb, convId, [text], sendStartedAt);
                 processed++;
               }
             }
