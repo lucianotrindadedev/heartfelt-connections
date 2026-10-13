@@ -29,6 +29,22 @@ const FALA_COM_OPERADOR: { re: RegExp; motivo: string }[] = [
   },
   { re: /recomenda[çc][ãa]o\s*:/i, motivo: "recomendação à equipe" },
   { re: /\*\*[^*\n]+\*\*/, motivo: "formatação de relatório (**negrito**)" },
+  // O modelo decide NÃO mandar nada e, em vez de PULAR, explica a decisão.
+  // Caso real (Clínica Bomfim, 21 98127-9491, 13/10): "Não há próxima mensagem
+  // a enviar neste momento. Aguardando resposta de Rahyane sobre a
+  // disponibilidade de ver os horários." — enviado à própria Rahyane. Em 90
+  // dias, 8 follow-ups assim, todos liberados por esta trava.
+  {
+    re: /n[ãa]o h[áa] (?:uma |nenhuma )?(?:pr[óo]xima |nova )?mensagem (?:a |para )(?:ser )?envia/i,
+    motivo: "diz que não há mensagem a enviar",
+  },
+  {
+    // "aguardando resposta DE Rahyane / DO José" — fala do lead na 3ª pessoa.
+    // "Fico aguardando sua resposta" (falando COM o lead) não casa.
+    re: /(?<!\p{L})aguardando (?:a )?resposta d[aeo]s?(?!\p{L})/iu,
+    motivo: "fala do lead na 3ª pessoa ('aguardando resposta de…')",
+  },
+  { re: /n[ãa]o devo enviar/i, motivo: "explica por que não deve enviar" },
 ];
 
 /**
