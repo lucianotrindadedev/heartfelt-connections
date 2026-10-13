@@ -53,3 +53,31 @@ describe("avaliarTextoDoFollowup — deixa passar mensagem boa", () => {
     expect(avaliarTextoDoFollowup(t)).toEqual({ action: "send" });
   });
 });
+
+// O modelo decide não mandar nada e, em vez de PULAR, explica a decisão — e a
+// explicação ia para o lead. Os 8 casos reais de 90 dias (todos liberados pela
+// versão anterior da trava). Caso que abriu: Clínica Bomfim, 21 98127-9491, 13/10.
+describe("avaliarTextoDoFollowup — barra explicação de 'não há mensagem a enviar'", () => {
+  it.each([
+    "Não há próxima mensagem a enviar neste momento. Aguardando resposta de Rahyane sobre a disponibilidade de ver os horários.",
+    "Não há mensagem a enviar neste momento. Estou aguardando a resposta de Priscila sobre qual dos dois horários (15:00 ou 15:30 na quinta-feira) ela prefere para a consulta",
+    "Aguardando resposta de Marcela. Não há novo contexto para enviar mensagem neste momento.",
+    "Neste momento, estou aguardando a resposta de Maria sobre qual unidade fica melhor para ela. Não há mensagem a enviar agora.",
+    "Estou aguardando a resposta do José Augusto sobre qual horário ele prefere: 9hs ou 10hs no dia 13/10.\n\nNão há nova mensagem a enviar neste momento",
+    "Estou aguardando a resposta de Gisele para continuar com a próxima mensagem. Ela ainda não respondeu à minha pergunta sobre há quanto tempo está sem o dente",
+    "Aguardando resposta de Marta à pergunta anterior. Não há mensagem para enviar neste momento.",
+    "Estou aguardando a resposta de Ozania sobre sua situação. Sem essa informação, não devo enviar próxima mensagem.",
+  ])("barra: %s", (t) => {
+    expect(pula(t)).toBe(true);
+  });
+
+  it.each([
+    // Mesmas palavras falando COM o lead
+    "Fico aguardando sua resposta, Rahyane! Ainda está com dor? Quer que eu veja os horários mais próximos?",
+    "Estou aguardando seu retorno pra reservar o horário, tá? 😊",
+    // Caso real que casava com uma 1ª versão da regra (follow-up legítimo, 09/10)
+    "Pra não enviar coisas que não te interessam: você procura uma formação pessoal, algo pra sua escola/equipe, ou consultoria estratégica? 😊",
+  ])("passa: %s", (t) => {
+    expect(avaliarTextoDoFollowup(t)).toEqual({ action: "send" });
+  });
+});

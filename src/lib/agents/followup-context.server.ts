@@ -149,6 +149,11 @@ soar como cobrança.
 8. Se NÃO deve haver mensagem — o lead pediu para parar, disse que não tem
    interesse, a conversa foi encerrada ou a pessoa não é um paciente/cliente —
    responda exatamente ${FOLLOWUP_SKIP_TOKEN} (só essa palavra) e nada mais.
+   O lead NÃO ter respondido à sua última pergunta NÃO é motivo para
+   ${FOLLOWUP_SKIP_TOKEN} — é exatamente para isso que esta mensagem existe:
+   retome a pergunta com outras palavras. Nunca explique a sua decisão nem
+   escreva "aguardando resposta": a saída é a mensagem ao lead ou
+   ${FOLLOWUP_SKIP_TOKEN}, nada além.
 9. 🚫 NUNCA cite valor, preço, "investimento", desconto ou parcelamento — nem
    se o lead perguntou. Você não tem a tabela de preços nem sabe qual tipo de
    consulta vale para ele. Se o lead perguntou de valor/pagamento, diga só que
