@@ -1433,10 +1433,22 @@ export function looksLikeGratitudeOrClosing(text: string): boolean {
   return false;
 }
 
+/**
+ * Nome de pessoa nunca tem algarismo nem link. Varredura de 60 dias (14/10/2026):
+ * 70 nomes gravados com dígito, NENHUM nome de verdade — telefone ("RECREIO,
+ * 964586771", "Pablo 979983537"), resposta colada no primeiro nome como se fosse
+ * sobrenome ("Lina Entre 60 e 80", "Fabio 70 convidados"), link do Facebook.
+ */
+export function nameHasDigitsOrLink(text: string): boolean {
+  return /\d/.test(text) || /https?:\/\/|www\./i.test(text);
+}
+
 function looksLikePersonName(text: string): boolean {
   const t = text.trim();
   if (!t || looksLikeBirthDate(t) || looksLikeSchedulingPreference(t)) return false;
   if (/^\d+$/.test(t)) return false;
+  // Nome não tem número nem link (ver nameHasDigitsOrLink).
+  if (nameHasDigitsOrLink(t)) return false;
   // Rejeita mensagens de saudacao/intencao — elas nao sao nome de pessoa.
   if (looksLikeIntentMessage(t)) return false;
   // ...e frases com verbo conjugado ("Ja te mandei", "Jesus já mandei"). Os dois
@@ -3880,7 +3892,8 @@ export function sanitizeLeadDataPatch(
       // mentionsUnavailability já existia e acerta ("hoje não consigo"), mas não
       // era consultado aqui — nomes assim entravam no cadastro do paciente.
       mentionsUnavailability(next.name) ||
-      looksLikeSentenceNotName(next.name)
+      looksLikeSentenceNotName(next.name) ||
+      nameHasDigitsOrLink(next.name)
     ) {
       delete next.name;
     }
@@ -4637,12 +4650,49 @@ function stripAffirmativePrefix(text: string): string {
   return text.replace(/^(sim|ok|isso|uhum|certo)[,.\s]+/i, "").trim();
 }
 
+/**
+ * A fala mais recente do assistente que NÃO é só um pedaço de outra fala
+ * recente. Os ecos da Helena (bolhas da nossa própria resposta) entram como
+ * falas separadas e podem vir depois da resposta inteira: "Bom dia! 😊 Tudo
+ * bem?" escondia o "qual é o seu nome…?" que vinha na mesma resposta.
+ */
+function ultimaFalaPropria(recentes: string[]): string | undefined {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+  const n = recentes.map(norm);
+  const proprias = recentes.filter(
+    (_, i) => !n.some((o, j) => j !== i && o.length > n[i]!.length && o.includes(n[i]!)),
+  );
+  return proprias.at(-1);
+}
+
+/**
+ * O texto faz uma pergunta de verdade? Saudação ("Oi! Tudo bem?") e fecho
+ * retórico ("…vou mandar escrito pra senhora. Tá?") não contam: neles a bola
+ * não volta para o lead com outro assunto.
+ */
+function temPerguntaDeVerdade(texto: string): boolean {
+  // Fecho retórico no FIM da oração: "Tudo bem?", "…o nosso endereço, tá?".
+  const RETORICA =
+    /(?:^|[\s,;])(?:tudo\s+(?:bem|bom|certo)(?:\s+por\s+a[ií])?|t[áa](?:\s+(?:bem|bom|certo|ok))?|ok|okay|certo|combinado|beleza|blz|pode\s+ser|sim|n[ée])\s*\?+$/i;
+  return texto
+    .split(/(?<=\?)/)
+    .filter((trecho) => trecho.trim().endsWith("?"))
+    .some((trecho) => {
+      const frase = (trecho.split(/[.!\n]/).pop() ?? "")
+        .replace(/^[^\p{L}]+/u, "")
+        .replace(/^(?:oi|ol[áa])\s*[,!]?\s*/i, "")
+        .trim();
+      return !RETORICA.test(frase);
+    });
+}
+
 function captureBookingAnswer(
   rawAnswer: string,
   assistantText: string,
   leadData: LeadData,
   fields: BookingFieldDef[],
   channelCtx?: BookingChannelContext,
+  lastAssistant?: string,
 ): Partial<LeadData> {
   if (
     channelCtx &&
@@ -4689,6 +4739,26 @@ function captureBookingAnswer(
   const fieldFromQuestion = matchFieldFromAssistantQuestion(assistantText, missing);
   if (!fieldFromQuestion) return {};
   const field = fieldFromQuestion;
+
+  // A resposta é da pergunta MAIS RECENTE. `assistantText` junta as 3 últimas
+  // falas do assistente (bolhas, ecos) — e uma pergunta de campo antiga ainda
+  // dentro dessa janela capturava a resposta a OUTRA pergunta. Caso real
+  // (Clínica Bomfim, IG @lu.lopesf, 14/10): a abertura pediu "Seu nome, Seu
+  // WhatsApp…"; dias depois a atendente perguntou "seu número de WhatsApp e
+  // qual é o seu bairro?" e "RECREIO, 964586771" virou o nome da lead.
+  // "Como posso te chamar?" / "qual é o nome dele?" também pedem o nome: não
+  // barram. (Só aqui — não passam a disparar captura que antes não existia.)
+  if (
+    lastAssistant &&
+    temPerguntaDeVerdade(lastAssistant) &&
+    !matchFieldFromAssistantQuestion(lastAssistant, missing) &&
+    !(
+      (field.maps_to === "name" || field.key === "name") &&
+      /te cham(?:ar|e)\b|nome d(?:ele|ela|o paciente|a paciente)\b/i.test(lastAssistant)
+    )
+  ) {
+    return {};
+  }
 
   if (isShortAffirmative(lastUser) && field.maps_to !== "name" && field.key !== "name") {
     return {};
@@ -4821,15 +4891,22 @@ export function backfillBookingFieldsFromHistory(
     const msg = history[i]!;
     if (msg.role !== "user") continue;
 
-    const assistantText = history
+    const recentes = history
       .slice(0, i)
       .filter((m) => m.role === "assistant")
       .slice(-3)
-      .map((m) => m.content)
-      .join("\n");
+      .map((m) => m.content);
+    const assistantText = recentes.join("\n");
     if (!assistantText.trim()) continue;
 
-    const patch = captureBookingAnswer(msg.content, assistantText, acc, fields, channelCtx);
+    const patch = captureBookingAnswer(
+      msg.content,
+      assistantText,
+      acc,
+      fields,
+      channelCtx,
+      ultimaFalaPropria(recentes),
+    );
     if (Object.keys(patch).length === 0) continue;
 
     acc = mergeLeadDataPatch(acc, patch);
@@ -4874,12 +4951,12 @@ export function tryAutoCaptureBookingAnswer(
   }
   if (lastUserIdx < 0) return {};
 
-  const assistantText = history
+  const recentes = history
     .slice(0, lastUserIdx)
     .filter((m) => m.role === "assistant")
     .slice(-3)
-    .map((m) => m.content)
-    .join("\n");
+    .map((m) => m.content);
+  const assistantText = recentes.join("\n");
   if (!assistantText.trim()) return {};
 
   return captureBookingAnswer(
@@ -4888,5 +4965,6 @@ export function tryAutoCaptureBookingAnswer(
     leadData,
     fields,
     channelCtx,
+    ultimaFalaPropria(recentes),
   );
 }
