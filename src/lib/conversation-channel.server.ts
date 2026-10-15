@@ -83,6 +83,25 @@ export function buildConversationKey(params: {
   return from || "unknown";
 }
 
+/**
+ * Chave da conversa NOVA quando a chave natural (telefone/canal) já pertence a
+ * conversa de OUTRO contato da Helena.
+ *
+ * Existe `unique (agent_id, phone)` em conversations. Desde 16/09 o webhook não
+ * adota mais a conversa de outro contato com a mesma chave (era assim que um
+ * estranho caía no histórico alheio) e cria uma própria — mas com a MESMA
+ * chave, o INSERT batia na unique, o webhook respondia 500 e a Helena, depois
+ * de várias falhas, DESATIVAVA o webhook da conta inteira. Caso real (Dental
+ * Clinic Corcovado, 15/10): contato "Daniel Moraes Serra", (21) 2543-1807 — o
+ * fixo da clínica, que desde julho é a chave de uma conversa de outro contato.
+ *
+ * `ct:<contactId>` é estável entre sessões do mesmo contato (a sessão muda a
+ * cada atendimento), então a próxima sessão dele acha a mesma conversa.
+ */
+export function contactScopedConversationKey(contactId: string): string {
+  return `ct:${contactId.trim()}`;
+}
+
 export interface EffectivePhoneResult {
   phone: string | null;
   source: "lead_phone" | "crm" | "conversation_key" | null;
