@@ -60,6 +60,7 @@ import {
   execConsultarPlanilha,
 } from "./sheets.server";
 import type { AgentContext, AgentResult } from "./context";
+import { cacheTtlFromSettings } from "./context";
 import type { LeadData, Stage } from "./stage";
 import {
   callLlmWithFallback,
@@ -3524,6 +3525,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
 
   let workingMessages: LlmMessage[] = [...history];
   let totalTokensIn = gateCost.tokensIn;
+  let totalTokensCached = 0;
+  let totalTokensCacheWrite = 0;
   let totalTokensOut = gateCost.tokensOut;
   let totalCostUsd = gateCost.costUsd;
   // Telemetria: marca quando o LLM tentou criar agendamento DUPLICADO no mesmo
@@ -3562,6 +3565,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     }
 
     totalTokensIn += turn.tokensIn;
+    totalTokensCached += turn.cachedTokens;
+    totalTokensCacheWrite += turn.cacheWriteTokens ?? 0;
     totalTokensOut += turn.tokensOut;
     totalCostUsd += turn.costUsd;
 
@@ -3773,6 +3778,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         temperature: ctx.temperature,
         modelTemperatures: ctx.modelTemperatures,
         enableCaching: ctx.model.startsWith("anthropic/"),
+        cacheTtl: cacheTtlFromSettings(ctx.agentSettings),
         toolChoice: "none",
       },
       (raw) => parseAgentJson(ctx, raw),
@@ -3780,6 +3786,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     );
 
   totalTokensIn += finalResponse.tokensIn;
+  totalTokensCached += finalResponse.cachedTokens;
+  totalTokensCacheWrite += finalResponse.cacheWriteTokens ?? 0;
   totalTokensOut += finalResponse.tokensOut;
   totalCostUsd += finalResponse.costUsd;
 
@@ -3961,12 +3969,15 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
             temperature: ctx.temperature,
             modelTemperatures: ctx.modelTemperatures,
             enableCaching: ctx.model.startsWith("anthropic/"),
+            cacheTtl: cacheTtlFromSettings(ctx.agentSettings),
             toolChoice: "none",
           },
           (raw) => parseAgentJson(ctx, raw),
           ctx.fallbackModels,
         );
       totalTokensIn += cResp.tokensIn;
+      totalTokensCached += cResp.cachedTokens;
+      totalTokensCacheWrite += cResp.cacheWriteTokens ?? 0;
       totalTokensOut += cResp.tokensOut;
       totalCostUsd += cResp.costUsd;
       reply = cRes.reply;
@@ -4099,12 +4110,15 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
             temperature: ctx.temperature,
             modelTemperatures: ctx.modelTemperatures,
             enableCaching: ctx.model.startsWith("anthropic/"),
+            cacheTtl: cacheTtlFromSettings(ctx.agentSettings),
             toolChoice: "none",
           },
           (raw) => parseAgentJson(ctx, raw),
           ctx.fallbackModels,
         );
       totalTokensIn += rResp.tokensIn;
+      totalTokensCached += rResp.cachedTokens;
+      totalTokensCacheWrite += rResp.cacheWriteTokens ?? 0;
       totalTokensOut += rResp.tokensOut;
       totalCostUsd += rResp.costUsd;
       reply = rRes.reply;
@@ -4186,6 +4200,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         tools_called: toolsCalled,
         tokens_in: totalTokensIn,
         tokens_out: totalTokensOut,
+        tokens_cached: totalTokensCached,
+        tokens_cache_write: totalTokensCacheWrite,
         cost_usd: totalCostUsd,
         telemetry: (() => {
           if (toolArgs.length > 0) mergedTelemetry.tool_args = toolArgs.join(" | ").slice(0, 600);
@@ -4350,6 +4366,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     tools_called: toolsCalled,
     tokens_in: totalTokensIn,
     tokens_out: totalTokensOut,
+    tokens_cached: totalTokensCached,
+    tokens_cache_write: totalTokensCacheWrite,
     cost_usd: totalCostUsd,
     telemetry: Object.keys(mergedTelemetry).length > 0 ? mergedTelemetry : undefined,
   };

@@ -34,7 +34,7 @@ export interface LlmMessage {
     | Array<{
         type: "text";
         text: string;
-        cache_control?: { type: "ephemeral" };
+        cache_control?: { type: "ephemeral"; ttl?: "1h" };
       }>;
   tool_calls?: LlmToolCall[];
   tool_call_id?: string;
@@ -68,6 +68,13 @@ export interface LlmRequest {
   timeoutMs?: number;
   /** Se true, ativa cache_control no systemCached (Anthropic via OpenRouter). */
   enableCaching?: boolean;
+  /**
+   * Duração do cache do systemCached. Padrão da Anthropic: 5 min. "1h" grava a
+   * 2× o preço de entrada (vs 1,25× do 5 min) mas a leitura continua a 0,1×;
+   * compensa quando o prefixo é por CONTA (não por conversa) e há turnos o dia
+   * inteiro — ver cacheTtlFromSettings em context.ts.
+   */
+  cacheTtl?: "5m" | "1h";
 }
 
 export interface LlmResponse {
@@ -77,6 +84,8 @@ export interface LlmResponse {
   tokensIn: number;
   tokensOut: number;
   cachedTokens: number;
+  /** Tokens GRAVADOS no cache nesta chamada (prompt_tokens_details.cache_write_tokens). */
+  cacheWriteTokens?: number;
   /** Custo em USD retornado pela OpenRouter (campo usage.cost). 0 quando não disponível. */
   costUsd: number;
   /** ID da geração OpenRouter (ex: "gen-abc123"). Útil para buscar custo via /api/v1/generation. */
@@ -106,7 +115,7 @@ interface OpenRouterChoice {
 interface OpenRouterUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
-  prompt_tokens_details?: { cached_tokens?: number };
+  prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
   /** Custo em USD retornado diretamente pela OpenRouter (ex: 0.000015). */
   cost?: number;
 }
@@ -124,7 +133,7 @@ interface OpenRouterResponseRaw {
  * cache_control={type:"ephemeral"} — válido para modelos Anthropic via
  * OpenRouter (prefixo anthropic/).
  */
-function buildMessages(req: LlmRequest): LlmMessage[] {
+export function buildMessages(req: LlmRequest): LlmMessage[] {
   const out: LlmMessage[] = [];
   const hasCached = !!req.systemCached?.trim();
   const hasDynamic = !!req.systemDynamic?.trim();
@@ -137,7 +146,8 @@ function buildMessages(req: LlmRequest): LlmMessage[] {
         {
           type: "text",
           text: req.systemCached!,
-          cache_control: { type: "ephemeral" },
+          cache_control:
+            req.cacheTtl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" },
         },
         ...(hasDynamic ? [{ type: "text" as const, text: req.systemDynamic! }] : []),
       ],
@@ -246,6 +256,7 @@ export async function callLlm(
     tokensIn: usage.prompt_tokens ?? 0,
     tokensOut: usage.completion_tokens ?? 0,
     cachedTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+    cacheWriteTokens: usage.prompt_tokens_details?.cache_write_tokens ?? 0,
     costUsd: usage.cost ?? 0,
     generationId: json.id,
     latencyMs,

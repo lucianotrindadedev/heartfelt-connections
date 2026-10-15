@@ -1139,6 +1139,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
               ],
               tokens_in: (result.tokens_in ?? 0) + (schedulerResult.tokens_in ?? 0),
               tokens_out: (result.tokens_out ?? 0) + (schedulerResult.tokens_out ?? 0),
+              tokens_cached: (result.tokens_cached ?? 0) + (schedulerResult.tokens_cached ?? 0),
+              tokens_cache_write:
+                (result.tokens_cache_write ?? 0) + (schedulerResult.tokens_cache_write ?? 0),
               cost_usd: (result.cost_usd ?? 0) + (schedulerResult.cost_usd ?? 0),
               telemetry: {
                 ...(result.telemetry ?? {}),
@@ -2070,6 +2073,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           latency_ms: latencyMs,
           tokens_in: result.tokens_in ?? null,
           tokens_out: result.tokens_out ?? null,
+          // Prompt cache (Anthropic): quanto da entrada veio do cache e quanto foi
+          // gravado. Antes o cachedTokens da OpenRouter era lido e descartado — o
+          // custo por turno só dava pra inferir pelo preço implícito por token.
+          tokens_cached: result.tokens_cached ?? null,
+          tokens_cache_write: result.tokens_cache_write ?? null,
           cost_usd_estimate: result.cost_usd ?? null,
           stage_from: stage,
           stage_effective: effectiveStage,
