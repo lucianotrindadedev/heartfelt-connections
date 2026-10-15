@@ -169,3 +169,57 @@ export function lastSpeakerIsHumanStaff(msgs: HistoryMsg[]): boolean {
   }
   return false;
 }
+
+/**
+ * A equipe avisou que um trabalho do paciente FICOU PRONTO ("sua prótese está
+ * pronta", "COROA está Pronta", "A cora de Felipe, já esta pronta"). É
+ * continuidade de tratamento — quem marca a retirada é a recepção, não a agenda
+ * de avaliação da IA.
+ */
+const ITEM_PRONTO_RE =
+  /(?<!\p{L})(pr[óo]tese|coroa|cora|aparelho|placa|dentadura|ponte|protocolo|lentes?|facetas?|pe[çc]a|provis[óo]rio)(?!\p{L})[^.!?\n]{0,40}?(?<!\p{L})(?:est[áa]|esta|ficou|ficaram|est[ãa]o|j[áa])\s+(?:j[áa]\s+)?pront[oa]s?(?!\p{L})/iu;
+
+/** Resposta da IA quando o lead responde ao aviso de "está pronto(a)". */
+export const ENTREGA_PRONTA_REPLY =
+  "Obrigada pelo retorno! 😊 Vou avisar a recepção, que confirma o horário com você por aqui.";
+
+/**
+ * O lead está respondendo a um aviso da EQUIPE de que um trabalho dele ficou
+ * pronto? Devolve o item ("prótese", "coroa"…) ou null.
+ *
+ * Casos reais (Odonto Sorrisos, 15/10): a recepção mandou "sua prótese está
+ * pronta! Qual seria o melhor dia…" (87 99824-4791) e "COROA está Pronta…"
+ * (87 99243-0695). Os pacientes responderam e a IA assumiu como agendamento de
+ * AVALIAÇÃO, ofertando horários da agenda do avaliador para buscar a peça.
+ *
+ * Vale só enquanto a IA ainda não falou depois do aviso (última fala com texto
+ * é do lead, e nenhuma resposta nossa veio depois do aviso).
+ */
+export function avisoDeEntregaProntaPendente(msgs: HistoryMsg[]): string | null {
+  const falas = msgs
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => (m.content ?? "").trim() && m.meta?.is_echo !== true);
+  if (falas.at(-1)?.m.role !== "user") return null;
+  for (let k = falas.length - 1; k >= 0; k--) {
+    const { m, i } = falas[k]!;
+    const origem = String(m.meta?.origem ?? "");
+    if (m.role === "assistant" && OWN_OUTBOUND_ORIGINS.has(origem)) return null;
+    if (m.role === "assistant" && origem === "humano" && isHumanStaffMessage(msgs, i)) {
+      const texto = m.content ?? "";
+      const hit = ITEM_PRONTO_RE.exec(texto);
+      // "irei verificar se sua placa já está pronta" — vai checar, não avisou.
+      const vaiVerificar =
+        !!hit &&
+        /(?<!\p{L})(?:verificar|ver|saber|confirmar|checar|conferir)\s+se(?!\p{L})[^.!?\n]*$/iu.test(
+          texto.slice(0, hit.index),
+        );
+      // "porque sua prótese ainda não está pronta" — o contrário do aviso.
+      const negado = !!hit && /(?<!\p{L})n[ãa]o(?!\p{L})/iu.test(hit[0]);
+      if (hit && !vaiVerificar && !negado) {
+        const item = hit[1]!.toLowerCase();
+        return item === "cora" ? "coroa" : item;
+      }
+    }
+  }
+  return null;
+}

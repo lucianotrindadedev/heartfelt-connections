@@ -120,7 +120,13 @@ import {
   hasRealQuestion,
 } from "./stage-signals";
 import { isReplyTooSimilar } from "./reply-similarity";
-import { isHumanStaffMessage, labelHumanStaff, stripHumanStaffLabel } from "./human-messages";
+import {
+  avisoDeEntregaProntaPendente,
+  ENTREGA_PRONTA_REPLY,
+  isHumanStaffMessage,
+  labelHumanStaff,
+  stripHumanStaffLabel,
+} from "./human-messages";
 import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 import { isTechRetryReply } from "./booking-failure";
 import { removerVocativoInformal } from "./vocativo-guard";
@@ -1056,8 +1062,26 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // turno seguinte — desfazendo o repasse que acabou de acontecer.
     let handoffStage: Stage | null = null;
     const t0 = Date.now();
+    // Resposta ao aviso da EQUIPE de que um trabalho ficou pronto (prótese,
+    // coroa…): é continuidade de tratamento, a recepção marca a retirada. A IA
+    // não roda — não oferece agenda de avaliação nem agenda nada —, só avisa o
+    // paciente e escala para a recepção. Ver avisoDeEntregaProntaPendente.
+    const entregaPronta = avisoDeEntregaProntaPendente(ordered);
     try {
-      if (route === "qualifier") {
+      if (entregaPronta) {
+        console.log(
+          `[orch] conv=${conversationId} resposta ao aviso de ${entregaPronta} pronto(a) — escalando para a recepção`,
+        );
+        result = {
+          reply: ENTREGA_PRONTA_REPLY,
+          next_stage: "ESCALATED",
+          lead_data_patch: {
+            escalation_reason: `Paciente respondeu ao aviso de ${entregaPronta} pronto(a) — a recepção confirma o horário de retirada.`,
+          },
+          tools_called: [],
+          telemetry: { entrega_pronta_handoff: entregaPronta },
+        };
+      } else if (route === "qualifier") {
         result = await runQualifierAgent(ctx);
 
         // ── REPASSE NO MESMO TURN (qualifier → scheduler) ──────────────────

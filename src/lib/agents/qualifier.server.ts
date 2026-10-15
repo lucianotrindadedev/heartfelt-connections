@@ -1013,12 +1013,34 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   let finalReply = result.reply;
   let inventedOfferScrubbed = false;
   const scrub = scrubInventedTimeOffers(finalReply, ctx.leadData.offered_slots);
+  let realSlotsAfterScrub = false;
   if (scrub.scrubbed) {
     finalReply = scrub.reply;
     inventedOfferScrubbed = true;
     console.warn(
       `[qualifier] oferta de horário fora da agenda removida conv=${ctx.conversationId} stage=${ctx.stage}->${finalStage} (offered_slots=${ctx.leadData.offered_slots?.length ?? 0})`,
     );
+    // Sem horário real em mãos a trava fechava com uma pergunta fixa ("prefere
+    // de manhã ou à tarde?") — mesmo com o lead já tendo dito o dia e o turno.
+    // Caso real (Odonto Sorrisos, 87 99243-0695, 15/10): "Perfeito, então
+    // segunda-feira à tarde é certo. Pra eu já te trazer os horários…: você
+    // prefere de manhã ou à tarde?". Consulta a agenda de verdade (dia/turno
+    // pedidos saem do histórico, dentro do execListarHorarios) e oferta os reais.
+    if (!(ctx.leadData.offered_slots?.length ?? 0) && hasBookingIntegration(ctx)) {
+      try {
+        const outcome = await execListarHorarios(ctx);
+        const reais = outcome.patch?.offered_slots ?? [];
+        if (reais.length > 0) {
+          Object.assign(mergedPatch, outcome.patch);
+          ctx.leadData = { ...ctx.leadData, ...outcome.patch };
+          const comReais = scrubInventedTimeOffers(result.reply, reais);
+          finalReply = comReais.reply;
+          realSlotsAfterScrub = true;
+        }
+      } catch (e) {
+        console.warn(`[qualifier] consulta da agenda após oferta inventada falhou:`, e);
+      }
+    }
   }
 
   return {
@@ -1035,6 +1057,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     telemetry: (() => {
       const t: Record<string, unknown> = {};
       if (inventedOfferScrubbed) t.invented_time_offer_scrubbed = true;
+      if (realSlotsAfterScrub) t.real_slots_after_scrub = true;
       if (toolArgs.length > 0) t.tool_args = toolArgs.join(" | ").slice(0, 600);
       if (turnosConsultados.size > 0) t.slot_listing_turnos = [...turnosConsultados].join(",");
       return Object.keys(t).length > 0 ? t : undefined;

@@ -69,7 +69,26 @@ export function claimsBookingWithoutAppointment(input: FalseClaimInput): boolean
   const r = input.reply ?? "";
   if (!r.trim()) return false;
   if (ALEGACAO_FORTE_RE.test(r)) return true;
-  return input.horarioEmJogo && ALEGACAO_FRACA_RE.test(r);
+  return input.horarioEmJogo && ALEGACAO_FRACA_RE.test(r) && !pedeEscolhaDeHorario(r);
+}
+
+/**
+ * A resposta PEDE ao lead que escolha um horário ("Qual desses fica melhor?",
+ * "…às 15:00 ou às 16:00?"). Uma confirmação de reserva nunca faz isso — aí o
+ * "confirmado" solto fala do DIA combinado, não de uma reserva.
+ *
+ * Caso real (Odonto Sorrisos, 87 99243-0695, 15/10): "Perfeito! Então
+ * segunda-feira à tarde é confirmado. 😊 Tenho horários disponíveis:
+ * segunda-feira, 19/10 às 15:00 ou às 16:00. Qual desses dois fica melhor para
+ * você?" virou "Só pra deixar claro: ainda não reservei nada, tá?" — para um
+ * lead que só tinha dito o dia. As alegações fortes ("agendei", "marcado para
+ * segunda às 15h") continuam barradas sempre.
+ */
+const PEDE_ESCOLHA_RE =
+  /\b(?:qual|quais)\b[^?]{0,60}\b(?:desses|deles|destes|hor[áa]rios?|op[çc](?:[ãa]o|[õo]es)|fica|prefere)\b[^?]*\?|\d{1,2}(?::\d{2}|h\d{0,2})\s+ou\s+(?:[àa]s\s+)?\d{1,2}(?::\d{2}|h)/i;
+
+export function pedeEscolhaDeHorario(reply: string): boolean {
+  return PEDE_ESCOLHA_RE.test(reply ?? "");
 }
 
 /**
