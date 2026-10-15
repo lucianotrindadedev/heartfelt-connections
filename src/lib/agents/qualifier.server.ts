@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import type { AgentContext, AgentResult } from "./context";
+import { cacheTtlFromSettings } from "./context";
 import {
   callLlmWithFallback,
   callLlmStructuredWithFallback,
@@ -785,6 +786,8 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     backfillPatch,
   );
   let totalTokensIn = gateCost.tokensIn;
+  let totalTokensCached = 0;
+  let totalTokensCacheWrite = 0;
   let totalTokensOut = gateCost.tokensOut;
   let totalCostUsd = gateCost.costUsd;
 
@@ -848,11 +851,14 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
         temperature: ctx.temperature,
         modelTemperatures: ctx.modelTemperatures,
         enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
+        cacheTtl: cacheTtlFromSettings(ctx.agentSettings),
       },
       ctx.qualifierFallbackModels,
     );
 
     totalTokensIn += turn.tokensIn;
+    totalTokensCached += turn.cachedTokens;
+    totalTokensCacheWrite += turn.cacheWriteTokens ?? 0;
     totalTokensOut += turn.tokensOut;
     totalCostUsd += turn.costUsd;
 
@@ -927,7 +933,11 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     }
   }
 
-  // Resposta final estruturada (sem tools) — com fallback.
+  // Resposta final estruturada — com fallback. Recebe a MESMA lista de tools do
+  // loop (com toolChoice "none"): o prompt cache da Anthropic é prefix-match e o
+  // prefixo começa pelas tools — sem elas aqui, esta chamada tinha um prefixo
+  // diferente e gravava um segundo cache inteiro em vez de ler o da 1ª chamada
+  // (na Bomfim, todo turno sem cache pagava 1,25× sobre as DUAS chamadas).
   const { result, response: finalResponse } =
     await callLlmStructuredWithFallback<QualifierJsonResult>(
       ctx.orKey,
@@ -949,7 +959,9 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
         maxTokens: ctx.maxTokens,
         temperature: ctx.temperature,
         modelTemperatures: ctx.modelTemperatures,
+        tools: buildQualifierTools(ctx),
         enableCaching: ctx.qualifierModel.startsWith("anthropic/"),
+        cacheTtl: cacheTtlFromSettings(ctx.agentSettings),
         toolChoice: "none",
       },
       (raw) => ResultSchema.parse(sanitizeStructuredAgentJson(raw)),
@@ -957,6 +969,8 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     );
 
   totalTokensIn += finalResponse.tokensIn;
+  totalTokensCached += finalResponse.cachedTokens;
+  totalTokensCacheWrite += finalResponse.cacheWriteTokens ?? 0;
   totalTokensOut += finalResponse.tokensOut;
   totalCostUsd += finalResponse.costUsd;
 
@@ -1013,6 +1027,8 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     tools_called: toolsCalled,
     tokens_in: totalTokensIn,
     tokens_out: totalTokensOut,
+    tokens_cached: totalTokensCached,
+    tokens_cache_write: totalTokensCacheWrite,
     cost_usd: totalCostUsd,
     telemetry: (() => {
       const t: Record<string, unknown> = {};

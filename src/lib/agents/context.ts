@@ -164,6 +164,10 @@ export interface AgentResult {
   tools_called?: string[];
   /** Total de tokens de entrada consumidos em todas as chamadas LLM deste turn. */
   tokens_in?: number;
+  /** Dos tokens_in, quantos vieram do prompt cache (lidos a ~10% do preço). */
+  tokens_cached?: number;
+  /** Tokens gravados no prompt cache neste turn (pagos a 1,25× ou 2×). */
+  tokens_cache_write?: number;
   /** Total de tokens de saída gerados em todas as chamadas LLM deste turn. */
   tokens_out?: number;
   /** Custo total em USD de todas as chamadas LLM deste turn (via usage.cost da OpenRouter). */
@@ -175,4 +179,18 @@ export interface AgentResult {
    *  - { preflight_blocked: true, dirty_fields: ["child_name"] }
    */
   telemetry?: Record<string, unknown>;
+}
+
+/**
+ * Duração do prompt cache (Anthropic) escolhida por conta: `agents.settings.cache_ttl`.
+ *
+ * O prefixo cacheado é o mesmo para TODAS as conversas da conta, então com
+ * volume de turnos ao longo do dia o cache de 1 h fica quente quase sempre.
+ * Com 5 min (padrão), cada lead que demora mais que isso pra responder paga a
+ * regravação inteira (~1/3 dos turnos na Bomfim, 70% do custo). A gravação
+ * de 1 h custa 2× em vez de 1,25×, então só vale para contas com tráfego
+ * contínuo — por isso é opt-in por conta, não global.
+ */
+export function cacheTtlFromSettings(settings: Record<string, string> | null | undefined): "1h" | undefined {
+  return (settings?.cache_ttl ?? "").trim().toLowerCase() === "1h" ? "1h" : undefined;
 }
