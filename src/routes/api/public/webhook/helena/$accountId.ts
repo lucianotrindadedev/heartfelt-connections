@@ -4,6 +4,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import {
   buildConversationKey,
+  contactScopedConversationKey,
   detectChannelFromSession,
   isLikelyWhatsAppIdentifier,
   normalizeBrazilPhone,
@@ -355,6 +356,8 @@ interface ConversationUpsertInput {
 interface ConversationUpsertResult {
   convId: string | null;
   contact: HelenaContact | null;
+  /** Código Postgres quando o INSERT falhou ("23505" = chave já usada). */
+  insertErrorCode?: string | null;
 }
 
 async function upsertConversation(
@@ -498,11 +501,39 @@ async function upsertConversation(
     return { convId, contact: resolvedContact };
   }
 
+  // A chave natural já é de outro contato (ver o aviso acima): a conversa nova
+  // não pode reusá-la — `unique (agent_id, phone)` derrubava o INSERT e o 500
+  // fazia a Helena desativar o webhook da conta. Usa a chave do contato, e
+  // adota a conversa que ele já tenha com essa chave (sessão anterior).
+  let insertKey = conversationPhone;
+  if (contactId && phoneMatches.length > 0) {
+    insertKey = contactScopedConversationKey(contactId);
+    const byContactKey = await sb
+      .from("conversations")
+      .select("id")
+      .eq("agent_id", input.agentId)
+      .eq("phone", insertKey)
+      .maybeSingle();
+    if (byContactKey.data) {
+      const convId = byContactKey.data.id as string;
+      await sb
+        .from("conversations")
+        .update({
+          helena_session_id: input.sessionId ?? null,
+          channel,
+          channel_identifier: channelIdentifier,
+          lead_phone: contactPhone,
+        })
+        .eq("id", convId);
+      return { convId, contact: resolvedContact };
+    }
+  }
+
   const ins = await sb
     .from("conversations")
     .insert({
       agent_id: input.agentId,
-      phone: conversationPhone,
+      phone: insertKey,
       helena_session_id: input.sessionId ?? null,
       helena_contact_id: contactId,
       channel,
@@ -513,8 +544,10 @@ async function upsertConversation(
     .single();
 
   if (ins.error) {
-    console.error("[webhook] insert conversation:", ins.error.message);
-    return { convId: null, contact: resolvedContact };
+    console.error(
+      `[webhook] insert conversation (chave=${insertKey} contato=${contactId ?? "?"} sessão=${input.sessionId ?? "?"}): ${ins.error.code ?? ""} ${ins.error.message}`,
+    );
+    return { convId: null, contact: resolvedContact, insertErrorCode: ins.error.code ?? null };
   }
   return { convId: ins.data.id as string, contact: resolvedContact };
 }
@@ -775,7 +808,7 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           ? normalizeBrazilPhone(fromDetails || legacyPhone)
           : null;
 
-        const { convId, contact: resolvedContact } = await upsertConversation(accountId, {
+        const upsertResult = await upsertConversation(accountId, {
           agentId: agentRow.data.id as string,
           sessionId,
           fromDetails: fromDetails || legacyPhone,
@@ -783,8 +816,16 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           inboundLeadPhone,
           isOutbound,
         });
+        const { convId, contact: resolvedContact } = upsertResult;
 
         if (!convId) {
+          // Conflito de chave é falha DESTE contato e não passa com retry: um
+          // 500 aqui faz a Helena reenviar o mesmo evento até desativar o
+          // webhook da conta inteira (Corcovado, 15/10). Responde 200 e deixa o
+          // erro no log; demais falhas de banco seguem 500 (retry pode resolver).
+          if (upsertResult.insertErrorCode === "23505") {
+            return Response.json({ ok: true, skipped: "conversation-key-conflict" });
+          }
           return new Response("DB error: could not upsert conversation", { status: 500 });
         }
 
