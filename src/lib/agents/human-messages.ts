@@ -213,7 +213,9 @@ export function avisoDeEntregaProntaPendente(msgs: HistoryMsg[]): string | null 
         /(?<!\p{L})(?:verificar|ver|saber|confirmar|checar|conferir)\s+se(?!\p{L})[^.!?\n]*$/iu.test(
           texto.slice(0, hit.index),
         );
-      if (hit && !vaiVerificar) {
+      // "porque sua prótese ainda não está pronta" — o contrário do aviso.
+      const negado = !!hit && /(?<!\p{L})n[ãa]o(?!\p{L})/iu.test(hit[0]);
+      if (hit && !vaiVerificar && !negado) {
         const item = hit[1]!.toLowerCase();
         return item === "cora" ? "coroa" : item;
       }

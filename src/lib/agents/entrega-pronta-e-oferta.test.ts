@@ -91,6 +91,7 @@ describe("avisoDeEntregaProntaPendente — resposta ao aviso de trabalho pronto"
 
   it.each([
     "Bom dia, irei verificar se sua placa já está pronta.",
+    "Estou entrando em contato só para desmarcar a sua vinda hoje, porque sua prótese ainda não está pronta.",
     "Pronto! Você não receberá mais mensagens automáticas por aqui. 👋",
     "Pronto combinado",
     "Estamos prontos para te atender! Qual o melhor horário?",
