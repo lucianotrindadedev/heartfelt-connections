@@ -123,6 +123,7 @@ import { isReplyTooSimilar } from "./reply-similarity";
 import { isHumanStaffMessage, labelHumanStaff, stripHumanStaffLabel } from "./human-messages";
 import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 import { isTechRetryReply } from "./booking-failure";
+import { removerVocativoInformal } from "./vocativo-guard";
 import {
   NEUTRAL_REPEAT_ACK,
   REPHRASE_PREFIX,
@@ -1383,8 +1384,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       }
     }
 
-    // O rótulo da fala da atendente (labelHumanStaff) nunca sai para o lead.
-    let reply = stripHumanStaffLabel(result.reply);
+    // O rótulo da fala da atendente (labelHumanStaff) nunca sai para o lead, nem
+    // apelido/vocativo informal ("Nega, …", "…, querida!") — ver vocativo-guard.ts.
+    let reply = removerVocativoInformal(stripHumanStaffLabel(result.reply), leadData.name);
     // Flags de telemetria do turn (vao para meta da mensagem + agent_runs).
     let duplicateReplyBlocked = false;
     let falseBookingClaimBlocked = false;

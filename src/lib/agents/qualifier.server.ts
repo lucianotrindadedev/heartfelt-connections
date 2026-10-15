@@ -50,6 +50,7 @@ import {
 } from "@/lib/helena-tags.server";
 import { searchKnowledge, formatChunksAsContext } from "@/lib/knowledge/retrieval.server";
 import { sendMediaBySlug, getAvailableMediaForPrompt } from "./send-media.server";
+import { VOCATIVO_RULE } from "./vocativo-guard";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -450,6 +451,7 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 3. A resposta vai em UM balão só no WhatsApp (a Meta cobra por balão). Use \\n\\n apenas como parágrafo dentro da mesma mensagem — não existe mais "segunda bolha". Seja breve: saudação, contexto e a pergunta final no mesmo balão.
 4. NUNCA mencione ferramentas, automações, CRM, tags ou sistemas.
 5. NUNCA invente fatos clínicos ou prometa resultados.
+5a. ${VOCATIVO_RULE}
 ${
   ctx.integrations.googleSheets
     ? `5b. 🚫 **PREÇO/VALOR:** a ÚNICA fonte de valor é a tool \`consultar_planilha\`. Perguntou preço → CHAME a tool e copie o valor LITERALMENTE. Não achou na planilha → diga que vai confirmar com a equipe. NUNCA invente, estime, arredonde nem calcule total, mesmo sob insistência.`

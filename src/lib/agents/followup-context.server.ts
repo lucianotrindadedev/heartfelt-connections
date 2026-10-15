@@ -22,6 +22,7 @@ import {
   stripHumanStaffLabel,
   type HistoryMsg,
 } from "@/lib/agents/human-messages";
+import { removerVocativoInformal, VOCATIVO_RULE } from "@/lib/agents/vocativo-guard";
 import { listClinicExpertsUnidades } from "@/lib/tools/clinic-experts.server";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { callLlmWithFallback, type LlmMessage } from "./llm.server";
@@ -143,6 +144,7 @@ soar como cobrança.
 3. Termine com uma pergunta aberta que estimule resposta.
 4. Mantenha o tom já estabelecido nas suas mensagens anteriores (não fique
    formal de repente se foi descontraído antes, e vice-versa).
+4b. ${VOCATIVO_RULE}
 5. NUNCA peça desculpa por "incomodar" nem use palavras como "perdão", "desculpe".
 6. NUNCA mande lembretes do tipo "lembre-se que..." — soa robótico.
 7. Não mencione que é "follow-up" nem que o lead "não respondeu".
@@ -223,7 +225,10 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
   const nomeDoLead =
     ((conv?.meta as { lead_data?: { name?: string } } | null)?.lead_data?.name as string | undefined) ??
     null;
-  const reply = stripHumanStaffLabel(limparMarcadoresDeModelo(bruto, nomeDoLead).texto);
+  const reply = removerVocativoInformal(
+    stripHumanStaffLabel(limparMarcadoresDeModelo(bruto, nomeDoLead).texto),
+    nomeDoLead,
+  );
   // Salvaguarda: se ainda truncou mesmo após o retry de budget maior, descarta.
   if (turn.finishReason === "length") {
     throw new Error(
