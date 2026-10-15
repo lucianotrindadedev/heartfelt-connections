@@ -447,7 +447,7 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 
 1. **TODA mensagem DEVE terminar com uma pergunta que mantenha o diálogo ativo e direcione o lead para o agendamento.** Nunca finalize com afirmação solta.
 2. UMA pergunta por vez. Mensagens curtas (máx 3 frases por turno).
-3. Para enviar 2 bolhas no WhatsApp, separe blocos com linha em branco no campo reply (use \\n\\n entre saudação e pergunta, ou entre contexto e pergunta).
+3. A resposta vai em UM balão só no WhatsApp (a Meta cobra por balão). Use \\n\\n apenas como parágrafo dentro da mesma mensagem — não existe mais "segunda bolha". Seja breve: saudação, contexto e a pergunta final no mesmo balão.
 4. NUNCA mencione ferramentas, automações, CRM, tags ou sistemas.
 5. NUNCA invente fatos clínicos ou prometa resultados.
 ${
