@@ -3672,6 +3672,43 @@ export function primeiroDaManhaEDaTarde<T>(
   return slots.indexOf(manha) < slots.indexOf(tarde) ? [manha, tarde] : [tarde, manha];
 }
 
+/**
+ * Horário PREFERIDO de um turno (settings.oferta_horarios_preferidos). Olha só
+ * o dia mais próximo que tem vaga no turno e devolve as vagas dele a partir do
+ * preferido (o próprio, se livre, e os seguintes); se nenhuma vaga do dia chega
+ * ao preferido, devolve as do dia como vieram.
+ *
+ * Caso real (Odonto Sorrisos, 21 99272-7525, 15/10): o prompt manda "15h em
+ * primeiro lugar; 13h ou 14h só se não houver nada depois das 15h", mas a
+ * ferramenta entregava as 6 vagas mais cedo da tarde (12:00…13:15) — as 15h,
+ * livres, nunca chegavam ao modelo.
+ *
+ * `slots` em ordem cronológica e já filtrados para o turno.
+ */
+export function vagasAPartirDoPreferido<T>(
+  slots: readonly T[],
+  minutosDoDia: (slot: T) => number,
+  diaDoSlot: (slot: T) => string,
+  preferido: number,
+): T[] {
+  if (slots.length === 0) return [];
+  const dia = diaDoSlot(slots[0]!);
+  const doDia = slots.filter((s) => diaDoSlot(s) === dia);
+  const depois = doDia.filter((s) => minutosDoDia(s) >= preferido);
+  return depois.length > 0 ? depois : doDia;
+}
+
+/** "09:00,15:00" → { manha: 540, tarde: 900 }. Ausente/inválido → null no turno. */
+export function horariosPreferidos(raw: string | undefined | null): {
+  manha: number | null;
+  tarde: number | null;
+} {
+  const [m, t] = String(raw ?? "")
+    .split(/[,;]/)
+    .map((x) => minutesOfDayFromLabel(x.trim()));
+  return { manha: m != null && m >= 0 ? m : null, tarde: t != null && t >= 0 ? t : null };
+}
+
 /** "16:45" / "16h45" / "9:00" → minutos do dia (1005, 1005, 540). -1 se inválido. */
 export function minutesOfDayFromLabel(label: string): number {
   const m = /(\d{1,2})[:h.](\d{2})/.exec(label ?? "");
