@@ -86,6 +86,63 @@ export const testOpenRouterKey = createServerFn({ method: "POST" })
     }
   });
 
+/**
+ * Números vindos da PRÓPRIA OpenRouter para a chave da conta (GET /api/v1/key).
+ *
+ * A view local soma o usage.cost que voltou em cada resposta — só enxerga o que
+ * passou por este app. Aqui é a fonte autoritativa de custo, e inclui o teto de
+ * gasto da chave quando existe. Aceita a chave de inferência (sk-or-v1-...);
+ * NÃO usa /api/v1/credits, que exige uma "management key" de conta.
+ */
+export const getOpenRouterUsage = createServerFn({ method: "POST" })
+  .inputValidator((d) => accountIdInput.parse(d))
+  .handler(async ({ data }) => {
+    const sb = getSelfhost();
+    const { data: row } = await sb
+      .from("account_secrets")
+      .select("openrouter_api_key_enc")
+      .eq("account_id", data.accountId)
+      .maybeSingle();
+    if (!row?.openrouter_api_key_enc) {
+      return { ok: false as const, error: "Sem chave OpenRouter cadastrada." };
+    }
+    try {
+      // decryptValue ESTOURA quando a RPC falha ou PGCRYPTO_KEY não está no
+      // ambiente — dentro do try, isso vira uma mensagem no painel em vez de
+      // um 500 sem explicação.
+      const { decryptValue } = await import("@/lib/crypto.server");
+      const key = await decryptValue(row.openrouter_api_key_enc as unknown as string);
+      if (!key) return { ok: false as const, error: "Falha ao descriptografar a chave." };
+
+      const r = await fetch("https://openrouter.ai/api/v1/key", {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        return { ok: false as const, error: `OpenRouter ${r.status}: ${body.slice(0, 150)}` };
+      }
+      const json = (await r.json()) as { data?: Record<string, unknown> };
+      const d = json.data ?? {};
+      const num = (v: unknown) => (v == null ? null : Number(v));
+      return {
+        ok: true as const,
+        label: (d.label as string | null) ?? null,
+        usage: Number(d.usage ?? 0),
+        usageDaily: Number(d.usage_daily ?? 0),
+        usageMonthly: Number(d.usage_monthly ?? 0),
+        limit: num(d.limit),
+        limitRemaining: num(d.limit_remaining),
+        isFreeTier: !!d.is_free_tier,
+      };
+    } catch (e) {
+      return {
+        ok: false as const,
+        error: e instanceof Error ? e.message : "Falha ao consultar a OpenRouter",
+      };
+    }
+  });
+
 export const listOpenRouterModels = createServerFn({ method: "POST" })
   .inputValidator((d) => accountIdInput.parse(d))
   .handler(async ({ data }) => {

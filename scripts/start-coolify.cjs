@@ -28,9 +28,19 @@ function guessContentType(filePath) {
   return "application/octet-stream";
 }
 
+// Serve qualquer arquivo que exista sob static/ — não só /assets/. O filtro
+// antigo deixava de fora tudo que o vite copia do public/ (ex.: /images/...),
+// e as logos das integrações chegariam quebradas em produção.
 function tryReadStatic(pathname) {
-  if (!pathname.startsWith("/assets/")) return null;
-  const file = path.join(STATIC_ROOT, pathname.slice(1));
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  const file = path.resolve(STATIC_ROOT, "." + decoded);
+  // path traversal guard: o resolvido tem que continuar dentro do STATIC_ROOT
+  if (!file.startsWith(STATIC_ROOT + path.sep)) return null;
   if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
   return { body: fs.readFileSync(file), type: guessContentType(file) };
 }
@@ -43,6 +53,14 @@ const httpServer = http.createServer(async (req, res) => {
     if (stat) {
       res.statusCode = 200;
       res.setHeader("Content-Type", stat.type);
+      // Assets do build têm hash no nome: podem ser cacheados para sempre.
+      // Demais estáticos (imagens do public/) revalidam de hora em hora.
+      res.setHeader(
+        "Cache-Control",
+        url.pathname.startsWith("/assets/")
+          ? "public, max-age=31536000, immutable"
+          : "public, max-age=3600",
+      );
       res.end(stat.body);
       return;
     }

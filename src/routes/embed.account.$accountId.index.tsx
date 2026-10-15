@@ -21,12 +21,9 @@ import {
   MessageCircle,
   Headphones,
   Calendar,
-  Stethoscope,
-  ClipboardList,
   Bell,
   Flame,
   UserX,
-  KeyRound,
   Loader2,
   Check,
   ExternalLink,
@@ -77,7 +74,16 @@ import {
   getUsageSummary,
   getHelenaConfig,
   setHelenaConfig,
+  getOpenRouterUsage,
 } from "@/lib/secrets.functions";
+import {
+  INTEGRATION_LOGOS,
+  IntegrationLogo,
+  IntegrationStatus,
+  IntegrationRow,
+  IntegrationGroup,
+  GoogleSheetsLogo,
+} from "@/components/embed/integrations";
 import {
   getGoogleCalendarStatusFn,
   getGoogleAuthUrl,
@@ -6787,6 +6793,7 @@ function AgentSettingsView({
             audioResponder={audioResponder}
             configuredIntegrations={configuredIntegrations}
             secretsLast4={secretsLast4}
+            llmModel={currentModel}
           />
         )}
       </div>
@@ -6802,10 +6809,11 @@ function IntegrationsTab({
   accountId,
   agentId: _agentId,
   agentSettings,
-  audioHabilitado,
-  audioTranscrever,
-  audioResponder,
+  audioHabilitado: _audioHabilitado,
+  audioTranscrever: _audioTranscrever,
+  audioResponder: _audioResponder,
   secretsLast4,
+  llmModel,
 }: {
   accountId: string;
   agentId: string;
@@ -6815,45 +6823,65 @@ function IntegrationsTab({
   audioResponder: boolean;
   configuredIntegrations?: { clinicorp: boolean; clinup: boolean; google_calendar: boolean; clinic_experts: boolean };
   secretsLast4?: { openrouter: string | null; elevenlabs: string | null };
+  /** Modelo em uso pelo agente (override da conta ou padrão global). */
+  llmModel?: string;
 }) {
   const [showSecrets, setShowSecrets] = useState(false);
+  const openrouterOk = !!secretsLast4?.openrouter;
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-8 space-y-4">
-      <div className="rounded-xl border border-primary/20 bg-primary/5 px-5 py-3.5">
-        <p className="text-xs text-primary/80 leading-relaxed">
-          <strong className="text-primary">Dica:</strong> Configure aqui os canais e ferramentas que seu assistente usa. Todas as integrações de agenda ficam disponíveis — ative e preencha as credenciais da que a sua clínica usa (não precisa aplicar template).
+    <div className="mx-auto max-w-3xl px-6 py-8 space-y-5">
+      <div className="flex items-start gap-2.5 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-primary/70" />
+        <p className="text-xs leading-relaxed text-primary/80">
+          <strong className="text-primary">Dica:</strong> Configure aqui os canais e ferramentas que seu
+          assistente usa. Todas as integrações de agenda ficam disponíveis — ative e preencha as
+          credenciais da que a sua clínica usa (não precisa aplicar template).
         </p>
       </div>
 
-      {/* Custo de IA — últimos 30 dias */}
+      {/* Custo de IA — últimos 30 dias (soma local do que passou por este app) */}
       <CostMiniCard accountId={accountId} />
 
-      {/* Conexões (OpenRouter / ElevenLabs) */}
-      <button
-        onClick={() => setShowSecrets(true)}
-        className="group w-full overflow-hidden rounded-2xl border border-amber-200/60 bg-gradient-to-r from-amber-50 to-orange-50 p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-amber-500/10"
-      >
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-white shadow-md shadow-amber-500/30">
-            <KeyRound className="h-5 w-5" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-foreground">Conexões de IA</p>
-            <div className="mt-1 flex flex-wrap gap-2">
-              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${secretsLast4?.openrouter ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-600"}`}>
-                <span className={`h-1 w-1 rounded-full ${secretsLast4?.openrouter ? "bg-emerald-500" : "bg-red-500"}`} />
-                OpenRouter {secretsLast4?.openrouter ? `••${secretsLast4.openrouter}` : "não configurado"}
+      {/* OpenRouter: a chave que faz a IA responder. Sem ela o agente fica mudo,
+          por isso o cartão fica fora do grupo e ganha a barra âmbar. */}
+      <div className="overflow-hidden rounded-2xl border border-slate-200 border-l-[3px] border-l-amber-400 bg-white shadow-sm">
+        <button
+          type="button"
+          onClick={() => setShowSecrets(true)}
+          className="group flex w-full items-center gap-3.5 px-5 py-4 text-left transition-colors hover:bg-slate-50"
+        >
+          <IntegrationLogo src={INTEGRATION_LOGOS.openrouter} active={openrouterOk} />
+          <span className="min-w-0 flex-1">
+            <span className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-slate-900">OpenRouter</span>
+              <IntegrationStatus
+                active={openrouterOk}
+                labelOn={`Conectado ••${secretsLast4?.openrouter ?? ""}`}
+                labelOff="Não configurado"
+                tone="warn"
+              />
+            </span>
+            <span className="mt-0.5 block text-xs text-slate-500">
+              Chave da IA que responde os leads. Clique para gerenciar as conexões.
+            </span>
+            {llmModel && (
+              <span className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
+                Modelo ativo:
+                <code className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-700">
+                  {llmModel}
+                </code>
               </span>
-              {/* ElevenLabs oculto — TTS ainda não implementado */}
-            </div>
+            )}
+          </span>
+          <ArrowRight className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-1" />
+        </button>
+        {openrouterOk && (
+          <div className="border-t border-slate-100 bg-slate-50/60 px-5 py-3.5">
+            <OpenRouterLiveUsage accountId={accountId} />
           </div>
-          {!secretsLast4?.openrouter && (
-            <AlertCircle className="h-5 w-5 shrink-0 text-amber-500" />
-          )}
-          <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-1" />
-        </div>
-      </button>
+        )}
+      </div>
 
       <SecretsSheet
         open={showSecrets}
@@ -6877,23 +6905,77 @@ function IntegrationsTab({
       {/* Integrações de agendamento — SEMPRE disponíveis. Cada painel tem seu
           próprio toggle "Ativar"; ao salvar com o toggle ligado, a integração
           passa a valer para o agente (independe de template). */}
-      <SectionTitle>Agenda</SectionTitle>
-      <p className="-mt-2 px-1 text-[11px] text-muted-foreground">
-        Ative apenas a agenda que a sua clínica usa. Lembre de ligar o toggle
-        <strong> "Ativar"</strong> dentro do painel antes de salvar.
-      </p>
-      <ClinicorpPanel accountId={accountId} />
-      <ClinicExpertsPanel accountId={accountId} />
-      <ClinupPanel accountId={accountId} />
-      <GoogleCalendarPanel accountId={accountId} agentSettings={agentSettings} />
+      <IntegrationGroup
+        icon={<Calendar className="h-5 w-5" />}
+        iconClassName="bg-blue-50 text-blue-600"
+        title="Integrações de agenda"
+        description='Ative apenas a agenda que a sua clínica usa. Lembre de ligar o toggle "Ativar" dentro do painel antes de salvar.'
+      >
+        <ClinicorpPanel accountId={accountId} />
+        <ClinicExpertsPanel accountId={accountId} />
+        <ClinupPanel accountId={accountId} />
+        <GoogleCalendarPanel accountId={accountId} agentSettings={agentSettings} />
+      </IntegrationGroup>
 
       {/* Fontes de dados que o agente consulta durante o atendimento. */}
-      <SectionTitle>Dados</SectionTitle>
-      <p className="-mt-2 px-1 text-[11px] text-muted-foreground">
-        Planilhas do Google que o agente pode consultar — ex.: tabela de preços.
-        Ele responde só o que estiver escrito na planilha.
+      <IntegrationGroup
+        icon={<Table className="h-5 w-5" />}
+        iconClassName="bg-emerald-50 text-emerald-600"
+        title="Fontes de dados"
+        description="Planilhas do Google que o agente pode consultar — ex.: tabela de preços. Ele responde só o que estiver escrito na planilha."
+      >
+        <GoogleSheetsPanel accountId={accountId} />
+      </IntegrationGroup>
+    </div>
+  );
+}
+
+/**
+ * Uso da chave direto na OpenRouter (fonte autoritativa, inclui o que outras
+ * ferramentas gastaram com a mesma chave). Não confundir com o CostMiniCard,
+ * que soma só o que passou por este app.
+ */
+function OpenRouterLiveUsage({ accountId }: { accountId: string }) {
+  const usageFn = useServerFn(getOpenRouterUsage);
+  const { data, isLoading } = useQuery({
+    queryKey: ["openrouter-usage", accountId],
+    queryFn: () => usageFn({ data: { accountId } }),
+    staleTime: 60 * 1000,
+  });
+
+  if (isLoading) {
+    return (
+      <p className="flex items-center gap-1.5 text-[11px] text-slate-400">
+        <Loader2 className="h-3 w-3 animate-spin" /> Consultando a OpenRouter…
       </p>
-      <GoogleSheetsPanel accountId={accountId} />
+    );
+  }
+  if (!data || !data.ok) {
+    return (
+      <p className="text-[11px] text-amber-700">
+        Não foi possível consultar o uso na OpenRouter{data?.error ? `: ${data.error}` : "."}
+      </p>
+    );
+  }
+
+  const fmt = (n: number) => `US$ ${n.toFixed(2)}`;
+  const items = [
+    { label: "Gasto no mês", value: fmt(data.usageMonthly) },
+    { label: "Hoje", value: fmt(data.usageDaily) },
+    { label: "Acumulado", value: fmt(data.usage) },
+    {
+      label: "Crédito restante",
+      value: data.limitRemaining != null ? fmt(data.limitRemaining) : "Sem limite",
+    },
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {items.map((it) => (
+        <div key={it.label} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{it.label}</p>
+          <p className="text-sm font-semibold tabular-nums text-slate-800">{it.value}</p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -7203,41 +7285,16 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
   const connected = !!data?.connected;
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center gap-3 p-5 text-left"
-      >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-400 to-green-600 text-white shadow-sm shadow-emerald-500/30">
-          <Table className="h-5 w-5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold">Google Sheets</p>
-          <p className="text-xs text-muted-foreground">
-            Tabela de preços e outras consultas
-          </p>
-        </div>
-        <span
-          className={`mr-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${connected ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-500" : "bg-zinc-400"}`}
-          />
-          {connected ? "Conectado" : "Desconectado"}
-        </span>
-        <svg
-          className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-        >
-          <path d="m6 9 6 6 6-6" />
-        </svg>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
+    <IntegrationRow
+      icon={<GoogleSheetsLogo className="h-7 w-7" />}
+      name="Google Sheets"
+      description="Tabela de preços e outras consultas"
+      active={connected}
+      statusOn="Conectado"
+      statusOff="Desconectado"
+      expanded={expanded}
+      onToggle={() => setExpanded(!expanded)}
+    >
           {connected ? (
             <>
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
@@ -7367,9 +7424,7 @@ function GoogleSheetsPanel({ accountId }: { accountId: string }) {
               </Button>
             </>
           )}
-        </div>
-      )}
-    </div>
+    </IntegrationRow>
   );
 }
 
@@ -7417,37 +7472,18 @@ function HelenaConfigPanel({ accountId }: { accountId: string }) {
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-      <button
-        className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-slate-50"
-        onClick={() => setOpen(!open)}
-      >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 text-white shadow-md shadow-cyan-500/30">
-          <MessageCircle className="h-5 w-5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold text-foreground">CRM</p>
-          <p className="text-xs text-muted-foreground">Token de envio de mensagens</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {isLoading ? (
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          ) : (
-            <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${
-              configured
-                ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"
-                : "bg-amber-50 text-amber-700 ring-1 ring-amber-200"
-            }`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${configured ? "bg-emerald-500" : "bg-amber-500"}`} />
-              {configured ? "Configurado" : "Pendente"}
-            </span>
-          )}
-          <span className={`text-muted-foreground transition-transform ${open ? "rotate-90" : ""}`}>›</span>
-        </div>
-      </button>
-
-      {open && (
-        <div className="border-t border-slate-100 px-5 py-4 space-y-4">
+    <IntegrationRow
+      standalone
+      icon={<MessageCircle className="h-6 w-6 text-cyan-600" />}
+      name="CRM"
+      description="Token de envio de mensagens"
+      active={configured}
+      statusOn="Configurado"
+      statusOff={isLoading ? "Verificando…" : "Pendente"}
+      statusTone="warn"
+      expanded={open}
+      onToggle={() => setOpen(!open)}
+    >
           {!configured && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
               <p className="text-xs font-semibold text-amber-800">⚠ Token não configurado</p>
@@ -7487,9 +7523,7 @@ function HelenaConfigPanel({ accountId }: { accountId: string }) {
             {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Salvar configuração do CRM
           </Button>
-        </div>
-      )}
-    </div>
+    </IntegrationRow>
   );
 }
 
@@ -8136,23 +8170,16 @@ function GoogleCalendarPanel({
   });
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-      <button onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-3 p-5 text-left">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-400 to-indigo-600 text-white shadow-sm shadow-blue-500/30">
-          <Calendar className="h-5 w-5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold">Google Calendar</p>
-          <p className="text-xs text-muted-foreground">Agendamentos via Google</p>
-        </div>
-        <span className={`mr-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${data?.connected ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${data?.connected ? "bg-emerald-500" : "bg-zinc-400"}`} />
-          {data?.connected ? "Conectado" : "Desconectado"}
-        </span>
-        <svg className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-      {expanded && (
-        <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
+    <IntegrationRow
+      logo={INTEGRATION_LOGOS.googleCalendar}
+      name="Google Calendar"
+      description="Agendamentos via Google"
+      active={!!data?.connected}
+      statusOn="Conectado"
+      statusOff="Desconectado"
+      expanded={expanded}
+      onToggle={() => setExpanded(!expanded)}
+    >
           {data?.connected ? (
             <>
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
@@ -8409,9 +8436,7 @@ function GoogleCalendarPanel({
               </Button>
             </>
           )}
-        </div>
-      )}
-    </div>
+    </IntegrationRow>
   );
 }
 
@@ -8553,23 +8578,16 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
   }
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-      <button onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-3 p-5 text-left">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-teal-400 to-cyan-600 text-white shadow-sm shadow-teal-500/30">
-          <Stethoscope className="h-5 w-5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold">Clinicorp</p>
-          <p className="text-xs text-muted-foreground">Consultar e agendar no Clinicorp</p>
-        </div>
-        <span className={`mr-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${data?.ativo ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${data?.ativo ? "bg-emerald-500" : "bg-zinc-400"}`} />
-          {data?.ativo ? "Ativo" : "Inativo"}
-        </span>
-        <svg className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-      {expanded && (
-        <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
+    <IntegrationRow
+      logo={INTEGRATION_LOGOS.clinicorp}
+      name="Clinicorp"
+      description="Consultar e agendar no Clinicorp"
+      active={!!data?.ativo}
+      statusOn="Ativo"
+      statusOff="Inativo"
+      expanded={expanded}
+      onToggle={() => setExpanded(!expanded)}
+    >
           <ToggleRow label="Ativar integração Clinicorp" value={ativo} onChange={setAtivo} />
 
           {/* Token */}
@@ -8758,9 +8776,7 @@ function ClinicorpPanel({ accountId }: { accountId: string }) {
             </Button>
             <Button variant="outline" onClick={doTest}>Testar</Button>
           </div>
-        </div>
-      )}
-    </div>
+    </IntegrationRow>
   );
 }
 
@@ -9272,23 +9288,16 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
   const selectedUuids = Object.keys(selectedProfs);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-      <button onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-3 p-5 text-left">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-600 text-white shadow-sm shadow-amber-500/30">
-          <Stethoscope className="h-5 w-5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold">Clinic Experts</p>
-          <p className="text-xs text-muted-foreground">Consultar e agendar no Clinic Experts</p>
-        </div>
-        <span className={`mr-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${data?.ativo ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${data?.ativo ? "bg-emerald-500" : "bg-zinc-400"}`} />
-          {data?.ativo ? "Ativo" : "Inativo"}
-        </span>
-        <svg className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-      {expanded && (
-        <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
+    <IntegrationRow
+      logo={INTEGRATION_LOGOS.clinicExperts}
+      name="Clinic Experts"
+      description="Consultar e agendar no Clinic Experts"
+      active={!!data?.ativo}
+      statusOn="Ativo"
+      statusOff="Inativo"
+      expanded={expanded}
+      onToggle={() => setExpanded(!expanded)}
+    >
           <ToggleRow label="Ativar integração Clinic Experts" value={ativo} onChange={setAtivo} />
 
           {/* Multi-unidade: central que agenda em VÁRIAS contas Clinic Experts
@@ -9514,9 +9523,7 @@ function ClinicExpertsPanel({ accountId }: { accountId: string }) {
             </Button>
             <Button variant="outline" onClick={doTest}>Testar</Button>
           </div>
-        </div>
-      )}
-    </div>
+    </IntegrationRow>
   );
 }
 
@@ -9645,23 +9652,16 @@ function ClinupPanel({ accountId }: { accountId: string }) {
   const selectedIds = Object.keys(selectedProfs);
 
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
-      <button onClick={() => setExpanded(!expanded)} className="flex w-full items-center gap-3 p-5 text-left">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-400 to-purple-600 text-white shadow-sm shadow-violet-500/30">
-          <ClipboardList className="h-5 w-5" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-semibold">Clinup</p>
-          <p className="text-xs text-muted-foreground">Consultar e agendar no Clinup</p>
-        </div>
-        <span className={`mr-2 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${data?.ativo ? "bg-emerald-100 text-emerald-700" : "bg-zinc-100 text-zinc-500"}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${data?.ativo ? "bg-emerald-500" : "bg-zinc-400"}`} />
-          {data?.ativo ? "Ativo" : "Inativo"}
-        </span>
-        <svg className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
-      </button>
-      {expanded && (
-        <div className="border-t border-slate-100 px-5 pb-5 pt-4 space-y-3">
+    <IntegrationRow
+      logo={INTEGRATION_LOGOS.clinup}
+      name="Clinup"
+      description="Consultar e agendar no Clinup"
+      active={!!data?.ativo}
+      statusOn="Ativo"
+      statusOff="Inativo"
+      expanded={expanded}
+      onToggle={() => setExpanded(!expanded)}
+    >
           <ToggleRow label="Ativar integração Clinup" value={ativo} onChange={setAtivo} />
 
           {/* Token */}
@@ -9799,9 +9799,7 @@ function ClinupPanel({ accountId }: { accountId: string }) {
             </Button>
             <Button variant="outline" onClick={doTest}>Testar</Button>
           </div>
-        </div>
-      )}
-    </div>
+    </IntegrationRow>
   );
 }
 
