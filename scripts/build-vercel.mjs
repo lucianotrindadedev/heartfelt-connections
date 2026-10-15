@@ -105,10 +105,15 @@ if (existsSync(VERCEL_OUT)) {
 await mkdir(join(VERCEL_OUT, "static/assets"), { recursive: true });
 await mkdir(FUNC_DIR, { recursive: true });
 
-// ── 3. Static assets (browser JS/CSS) ──────────────────────────────────────
+// ── 3. Static assets (browser JS/CSS + public/) ────────────────────────────
+// dist/client inteiro, não só assets/: o vite copia public/* para a raiz do
+// dist/client (ex.: images/integrations/clinicorp.png), e copiar só assets/
+// deixava esses arquivos fora do deploy — logo quebrada em produção.
 console.log("📦  Copiando assets estáticos do browser...");
-await cp(join(DIST_CLIENT, "assets"), join(VERCEL_OUT, "static/assets"), {
+await cp(DIST_CLIENT, join(VERCEL_OUT, "static"), {
   recursive: true,
+  // wrangler.json é artefato de build do Cloudflare — não é para servir.
+  filter: (src) => !src.endsWith("wrangler.json"),
 });
 
 // ── 4. esbuild: bundle server.js + todas as dependências npm ───────────────
