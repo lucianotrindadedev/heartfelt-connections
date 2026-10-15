@@ -139,6 +139,8 @@ import {
   rankSlotsByRequestedHour,
   limitarComVariedadeDeTurno,
   primeiroDaManhaEDaTarde,
+  vagasAPartirDoPreferido,
+  horariosPreferidos,
   type AlmocoDoDia,
   scrubInventedTimeOffers,
   minutesOfDayFromLabel,
@@ -1645,13 +1647,26 @@ export async function execListarHorarios(
     new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(d);
 
   const bounds = periodoParaHoras(resolvedPeriodo);
-  const inPeriodo = (arr: ClinicorpSlot[]) =>
-    bounds
-      ? arr.filter((s) => {
-          const h = Number(s.fromTime.slice(0, 2));
-          return Number.isFinite(h) && h >= bounds.min && h < bounds.max;
-        })
-      : arr;
+  // Contas com oferta configurada (oferta_primeiro_manha_tarde): o turno pedido
+  // respeita o ALMOÇO do expediente — manhã até o início, tarde a partir do fim.
+  // Antes, "tarde" era 12h–18h fixo e o almoço (que a Clinicorp mostra como
+  // livre) ia para o lead. Caso real (Odonto Sorrisos, 21 99272-7525, 15/10):
+  // pediu "amanhã à tarde" e recebeu 12:00 / 12:15, em pleno almoço.
+  const turnoPorAlmoco = ofertaPrimeiroManhaTarde(ctx);
+  const turnoPedido = (resolvedPeriodo ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const noTurno = (s: ClinicorpSlot): boolean => {
+    if (!bounds) return true;
+    const m = minutesOfDayFromLabel(s.fromTime);
+    if (m < 0) return false;
+    if (turnoPorAlmoco && (turnoPedido === "manha" || turnoPedido === "tarde")) {
+      const almoco = almocoDoDia(ctx, s.localDate);
+      return turnoPedido === "manha"
+        ? m < (almoco?.inicio ?? bounds.max * 60)
+        : m >= (almoco?.fim ?? bounds.min * 60) && m < bounds.max * 60;
+    }
+    return m >= bounds.min * 60 && m < bounds.max * 60;
+  };
+  const inPeriodo = (arr: ClinicorpSlot[]) => (bounds ? arr.filter(noTurno) : arr);
 
   let clinicorp = await listClinicorpSlots(ctx.accountId, fmt(today), fmt(end));
   let slots = clinicorp.slots;
@@ -1720,19 +1735,47 @@ export async function execListarHorarios(
   // Quando o lead PEDIU turno, respeita o pedido e corta direto.
   // Par fixo "1ª manhã + 1ª tarde" (configuração do agente). Só quando o lead
   // não pediu turno nem hora — aí vale o pedido dele e a lista normal.
-  const parFixo =
-    ofertaPrimeiroManhaTarde(ctx) && !bounds && resolvedHora == null
-      ? primeiroDaManhaEDaTarde(
-          [...slots].sort((a, b) => a.start.localeCompare(b.start)),
-          (x) => minutesOfDayFromLabel(x.fromTime),
-          (x) => almocoDoDia(ctx, x.localDate),
-        )
-      : null;
+  //
+  // Com horários PREFERIDOS (settings.oferta_horarios_preferidos, ex. "09:00,15:00")
+  // cada turno sai do preferido em diante — no par fixo e no turno pedido. Ver
+  // vagasAPartirDoPreferido.
+  const preferidos = turnoPorAlmoco
+    ? horariosPreferidos(ctx.agentSettings.oferta_horarios_preferidos)
+    : { manha: null, tarde: null };
+  const minutos = (x: ClinicorpSlot) => minutesOfDayFromLabel(x.fromTime);
+  const cronologico = (arr: readonly ClinicorpSlot[]) =>
+    [...arr].sort((a, b) => a.start.localeCompare(b.start));
+  const comPreferido = (arr: readonly ClinicorpSlot[], pref: number | null) =>
+    pref == null
+      ? cronologico(arr)
+      : vagasAPartirDoPreferido(cronologico(arr), minutos, (x) => x.localDate, pref);
+  const parFixo = (() => {
+    if (!ofertaPrimeiroManhaTarde(ctx) || bounds || resolvedHora != null) return null;
+    if (preferidos.manha == null && preferidos.tarde == null) {
+      return primeiroDaManhaEDaTarde(cronologico(slots), minutos, (x) =>
+        almocoDoDia(ctx, x.localDate),
+      );
+    }
+    const manha = slots.filter(
+      (x) => minutos(x) >= 0 && minutos(x) < (almocoDoDia(ctx, x.localDate)?.inicio ?? 12 * 60),
+    );
+    const tarde = slots.filter(
+      (x) => minutos(x) >= (almocoDoDia(ctx, x.localDate)?.fim ?? 12 * 60),
+    );
+    const m = comPreferido(manha, preferidos.manha)[0];
+    const t = comPreferido(tarde, preferidos.tarde)[0];
+    return m && t ? [m, t] : null;
+  })();
+  const prefDoTurno =
+    turnoPedido === "manha" ? preferidos.manha : turnoPedido === "tarde" ? preferidos.tarde : null;
   const limited = (
     parFixo
       ? [...parFixo]
       : bounds
-        ? ranked.slice(0, 6)
+        ? (resolvedHora == null && prefDoTurno != null
+            ? comPreferido(ranked, prefDoTurno)
+            : ranked
+          ).slice(0, 6)
         : limitarComVariedadeDeTurno(ranked, 6, (x) => minutesOfDayFromLabel(x.fromTime))
   )
     .sort((a, b) => a.start.localeCompare(b.start))

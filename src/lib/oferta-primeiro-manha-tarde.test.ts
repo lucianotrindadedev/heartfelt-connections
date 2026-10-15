@@ -127,3 +127,94 @@ describe("execListarHorarios (Clinicorp) com oferta_primeiro_manha_tarde", () =>
     expect(out.slots.map((s) => s.time_label)).toContain("17:30");
   });
 });
+
+// Caso real (Odonto Sorrisos, 21 99272-7525, 15/10/2026): pediu "amanhã à tarde"
+// e recebeu 12:00 / 12:15 — almoço. A agenda real de 16/10 (Clinicorp) tinha as
+// 15:00 livres, mas a ferramenta entregava só as 6 vagas mais cedo (12:00…13:15).
+// O prompt da conta manda: manhã 9h (8h só se pedirem), tarde 15h em primeiro
+// (13h/14h só se não houver nada depois das 15h).
+const DIA_REAL = grade("2099-09-28", [
+  "08:00", "08:15", "08:30", "08:45", "09:00", "09:15", "09:30", "09:45", "10:00",
+  "11:45", "12:00", "12:15", "12:30", "12:45", "13:00", "13:15", "13:30", "13:45",
+  "14:00", "14:15", "15:00", "15:15", "15:30", "15:45", "16:00", "17:45",
+]);
+const PREF = { oferta_primeiro_manha_tarde: "true", oferta_horarios_preferidos: "09:00,15:00" };
+
+async function listarTurno(c: never, dataAlvo: string, periodo: string) {
+  return JSON.parse((await execListarHorarios(c, undefined, undefined, dataAlvo, periodo)).result) as {
+    slots: { date_label: string; time_label: string }[];
+  };
+}
+
+describe("turno pedido respeita o almoço (contas com oferta configurada)", () => {
+  beforeEach(() => {
+    listClinicorpSlots.mockReset();
+    listClinicorpSlots.mockResolvedValue({ slots: DIA_REAL, failedDates: [], busyCheckFailed: false });
+  });
+
+  it("'tarde' começa no fim do almoço, nunca 12:xx", async () => {
+    const out = await listarTurno(ctx({ oferta_primeiro_manha_tarde: "true" }), "2099-09-28", "tarde");
+    expect(out.slots[0]?.time_label).toBe("13:00");
+    expect(out.slots.some((s) => s.time_label.startsWith("12:"))).toBe(false);
+  });
+
+  it("'manhã' termina no início do almoço", async () => {
+    const out = await listarTurno(ctx({ oferta_primeiro_manha_tarde: "true" }), "2099-09-28", "manha");
+    expect(out.slots.every((s) => Number(s.time_label.slice(0, 2)) < 12)).toBe(true);
+  });
+
+  it("conta sem a configuração: tarde segue 12h–18h (nada muda)", async () => {
+    const out = await listarTurno(ctx({}), "2099-09-28", "tarde");
+    expect(out.slots[0]?.time_label).toBe("12:00");
+  });
+});
+
+describe("horários preferidos (oferta_horarios_preferidos)", () => {
+  beforeEach(() => {
+    listClinicorpSlots.mockReset();
+    listClinicorpSlots.mockResolvedValue({ slots: DIA_REAL, failedDates: [], busyCheckFailed: false });
+  });
+
+  it("lead pediu tarde: começa nas 15:00 (caso 21 99272-7525)", async () => {
+    const out = await listarTurno(ctx(PREF), "2099-09-28", "tarde");
+    expect(out.slots.map((s) => s.time_label)).toEqual(["15:00", "15:15", "15:30", "15:45", "16:00", "17:45"]);
+  });
+
+  it("lead pediu manhã: começa nas 09:00, não nas 08:00", async () => {
+    const out = await listarTurno(ctx(PREF), "2099-09-28", "manha");
+    expect(out.slots[0]?.time_label).toBe("09:00");
+  });
+
+  it("par fixo (sem turno pedido): 09:00 + 15:00", async () => {
+    const out = await listar(ctx(PREF), "2099-09-28");
+    expect(out.slots.map((s) => s.time_label)).toEqual(["09:00", "15:00"]);
+  });
+
+  it("15:00 ocupado: o próximo depois das 15h", async () => {
+    listClinicorpSlots.mockResolvedValue({
+      slots: DIA_REAL.filter((s) => s.fromTime !== "15:00"),
+      failedDates: [],
+      busyCheckFailed: false,
+    });
+    const out = await listar(ctx(PREF), "2099-09-28");
+    expect(out.slots.map((s) => s.time_label)).toEqual(["09:00", "15:15"]);
+  });
+
+  it("nada depois das 15h: 13h/14h como fallback; nada depois das 9h: 8h", async () => {
+    listClinicorpSlots.mockResolvedValue({
+      slots: grade("2099-09-28", ["08:00", "08:15", "13:00", "14:00"]),
+      failedDates: [],
+      busyCheckFailed: false,
+    });
+    const out = await listar(ctx(PREF), "2099-09-28");
+    expect(out.slots.map((s) => s.time_label)).toEqual(["08:00", "13:00"]);
+  });
+
+  it("hora exata pedida pelo lead prevalece sobre o preferido", async () => {
+    const out = await listar(
+      ctx(PREF, [{ role: "user", content: "consegue 13h?" }]),
+      "2099-09-28",
+    );
+    expect(out.slots.map((s) => s.time_label)).toContain("13:00");
+  });
+});
