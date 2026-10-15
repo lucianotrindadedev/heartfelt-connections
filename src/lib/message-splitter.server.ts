@@ -1,42 +1,38 @@
-// Quebra uma resposta longa em múltiplas mensagens para envio via WhatsApp.
+// Decide em quantos balões uma resposta vai para o WhatsApp.
 //
-// Prioridade: regras determinísticas (frases, cláusulas, \n\n) e depois LLM.
+// Política (15/10/2026): a Meta cobra POR BALÃO, então a resposta vai em UM
+// balão sempre que couber. Só passa de um quando fica muito grande — e aí vai
+// em exatamente DOIS, cortados no melhor ponto (parágrafo > linha > frase),
+// nunca dentro de um bloco protegido. NUNCA mais que dois.
+//
+// Antes disso a divisão era por "unidades de sentido" (saudação / contexto /
+// pergunta, até 5–8 partes, com um LLM de apoio): média de 2,4 balões por
+// resposta, 90% das respostas com 2 ou mais. O splitter por LLM saiu junto —
+// com no máximo dois balões, um corte determinístico resolve, sem custo nem
+// latência extra.
 
-import { getSelfhost } from "@/integrations/selfhost/client.server";
-import { decryptValue } from "@/lib/crypto.server";
-import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_SPLITTER_MODEL } from "@/lib/llm-defaults";
-
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-
-const MAX_CHARS = 600;
-const MIN_LLM_SPLIT_CHARS = 80;
-const MIN_PART_CHARS = 8;
-const MAX_PARTS = 5;
-/** Limite mais alto quando há blocos protegidos (preço, lista de serviços etc.)
- *  — evita descartar conteúdo que o agente marcou para enviar inteiro. */
-const MAX_PARTS_PROTECTED = 8;
-/** Não quebrar mensagens menores que isto — costumam ser 1 bolha só. */
-const NO_SPLIT_BELOW_CHARS = 220;
-/** Pausa mínima entre bolhas no WhatsApp (Helena/WhatsApp podem fundir envios muito rápidos). */
+/** Acima disto a resposta vai em 2 balões; até aqui, sempre 1. */
+export const SINGLE_BUBBLE_MAX_CHARS = 700;
+/** Teto absoluto de balões por resposta. */
+export const MAX_BUBBLES = 2;
+/** Cada balão precisa ter pelo menos isto; senão, não vale cortar. */
+const MIN_PART_CHARS = 20;
+/**
+ * Fração mínima do texto que o balão menor precisa ter para o corte ser
+ * considerado "equilibrado" num nível (parágrafo/linha/frase). Um corte logo
+ * depois de "Oi, Paulo!" deixaria um balão de 10 chars e outro com tudo —
+ * nesse caso tentamos o próximo nível antes de aceitar o desequilíbrio.
+ */
+const BALANCED_MIN_RATIO = 0.25;
+/** Pausa mínima entre balões no WhatsApp (Helena/WhatsApp podem fundir envios muito rápidos). */
 export const MIN_INTER_PART_DELAY_MS = 1200;
-
-const SPLIT_PROMPT = `Você é especialista em WhatsApp. Divida a mensagem abaixo em partes para envio sequencial.
-
-Regras:
-1. Máximo 8 partes — inclua TODO o texto, sem omitir frases.
-2. Não quebre listas (bullets, numeração) no meio.
-3. Não separe títulos abreviados do nome (ex.: mantenha "Dra. Michelle" na mesma parte).
-4. Cada parte = unidade de sentido completa.
-5. Preserve formatação.
-6. Responda SOMENTE com JSON: {"partes":["parte1","parte2",...]}`;
 
 const ABBREV_BEFORE_DOT = /\b(?:Dra|Dr|Sr|Sra|Prof|Eng|etc|vs|ex)\.$/i;
 
 // ── Blocos protegidos ([[NOSPLIT]]...[[/NOSPLIT]]) ──────────────────────────
-// O agente envolve trechos que devem ir em UMA bolha só (ex.: tabela de preços,
-// lista de serviços inclusos), mesmo contendo linhas em branco. O splitter
-// mantém o bloco inteiro e remove os marcadores antes do envio.
-const PROTECTED_OPEN_RE = /\[\[\s*NOSPLIT\s*\]\]/i;
+// O agente envolve trechos que devem ir inteiros num balão (ex.: tabela de
+// preços, lista de serviços inclusos). O corte em dois nunca cai dentro de um
+// bloco; os marcadores são removidos antes do envio.
 const PROTECTED_BLOCK_RE = /\[\[\s*NOSPLIT\s*\]\]([\s\S]*?)\[\[\s*\/\s*NOSPLIT\s*\]\]/gi;
 const PROTECTED_ANY_MARKER_RE = /\[\[\s*\/?\s*NOSPLIT\s*\]\]/gi;
 
@@ -48,37 +44,17 @@ export function stripProtectedMarkers(text: string): string {
     .trim();
 }
 
-function hasProtectedBlock(text: string): boolean {
-  return PROTECTED_OPEN_RE.test(text);
-}
-
-/**
- * Divide respeitando blocos protegidos: cada [[NOSPLIT]]...[[/NOSPLIT]] vira UMA
- * parte atômica; o texto fora dos blocos é dividido pelas regras normais.
- */
-function splitWithProtectedBlocks(text: string): string[] {
-  const parts: string[] = [];
+/** Intervalos [início, fim) dos blocos protegidos no texto ORIGINAL (com marcadores). */
+function protectedRanges(text: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
   const re = new RegExp(PROTECTED_BLOCK_RE);
-  let last = 0;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const before = text.slice(last, m.index).trim();
-    if (before) parts.push(...ruleBasedSplit(before));
-    const block = stripProtectedMarkers(m[1] ?? "");
-    if (block) parts.push(block);
-    last = m.index + m[0].length;
-  }
-  const after = text.slice(last).trim();
-  if (after) parts.push(...ruleBasedSplit(after));
-
-  return parts
-    .map(stripProtectedMarkers)
-    .filter((p) => p.length > 0)
-    .slice(0, MAX_PARTS_PROTECTED);
+  while ((m = re.exec(text)) !== null) out.push([m.index, m.index + m[0].length]);
+  return out;
 }
 
-function capParts(parts: string[]): string[] {
-  return parts.filter((p) => p.trim().length >= MIN_PART_CHARS).slice(0, MAX_PARTS);
+function insideProtected(ranges: Array<[number, number]>, idx: number): boolean {
+  return ranges.some(([a, b]) => idx > a && idx < b);
 }
 
 function isAbbreviationPeriod(text: string, dotIndex: number): boolean {
@@ -86,267 +62,113 @@ function isAbbreviationPeriod(text: string, dotIndex: number): boolean {
   return ABBREV_BEFORE_DOT.test(window);
 }
 
-/** Divide em frases (. ! ?), ignorando abreviações (Dra., Dr., etc.). */
-function splitAllSentences(text: string): string[] | null {
-  const trimmed = text.trim();
-  const parts: string[] = [];
-  let start = 0;
+/** Um ponto de corte candidato: o balão 1 é text[0, cutAt) e o 2 é text[resumeAt, fim). */
+interface Cut {
+  cutAt: number;
+  resumeAt: number;
+}
 
-  for (let i = 0; i < trimmed.length && parts.length < MAX_PARTS; i++) {
-    const ch = trimmed[i];
+/** Quebras de parágrafo (linha em branco). */
+function paragraphCuts(text: string): Cut[] {
+  const out: Cut[] = [];
+  const re = /\n[ \t]*\n+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) out.push({ cutAt: m.index, resumeAt: m.index + m[0].length });
+  return out;
+}
+
+/** Quebras de linha simples (listas, itens). */
+function lineCuts(text: string): Cut[] {
+  const out: Cut[] = [];
+  const re = /\n/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) out.push({ cutAt: m.index, resumeAt: m.index + 1 });
+  return out;
+}
+
+/** Fim de frase (. ! ?) seguido de espaço — ignorando abreviações (Dra., Dr., etc.). */
+function sentenceCuts(text: string): Cut[] {
+  const out: Cut[] = [];
+  for (let i = 0; i < text.length - 1; i++) {
+    const ch = text[i];
     if (ch !== "." && ch !== "!" && ch !== "?") continue;
-    if (isAbbreviationPeriod(trimmed, i)) continue;
-
-    const after = trimmed.slice(i + 1);
-    const atEnd = after.trim().length === 0;
-    const newSentence = /^\s+[A-ZÁÀÂÃÉÊÍÓÔÚÇ\u00C0-\u024F"']/.test(after);
-
-    if (!atEnd && !newSentence) continue;
-
-    const chunk = trimmed.slice(start, i + 1).trim();
-    if (chunk.length >= MIN_PART_CHARS) {
-      parts.push(chunk);
-    }
-    start = i + 1;
-    while (start < trimmed.length && /\s/.test(trimmed[start]!)) start++;
-    i = start - 1;
+    if (!/\s/.test(text[i + 1]!)) continue;
+    if (ch === "." && isAbbreviationPeriod(text, i)) continue;
+    let resume = i + 1;
+    while (resume < text.length && /\s/.test(text[resume]!)) resume++;
+    out.push({ cutAt: i + 1, resumeAt: resume });
   }
-
-  const tail = trimmed.slice(start).trim();
-  if (tail.length >= MIN_PART_CHARS && parts.length < MAX_PARTS) {
-    parts.push(tail);
-  }
-
-  if (parts.length >= 2) return capParts(parts);
-  return null;
+  return out;
 }
 
-/** Frase única longa: quebra em vírgula antes de cláusula nova (marketing). */
-function splitLongClause(text: string): string[] | null {
-  if (text.length < 140) return null;
-
-  const patterns = [
-    /,\s+(?=essa\s+)/i,
-    /,\s+(?=para\s+te\s+)/i,
-    /,\s+(?=priorizar\s+)/i,
-    /,\s+(?=temos\s+)/i,
-    /,\s+(?=na\s+Costa\s+)/i,
-    /,\s+(?=nossa\s+)/i,
-    /,\s+(?=como\s+um\s+)/i,
-    /,\s+(?=a\s+Dra\.?\s+)/i,
-    /,\s+(?=michelle\s+)/i,
-  ];
-
-  for (const re of patterns) {
-    const idx = text.search(re);
-    if (idx >= 50 && idx < text.length - 50) {
-      const a = text.slice(0, idx + 1).trim();
-      const b = text.slice(idx + 1).trim();
-      if (a.length >= MIN_PART_CHARS && b.length >= MIN_PART_CHARS) {
-        const bParts = splitAllSentences(b) ?? [b];
-        return capParts([a, ...bParts]);
-      }
-    }
+/**
+ * Escolhe o corte mais perto do meio dentre os candidatos de um nível, fora de
+ * blocos protegidos e com os dois lados grandes o bastante. `balanced` exige
+ * ainda que o lado menor tenha pelo menos BALANCED_MIN_RATIO do total.
+ */
+function bestCut(
+  text: string,
+  cuts: Cut[],
+  ranges: Array<[number, number]>,
+  balanced: boolean,
+): [string, string] | null {
+  const total = text.length;
+  const middle = total / 2;
+  let best: { parts: [string, string]; dist: number } | null = null;
+  for (const c of cuts) {
+    if (insideProtected(ranges, c.cutAt) || insideProtected(ranges, c.resumeAt)) continue;
+    const a = stripProtectedMarkers(text.slice(0, c.cutAt));
+    const b = stripProtectedMarkers(text.slice(c.resumeAt));
+    if (a.length < MIN_PART_CHARS || b.length < MIN_PART_CHARS) continue;
+    if (balanced && Math.min(a.length, b.length) < total * BALANCED_MIN_RATIO) continue;
+    const dist = Math.abs(c.cutAt - middle);
+    if (!best || dist < best.dist) best = { parts: [a, b], dist };
   }
-
-  return null;
+  return best?.parts ?? null;
 }
 
-function expandOpenerWithBody(opener: string, body: string): string[] {
-  const bodyParts = splitAllSentences(body) ?? (splitLongClause(body) ?? [body]);
-  return capParts([opener, ...bodyParts]);
+/** Corta o texto em exatamente dois balões no melhor ponto; null se não houver onde cortar. */
+function splitInTwo(text: string): [string, string] | null {
+  const ranges = protectedRanges(text);
+  const levels = [paragraphCuts(text), lineCuts(text), sentenceCuts(text)];
+  // 1ª passada: corte equilibrado no nível mais "natural" possível.
+  for (const cuts of levels) {
+    const r = bestCut(text, cuts, ranges, true);
+    if (r) return r;
+  }
+  // 2ª passada: qualquer corte válido, o mais perto do meio.
+  return bestCut(text, levels.flat(), ranges, false);
 }
 
-/** Saudação curta + corpo (só padrões explícitos — evita cortar em 2 bolhas). */
-function splitOpenerAndBody(text: string): string[] | null {
-  const m = text.match(
-    /^((?:Oi|Olá|Ola|Poxa|Perfeito|Entendo|Compreendo|Certo|Pelo\s+que)[!.]?(?:\s+[^.!?\n]{0,50})?[!.]?)\s+([\s\S]{20,})$/i,
-  );
-  if (m) return expandOpenerWithBody(m[1].trim(), m[2].trim());
-  return null;
-}
-
-function ruleBasedSplit(text: string): string[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-
-  // 1. Quebra EXPLÍCITA do agente com \n\n entre blocos — respeita sempre.
-  if (/\n{2,}/.test(trimmed)) {
-    const blocks = trimmed.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
-    if (blocks.length > 1) return capParts(blocks);
-  }
-
-  // 2. Mensagens curtas (até 220 chars) ficam em UMA bolha só.
-  // Evita fragmentar frases naturais como "Tudo bem! Como posso ajudar?"
-  // em duas bolhas (que destrói o flow + esconde a pergunta final).
-  if (trimmed.length <= NO_SPLIT_BELOW_CHARS) {
-    return [trimmed];
-  }
-
-  // 3. Múltiplas linhas curtas (lista / itens) — preserva.
-  const lines = trimmed.split(/\n/).map((l) => l.trim()).filter(Boolean);
-  if (lines.length >= 2 && lines.length <= MAX_PARTS && lines.every((l) => l.length <= MAX_CHARS)) {
-    return capParts(lines);
-  }
-
-  // 4. Texto longo (>220 chars) sem quebras explícitas:
-  //    a) Tenta separar saudação + corpo + pergunta
-  //    b) Senão, quebra em frases
-  const opener = splitOpenerAndBody(trimmed);
-  if (opener && opener.length > 1) return opener;
-
-  const sentences = splitAllSentences(trimmed);
-  if (sentences) return sentences;
-
-  const clause = splitLongClause(trimmed);
-  if (clause) return capParts(clause);
-
-  return [trimmed];
-}
-
-/** Custo/tokens de uma chamada LLM, para telemetria. */
+/** Custo/tokens de uma chamada LLM, para telemetria. Mantido na assinatura
+ *  por compatibilidade: o splitter não chama mais LLM nenhum. */
 export interface SplitCost {
   costUsd: number;
   tokensIn: number;
   tokensOut: number;
 }
 
-async function llmSplitOne(
-  text: string,
-  orKey: string,
-  model: string,
-  onCost?: (c: SplitCost) => void,
-): Promise<string[] | null> {
-  const res = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${orKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: SPLIT_PROMPT },
-        { role: "user", content: text },
-      ],
-      max_tokens: 1024,
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-    }),
-    // Timeout curto: o split é best-effort. Se demorar, cai pra fallback/regras
-    // em vez de segurar a resposta ao lead por 25s.
-    signal: AbortSignal.timeout(12_000),
-  });
-
-  if (!res.ok) {
-    console.warn(`[split] LLM HTTP ${res.status} (model=${model})`);
-    return null;
-  }
-
-  const json = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
-    usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number };
-  };
-  // Custo cobrado mesmo que o parse abaixo falhe — o modelo já rodou.
-  onCost?.({
-    costUsd: json.usage?.cost ?? 0,
-    tokensIn: json.usage?.prompt_tokens ?? 0,
-    tokensOut: json.usage?.completion_tokens ?? 0,
-  });
-  const raw = (json.choices?.[0]?.message?.content ?? "").trim();
-  if (!raw) return null;
-
-  let parsed: { partes?: unknown };
-  try {
-    parsed = JSON.parse(raw) as { partes?: unknown };
-  } catch {
-    const match = raw.match(/\{[\s\S]*"partes"[\s\S]*\}/);
-    if (!match) return null;
-    parsed = JSON.parse(match[0]) as { partes?: unknown };
-  }
-
-  if (Array.isArray(parsed.partes) && parsed.partes.length > 0) {
-    const parts = (parsed.partes as string[]).map((p) => String(p).trim()).filter(Boolean);
-    return parts.length > 1 ? capParts(parts) : null;
-  }
-  return null;
-}
-
-/** Tenta o splitter em cada modelo da lista (primário + fallback) até um
- *  responder. Timeout/erro num modelo → tenta o próximo; se todos falharem,
- *  retorna null e o chamador usa a divisão por regras. */
-async function llmSplit(
-  text: string,
-  orKey: string,
-  models: string[],
-  onCost?: (c: SplitCost) => void,
-): Promise<string[] | null> {
-  const chain = models.filter((m, i) => m && models.indexOf(m) === i);
-  for (const model of chain) {
-    try {
-      const r = await llmSplitOne(text, orKey, model, onCost);
-      if (r && r.length > 1) return r;
-    } catch (e) {
-      console.warn(
-        `[split] LLM splitter falhou (model=${model}): ${e instanceof Error ? e.message : e} — tentando próximo/regras`,
-      );
-    }
-  }
-  return null;
-}
-
+/**
+ * Balões de uma resposta: 1 (regra) ou 2 (só quando passa de
+ * SINGLE_BUBBLE_MAX_CHARS). Nunca mais que MAX_BUBBLES. Determinístico, sem
+ * DB nem LLM — `accountId`/`onCost` ficam pela compatibilidade dos chamadores.
+ */
 export async function splitMessage(
   text: string,
-  accountId: string,
-  onCost?: (c: SplitCost) => void,
+  _accountId?: string,
+  _onCost?: (c: SplitCost) => void,
 ): Promise<string[]> {
   const trimmed = text.trim();
   if (!trimmed) return [];
 
-  // Blocos protegidos: o agente marcou trechos que devem ir em UMA bolha só.
-  // Respeitamos e NÃO acionamos o splitter LLM (a divisão já é explícita).
-  if (hasProtectedBlock(trimmed)) {
-    const parts = splitWithProtectedBlocks(trimmed);
-    if (parts.length > 0) {
-      console.log(`[split] blocos protegidos → ${parts.length} parte(s)`);
-      return parts;
-    }
-    return [stripProtectedMarkers(trimmed)];
-  }
+  const clean = stripProtectedMarkers(trimmed);
+  if (!clean) return [];
+  if (clean.length <= SINGLE_BUBBLE_MAX_CHARS) return [clean];
 
-  const ruleResult = ruleBasedSplit(trimmed);
-  if (ruleResult.length > 1) {
-    console.log(`[split] regras → ${ruleResult.length} parte(s)`);
-    return ruleResult;
-  }
-
-  if (trimmed.length >= MIN_LLM_SPLIT_CHARS) {
-    try {
-      const sb = getSelfhost();
-      const [llmRow, secretsRow] = await Promise.all([
-        sb.from("account_llm_config").select("splitter_model").eq("account_id", accountId).single(),
-        sb.from("account_secrets").select("openrouter_api_key_enc").eq("account_id", accountId).single(),
-      ]);
-
-      if (secretsRow.data?.openrouter_api_key_enc) {
-        const orKey = await decryptValue(secretsRow.data.openrouter_api_key_enc as unknown as string);
-        if (orKey) {
-          const model =
-            (llmRow.data as Record<string, unknown> | null)?.splitter_model as string | undefined
-            || DEFAULT_SPLITTER_MODEL;
-          const llmResult = await llmSplit(trimmed, orKey, [model, DEFAULT_AUX_FALLBACK_MODEL], onCost);
-          if (llmResult && llmResult.length > 1) {
-            console.log(`[split] LLM → ${llmResult.length} parte(s)`);
-            return llmResult;
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("[split] LLM indisponível:", e instanceof Error ? e.message : e);
-    }
-  }
-
-  return ruleResult;
+  const two = splitInTwo(trimmed);
+  if (!two) return [clean];
+  console.log(`[split] ${clean.length} chars → 2 balões (${two[0].length}+${two[1].length})`);
+  return two.slice(0, MAX_BUBBLES);
 }
 
 export function typingDelayMs(text: string, partIndex = 0): number {
