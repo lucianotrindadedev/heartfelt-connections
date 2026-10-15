@@ -74,6 +74,7 @@ import { buildOwnerStylePromptBlock } from "./owner-style-prompt.server";
 import { agendaUnicaDoAgente, linhaDiasFechados } from "@/lib/followup-guard";
 import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import { promisesAvailabilityCheck } from "./stage-signals";
+import { VOCATIVO_RULE } from "./vocativo-guard";
 import {
   classifyBookingError,
   parseBookingFailure,
@@ -3095,6 +3096,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 0b. 📅 **DIA E HORA EXATOS — COPIE, NÃO CALCULE:** ao ofertar, repetir ou confirmar um horário, copie LITERALMENTE o \`date_label\` e o \`time_label\` como vieram de listar_horarios (ex.: date_label="quarta-feira, 22/07", time_label="10:30" → escreva "quarta-feira, 22/07 às 10:30"). NUNCA deduza o dia da semana a partir da data, nem a data a partir do dia da semana, nem troque para outro dia. Se você trocar o dia (ex.: dizer "quinta-feira, 23/07" para um slot que na agenda é quarta 22/07), o lead escolhe um horário que NÃO existe na lista e o agendamento TRAVA em loop. Na dúvida sobre qualquer data/hora, chame listar_horarios de novo em vez de escrever de memória.
 1. NUNCA diga "vou verificar", "estou consultando", "já te retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores das tools.
+2b. ${VOCATIVO_RULE}
 3. UMA pergunta por vez. Mensagens curtas, em UM balão só no WhatsApp (a Meta cobra por balão). \\n\\n é só parágrafo dentro da mesma mensagem, não uma bolha separada.
 4. NUNCA use "dentista" ou "consulta odontológica" se o contexto for escola/educação — use "${appointmentLabel}" e linguagem do prompt do proprietário.
 5. Escale para humano (next_stage="ESCALATED" + lead_data_patch.escalation_reason) quando o lead pedir explicitamente OU quando ele demonstrar frustração real / risco de desistir (reclamar do atendimento, dizer que foi induzido/enrolado, ameaçar não vir, dizer que vai procurar outro lugar). NUNCA diga "vou chamar alguém da equipe", "vou te transferir" ou algo parecido sem usar next_stage="ESCALATED" no MESMO turno — dizer isso sem escalar deixa o lead esperando um atendimento que nunca chega.
