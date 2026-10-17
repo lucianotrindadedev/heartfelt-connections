@@ -747,3 +747,131 @@ export async function listClinupSlotsDetailed(
     };
   });
 }
+
+// ============================================================
+// AGENDA POR PERÍODO (warm-up)
+// ============================================================
+
+/**
+ * Situações da consulta que recebem lembrete — as mesmas do workflow n8n
+ * "07. Warm-up - Implanto Master VN": 3 = PendenteConfirmacao, 4 e 5 = demais
+ * estados de consulta ainda de pé. Faltou (7), Reagendou (8) etc. ficam fora.
+ */
+export const CLINUP_WARMUP_SITUACOES = new Set([3, 4, 5]);
+
+export interface ClinupUpcomingAppointment {
+  /** id da consulta — é o mesmo `appointment_id` que a IA grava no lead_data. */
+  id: string;
+  /** Início com o fuso de Brasília explícito (ex.: "2026-10-19T14:00:00-03:00"). */
+  startIso: string;
+  patientId: string;
+  patientName: string;
+  professionalId: string;
+  situacao: number | null;
+}
+
+/**
+ * Início da consulta em ISO com -03:00.
+ *
+ * A API manda `dataInicio` com sufixo "Z" INDEVIDO: "2026-10-17T09:00:00Z" é
+ * 09:00 de Brasília, não UTC (o mesmo par de campos traz hora="09:00:00"). Ler
+ * como UTC atrasaria todo lembrete em 3h — o n8n já tinha tropeçado nisso.
+ * Monta sempre a partir do DIA + HORA locais.
+ */
+export function clinupLocalStartIso(data: unknown, hora: unknown): string | null {
+  const dia = String(data ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) return null;
+  const m = String(hora ?? "").trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const hh = m[1]!.padStart(2, "0");
+  return `${dia}T${hh}:${m[2]}:00-03:00`;
+}
+
+/** Lê a resposta de GET /consultas/pesquisa (array cru ou {"consultas":[…]}). */
+export function parseClinupPesquisa(json: unknown): ClinupUpcomingAppointment[] {
+  type Consulta = {
+    id?: string | number;
+    data?: string;
+    dataInicio?: string;
+    hora?: string;
+    horaTexto?: string;
+    pacienteId?: string | number;
+    pacienteNome?: string;
+    profissionalId?: string | number;
+    situacao?: number | string;
+  };
+  const lista: Consulta[] = Array.isArray(json)
+    ? (json as Consulta[])
+    : ((json as { consultas?: Consulta[] } | null)?.consultas ?? []);
+  const out: ClinupUpcomingAppointment[] = [];
+  for (const c of lista) {
+    if (c?.id == null || c.pacienteId == null) continue;
+    const startIso = clinupLocalStartIso(c.data ?? c.dataInicio, c.hora ?? c.horaTexto);
+    if (!startIso) continue;
+    const sit = c.situacao == null || c.situacao === "" ? null : Number(c.situacao);
+    out.push({
+      id: String(c.id),
+      startIso,
+      patientId: String(c.pacienteId),
+      patientName: String(c.pacienteNome ?? "").trim(),
+      professionalId: String(c.profissionalId ?? ""),
+      situacao: Number.isFinite(sit) ? sit : null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Consultas dos profissionais habilitados no período [fromDate, toDate]
+ * (YYYY-MM-DD, datas de Brasília), já filtradas pelas situações que recebem
+ * lembrete. GET /consultas/pesquisa — o único endpoint da API aberta que lista
+ * a agenda por período; GET /consultas só responde com `pacienteId`.
+ */
+export async function listClinupUpcomingAppointments(
+  accountId: string,
+  fromDate: string,
+  toDate: string,
+): Promise<ClinupUpcomingAppointment[]> {
+  const config = await loadConfig(accountId);
+  const profs = resolveProfessionals(config);
+  const out: ClinupUpcomingAppointment[] = [];
+  const vistos = new Set<string>();
+  for (const prof of profs) {
+    const url =
+      `${CLINUP_BASE}/consultas/pesquisa?profissionalId=${encodeURIComponent(prof.id)}` +
+      `&dataInicio=${encodeURIComponent(fromDate)}&dataTermino=${encodeURIComponent(toDate)}`;
+    const res = await fetch(url, {
+      headers: { ...authHeaders(config), accept: "application/json" },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      console.warn(`[clinup] consultas/pesquisa prof=${prof.id} HTTP ${res.status}`);
+      continue;
+    }
+    for (const c of parseClinupPesquisa(await res.json())) {
+      if (c.situacao == null || !CLINUP_WARMUP_SITUACOES.has(c.situacao)) continue;
+      if (vistos.has(c.id)) continue;
+      vistos.add(c.id);
+      out.push({ ...c, professionalId: c.professionalId || prof.id });
+    }
+  }
+  return out;
+}
+
+/**
+ * Celular do paciente (GET /paciente?pacienteId → {"paciente":{celular1}}).
+ * A pesquisa de consultas não traz telefone; o warm-up só chama isto quando um
+ * lembrete está para sair e a conversa não foi achada pelo appointment_id.
+ * Vazio quando o cadastro não tem celular.
+ */
+export async function getClinupPatientPhone(accountId: string, patientId: string): Promise<string> {
+  const config = await loadConfig(accountId);
+  const res = await fetch(`${CLINUP_BASE}/paciente?pacienteId=${encodeURIComponent(patientId)}`, {
+    headers: authHeaders(config),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!res.ok) return "";
+  const p = extrairPaciente(await res.json());
+  const raw = p?.celular1 ?? p?.celular ?? "";
+  return raw ? sanitizePhone(String(raw)) : "";
+}

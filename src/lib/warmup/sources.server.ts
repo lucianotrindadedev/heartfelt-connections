@@ -1,12 +1,15 @@
 // Adapter unificado: lista agendamentos próximos de TODOS os providers
-// de agenda ativos na conta. Implementado: Clinicorp, Google Calendar e
-// Clinic Experts. Clinup fica como stub pronto pra ser ligado quando o
-// adapter expõe listUpcomingEvents (ver clinup.server.ts).
+// de agenda ativos na conta: Clinicorp, Google Calendar, Clinic Experts e
+// Clinup.
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { listClinicorpUpcomingAppointments } from "@/lib/tools/clinicorp.server";
 import { listUpcomingGoogleCalendarEvents } from "@/lib/tools/google-calendar.server";
 import { listClinicExpertsUpcomingAppointments } from "@/lib/tools/clinic-experts.server";
+import {
+  getClinupPatientPhone,
+  listClinupUpcomingAppointments,
+} from "@/lib/tools/clinup.server";
 
 export interface UpcomingAppointment {
   source: "clinicorp" | "google_calendar" | "clinup" | "clinic_experts";
@@ -18,6 +21,19 @@ export interface UpcomingAppointment {
   /** Profissional do agendamento (Clinicorp dentist_person_id) — usado para
    *  filtrar o warm-up por profissional selecionado. */
   professionalId?: number;
+  /**
+   * Telefone sob demanda, para fontes cuja listagem não traz o telefone
+   * (Clinup: a pesquisa de consultas só traz o pacienteId). O cron só chama
+   * quando um lembrete está para sair e a conversa não foi achada pelo
+   * appointment_id — buscar o telefone de toda consulta a cada 5 min seria
+   * uma chamada por paciente por tick.
+   */
+  resolvePhone?: () => Promise<string>;
+}
+
+/** YYYY-MM-DD no fuso de Brasília (UTC−3 fixo). */
+function spDate(d: Date): string {
+  return new Date(d.getTime() - 3 * 3_600_000).toISOString().slice(0, 10);
 }
 
 /**
@@ -125,12 +141,36 @@ export async function listAllUpcomingAppointments(
     }
   }
 
-  // ─── Clinup (TODO: implementar quando o adapter expor listUpcoming) ──
-  // const { data: clinup } = await sb.from("clinup_config")...
-  // if (clinup?.ativo) {
-  //   const items = await listClinupUpcomingAppointments(accountId, fromDate, toDate);
-  //   for (const a of items) out.push({ source: 'clinup', ... })
-  // }
+  // ─── Clinup ─────────────────────────────────────────────────
+  // GET /consultas/pesquisa por profissional habilitado (o mesmo endpoint do
+  // workflow n8n da Implanto). Datas em horário de Brasília: em UTC, depois
+  // das 21h o "hoje" já virava amanhã e a consulta da noite sumia da janela.
+  const { data: clinup } = await sb
+    .from("clinup_config")
+    .select("account_id, ativo")
+    .eq("account_id", accountId)
+    .eq("ativo", true)
+    .maybeSingle();
+  if (clinup) {
+    try {
+      const items = await listClinupUpcomingAppointments(accountId, spDate(fromDate), spDate(toDate));
+      for (const a of items) {
+        const startDate = new Date(a.startIso);
+        if (Number.isNaN(startDate.getTime())) continue;
+        out.push({
+          source: "clinup",
+          externalId: a.id,
+          start: startDate,
+          patientPhone: "",
+          patientName: a.patientName,
+          status: a.situacao != null ? String(a.situacao) : undefined,
+          resolvePhone: () => getClinupPatientPhone(accountId, a.patientId),
+        });
+      }
+    } catch (e) {
+      console.error("[warmup-sources] clinup falhou:", e);
+    }
+  }
 
   return out;
 }

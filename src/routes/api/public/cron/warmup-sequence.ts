@@ -6,7 +6,7 @@
 // Lógica:
 // 1. Carrega todos os warmup_steps habilitados, agrupa por agente.
 // 2. Para cada agente:
-//    a. Lista agendamentos próximos via adapter (Clinicorp, GCal, Clinup).
+//    a. Lista agendamentos próximos via adapter (Clinicorp, GCal, Clinic Experts, Clinup).
 //    b. Para cada agendamento × step:
 //       - Calcula sendAt = appt.start - delay do step.
 //       - Verifica se now ∈ [sendAt, sendAt + window_minutes].
@@ -24,6 +24,7 @@ import {
   sendHelenaTemplate,
 } from "@/lib/helena.server";
 import { listAllUpcomingAppointments } from "@/lib/warmup/sources.server";
+import { effectiveWarmupSendAt } from "@/lib/warmup/send-window";
 
 function validateCronSecret(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
@@ -70,7 +71,7 @@ interface ConvMatch {
 async function resolveWarmupConversation(
   sb: ReturnType<typeof getSelfhost>,
   agentId: string,
-  appt: { externalId: string; patientPhone: string },
+  appt: { externalId: string; patientPhone: string; resolvePhone?: () => Promise<string> },
 ): Promise<ConvMatch | null> {
   const byAppt = await sb
     .from("conversations")
@@ -81,6 +82,12 @@ async function resolveWarmupConversation(
     .limit(1)
     .maybeSingle();
   if (byAppt.data?.helena_session_id) return byAppt.data as ConvMatch;
+
+  // Fontes sem telefone na listagem (Clinup) buscam agora, só para este
+  // lembrete. O telefone fica no próprio objeto para o registro em warmup_sends.
+  if (!appt.patientPhone && appt.resolvePhone) {
+    appt.patientPhone = await appt.resolvePhone().catch(() => "");
+  }
 
   if (appt.patientPhone) {
     const { data } = await sb
@@ -229,9 +236,14 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
                 continue;
               }
 
-              // sendAt = appointment.start - delay
+              // sendAt = appointment.start - delay, adiado para o horário de
+              // envio (06:00–20:00 de Brasília) quando cai de madrugada/noite.
               const delayMs = delayToMs(step.time_before_value, step.time_before_unit);
-              const sendAt = new Date(appt.start.getTime() - delayMs);
+              const sendAt = effectiveWarmupSendAt(
+                new Date(appt.start.getTime() - delayMs),
+                appt.start,
+              );
+              if (!sendAt) continue; // a abertura seguinte já seria depois da consulta
               const windowEnd = new Date(sendAt.getTime() + step.window_minutes * 60_000);
 
               if (now < sendAt) continue;  // ainda não é hora
@@ -252,10 +264,7 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
 
               // Resolve sessionId: por appointment_id (lead_data) primeiro,
               // com fallback por telefone (ver resolveWarmupConversation).
-              const conv = await resolveWarmupConversation(sb, agentId, {
-                externalId: appt.externalId,
-                patientPhone: appt.patientPhone,
-              });
+              const conv = await resolveWarmupConversation(sb, agentId, appt);
 
               const sessionId = conv?.helena_session_id ?? undefined;
 
