@@ -60,6 +60,7 @@ import {
   execConsultarPlanilha,
 } from "./sheets.server";
 import type { AgentContext, AgentResult } from "./context";
+import { AGENDA_LISTING_TOOL_NAMES } from "./agenda-tool-names";
 import { cacheTtlFromSettings } from "./context";
 import type { LeadData, Stage } from "./stage";
 import {
@@ -3437,14 +3438,7 @@ async function tryDeterministicBooking(ctx: AgentContext): Promise<{
 const MAX_TOOL_LOOPS = 6;
 
 /** Nomes (e aliases) da tool de consulta de agenda — ver o switch do tool loop. */
-const LISTAR_HORARIOS_TOOL_NAMES = new Set([
-  "listar_horarios",
-  "listar_horarios_clinicorp",
-  "listar_horarios_google_calendar",
-  "listar_horarios_clinup",
-  "clinup_buscar_horarios",
-  "listar_horarios_clinic_experts",
-]);
+const LISTAR_HORARIOS_TOOL_NAMES = AGENDA_LISTING_TOOL_NAMES;
 
 export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult> {
   // RAG com Gate: modelo barato decide se a msg precisa de busca.
