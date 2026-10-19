@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import type { AgentContext, AgentResult } from "./context";
+import { AGENDA_LISTING_TOOL, AGENDA_TOOL_ALIASES_NOTE, isAgendaListingTool } from "./agenda-tool-names";
 import { cacheTtlFromSettings } from "./context";
 import {
   callLlmWithFallback,
@@ -156,7 +157,8 @@ const QUALIFIER_AGENDA_TOOL: LlmTool = {
       "Chame SEMPRE que o lead aceitar ver horários, perguntar disponibilidade ou citar uma data — " +
       "NUNCA responda 'vou verificar' sem chamar esta tool. " +
       "Você NÃO agenda: depois de ofertar, sinalize next_stage='SLOT_OFFER' e o módulo de agendamento finaliza. " +
-      "Ofereça no máximo 2 horários, copiando date_label e time_label LITERALMENTE como vieram.",
+      "Ofereça no máximo 2 horários, copiando date_label e time_label LITERALMENTE como vieram. " +
+      AGENDA_TOOL_ALIASES_NOTE,
     parameters: {
       type: "object",
       properties: {
@@ -883,7 +885,9 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       let outcome: ToolOutcome = { result: JSON.stringify({ error: "tool desconhecida" }) };
       if (tc.function.name === "aplicar_tag_interesse" && typeof args.tag === "string") {
         outcome = await execAplicarTagInteresse(ctx, args.tag, "qualifier");
-      } else if (tc.function.name === "listar_horarios") {
+      } else if (isAgendaListingTool(tc.function.name)) {
+        // Aceita os apelidos por provedor (listar_horarios_clinicorp…) que os
+        // prompts de proprietário citam — ver agenda-tool-names.ts.
         // Reusa o MESMO executor do scheduler — nada de segunda implementação
         // de busca de horário (filtro de turno, prioridade por hora pedida,
         // auto-ampliação da janela e checagem de expediente vivem lá dentro).
@@ -914,9 +918,12 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
         };
       }
 
-      toolsCalled.push(tc.function.name);
-      toolArgs.push(resumeToolArgs(tc.function.name, tc.function.arguments ?? "{}"));
-      if (tc.function.name === "listar_horarios") {
+      // Apelido vira o nome canônico em tools_called: o orquestrador e a
+      // telemetria procuram "listar_horarios".
+      const toolName = isAgendaListingTool(tc.function.name) ? AGENDA_LISTING_TOOL : tc.function.name;
+      toolsCalled.push(toolName);
+      toolArgs.push(resumeToolArgs(toolName, tc.function.arguments ?? "{}"));
+      if (toolName === AGENDA_LISTING_TOOL) {
         turnosConsultados.add(
           turnoDaBusca(ctx, typeof args.periodo === "string" ? args.periodo : undefined) ?? "todos",
         );
