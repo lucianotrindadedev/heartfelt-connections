@@ -31,7 +31,11 @@ import {
   backfillBookingFieldsFromHistory,
   bookingFieldQuestion,
   captureLeadPhoneFromHistory,
+  escalationDoneReply,
+  escalationPhoneAskReply,
+  isEscalationAwaitingPhone,
   hasBookingPhone,
+  shouldHoldEscalationForPhone,
   resolveLeadPhone,
   defaultCommitmentQuestion,
   getBookingFieldsForChannel,
@@ -2043,6 +2047,49 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       newStage = "ESCALATED";
     }
 
+    // Instagram/Messenger sem telefone: a transferência espera o número. Roda
+    // DEPOIS do ghost-escalation acima (que pode ter forçado o ESCALATED) e
+    // troca a resposta pelo pedido do WhatsApp; o escalation_reason fica no
+    // lead_data, e no próximo turn — com o número capturado ou recusado — a
+    // transferência segue. Ver shouldHoldEscalationForPhone.
+    let escalationHeldForPhone = false;
+    let escalationResumedAfterPhone = false;
+    if (
+      newStage !== "ESCALATED" &&
+      stage !== "ESCALATED" &&
+      isEscalationAwaitingPhone(history, finalLeadData.escalation_reason)
+    ) {
+      // Turn seguinte ao pedido: o lead mandou o número (já capturado em
+      // custom_fields) ou recusou. A transferência segurada acontece agora.
+      escalationResumedAfterPhone = true;
+      newStage = "ESCALATED";
+      reply = escalationDoneReply(finalLeadData.name);
+    }
+    if (
+      newStage === "ESCALATED" &&
+      stage !== "ESCALATED" &&
+      shouldHoldEscalationForPhone({
+        channel,
+        hasPhone: hasBookingPhone(finalLeadData, agentSettings, effectivePhone, normalizeBrazilPhone),
+        history,
+      })
+    ) {
+      escalationHeldForPhone = true;
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "escalation_held_for_phone",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          channel,
+          stage_from: stage,
+          reason: finalLeadData.escalation_reason?.slice(0, 120),
+        })}`,
+      );
+      newStage = stage;
+      reply = escalationPhoneAskReply(finalLeadData.name);
+    }
+
     // Leads360: decide o que sincronizar neste turn. O envio HTTP é best-effort
     // e roda DEPOIS do persist; aqui só marcamos o flag de dedup do lead para
     // ser persistido (evita reenviar /leads a cada turn).
@@ -2133,6 +2180,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
             ? ((result.telemetry?.same_turn_handoff as string) ?? true)
             : undefined,
           ghost_escalation_forced: ghostEscalationForced || undefined,
+          escalation_held_for_phone: escalationHeldForPhone || undefined,
+          escalation_resumed_after_phone: escalationResumedAfterPhone || undefined,
           forced_scheduling_advance: forcedSchedulingAdvance || undefined,
           preflight_blocked: (result.telemetry?.preflight_blocked as boolean) || undefined,
           preflight_dirty_fields: (result.telemetry?.dirty_fields as string[]) || undefined,

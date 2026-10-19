@@ -201,6 +201,66 @@ export function assistantAskedForPhone(text: string | null | undefined): boolean
 }
 
 /**
+ * Segura a transferência para humano até o telefone ser pedido, em canal SEM
+ * telefone (Instagram/Messenger).
+ *
+ * A equipe só consegue retomar o lead por WhatsApp/ligação: escalar sem número
+ * deixa o humano sem como falar com ele. Caso real (Clínica Bomfim, Instagram
+ * @andersonavelar310.aa, 17/10): o prompt manda pedir o telefone antes de todo
+ * `escalar_humano`, mas o agente foi direto para "vou te direcionar para a
+ * nossa equipe" — a CRC recebeu o lead sem número nenhum.
+ *
+ * Segura só se o telefone ainda NÃO foi pedido nas últimas 3 falas do agente:
+ * depois de pedido, se o lead recusar ou ignorar, a transferência segue (regra
+ * do proprietário: "se o lead se recusar, transfira mesmo assim").
+ */
+export function shouldHoldEscalationForPhone(params: {
+  channel: ConversationChannel;
+  hasPhone: boolean;
+  history: { role: "user" | "assistant"; content: string }[];
+}): boolean {
+  if (params.channel !== "instagram" && params.channel !== "messenger") return false;
+  if (params.hasPhone) return false;
+  const askedRecently = params.history
+    .filter((m) => m.role === "assistant")
+    .slice(-3)
+    .some((m) => assistantAskedForPhone(m.content));
+  return !askedRecently;
+}
+
+/** Trecho fixo do pedido de telefone — é por ele que o turn seguinte reconhece
+ *  que há uma transferência esperando o número. */
+const ESCALATION_PHONE_ASK_MARKER = "Antes de te passar para a nossa equipe";
+
+/** Pedido de telefone que substitui a resposta quando a transferência é segurada. */
+export function escalationPhoneAskReply(leadName: string | null | undefined): string {
+  const primeiro = (leadName ?? "").trim().split(/\s+/)[0] ?? "";
+  const abertura = primeiro ? `Perfeito, ${primeiro}! ` : "Perfeito! ";
+  return `${abertura}${ESCALATION_PHONE_ASK_MARKER}, me informa seu número de WhatsApp com DDD? Assim eles conseguem falar com você. 😊`;
+}
+
+/**
+ * A transferência foi segurada no turn anterior (a última fala do agente é o
+ * pedido de telefone de `escalationPhoneAskReply`) e o motivo continua no
+ * lead_data. Com o número capturado OU recusado, ela tem de acontecer agora —
+ * sem depender de o modelo lembrar de escalar de novo.
+ */
+export function isEscalationAwaitingPhone(
+  history: { role: "user" | "assistant"; content: string }[],
+  escalationReason: string | null | undefined,
+): boolean {
+  if (!escalationReason?.trim()) return false;
+  const ultimaDoAgente = [...history].reverse().find((m) => m.role === "assistant");
+  return !!ultimaDoAgente?.content.includes(ESCALATION_PHONE_ASK_MARKER);
+}
+
+/** Resposta da transferência concluída depois do pedido de telefone. */
+export function escalationDoneReply(leadName: string | null | undefined): string {
+  const primeiro = (leadName ?? "").trim().split(/\s+/)[0] ?? "";
+  return `Obrigada${primeiro ? `, ${primeiro}` : ""}! Já passei seu atendimento para a nossa equipe, que vai continuar com você em breve. 😊`;
+}
+
+/**
  * Telefone utilizável para agendar: o do contexto (WhatsApp/CRM) OU o que o
  * lead digitou na conversa. Em canais sem telefone (Instagram/Messenger) só
  * existe o segundo — e era exatamente ele que os portões de agendamento
@@ -559,7 +619,7 @@ O lead está no **WhatsApp**. Telefone já confirmado: **${effectivePhone}**.
   if ((channel === "instagram" || channel === "messenger") && !effectivePhone?.trim()) {
     return `# TELEFONE — PEÇA E GUARDE
 
-Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp). Peça o WhatsApp com DDD antes de agendar.
+Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp). Peça o WhatsApp com DDD o quanto antes — de preferência já na primeira resposta, junto com o nome — e SEMPRE antes de agendar ou de transferir para a equipe (next_stage="ESCALATED"): sem o número, a equipe não consegue falar com o lead.
 
 - Ao receber o número, grave-o em \`lead_data_patch.custom_fields.${COLLECTED_PHONE_KEY}\` no MESMO turn.
 - Se ele já constar em "Já coletados", NÃO pergunte de novo — use o que está lá.`;
