@@ -630,18 +630,87 @@ export async function callLlmStructured<T>(
       `LLM retornou content vazio (finish_reason=${response.finishReason}, tokens_out=${response.tokensOut})`,
     );
   }
+  try {
+    return { result: parse(parseStructuredContent(response)), response };
+  } catch (e) {
+    if (!isStructuredContentIssue(e)) throw e;
+    // Resposta fora do formato (texto puro, JSON quebrado ou faltando campo do
+    // schema). Com o modelo único da plataforma (sem fallback), isto virava
+    // "tive uma instabilidade técnica" — e o conteúdo quase sempre estava certo.
+    // Caso real (Alfa Implantes, 23/10): o Haiku respondeu "Prazer, Luciano! 😊
+    // O que te incomoda mais hoje…" em texto puro. Uma tentativa de reparo com
+    // o MESMO modelo: mostra a resposta dele e pede o mesmo conteúdo no JSON.
+    console.warn(
+      `[llm] resposta fora do formato model=${req.model} (${e instanceof Error ? e.message.slice(0, 120) : e}) — tentando reparo`,
+    );
+    const repair = await callLlm(orKey, {
+      ...req,
+      messages: [
+        ...req.messages,
+        { role: "assistant" as const, content: response.content },
+        { role: "user" as const, content: STRUCTURED_REPAIR_PROMPT },
+      ],
+      jsonMode: true,
+    });
+    const merged = sumUsage(response, repair);
+    if (!repair.content) throw e;
+    try {
+      const result = parse(parseStructuredContent(repair));
+      console.warn(`[llm] reparo de formato OK model=${req.model}`);
+      return { result, response: merged };
+    } catch {
+      throw e;
+    }
+  }
+}
+
+/** Pedido de reparo quando a resposta veio fora do JSON exigido. */
+const STRUCTURED_REPAIR_PROMPT =
+  "Sua resposta acima não veio no formato exigido. Reescreva a MESMA resposta (o mesmo texto para o lead e as mesmas decisões) " +
+  "agora APENAS como o JSON exigido pelo schema das instruções, em uma única linha — sem texto antes nem depois, sem markdown, sem ```json.";
+
+/** Falha de CONTEÚDO (não de rede): JSON inválido/vazio ou schema não bateu. */
+export function isStructuredContentIssue(e: unknown): boolean {
+  if (e instanceof LlmError) return e.status === 200;
+  return (
+    !!e &&
+    typeof e === "object" &&
+    ((e as { name?: string }).name === "ZodError" ||
+      Array.isArray((e as { issues?: unknown }).issues))
+  );
+}
+
+/** Soma tokens/custo da chamada original e do reparo (telemetria do turno). */
+function sumUsage(a: LlmResponse, b: LlmResponse): LlmResponse {
+  return {
+    ...b,
+    tokensIn: a.tokensIn + b.tokensIn,
+    tokensOut: a.tokensOut + b.tokensOut,
+    cachedTokens: a.cachedTokens + b.cachedTokens,
+    cacheWriteTokens: (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0),
+    costUsd: a.costUsd + b.costUsd,
+    latencyMs: a.latencyMs + b.latencyMs,
+  };
+}
+
+/**
+ * Extrai o JSON do content: direto, com newlines escapadas, de bloco
+ * ```json, ou salvando JSON truncado. Lança LlmError(200) se nada servir.
+ */
+function parseStructuredContent(response: LlmResponse): unknown {
+  const raw = response.content ?? "";
   let parsed: unknown;
   try {
-    parsed = JSON.parse(response.content);
+    parsed = JSON.parse(raw);
   } catch {
     // Antes de tudo: tenta escapar newlines literais dentro de strings
     // (LLMs frequentemente esquecem disso em campos de texto longo).
     try {
-      parsed = JSON.parse(fixUnescapedNewlinesInStrings(response.content));
+      parsed = JSON.parse(fixUnescapedNewlinesInStrings(raw));
       console.warn("[llm] recovered JSON com newlines não-escapadas em strings");
     } catch {
       // 1. Tenta extrair JSON de bloco markdown ```json ... ```
-      const match = response.content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      const match = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
       if (match) {
         try { parsed = JSON.parse(match[1]); }
         catch {
@@ -650,23 +719,22 @@ export async function callLlmStructured<T>(
             // 2. Tenta recuperar JSON truncado dentro do bloco
             try { parsed = recoverTruncatedJson(match[1]); }
             catch {
-              throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 300)}`);
+              throw new LlmError(200, `LLM retornou JSON inválido: ${raw.slice(0, 300)}`);
             }
           }
         }
       } else {
         // 3. Tenta recuperar JSON truncado direto
         try {
-          parsed = recoverTruncatedJson(response.content);
+          parsed = recoverTruncatedJson(raw);
           console.warn(
             `[llm] recovered truncated JSON (finish_reason=${response.finishReason}, tokens_out=${response.tokensOut})`,
           );
         } catch {
-          throw new LlmError(200, `LLM retornou JSON inválido: ${response.content.slice(0, 300)}`);
+          throw new LlmError(200, `LLM retornou JSON inválido: ${raw.slice(0, 300)}`);
         }
       }
     }
   }
-  const result = parse(parsed);
-  return { result, response };
+  return parsed;
 }
