@@ -138,6 +138,58 @@ describe("detectSignals", () => {
     expect(s.userAskedDateAvailability).toBe(false);
   });
 
+  // Caso real: Amazing CCZ, (21) 97558-2703, 23/10/2026 — a ficha respondida
+  // de uma vez levou a IA a ofertar horário pulando a apresentação da escola.
+  it("NAO marca disponibilidade para data de nascimento no meio da ficha", () => {
+    const s = detectSignals(
+      baseCtx({
+        stage: "RECEPTION",
+        history: [
+          { role: "assistant", content: "Para seguirmos, poderia nos informar: *Nome do aluno:* *Data de nascimento:*" },
+          { role: "user", content: "João\n10/01/2019\n7°ano\n2027\nMaple Bear" },
+        ],
+      }),
+    );
+    expect(s.userAskedDateAvailability).toBe(false);
+  });
+
+  it("NAO marca disponibilidade para nascimento com ano de 2 digitos na frase", () => {
+    const s = detectSignals(
+      baseCtx({ history: [{ role: "user", content: "Ana, nasceu 25/07/19, vai pro 1º ano" }] }),
+    );
+    expect(s.userAskedDateAvailability).toBe(false);
+  });
+
+  it("ainda marca disponibilidade quando a ficha vem junto com pedido de data", () => {
+    const s = detectSignals(
+      baseCtx({
+        history: [{ role: "user", content: "João, 10/01/2019. Vocês têm horário dia 28/10?" }],
+      }),
+    );
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
+  it("ainda marca disponibilidade para data futura com ano de 2 digitos", () => {
+    const yy = String((new Date().getFullYear() + 1) % 100).padStart(2, "0");
+    const s = detectSignals(
+      baseCtx({ history: [{ role: "user", content: `Festa dia 20/2/${yy}. 70 convidados` }] }),
+    );
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
+  it("ainda marca disponibilidade para lista de dias que parece data", () => {
+    const s = detectSignals(baseCtx({ history: [{ role: "user", content: "Para agosto 15/16/22/23" }] }));
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
+  it("ainda marca disponibilidade para data com o ano corrente", () => {
+    const year = new Date().getFullYear();
+    const s = detectSignals(
+      baseCtx({ history: [{ role: "user", content: `pode ser 28/10/${year}?` }] }),
+    );
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
   it("NAO marca disponibilidade fora de RECEPTION/QUALIFICATION", () => {
     const s = detectSignals(
       baseCtx({
