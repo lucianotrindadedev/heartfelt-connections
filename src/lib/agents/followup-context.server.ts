@@ -6,7 +6,7 @@
 
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
-import { DEFAULT_AUX_FALLBACK_MODEL, DEFAULT_LLM_MODEL } from "@/lib/llm-defaults";
+import { STANDARD_AGENT_MODEL } from "@/lib/llm-defaults";
 import {
   avaliarTextoDoFollowup,
   diasFechadosDoExpediente,
@@ -78,10 +78,8 @@ export async function generateContextualFollowup(
   ]);
   if (agent.error || !agent.data) throw new Error("Agente não encontrado.");
 
-  const model =
-    (agent.data.llm_model_override as string | null) ||
-    (llmCfg.data?.default_model as string | undefined) ||
-    DEFAULT_LLM_MODEL;
+  // Modelo de conversa único da plataforma — ver STANDARD_AGENT_MODEL.
+  const model = STANDARD_AGENT_MODEL;
 
   const basePrompt = (agent.data.system_prompt as string) || "";
   const settings = (agent.data.settings as Record<string, string> | null) ?? {};
@@ -209,7 +207,8 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
       temperature: 0.7,
       maxTokens: 1500,
     },
-    model === DEFAULT_AUX_FALLBACK_MODEL ? [] : [DEFAULT_AUX_FALLBACK_MODEL],
+    // Sem fallback: o modelo de conversa é único na plataforma.
+    [],
   );
 
   const bruto = (turn.content ?? "").trim();

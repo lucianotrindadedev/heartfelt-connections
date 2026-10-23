@@ -12,10 +12,9 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { decryptValue } from "@/lib/crypto.server";
 import {
   DEFAULT_LLM_MODEL,
-  DEFAULT_QUALIFIER_FALLBACK_MODELS,
-  DEFAULT_QUALIFIER_MODEL,
   DEFAULT_TOOL_FALLBACK_MODELS,
   DEFAULT_TOOL_MODEL,
+  STANDARD_AGENT_MODEL,
 } from "@/lib/llm-defaults";
 import { splitMessage } from "@/lib/message-splitter.server";
 import { listAccountSheets } from "@/lib/tools/google-sheets.server";
@@ -135,10 +134,8 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
 
     const planilhas = await listAccountSheets(data.accountId);
 
-    const model =
-      (agent.data.llm_model_override as string | null) ||
-      (llm.data?.default_model as string | undefined) ||
-      DEFAULT_LLM_MODEL;
+    // Modelo de conversa único da plataforma — ver STANDARD_AGENT_MODEL.
+    const model = STANDARD_AGENT_MODEL;
     const maxTokens = (llm.data?.max_tokens as number | undefined) ?? 2048;
     const temperature = (llm.data?.temperature as number | undefined) ?? 0.5;
 
@@ -157,20 +154,11 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       agentSettings: (agent.data.settings as Record<string, string> | null) ?? {},
       basePrompt: (agent.data.system_prompt as string) || "",
       model,
-      qualifierModel:
-        ((llm.data as Record<string, unknown> | null)?.qualifier_model as string | undefined) ??
-        (llm.data?.default_model as string | undefined) ??
-        DEFAULT_QUALIFIER_MODEL,
-      qualifierFallbackModels:
-        (llm.data?.fallback_models as string[] | undefined) ??
-        [...DEFAULT_QUALIFIER_FALLBACK_MODELS],
+      qualifierModel: STANDARD_AGENT_MODEL,
+      qualifierFallbackModels: [],
       toolModel: (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
-      toolFallbackModels:
-        (llm.data?.fallback_models as string[] | undefined) ??
-        [...DEFAULT_TOOL_FALLBACK_MODELS],
-      fallbackModels:
-        (llm.data?.fallback_models as string[] | undefined) ??
-        ["openai/gpt-4o-mini", "anthropic/claude-haiku-4.5"],
+      toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
+      fallbackModels: [],
       ragGateModel:
         (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
       maxTokens,

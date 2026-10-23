@@ -69,13 +69,16 @@ import {
   setOpenRouterKey,
   setElevenLabsKey,
   testOpenRouterKey,
-  listOpenRouterModels,
   listElevenLabsVoices,
   getUsageSummary,
   getHelenaConfig,
   setHelenaConfig,
   getOpenRouterUsage,
 } from "@/lib/secrets.functions";
+import {
+  STANDARD_AGENT_MODEL,
+  STANDARD_AGENT_MODEL_LABEL,
+} from "@/lib/llm-defaults";
 import {
   INTEGRATION_LOGOS,
   IntegrationLogo,
@@ -506,13 +509,10 @@ function EmbedHome() {
         accountId={accountId}
         agentId={agentId}
         agentSettings={(agent.settings as Record<string, string> | null) ?? {}}
-        currentModel={(agent.llm_model_override as string | null) ?? (data.llm?.default_model as string | null) ?? ""}
-        currentFallbackModel={((data.llm?.fallback_models as string[] | null) ?? [])[0] ?? ""}
         currentModelTemperatures={(data.llm?.model_temperatures as Record<string, number> | null) ?? {}}
         currentDefaultTemperature={(data.llm?.temperature as number | null) ?? 0.5}
         currentVoice={(data.voice?.elevenlabs_voice_id as string | null) ?? null}
         debounceSegundos={(agent.debounce_segundos as number | null) ?? 20}
-        hasOpenRouter={!!data.secrets?.openrouter_last4}
         hasElevenLabs={!!data.secrets?.elevenlabs_last4}
         audioHabilitado={!!(data.audio?.habilitado)}
         audioTranscrever={!!(data.audio?.transcrever_in)}
@@ -6112,13 +6112,10 @@ function AgentSettingsView({
   accountId,
   agentId,
   agentSettings,
-  currentModel,
-  currentFallbackModel,
   currentModelTemperatures,
   currentDefaultTemperature,
   currentVoice,
   debounceSegundos,
-  hasOpenRouter,
   hasElevenLabs,
   audioHabilitado,
   audioTranscrever,
@@ -6130,13 +6127,10 @@ function AgentSettingsView({
   accountId: string;
   agentId: string;
   agentSettings: Record<string, string>;
-  currentModel: string;
-  currentFallbackModel: string;
   currentModelTemperatures: Record<string, number>;
   currentDefaultTemperature: number;
   currentVoice: string | null;
   debounceSegundos: number;
-  hasOpenRouter: boolean;
   hasElevenLabs: boolean;
   audioHabilitado: boolean;
   audioTranscrever: boolean;
@@ -6149,38 +6143,19 @@ function AgentSettingsView({
   const updateLlm = useServerFn(updateLlmConfig);
   const updateVoice = useServerFn(updateVoiceConfig);
   const updateAgentFn = useServerFn(updateAgent);
-  const listModels = useServerFn(listOpenRouterModels);
   const listVoices = useServerFn(listElevenLabsVoices);
 
-  const [model, setModel] = useState(currentModel);
-  const [fallbackModel, setFallbackModel] = useState(currentFallbackModel);
-  // Temperatura por modelo (slider 0..1, passo 0.1). Inicia na temperatura já
-  // configurada para o modelo; se não houver, na temperatura padrão da conta.
-  // Salvo em account_llm_config.model_temperatures.
+  // Modelo de conversa é único na plataforma (STANDARD_AGENT_MODEL) — o painel
+  // só ajusta a temperatura dele, salva em account_llm_config.model_temperatures.
+  // Sem valor para o modelo, o motor usa a temperatura padrão da conta.
   const [primaryTemp, setPrimaryTemp] = useState<number>(() => {
-    const t = currentModelTemperatures[currentModel];
-    return typeof t === "number" ? t : currentDefaultTemperature;
-  });
-  const [fallbackTemp, setFallbackTemp] = useState<number>(() => {
-    const t = currentFallbackModel ? currentModelTemperatures[currentFallbackModel] : undefined;
+    const t = currentModelTemperatures[STANDARD_AGENT_MODEL];
     return typeof t === "number" ? t : currentDefaultTemperature;
   });
   const [voiceId, setVoiceId] = useState(currentVoice ?? "");
   const [debounce, setDebounce] = useState(debounceSegundos);
   const [settings, setSettings] = useState<Record<string, string>>(agentSettings);
   const [activeSection, setActiveSection] = useState<"profile" | "ai" | "integrations">("profile");
-  // Combobox do modelo: busca + abre/fecha dropdown
-  const [modelSearch, setModelSearch] = useState("");
-  const [modelOpen, setModelOpen] = useState(false);
-  // Combobox do modelo de fallback (busca/abre independentes)
-  const [fallbackSearch, setFallbackSearch] = useState("");
-  const [fallbackOpen, setFallbackOpen] = useState(false);
-
-  const models = useQuery({
-    queryKey: ["openrouter-models", accountId],
-    queryFn: () => listModels({ data: { accountId } }),
-    enabled: hasOpenRouter,
-  });
   const voices = useQuery({
     queryKey: ["eleven-voices", accountId],
     queryFn: () => listVoices({ data: { accountId } }),
@@ -6190,57 +6165,20 @@ function AgentSettingsView({
   const setSetting = (key: string, val: string) =>
     setSettings((p) => ({ ...p, [key]: val }));
 
-  // Modelos ordenados alfabeticamente + filtrados pela busca (case-insensitive,
-  // busca em nome e id).
-  const filteredSortedModels = useMemo(() => {
-    const list = models.data?.models ?? [];
-    const q = modelSearch.trim().toLowerCase();
-    const filtered = !q
-      ? list
-      : list.filter(
-          (m) =>
-            m.name.toLowerCase().includes(q) ||
-            m.id.toLowerCase().includes(q),
-        );
-    return [...filtered].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
-  }, [models.data, modelSearch]);
-
-  const selectedModelLabel = useMemo(() => {
-    const found = (models.data?.models ?? []).find((m) => m.id === model);
-    return found?.name ?? model;
-  }, [models.data, model]);
-
-  const filteredSortedFallbackModels = useMemo(() => {
-    const list = models.data?.models ?? [];
-    const q = fallbackSearch.trim().toLowerCase();
-    const filtered = !q
-      ? list
-      : list.filter(
-          (m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
-        );
-    return [...filtered].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
-  }, [models.data, fallbackSearch]);
-
-  const selectedFallbackLabel = useMemo(() => {
-    if (!fallbackModel) return "";
-    const found = (models.data?.models ?? []).find((m) => m.id === fallbackModel);
-    return found?.name ?? fallbackModel;
-  }, [models.data, fallbackModel]);
-
   const save = useMutation({
     mutationFn: async () => {
       // Temperatura por modelo: mescla os sliders com o mapa existente
       // (preserva temperaturas de outros modelos/papéis já configurados).
       const clampTemp = (n: number) => Math.min(1, Math.max(0, Math.round(n * 10) / 10));
       const modelTemps: Record<string, number> = { ...currentModelTemperatures };
-      modelTemps[model] = clampTemp(primaryTemp);
-      if (fallbackModel) modelTemps[fallbackModel] = clampTemp(fallbackTemp);
+      modelTemps[STANDARD_AGENT_MODEL] = clampTemp(primaryTemp);
       await updateLlm({
         data: {
           accountId,
-          default_model: model,
-          // [] limpa o fallback; senão envia o modelo escolhido.
-          fallback_models: fallbackModel ? [fallbackModel] : [],
+          // Modelo único da plataforma, sem fallback (gravados só para manter a
+          // config da conta coerente — o motor não lê mais esses campos).
+          default_model: STANDARD_AGENT_MODEL,
+          fallback_models: [],
           model_temperatures: modelTemps,
         },
       });
@@ -6469,201 +6407,28 @@ function AgentSettingsView({
           <div className="mx-auto max-w-xl px-6 py-8 space-y-6">
             <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-5">
 
-              {/* Model */}
+              {/* Temperatura do modelo de conversa (modelo único da plataforma) */}
               <div>
-                <Label className="text-sm font-semibold">Modelo de IA (OpenRouter)</Label>
-                <p className="mb-2 text-xs text-muted-foreground">Modelo utilizado para processar as conversas.</p>
-                {!hasOpenRouter ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
-                    Cadastre sua chave OpenRouter em "Conexões e custos" para listar os modelos.
+                <Label className="text-sm font-semibold">Temperatura da IA</Label>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Modelo: {STANDARD_AGENT_MODEL_LABEL} (padrão da plataforma). 0 = mais determinístico
+                  (recomendado para agendamento), 1 = mais criativo.
+                </p>
+                <div className="flex items-center gap-4">
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.1}
+                    value={primaryTemp}
+                    onChange={(e) => setPrimaryTemp(Number(e.target.value))}
+                    className="flex-1 accent-primary"
+                  />
+                  <div className="flex w-16 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 py-1.5 text-sm font-semibold tabular-nums">
+                    {primaryTemp.toFixed(1)}
                   </div>
-                ) : models.isLoading ? (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Carregando modelos…
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={modelOpen ? modelSearch : selectedModelLabel}
-                      onChange={(e) => {
-                        setModelSearch(e.target.value);
-                        setModelOpen(true);
-                      }}
-                      onFocus={() => {
-                        setModelOpen(true);
-                        setModelSearch("");
-                      }}
-                      placeholder={
-                        model ? "Buscar outro modelo…" : "— buscar e escolher modelo —"
-                      }
-                      className="w-full rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    />
-                    {modelOpen && (
-                      <>
-                        {/* clique fora fecha */}
-                        <div
-                          className="fixed inset-0 z-10"
-                          onClick={() => {
-                            setModelOpen(false);
-                            setModelSearch("");
-                          }}
-                        />
-                        <div className="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl">
-                          {filteredSortedModels.length === 0 ? (
-                            <div className="px-3 py-3 text-xs text-muted-foreground">
-                              Nenhum modelo encontrado para "{modelSearch}".
-                            </div>
-                          ) : (
-                            filteredSortedModels.map((m) => (
-                              <button
-                                key={m.id}
-                                type="button"
-                                onClick={() => {
-                                  setModel(m.id);
-                                  setModelOpen(false);
-                                  setModelSearch("");
-                                }}
-                                className={`block w-full border-b border-slate-50 px-3 py-2 text-left text-sm transition-colors last:border-b-0 hover:bg-slate-50 ${
-                                  m.id === model
-                                    ? "bg-primary/5 text-primary"
-                                    : "text-foreground"
-                                }`}
-                              >
-                                <div className="font-medium">{m.name}</div>
-                                <div className="font-mono text-[10px] text-muted-foreground">
-                                  {m.id}
-                                </div>
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
+                </div>
               </div>
-
-              {/* Temperatura do modelo principal */}
-              {hasOpenRouter && !models.isLoading && (
-                <div>
-                  <Label className="text-sm font-semibold">Temperatura do modelo principal</Label>
-                  <p className="mb-2 text-xs text-muted-foreground">
-                    0 = mais determinístico (recomendado para agendamento), 1 = mais criativo.
-                  </p>
-                  <div className="flex items-center gap-4">
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.1}
-                      value={primaryTemp}
-                      onChange={(e) => setPrimaryTemp(Number(e.target.value))}
-                      className="flex-1 accent-primary"
-                    />
-                    <div className="flex w-16 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 py-1.5 text-sm font-semibold tabular-nums">
-                      {primaryTemp.toFixed(1)}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Modelo de fallback */}
-              {hasOpenRouter && !models.isLoading && (
-                <div>
-                  <Label className="text-sm font-semibold">Modelo de fallback (opcional)</Label>
-                  <p className="mb-2 text-xs text-muted-foreground">
-                    Se o modelo principal falhar, o sistema aciona este imediatamente. Deixe vazio para não usar fallback.
-                  </p>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      value={fallbackOpen ? fallbackSearch : selectedFallbackLabel}
-                      onChange={(e) => {
-                        setFallbackSearch(e.target.value);
-                        setFallbackOpen(true);
-                      }}
-                      onFocus={() => {
-                        setFallbackOpen(true);
-                        setFallbackSearch("");
-                      }}
-                      placeholder="— sem fallback (buscar modelo) —"
-                      className="w-full rounded-xl border border-slate-200 bg-background px-4 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    />
-                    {fallbackModel && !fallbackOpen && (
-                      <button
-                        type="button"
-                        onClick={() => setFallbackModel("")}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-muted-foreground hover:text-foreground"
-                      >
-                        limpar
-                      </button>
-                    )}
-                    {fallbackOpen && (
-                      <>
-                        <div
-                          className="fixed inset-0 z-10"
-                          onClick={() => {
-                            setFallbackOpen(false);
-                            setFallbackSearch("");
-                          }}
-                        />
-                        <div className="absolute left-0 right-0 z-20 mt-1 max-h-72 overflow-y-auto rounded-xl border border-slate-200 bg-white shadow-xl">
-                          {filteredSortedFallbackModels.length === 0 ? (
-                            <div className="px-3 py-3 text-xs text-muted-foreground">
-                              Nenhum modelo encontrado para "{fallbackSearch}".
-                            </div>
-                          ) : (
-                            filteredSortedFallbackModels
-                              .filter((m) => m.id !== model)
-                              .map((m) => (
-                                <button
-                                  key={m.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setFallbackModel(m.id);
-                                    setFallbackOpen(false);
-                                    setFallbackSearch("");
-                                  }}
-                                  className={`block w-full border-b border-slate-50 px-3 py-2 text-left text-sm transition-colors last:border-b-0 hover:bg-slate-50 ${
-                                    m.id === fallbackModel ? "bg-primary/5 text-primary" : "text-foreground"
-                                  }`}
-                                >
-                                  <div className="font-medium">{m.name}</div>
-                                  <div className="font-mono text-[10px] text-muted-foreground">{m.id}</div>
-                                </button>
-                              ))
-                          )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Temperatura do modelo de fallback */}
-              {hasOpenRouter && !models.isLoading && fallbackModel && (
-                <div>
-                  <Label className="text-sm font-semibold">Temperatura do modelo de fallback</Label>
-                  <p className="mb-2 text-xs text-muted-foreground">
-                    Aplicada quando o fallback é acionado.
-                  </p>
-                  <div className="flex items-center gap-4">
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.1}
-                      value={fallbackTemp}
-                      onChange={(e) => setFallbackTemp(Number(e.target.value))}
-                      className="flex-1 accent-primary"
-                    />
-                    <div className="flex w-16 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 py-1.5 text-sm font-semibold tabular-nums">
-                      {fallbackTemp.toFixed(1)}
-                    </div>
-                  </div>
-                </div>
-              )}
 
               {/* Voz do assistente (ElevenLabs TTS) — oculto: ainda não
                   implementado (resposta em voz). Reativar quando o TTS
@@ -6793,7 +6558,7 @@ function AgentSettingsView({
             audioResponder={audioResponder}
             configuredIntegrations={configuredIntegrations}
             secretsLast4={secretsLast4}
-            llmModel={currentModel}
+            llmModel={STANDARD_AGENT_MODEL}
           />
         )}
       </div>
