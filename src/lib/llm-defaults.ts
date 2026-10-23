@@ -1,6 +1,22 @@
 /** Modelo padrão OpenRouter para agentes, RAG gate, splitter e jobs auxiliares. */
 export const DEFAULT_LLM_MODEL = "google/gemini-2.5-flash";
 
+/**
+ * Modelo ÚNICO de conversa da plataforma (qualifier, scheduler, follow-up,
+ * replay e treinador), igual em todas as contas — decisão de 23/10/2026. O
+ * painel não mostra mais seletor de modelo nem de fallback: só a temperatura.
+ * `account_llm_config.default_model`, `fallback_models` e
+ * `agents.llm_model_override` deixaram de ser lidos para a conversa.
+ * Modelos auxiliares (tool loop, RAG gate, splitter) continuam à parte.
+ */
+export const STANDARD_AGENT_MODEL = "anthropic/claude-haiku-4.5";
+
+/** Rótulo do modelo padrão para a interface. */
+export const STANDARD_AGENT_MODEL_LABEL = "Claude Haiku 4.5";
+
+/** Temperatura inicial do modelo padrão (a mesma recomendada no painel). */
+export const STANDARD_AGENT_TEMPERATURE = 0.3;
+
 /** Modelo para tool calling (scheduler: listar_horarios, criar_agendamento, etc.). */
 export const DEFAULT_TOOL_MODEL = "openai/gpt-4.1-mini";
 
@@ -10,15 +26,15 @@ export const DEFAULT_TOOL_MODEL = "openai/gpt-4.1-mini";
  * agente para garantir os defaults mesmo sem depender do default da coluna.
  */
 export const DEFAULT_ACCOUNT_LLM_CONFIG = {
-  default_model: "google/gemini-3.5-flash",
+  default_model: STANDARD_AGENT_MODEL,
   splitter_model: "openai/gpt-4.1-mini",
   formatter_model: "openai/gpt-4.1-mini",
   rag_gate_model: "openai/gpt-4.1-mini",
   tool_model: "openai/gpt-4.1-mini",
-  fallback_models: ["openai/gpt-4.1-mini"],
-  // Temperatura por modelo (chave = model id). Vazio → cada modelo usa a
-  // temperatura padrão da conta (coluna temperature).
-  model_temperatures: {} as Record<string, number>,
+  // Sem fallback do modelo de conversa (padrão único da plataforma).
+  fallback_models: [] as string[],
+  // Temperatura por modelo (chave = model id).
+  model_temperatures: { [STANDARD_AGENT_MODEL]: STANDARD_AGENT_TEMPERATURE } as Record<string, number>,
 } as const;
 
 /**

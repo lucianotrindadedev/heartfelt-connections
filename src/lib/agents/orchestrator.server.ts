@@ -64,10 +64,9 @@ import {
 import { limparMarcadoresDeModelo } from "@/lib/placeholder-guard";
 import {
   DEFAULT_LLM_MODEL,
-  DEFAULT_QUALIFIER_FALLBACK_MODELS,
-  DEFAULT_QUALIFIER_MODEL,
   DEFAULT_TOOL_FALLBACK_MODELS,
   DEFAULT_TOOL_MODEL,
+  STANDARD_AGENT_MODEL,
 } from "@/lib/llm-defaults";
 import {
   loadHelenaAccount,
@@ -971,30 +970,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       helenaContact,
       agentSettings,
       basePrompt: (agent.data.system_prompt as string) || "",
-      model:
-        (agent.data.llm_model_override as string | null) ||
-        (llm.data?.default_model as string | undefined) ||
-        DEFAULT_LLM_MODEL,
-      // O qualifier é quem responde o lead nas fases RECEPTION/QUALIFICATION
-      // (ver routeForStage). Deve usar EXATAMENTE o modelo/fallback que a conta
-      // configurou (default_model + fallback_models), não um modelo fixo. A
-      // coluna opcional qualifier_model, se existir e estiver preenchida, ainda
-      // sobrescreve — mas o padrão é o modelo principal configurado.
-      qualifierModel:
-        ((llm.data as Record<string, unknown> | null)?.qualifier_model as string | undefined) ??
-        (llm.data?.default_model as string | undefined) ??
-        DEFAULT_QUALIFIER_MODEL,
-      qualifierFallbackModels: (llm.data?.fallback_models as string[] | undefined) ?? [
-        ...DEFAULT_QUALIFIER_FALLBACK_MODELS,
-      ],
+      // Modelo de conversa ÚNICO da plataforma (qualifier e scheduler), sem
+      // fallback — ver STANDARD_AGENT_MODEL. default_model/fallback_models da
+      // conta e llm_model_override do agente não são mais lidos aqui.
+      model: STANDARD_AGENT_MODEL,
+      qualifierModel: STANDARD_AGENT_MODEL,
+      qualifierFallbackModels: [],
+      // Tool loop do scheduler: modelo auxiliar, com o fallback interno de
+      // sempre (não é o modelo de conversa e não aparece no painel).
       toolModel: (llm.data?.tool_model as string | undefined) ?? DEFAULT_TOOL_MODEL,
-      toolFallbackModels: (llm.data?.fallback_models as string[] | undefined) ?? [
-        ...DEFAULT_TOOL_FALLBACK_MODELS,
-      ],
-      fallbackModels: (llm.data?.fallback_models as string[] | undefined) ?? [
-        "openai/gpt-4o-mini",
-        "anthropic/claude-haiku-4.5",
-      ],
+      toolFallbackModels: [...DEFAULT_TOOL_FALLBACK_MODELS],
+      fallbackModels: [],
       ragGateModel: (llm.data?.rag_gate_model as string | undefined) ?? DEFAULT_LLM_MODEL,
       maxTokens: (llm.data?.max_tokens as number | undefined) ?? 1024,
       temperature: (llm.data?.temperature as number | undefined) ?? 0.5,
