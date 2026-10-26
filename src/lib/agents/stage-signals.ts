@@ -124,6 +124,36 @@ export function isShortAffirmative(text: string): boolean {
 const DATE_AVAILABILITY_REGEX =
   /(disponibilidade|dispon[ií]vel|tem\s+(?:data|vaga|hor[aá]rio|agenda)|data\s+(?:livre|dispon[ií]vel)|agenda\s+(?:livre|aberta)|\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b|\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b)/i;
 
+/**
+ * Datas com ano JÁ PASSADO ("10/01/2019", "25/07/19") nunca são pedido de
+ * disponibilidade — ninguém pede visita em 2019. São data de nascimento, e
+ * saem do texto antes do DATE_AVAILABILITY_REGEX.
+ *
+ * Por que não basta o looksLikeBirthDate: ele só reconhece a mensagem INTEIRA
+ * como data. Quando o lead responde a ficha de abertura com vários campos de
+ * uma vez (nome, nascimento, série, ano e escola, um por linha), a data no
+ * meio casava o regex, a conversa ia direto pro scheduler e a IA ofertava
+ * horário pulando a apresentação da escola. Caso real: Amazing CCZ,
+ * (21) 97558-2703, 23/10/2026.
+ *
+ * Datas sem ano ("dia 28/10") e com o ano corrente ou futuro continuam
+ * valendo como pedido de data.
+ */
+const DATE_WITH_YEAR_REGEX = /\b(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})\b/g;
+
+export function stripPastYearDates(text: string, currentYear: number): string {
+  return (text ?? "").replace(DATE_WITH_YEAR_REGEX, (match, d: string, m: string, y: string) => {
+    // Só data de calendário válida: "agosto 15/16/22/23" é lista de dias, não nascimento.
+    if (Number(d) < 1 || Number(d) > 31 || Number(m) < 1 || Number(m) > 12) return match;
+    let year = Number(y);
+    // "/27" é 2027 (festa marcada pro ano que vem), "/93" é 1993 (nascimento).
+    if (y.length === 2) {
+      year = year <= (currentYear % 100) + 10 ? 2000 + year : 1900 + year;
+    }
+    return year < currentYear ? " " : match;
+  });
+}
+
 export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
   const lastUserMsg =
     [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
@@ -146,10 +176,11 @@ export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
     isShortYes;
 
   // Data de nascimento (resposta de campo) nunca conta como pedido de
-  // disponibilidade — evita roteamento errado quando o lead responde "15/03/2019".
+  // disponibilidade — evita roteamento errado quando o lead responde "15/03/2019",
+  // sozinha ou no meio da ficha com outros dados (ver stripPastYearDates).
   const userAskedDateAvailability =
     (ctx.stage === "RECEPTION" || ctx.stage === "QUALIFICATION") &&
-    DATE_AVAILABILITY_REGEX.test(lastUserMsg) &&
+    DATE_AVAILABILITY_REGEX.test(stripPastYearDates(lastUserMsg, new Date().getFullYear())) &&
     !looksLikeBirthDate(lastUserMsg);
 
   return {
