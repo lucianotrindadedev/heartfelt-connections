@@ -52,6 +52,7 @@ import {
 import { searchKnowledge, formatChunksAsContext } from "@/lib/knowledge/retrieval.server";
 import { sendMediaBySlug, getAvailableMediaForPrompt } from "./send-media.server";
 import { VOCATIVO_RULE } from "./vocativo-guard";
+import { linhaSaudacaoDoHorario } from "./saudacao-guard";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -603,6 +604,7 @@ horários/slots) nem quando ele só está respondendo normalmente.`;
   const stateBlock = `# ESTADO ATUAL
 
 - 📅 HOJE é ${dateStr} (horário de São Paulo). Esta é a SUA referência de tempo: antes de falar de qualquer dia/data, localize-se por ela. NUNCA mencione ou ofereça datas no PASSADO. Ao interpretar "amanhã", "semana que vem", "sexta", "dia 15", "hoje à tarde", calcule SEMPRE a partir de HOJE.
+${linhaSaudacaoDoHorario()}
 - Stage corrente: ${ctx.stage}
 - Ciclos de conversa já completos: ${cycleCount}
 - Canal: ${ctx.channel}

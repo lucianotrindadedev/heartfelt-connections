@@ -133,6 +133,7 @@ import {
 import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 import { isTechRetryReply } from "./booking-failure";
 import { removerVocativoInformal } from "./vocativo-guard";
+import { corrigirSaudacao } from "./saudacao-guard";
 import {
   NEUTRAL_REPEAT_ACK,
   REPHRASE_PREFIX,
@@ -1401,6 +1402,20 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // O rótulo da fala da atendente (labelHumanStaff) nunca sai para o lead, nem
     // apelido/vocativo informal ("Nega, …", "…, querida!") — ver vocativo-guard.ts.
     let reply = removerVocativoInformal(stripHumanStaffLabel(result.reply), leadData.name);
+    // Saudação fora do período ("Boa noite" às 17:15) — ver saudacao-guard.ts.
+    const saudacao = corrigirSaudacao(reply, lastUserBurst(history));
+    if (saudacao.para) {
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "saudacao_corrigida",
+          conv: conversationId,
+          account: accountId,
+          de: saudacao.de,
+          para: saudacao.para,
+        })}`,
+      );
+      reply = saudacao.texto;
+    }
     // Flags de telemetria do turn (vao para meta da mensagem + agent_runs).
     let duplicateReplyBlocked = false;
     let falseBookingClaimBlocked = false;
@@ -2156,6 +2171,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           // no caso Odonto Sorrisos (87 99625-9078). Guardamos o original para
           // conseguir auditar o gatilho depois.
           reply_llm_original: reply !== result.reply ? result.reply.slice(0, 400) : undefined,
+          saudacao_corrigida: saudacao.para ? `${saudacao.de} → ${saudacao.para}` : undefined,
           false_reschedule_claim_blocked: falseRescheduleClaimBlocked || undefined,
           confirmed_objection_blocked: confirmedObjectionBlocked || undefined,
           stall_reply_blocked: stallReplyBlocked || undefined,

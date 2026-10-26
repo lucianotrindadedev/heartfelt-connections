@@ -76,6 +76,7 @@ import { agendaUnicaDoAgente, linhaDiasFechados } from "@/lib/followup-guard";
 import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import { promisesAvailabilityCheck } from "./stage-signals";
 import { VOCATIVO_RULE } from "./vocativo-guard";
+import { linhaSaudacaoDoHorario } from "./saudacao-guard";
 import {
   classifyBookingError,
   parseBookingFailure,
@@ -3209,6 +3210,7 @@ ${ld.selected_agenda ? `- Unidade já escolhida nesta conversa: "${ld.selected_a
   return `# ESTADO ATUAL
 
 - 📅 HOJE é ${dateStr} (São Paulo) — data de referência ISO: ${todayIso}. Localize-se SEMPRE por ela. NUNCA ofereça, confirme ou mencione horários no PASSADO. Só ofereça horários vindos de listar_horarios (que já começa a partir de hoje). Ao passar data_alvo, calcule "amanhã"/"sexta"/"dia 15" a partir de HOJE (${todayIso}).
+${linhaSaudacaoDoHorario()}
 - Stage corrente: ${ctx.stage}
 - Telefone do lead: ${resolveBookingPhone(ctx) ?? "(nenhum telefone ainda — peça o WhatsApp com DDD)"}
 - Canal: ${ctx.channel}
