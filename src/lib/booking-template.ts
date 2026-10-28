@@ -5,6 +5,7 @@ import type { LeadData } from "@/lib/agents/stage";
 import type { AgentContext } from "@/lib/agents/context";
 import type { ConversationChannel } from "@/lib/conversation-channel.server";
 import { stripQuotePrefix } from "./quote-prefix";
+import { isUnsupportedContentPlaceholder } from "./platform-notice";
 
 export interface BookingFieldDef {
   /** Chave em lead_data.custom_fields (ou "name" para lead_data.name). */
@@ -3215,6 +3216,19 @@ function clausulaImpede(clausula: string, p: string): boolean {
   const J20 = `${SEM_OUTRO_TURNO}{0,20}`;
   const J30 = `${SEM_OUTRO_TURNO}{0,30}`;
   const S = IMPEDIMENTO_SOLTO;
+  // Pergunta pela VAGA no turno ("Não tem nenhum horário à tarde?", "não teria
+  // vaga de manhã?") é PEDIDO desse turno, não impedimento — o "não" é da
+  // pergunta, não do lead. Só 3ª pessoa (tem/teria/há): "não TENHO horário de
+  // manhã" é o lead dizendo que não pode, e continua excluindo.
+  // Caso real (Bomfim, lead do Instagram, 28/10): lida como exclusão da
+  // tarde, a frase não bloqueou o agendamento das 09:00.
+  if (
+    new RegExp(
+      `\\bn[ãa]o\\s+(?:tem|teria|haveria|h[áa]|existe)\\s+(?:nenhum[a]?\\s+|algum[a]?\\s+|mais\\s+)?(?:hor[áa]rios?|vagas?|op[çc](?:[ãa]o|[õo]es)|disponibilidade)${SEM_OUTRO_TURNO}{0,20}${p}`,
+    ).test(clausula)
+  ) {
+    return false;
+  }
   return (
     new RegExp(
       `(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`,
@@ -3622,6 +3636,41 @@ export function rankSlotsByRequestedHour<T>(
 /** Turno de um horário, pelos minutos do dia. Fronteiras iguais às de
  *  periodoParaHoras/pickSlotByPreference: manhã <12, tarde 12–18, noite ≥18. */
 export type TurnoSlot = "manha" | "tarde" | "noite";
+/**
+ * O lead pediu um turno na última rajada ("Não tem nenhum horário à tarde?") e o
+ * horário escolhido é de OUTRO turno? Barreira determinística do agendamento.
+ *
+ * Caso real (Clínica Bomfim, lead do Instagram, 28/10): oferta "quarta
+ * 28/10 às 11:30 ou quinta 29/10 às 09:00"; a lead respondeu "Nao tem nenhum
+ * horario a tarde" + "Amanha". O "amanhã" casou com o único slot ofertado de
+ * quinta (09:00) e o agendamento das 09:00 foi criado no Clinicorp — enquanto a
+ * própria resposta perguntava qual horário da TARDE ela queria.
+ *
+ * Devolve o turno pedido e o do slot quando divergem; null quando não há
+ * pedido de turno ou quando bate.
+ */
+export function leadPeriodContradictsSlot(
+  burst: readonly string[],
+  slotIso: string | null | undefined,
+): { pedido: TurnoSlot; doSlot: TurnoSlot } | null {
+  if (!slotIso) return null;
+  const d = new Date(slotIso);
+  if (isNaN(d.getTime())) return null;
+  const pedido = requestedPeriodoFromText(burst.join("\n"));
+  if (!pedido) return null;
+  const [hh, mm] = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .format(d)
+    .split(":")
+    .map(Number);
+  const doSlot = turnoDeMinutos((hh! % 24) * 60 + mm!);
+  return doSlot === pedido ? null : { pedido, doSlot };
+}
+
 export function turnoDeMinutos(minutos: number): TurnoSlot {
   if (minutos < 12 * 60) return "manha";
   if (minutos < 18 * 60) return "tarde";
@@ -3990,6 +4039,9 @@ export function sanitizeLeadDataPatch(
       // era consultado aqui — nomes assim entravam no cadastro do paciente.
       mentionsUnavailability(next.name) ||
       looksLikeSentenceNotName(next.name) ||
+      // Placeholder de conteúdo não suportado ("Mensagem"), sozinho ou grudado
+      // ao nome ("<Nome> Mensagem") — ver isUnsupportedContentPlaceholder.
+      nameHasPlaceholderWord(next.name) ||
       nameHasDigitsOrLink(next.name)
     ) {
       delete next.name;
@@ -4928,6 +4980,11 @@ export function stripNameIntroduction(text: string): string {
   return semIntro.trim() || t;
 }
 
+/** Alguma palavra do nome é o placeholder "Mensagem"/"Message" da Helena? */
+export function nameHasPlaceholderWord(name: string | null | undefined): boolean {
+  return (name ?? "").trim().split(/\s+/).some((w) => isUnsupportedContentPlaceholder(w));
+}
+
 /**
  * O lead respondeu o primeiro nome ("Ana") e, quando pedimos o sobrenome,
  * respondeu só "Souza". Sem juntar, a captura sobrescreveria "Ana" por "Souza",
@@ -4943,6 +5000,8 @@ export function mergePartialName(
   const prev = (existing ?? "").trim();
   const next = answer.trim();
   if (!prev) return next;
+  // "Mensagem" não é sobrenome — é o placeholder de conteúdo não suportado.
+  if (nameHasPlaceholderWord(next)) return prev;
   if (field && !requiresFullName(field)) return next;
   // Já estava completo, ou o lead repetiu o nome inteiro → a resposta nova manda.
   if (hasSurname(prev) || hasSurname(next)) return next;

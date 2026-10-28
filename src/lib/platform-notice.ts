@@ -27,8 +27,24 @@
 export function isPlatformNotice(text: string | null | undefined): boolean {
   const t = (text ?? "").trim();
   if (!t) return false;
+  if (isUnsupportedContentPlaceholder(t)) return true;
   if (!/^\*aten[çc][ãa]o:\*/i.test(t)) return false;
   return /(n[ãa]o\s+(?:é|e)\s+suportad|n[ãa]o\s+suportada\s+pela\s+api|this\s+message\s+is\s+unavailable|message\s+type\s+unknown)/i.test(
     t,
   );
+}
+
+/**
+ * Texto que a Helena grava NO LUGAR de um conteúdo do Instagram que ela não
+ * entende (figurinha, compartilhamento de post, story): uma mensagem com a
+ * palavra "Mensagem" sozinha, logo depois do aviso "*Atenção:* o tipo da
+ * mensagem… não é suportado". Ninguém escreve só "Mensagem" para a clínica.
+ *
+ * Caso real (Clínica Bomfim, lead do Instagram, 28/10): a lead
+ * mandou o WhatsApp, em seguida um conteúdo não suportado, e o "Mensagem" foi
+ * lido como resposta dela — o agente passou a chamá-la de "Mensagem" e o
+ * paciente foi cadastrado no Clinicorp como "<Nome> Mensagem".
+ */
+export function isUnsupportedContentPlaceholder(text: string | null | undefined): boolean {
+  return /^(?:mensagem|message)[.!]?$/i.test((text ?? "").trim());
 }
