@@ -151,6 +151,10 @@ export const replayConversation = createServerFn({ method: "POST" })
       (conv.data.phone as string | null) ??
       null;
 
+    // Multi-agenda (uma agenda por loja/unidade): sem isto a simulação usava a
+    // agenda padrão e nunca exercitava o parâmetro `agenda` das tools.
+    const googleAgendas = gcalCfg.data?.ativo ? await listAccountAgendas(accountId) : [];
+
     const buildCtx = (
       history: { role: "user" | "assistant"; content: string }[],
       stage: Stage,
@@ -190,9 +194,7 @@ export const replayConversation = createServerFn({ method: "POST" })
         googleSheets: planilhas.length > 0,
       },
       googleSheets: planilhas,
-      // Multi-agenda (uma agenda por loja/unidade): sem isto a simulação usava
-      // a agenda padrão e nunca exercitava o parâmetro `agenda` das tools.
-      googleAgendas: gcalCfg.data?.ativo ? await listAccountAgendas(accountId) : [],
+      googleAgendas,
       clinicExpertsProfessionals: [],
       clinicExpertsUnidades: [],
     clinupProfessionals: [],
