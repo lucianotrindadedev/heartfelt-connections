@@ -57,6 +57,8 @@ export interface LeadData {
   /** Label da agenda Google escolhida (multi-agenda). Definido ao listar/oferecer
    *  horários e reusado no booking/cancelamento para agir na agenda certa. */
   selected_agenda?: string;
+  /** Mídia de abertura (settings.midia_inicio_slug) já enviada nesta conversa. */
+  midia_inicio_enviada?: boolean;
   /** Lista atual de horários oferecidos (para validar escolha do lead).
    *  end_iso = fim real do slot conforme a grade da agenda (Clinicorp), usado
    *  no booking para não estourar a grade com a duração padrão. */

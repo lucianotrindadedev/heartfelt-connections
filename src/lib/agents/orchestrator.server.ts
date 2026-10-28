@@ -104,6 +104,8 @@ import {
   TRANSFER_UNITS_SETTING,
 } from "@/lib/transfer-units";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
+import { midiaInicioPendente } from "./midia-inicio";
+import { sendMediaBySlug } from "./send-media.server";
 import { notifyBooking } from "@/lib/agents/notify-booking.server";
 import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
 import type { AgentContext, AgentResult } from "./context";
@@ -2151,6 +2153,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       reply = limpezaMarcadores.texto || "Me conta um pouquinho mais pra eu te ajudar certinho? 😊";
     }
 
+    // Mídia de abertura (arte de campanha etc.): sai antes da 1ª resposta, uma
+    // vez só — ver midia-inicio.ts. Marcada antes do persist para um
+    // reprocessamento do turno não reenviar.
+    const midiaInicio =
+      newStage !== "ESCALATED" ? midiaInicioPendente(agentSettings, finalLeadData, history) : null;
+    if (midiaInicio) finalLeadData.midia_inicio_enviada = true;
+
     // 12. Persiste e entrega
     await persistStageAndLeadData(conversationId, meta, newStage, finalLeadData, route);
 
@@ -2163,6 +2172,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // e a notificação pra equipe (WhatsApp/Leads360) ficava perdida PARA SEMPRE,
     // mesmo que o lead recebesse a resposta depois num retry.
     try {
+      if (midiaInicio) {
+        // Falha no envio da mídia não segura a resposta em texto.
+        const enviada = await sendMediaBySlug(ctx, midiaInicio);
+        console.log(
+          `[orch] mídia de abertura "${midiaInicio}" conv=${conversationId} → ${enviada.ok ? "enviada" : `falhou: ${enviada.error}`}`,
+        );
+      }
       await deliverReply(
         accountId,
         agentId,
