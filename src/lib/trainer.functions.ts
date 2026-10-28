@@ -18,6 +18,7 @@ import {
 } from "@/lib/llm-defaults";
 import { splitMessage } from "@/lib/message-splitter.server";
 import { listAccountSheets } from "@/lib/tools/google-sheets.server";
+import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import type { AgentContext } from "@/lib/agents/context";
 import { runQualifierAgent } from "@/lib/agents/qualifier.server";
 import { isUnifiedMode, runSchedulerAgent } from "@/lib/agents/scheduler.server";
@@ -175,7 +176,9 @@ export const runTrainerTurn = createServerFn({ method: "POST" })
       // Planilha entra no treinador (leitura pura, sem efeito colateral) — é
       // justamente onde se testa se o agente responde preço com o dado real.
       googleSheets: planilhas,
-      googleAgendas: [],
+      // Multi-agenda (uma agenda por loja/unidade): sem isto a simulação usava
+      // a agenda padrão e nunca exercitava o parâmetro `agenda` das tools.
+      googleAgendas: gcalCfg.data?.ativo ? await listAccountAgendas(data.accountId) : [],
       clinicExpertsProfessionals: [],
       clinicExpertsUnidades: [],
       clinupProfessionals: [],

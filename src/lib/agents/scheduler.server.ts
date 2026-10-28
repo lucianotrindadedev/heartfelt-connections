@@ -546,7 +546,18 @@ export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
   const sheetTool = buildConsultarPlanilhaTool(ctx);
   if (sheetTool) base = [...base, sheetTool];
 
-  if (!agendaParamActive(ctx)) return base;
+  return withAgendaParam(ctx, base);
+}
+
+/**
+ * Em multi-agenda (2+ agendas Google) ou multi-unidade (2+ unidades Clinic
+ * Experts), injeta o parâmetro obrigatório `agenda` (enum dos labels) em
+ * listar_horarios e criar_agendamento. Fora disso, devolve as tools como estão.
+ * Usado pelo scheduler e pela consulta de horários do qualifier — sem o
+ * parâmetro, a busca do qualifier numa conta multi-agenda sempre voltava erro.
+ */
+export function withAgendaParam(ctx: AgentContext, tools: LlmTool[]): LlmTool[] {
+  if (!agendaParamActive(ctx)) return tools;
 
   // GCal tem precedência (ver isMultiUnidadeCe). O enum lista agendas Google
   // OU unidades Clinic Experts — nunca a mistura dos dois.
@@ -565,7 +576,7 @@ export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
       options.map((o) => `- "${o.label}": ${o.descricao || "(sem descrição)"}`).join("\n"),
   };
 
-  return base.map((t) => {
+  return tools.map((t) => {
     if (t.function.name !== "listar_horarios" && t.function.name !== "criar_agendamento") {
       return t;
     }

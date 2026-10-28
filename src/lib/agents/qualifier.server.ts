@@ -21,7 +21,7 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
-import { execListarHorarios, turnoDaBusca } from "./scheduler.server";
+import { execListarHorarios, turnoDaBusca, withAgendaParam } from "./scheduler.server";
 import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
 import {
   buildConsultarPlanilhaTool,
@@ -185,13 +185,15 @@ const QUALIFIER_AGENDA_TOOL: LlmTool = {
  *  determinística de turma (turma_auto), removemos aplicar_tag_interesse — a
  *  tag de turma é aplicada pelo código, nunca pelo LLM (evita etiqueta no chute
  *  ou turma errada). Com agenda ativa, ganha a consulta de horários (read-only). */
-function buildQualifierTools(ctx: AgentContext): LlmTool[] {
+export function buildQualifierTools(ctx: AgentContext): LlmTool[] {
   let tools = QUALIFIER_TOOLS;
   if (agentUsesTurmaClassifier(ctx.agentSettings)) {
     tools = tools.filter((t) => t.function.name !== "aplicar_tag_interesse");
   }
   if (hasBookingIntegration(ctx)) {
-    tools = [...tools, QUALIFIER_AGENDA_TOOL];
+    // Multi-agenda / multi-unidade: a consulta precisa saber QUAL agenda (loja,
+    // unidade) — o mesmo parâmetro `agenda` do scheduler.
+    tools = [...tools, ...withAgendaParam(ctx, [QUALIFIER_AGENDA_TOOL])];
   }
   // Planilha (tabela de preços etc.): pergunta de valor chega quase sempre na
   // qualificação, então a consulta precisa existir aqui — não só no scheduler.
@@ -900,7 +902,12 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
           outcome = await execListarHorarios(
             ctx,
             undefined,
-            undefined,
+            // Sem `agenda` (conta de agenda única, ou o modelo omitiu), segue a
+            // agenda já escolhida na conversa — numa central de lojas, sem
+            // nenhuma das duas a busca devolve erro pedindo a loja.
+            typeof args.agenda === "string" && args.agenda.trim()
+              ? args.agenda
+              : (ctx.leadData.selected_agenda ?? undefined),
             typeof args.data_alvo === "string" ? args.data_alvo : undefined,
             typeof args.periodo === "string" ? args.periodo : undefined,
           );

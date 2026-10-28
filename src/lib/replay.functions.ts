@@ -32,6 +32,7 @@ import { runSchedulerAgent } from "@/lib/agents/scheduler.server";
 import { routeForStage, type LeadData, type Stage } from "@/lib/agents/stage";
 import { mergeLeadDataPatch } from "@/lib/booking-template";
 import { listAccountSheets } from "@/lib/tools/google-sheets.server";
+import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 
 interface ReplayMessage {
   role: "user" | "assistant";
@@ -189,7 +190,9 @@ export const replayConversation = createServerFn({ method: "POST" })
         googleSheets: planilhas.length > 0,
       },
       googleSheets: planilhas,
-      googleAgendas: [],
+      // Multi-agenda (uma agenda por loja/unidade): sem isto a simulação usava
+      // a agenda padrão e nunca exercitava o parâmetro `agenda` das tools.
+      googleAgendas: gcalCfg.data?.ativo ? await listAccountAgendas(accountId) : [],
       clinicExpertsProfessionals: [],
       clinicExpertsUnidades: [],
     clinupProfessionals: [],
