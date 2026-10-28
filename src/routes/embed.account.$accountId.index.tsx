@@ -192,6 +192,7 @@ import {
   transcribeAudio,
 } from "@/lib/media.functions";
 import { lineDiff, diffChangeBlocks, diffStats, type DiffOp } from "@/lib/text-diff";
+import { MIDIA_INICIO_SETTING } from "@/lib/agents/midia-inicio";
 
 interface AccountSearch {
   picked?: string;
@@ -891,7 +892,10 @@ function bhToHuman(s: WeekSchedule): string {
     const range = j - i > 1
       ? `${shortName[cur.key]}–${shortName[active[j - 1].key]}`
       : shortName[cur.key];
-    parts.push(`${range}: ${sch.start}–${sch.end} (almoço ${sch.lunch_start}–${sch.lunch_end})`);
+    // Sem almoço cadastrado, nada de "(almoço –)" / "(almoço undefined–undefined)":
+    // este texto vai no prompt do agente (settings.business_hours).
+    const almoco = sch.lunch_start && sch.lunch_end ? ` (almoço ${sch.lunch_start}–${sch.lunch_end})` : "";
+    parts.push(`${range}: ${sch.start}–${sch.end}${almoco}`);
     i = j;
   }
   return parts.length ? parts.join(" / ") : "Não definido";
@@ -1478,7 +1482,7 @@ function TrainingView({
           />
         </>
       ) : (
-        <MediaLibrary agentId={agentId} />
+        <MediaLibrary agentId={agentId} accountId={accountId} agentSettings={agentSettings} />
       )}
 
       {/* Templates modal */}
@@ -2221,9 +2225,34 @@ interface AgentMediaItem {
   criado_em: string;
 }
 
-function MediaLibrary({ agentId }: { agentId: string }) {
+function MediaLibrary({
+  agentId,
+  accountId,
+  agentSettings,
+}: {
+  agentId: string;
+  accountId: string;
+  agentSettings: Record<string, string>;
+}) {
   const qc = useQueryClient();
   const listFn = useServerFn(listAgentMedia);
+  const mergeSettingsFn = useServerFn(mergeAgentSettings);
+  // Mídia de abertura: enviada uma vez, antes da 1ª resposta (ver midia-inicio.ts).
+  const [midiaInicio, setMidiaInicio] = useState(agentSettings[MIDIA_INICIO_SETTING] ?? "");
+
+  async function toggleMidiaInicio(slug: string) {
+    const next = midiaInicio === slug ? "" : slug;
+    const prev = midiaInicio;
+    setMidiaInicio(next);
+    try {
+      await mergeSettingsFn({ data: { accountId, settings: { [MIDIA_INICIO_SETTING]: next } } });
+      qc.invalidateQueries({ queryKey: ["agent", accountId] });
+      toast.success(next ? "Mídia será enviada no início da conversa." : "Mídia de abertura desligada.");
+    } catch (e) {
+      setMidiaInicio(prev);
+      toast.error(e instanceof Error ? e.message : "Erro ao salvar");
+    }
+  }
   const uploadFn = useServerFn(uploadAgentMedia);
   const updateFn = useServerFn(updateAgentMedia);
   const delFn = useServerFn(deleteAgentMedia);
@@ -2369,6 +2398,8 @@ function MediaLibrary({ agentId }: { agentId: string }) {
           <MediaCard
             key={m.id}
             item={m}
+            isOpening={!!midiaInicio && midiaInicio === m.slug}
+            onToggleOpening={() => void toggleMidiaInicio(m.slug)}
             onRemove={() => void removeMedia(m.id, m.title)}
             onSave={(patch) => void saveEdit(m, patch)}
           />
@@ -2437,10 +2468,14 @@ function MediaLibrary({ agentId }: { agentId: string }) {
 
 function MediaCard({
   item,
+  isOpening,
+  onToggleOpening,
   onRemove,
   onSave,
 }: {
   item: AgentMediaItem;
+  isOpening: boolean;
+  onToggleOpening: () => void;
   onRemove: () => void;
   onSave: (patch: Partial<AgentMediaItem>) => void;
 }) {
@@ -2532,6 +2567,15 @@ function MediaCard({
                 Remover
               </button>
             </div>
+            <label className="mt-2 flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
+              <input
+                type="checkbox"
+                checked={isOpening}
+                onChange={onToggleOpening}
+                className="h-3.5 w-3.5 accent-primary"
+              />
+              Enviar no início da conversa
+            </label>
           </>
         )}
       </div>
