@@ -31,6 +31,9 @@ export interface LeadData {
   interest?: string;
   /** Reason quando estado for ESCALATED. */
   escalation_reason?: string;
+  /** Loja/unidade de destino quando a central TRANSFERE o atendimento (nome de
+   *  uma loja de agents.settings.transfer_units_json) — ver transfer-units.ts. */
+  transfer_unit?: string;
   /** ISO 8601 (com fuso) em que o lead pediu para ser contatado. Enquanto for
    *  futuro, SEGURA os follow-ups automáticos até essa data ("me chama amanhã").
    *  Limpo quando o lead volta a responder (re-engajou). */

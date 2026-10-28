@@ -60,6 +60,7 @@ import {
   execConsultarPlanilha,
 } from "./sheets.server";
 import type { AgentContext, AgentResult } from "./context";
+import { buildTransferUnitsPromptBlock, parseTransferUnits, TRANSFER_UNITS_SETTING } from "@/lib/transfer-units";
 import { AGENDA_LISTING_TOOL_NAMES } from "./agenda-tool-names";
 import { cacheTtlFromSettings } from "./context";
 import type { LeadData, Stage } from "./stage";
@@ -328,6 +329,7 @@ const leadDataPatchShape = {
   appointment_id: z.union([z.number(), z.string()]).nullish(),
   notes: z.string().nullish(),
   escalation_reason: z.string().nullish(),
+  transfer_unit: z.string().nullish(),
   retomar_em: z.string().nullish(),
   retorno_motivo: z.string().nullish(),
   custom_fields: coercibleStringRecord.nullish(),
@@ -3189,6 +3191,9 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
   // do prompt caching. Ver buildCachedSystemPrompt.
   const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
   const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+  const transferBlock = buildTransferUnitsPromptBlock(
+    parseTransferUnits(ctx.agentSettings[TRANSFER_UNITS_SETTING]),
+  );
 
   // Bloco de agendas (multi-agenda). Lista os labels + quando usar cada uma,
   // e instrui o agente a passar o parâmetro `agenda` nas tools de agenda.
@@ -3232,7 +3237,7 @@ ${ld.selected_agenda ? `- Unidade já escolhida nesta conversa: "${ld.selected_a
 - Stage corrente: ${ctx.stage}
 - Telefone do lead: ${resolveBookingPhone(ctx) ?? "(nenhum telefone ainda — peça o WhatsApp com DDD)"}
 - Canal: ${ctx.channel}
-${phoneBlock ? `\n${phoneBlock}\n` : ""}${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}${transferBlock ? `\n${transferBlock}\n` : ""}${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
 ${agendasBlock}
 # LEAD_DATA ACUMULADO
 

@@ -97,6 +97,12 @@ import {
 import { haltConversationForNoCredits } from "@/lib/credits.server";
 import { isInsufficientCreditsError } from "@/lib/agents/llm.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
+import {
+  parseTransferUnits,
+  resolveTransferUnit,
+  TRANSFER_TAG,
+  TRANSFER_UNITS_SETTING,
+} from "@/lib/transfer-units";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { notifyBooking } from "@/lib/agents/notify-booking.server";
 import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
@@ -677,7 +683,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // sob o contexto de "isto aqui precisa de humano". String vazia, não
       // undefined — stripNullishFields apaga a chave em vez de zerar o valor
       // (o campo ficava grudento e voltava no turn seguinte).
-      leadData = { ...leadData, escalation_reason: "" };
+      // A loja da transferência anterior (central de lojas) idem: sem isto, a
+      // loja ainda gravada forçaria uma nova transferência já no próximo turn.
+      leadData = { ...leadData, escalation_reason: "", transfer_unit: "" };
     }
     // Captura ANTES de qualquer mutação — usado para detectar transições de
     // agendamento (sem→com = agendou; com→sem = cancelou) e disparar a
@@ -2038,6 +2046,40 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // troca a resposta pelo pedido do WhatsApp; o escalation_reason fica no
     // lead_data, e no próximo turn — com o número capturado ou recusado — a
     // transferência segue. Ver shouldHoldEscalationForPhone.
+    // Central de lojas: a IA indicou a loja (transfer_unit) mas não mudou o
+    // estágio. Loja cadastrada = transferência; o estágio vem junto. Roda antes
+    // da trava de telefone do Instagram, que continua valendo para a transferência.
+    const transferUnits = parseTransferUnits(agentSettings[TRANSFER_UNITS_SETTING]);
+    const transferUnit = resolveTransferUnit(transferUnits, finalLeadData.transfer_unit);
+    // Só força o estágio quando a IA indicou a loja NESTE turn — a loja já
+    // gravada (ex.: transferência segurada pela trava de telefone) segue o
+    // fluxo normal da escalada.
+    const transferUnitThisTurn = !!resolveTransferUnit(
+      transferUnits,
+      ((result.lead_data_patch ?? {}) as Partial<LeadData>).transfer_unit,
+    );
+    if (transferUnit && transferUnitThisTurn && newStage !== "ESCALATED" && stage !== "ESCALATED") {
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "transfer_unit_forced_escalation",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          unit: transferUnit.name,
+          stage_from: stage,
+        })}`,
+      );
+      newStage = "ESCALATED";
+    }
+    if (transferUnit && newStage === "ESCALATED") {
+      finalLeadData = {
+        ...finalLeadData,
+        transfer_unit: transferUnit.name,
+        escalation_reason:
+          finalLeadData.escalation_reason?.trim() || `Transferido para ${transferUnit.name}`,
+      };
+    }
+
     let escalationHeldForPhone = false;
     let escalationResumedAfterPhone = false;
     if (
@@ -2234,6 +2276,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           orKey,
           summaryModel: ctx.ragGateModel,
           disableTags: ctx.disableTags,
+          // Central de lojas: alerta também no WhatsApp da loja + etiqueta "Transferido".
+          transferUnit: resolveTransferUnit(transferUnits, finalLeadData.transfer_unit) ?? undefined,
+          extraTags: resolveTransferUnit(transferUnits, finalLeadData.transfer_unit)
+            ? [TRANSFER_TAG]
+            : undefined,
         });
       } catch (e) {
         console.error("[orch] escalateToHuman falhou:", e);
@@ -2339,6 +2386,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         await sendLeads360Transfer(leads360, {
           name: leads360Name,
           phone: leads360Phone,
+          // Central de lojas: a loja de destino; sem loja, "Atendimento Humano".
+          destination: resolveTransferUnit(transferUnits, finalLeadData.transfer_unit)?.name,
         });
       }
     }
