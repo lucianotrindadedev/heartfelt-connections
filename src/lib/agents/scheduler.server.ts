@@ -965,6 +965,26 @@ function parseDataAlvoBrt(dataAlvo?: string): Date | null {
  * e o "11h" da lead casou o slot de segunda — agendou no dia ERRADO (e num
  * profissional que nem atende quinta).
  */
+/** Ver historicoParaPreferencias. */
+export const AGENDA_IGNORA_DATAS_SETTING = "agenda_ignora_datas_da_conversa";
+
+/**
+ * Histórico de onde a busca de horários tira as preferências do lead (dia,
+ * dia da semana, turno, hora) quando o modelo não as passa.
+ *
+ * Com `agenda_ignora_datas_da_conversa = "true"` devolve vazio: a agenda é de
+ * outra coisa que a conversa (Game Point: a agenda é da VISITA, mas o lead fala
+ * da data da FESTA — "sábado de julho", "dia 14 de março"). Sem isso a busca se
+ * prendia a sábado/julho e a visita saía longe ou no dia errado. Nesse modo só
+ * vale o que o modelo pedir explicitamente (data_alvo/periodo).
+ */
+export function historicoParaPreferencias(
+  ctx: Pick<AgentContext, "history" | "agentSettings">,
+): { role: "user" | "assistant"; content: string }[] {
+  const v = String(ctx.agentSettings?.[AGENDA_IGNORA_DATAS_SETTING] ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "sim" ? [] : ctx.history;
+}
+
 function requestedDateFromHistory(
   history: { role: "user" | "assistant"; content: string }[],
 ): string | null {
@@ -1072,7 +1092,7 @@ export function turnoDaBusca(
 ): "manha" | "tarde" | "noite" | undefined {
   return resolvePeriodoBusca({
     doModelo: periodoDoModelo,
-    doLead: requestedPeriodoFromHistory(ctx.history),
+    doLead: requestedPeriodoFromHistory(historicoParaPreferencias(ctx)),
   }).periodo;
 }
 
@@ -1125,7 +1145,7 @@ export async function execListarHorarios(
   // a quinta tinha 35 vagas e o agente disse que não tinha horário. O dia pedido
   // vem do data_alvo (LLM) ou é inferido do histórico (ex.: "quinta").
   const requestedDay =
-    (dataAlvo && dataAlvo.slice(0, 10)) || requestedDateFromHistory(ctx.history) || null;
+    (dataAlvo && dataAlvo.slice(0, 10)) || requestedDateFromHistory(historicoParaPreferencias(ctx)) || null;
   const askingDifferentDay = isAskingDifferentDay(selected, requestedDay);
   if (selected && askingDifferentDay) {
     console.log(
@@ -1171,7 +1191,7 @@ export async function execListarHorarios(
   // dias_a_frente). Com dias_a_frente explícito o LLM está fazendo uma busca
   // ampla de propósito (ex.: achar alternativas) — respeita isso.
   const resolvedDataAlvo =
-    dataAlvo ?? (diasAFrente == null ? requestedDateFromHistory(ctx.history) : null) ?? undefined;
+    dataAlvo ?? (diasAFrente == null ? requestedDateFromHistory(historicoParaPreferencias(ctx)) : null) ?? undefined;
   if (!dataAlvo && resolvedDataAlvo) {
     console.log(
       `[scheduler] listar_horarios conv=${ctx.conversationId}: data_alvo ausente do LLM — ancorando no dia pedido pelo lead (${resolvedDataAlvo})`,
@@ -1189,7 +1209,7 @@ export async function execListarHorarios(
   // de manhã" com a manhã livre (ver requestedPeriodoFromHistory).
   const turno = resolvePeriodoBusca({
     doModelo: periodo,
-    doLead: requestedPeriodoFromHistory(ctx.history),
+    doLead: requestedPeriodoFromHistory(historicoParaPreferencias(ctx)),
   });
   // Mesmo resultado que turnoDaBusca(ctx, periodo) — a funcao exportada existe
   // para quem precisa saber o turno SEM disparar a busca.
@@ -1206,7 +1226,7 @@ export async function execListarHorarios(
   // Hora exata pedida pelo lead ("16h", "às 16 horas"): usada para priorizar,
   // dentro do turno, os horários mais próximos dela antes do corte de 6 — ver
   // requestedHoraFromHistory.
-  const resolvedHora = requestedHoraFromHistory(ctx.history);
+  const resolvedHora = requestedHoraFromHistory(historicoParaPreferencias(ctx));
 
   // DIA DA SEMANA pedido ("tem que ser no sábado"). É uma RESTRIÇÃO, não uma
   // data: quando aquele sábado não tem vaga, o certo é procurar o PRÓXIMO
@@ -1224,7 +1244,7 @@ export async function execListarHorarios(
   const anchorKeyRaw = anchor
     ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
     : null;
-  const diaSemanaPedido = requestedWeekdayFromHistory(ctx.history);
+  const diaSemanaPedido = requestedWeekdayFromHistory(historicoParaPreferencias(ctx));
   const restringeDiaSemana =
     diaSemanaPedido && anchorKeyRaw && weekdayKeyOfIso(anchorKeyRaw) === diaSemanaPedido
       ? diaSemanaPedido
