@@ -3221,7 +3221,7 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
   // mudam a cada turno — mantê-los fora do systemCached preserva o prefix-match
   // do prompt caching. Ver buildCachedSystemPrompt.
   const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
-  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone, ctx.agentSettings);
   const transferBlock = buildTransferUnitsPromptBlock(
     parseTransferUnits(ctx.agentSettings[TRANSFER_UNITS_SETTING]),
   );

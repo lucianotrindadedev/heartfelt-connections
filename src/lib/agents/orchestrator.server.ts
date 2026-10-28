@@ -36,6 +36,8 @@ import {
   isEscalationAwaitingPhone,
   hasBookingPhone,
   shouldHoldEscalationForPhone,
+  precisaPedirWhatsapp,
+  comPedidoDeWhatsapp,
   resolveLeadPhone,
   defaultCommitmentQuestion,
   getBookingFieldsForChannel,
@@ -2046,8 +2048,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Instagram/Messenger sem telefone: a transferência espera o número. Roda
     // DEPOIS do ghost-escalation acima (que pode ter forçado o ESCALATED) e
     // troca a resposta pelo pedido do WhatsApp; o escalation_reason fica no
-    // lead_data, e no próximo turn — com o número capturado ou recusado — a
-    // transferência segue. Ver shouldHoldEscalationForPhone.
+    // lead_data, e a transferência só segue quando o número chegar — sem ele,
+    // pede de novo (obrigatório). Ver shouldHoldEscalationForPhone.
     // Central de lojas: a IA indicou a loja (transfer_unit) mas não mudou o
     // estágio. Loja cadastrada = transferência; o estágio vem junto. Roda antes
     // da trava de telefone do Instagram, que continua valendo para a transferência.
@@ -2089,8 +2091,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       stage !== "ESCALATED" &&
       isEscalationAwaitingPhone(history, finalLeadData.escalation_reason)
     ) {
-      // Turn seguinte ao pedido: o lead mandou o número (já capturado em
-      // custom_fields) ou recusou. A transferência segurada acontece agora.
+      // Turn seguinte ao pedido: com o número capturado em custom_fields, a
+      // transferência segurada acontece agora; sem ele, a trava abaixo segura
+      // de novo e insiste no pedido.
       escalationResumedAfterPhone = true;
       newStage = "ESCALATED";
       reply = escalationDoneReply(finalLeadData.name);
@@ -2101,7 +2104,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       shouldHoldEscalationForPhone({
         channel,
         hasPhone: hasBookingPhone(finalLeadData, agentSettings, effectivePhone, normalizeBrazilPhone),
-        history,
       })
     ) {
       escalationHeldForPhone = true;
@@ -2117,7 +2119,37 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         })}`,
       );
       newStage = stage;
-      reply = escalationPhoneAskReply(finalLeadData.name);
+      reply = escalationPhoneAskReply(finalLeadData.name, escalationResumedAfterPhone);
+    }
+
+    // WhatsApp OBRIGATÓRIO em Instagram/Messenger: identificado o lead (ou
+    // desde a 1ª resposta, com whatsapp_no_inicio), toda resposta pede o número
+    // até ele chegar. O prompt já manda pedir; isto garante quando o modelo
+    // esquece. Agendar e transferir continuam travados sem número.
+    if (
+      !escalationHeldForPhone &&
+      newStage !== "ESCALATED" &&
+      stage !== "ESCALATED" &&
+      precisaPedirWhatsapp({
+        channel,
+        hasPhone: hasBookingPhone(finalLeadData, agentSettings, effectivePhone, normalizeBrazilPhone),
+        leadName: finalLeadData.name,
+        settings: agentSettings,
+      })
+    ) {
+      const comPedido = comPedidoDeWhatsapp(reply);
+      if (comPedido !== reply) {
+        console.warn(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "whatsapp_obrigatorio_pedido",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            channel,
+          })}`,
+        );
+        reply = comPedido;
+      }
     }
 
     // Leads360: decide o que sincronizar neste turn. O envio HTTP é best-effort

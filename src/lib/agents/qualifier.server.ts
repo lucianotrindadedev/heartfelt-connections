@@ -555,7 +555,7 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
   const hasExplicitInterestInM1 =
     !!utm?.content || (m1Trimmed.length >= 20 && !isGreetingOnly && hasIntentWords);
 
-  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone, ctx.agentSettings);
   const transferBlock = buildTransferUnitsPromptBlock(
     parseTransferUnits(ctx.agentSettings[TRANSFER_UNITS_SETTING]),
   );
