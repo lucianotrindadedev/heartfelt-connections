@@ -4,10 +4,13 @@
 import { describe, expect, it } from "vitest";
 import {
   buildChannelPhonePromptBlock,
+  comPedidoDeWhatsapp,
   escalationDoneReply,
   escalationPhoneAskReply,
   isEscalationAwaitingPhone,
+  precisaPedirWhatsapp,
   shouldHoldEscalationForPhone,
+  WHATSAPP_NO_INICIO_SETTING,
 } from "./booking-template";
 
 type Msg = { role: "user" | "assistant"; content: string };
@@ -25,37 +28,25 @@ const anderson: Msg[] = [
 
 describe("shouldHoldEscalationForPhone", () => {
   it("Instagram sem telefone e sem pedido recente → segura (o caso do Anderson)", () => {
-    expect(shouldHoldEscalationForPhone({ channel: "instagram", hasPhone: false, history: anderson })).toBe(true);
+    expect(shouldHoldEscalationForPhone({ channel: "instagram", hasPhone: false })).toBe(true);
   });
 
   it("Messenger sem telefone → segura também", () => {
-    expect(shouldHoldEscalationForPhone({ channel: "messenger", hasPhone: false, history: anderson })).toBe(true);
+    expect(shouldHoldEscalationForPhone({ channel: "messenger", hasPhone: false })).toBe(true);
   });
 
   it("WhatsApp nunca segura — o telefone é o próprio canal", () => {
-    expect(shouldHoldEscalationForPhone({ channel: "whatsapp", hasPhone: false, history: anderson })).toBe(false);
+    expect(shouldHoldEscalationForPhone({ channel: "whatsapp", hasPhone: false })).toBe(false);
   });
 
   it("Instagram com telefone já coletado → não segura", () => {
-    expect(shouldHoldEscalationForPhone({ channel: "instagram", hasPhone: true, history: anderson })).toBe(false);
+    expect(shouldHoldEscalationForPhone({ channel: "instagram", hasPhone: true })).toBe(false);
   });
 
-  it("telefone já pedido nas últimas falas → não segura (lead recusou ou ignorou: transfere mesmo assim)", () => {
-    const pediu: Msg[] = [
-      ...anderson,
-      { role: "assistant", content: escalationPhoneAskReply("Anderson") },
-      { role: "user", content: "prefiro não passar" },
-    ];
-    expect(shouldHoldEscalationForPhone({ channel: "instagram", hasPhone: false, history: pediu })).toBe(false);
-  });
-
-  it("pedido antigo (fora das 3 últimas falas do agente) não vale — pede de novo antes de transferir", () => {
-    const antigo: Msg[] = [
-      { role: "assistant", content: "Me passa seu WhatsApp com DDD?" },
-      { role: "user", content: "depois" },
-      ...anderson,
-    ];
-    expect(shouldHoldEscalationForPhone({ channel: "instagram", hasPhone: false, history: antigo })).toBe(true);
+  it("OBRIGATÓRIO: mesmo depois de pedido, sem número a transferência continua segurada", () => {
+    // Antes (até 28/10) o lead que recusava ou ignorava era transferido sem
+    // número; agora a equipe só recebe o lead com o WhatsApp.
+    expect(shouldHoldEscalationForPhone({ channel: "instagram", hasPhone: false })).toBe(true);
   });
 });
 
@@ -102,5 +93,57 @@ describe("instrução de telefone para Instagram", () => {
   });
   it("WhatsApp com telefone continua mandando NÃO perguntar", () => {
     expect(buildChannelPhonePromptBlock("whatsapp", "21999991234")).toMatch(/NÃO PERGUNTE/);
+  });
+});
+
+describe("WhatsApp obrigatório no Instagram/Messenger", () => {
+  const base = { hasPhone: false, settings: {} as Record<string, string> };
+
+  it("identificado o lead (tem nome) e sem número → pede", () => {
+    expect(precisaPedirWhatsapp({ ...base, channel: "instagram", leadName: "Anderson" })).toBe(true);
+    expect(precisaPedirWhatsapp({ ...base, channel: "messenger", leadName: "Anderson" })).toBe(true);
+  });
+
+  it("antes do nome não pede — a não ser com whatsapp_no_inicio (Game Point)", () => {
+    expect(precisaPedirWhatsapp({ ...base, channel: "instagram", leadName: null })).toBe(false);
+    expect(
+      precisaPedirWhatsapp({
+        ...base,
+        channel: "instagram",
+        leadName: null,
+        settings: { [WHATSAPP_NO_INICIO_SETTING]: "true" },
+      }),
+    ).toBe(true);
+  });
+
+  it("com número coletado ou no WhatsApp → não pede", () => {
+    expect(precisaPedirWhatsapp({ ...base, hasPhone: true, channel: "instagram", leadName: "Anderson" })).toBe(false);
+    expect(precisaPedirWhatsapp({ ...base, channel: "whatsapp", leadName: "Anderson" })).toBe(false);
+  });
+
+  it("acrescenta o pedido só quando a resposta ainda não pede o número", () => {
+    const r = comPedidoDeWhatsapp("Que legal, Anderson! Qual unidade fica melhor pra você?");
+    expect(r).toBe(
+      "Que legal, Anderson! Qual unidade fica melhor pra você?\n\nMe passa também seu WhatsApp com DDD? É por ele que a nossa equipe fala com você 😊",
+    );
+    const jaPede = "Perfeito! Me informa seu WhatsApp com DDD?";
+    expect(comPedidoDeWhatsapp(jaPede)).toBe(jaPede);
+  });
+
+  it("o pedido insistente mantém a transferência pendente no turno seguinte", () => {
+    const h: Msg[] = [
+      ...anderson,
+      { role: "assistant", content: escalationPhoneAskReply("Anderson", true) },
+      { role: "user", content: "não quero passar" },
+    ];
+    expect(escalationPhoneAskReply("Anderson", true)).toMatch(/^Anderson, antes de te passar.*preciso do seu número de WhatsApp/);
+    expect(isEscalationAwaitingPhone(h, "unidade Recreio")).toBe(true);
+  });
+
+  it("instrução do prompt: obrigatório e, com whatsapp_no_inicio, nome + WhatsApp na 1ª resposta", () => {
+    expect(buildChannelPhonePromptBlock("instagram", null)).toMatch(/OBRIGATÓRIO/);
+    expect(
+      buildChannelPhonePromptBlock("instagram", null, { [WHATSAPP_NO_INICIO_SETTING]: "true" }),
+    ).toMatch(/PRIMEIRA resposta, peça o NOME e o WhatsApp/);
   });
 });

@@ -201,41 +201,76 @@ export function assistantAskedForPhone(text: string | null | undefined): boolean
   return ASKED_FOR_PHONE_RE.test(text ?? "");
 }
 
+/** Canal sem telefone no contexto: o WhatsApp do lead só existe se ele digitar. */
+function isCanalSemTelefone(channel: ConversationChannel): boolean {
+  return channel === "instagram" || channel === "messenger";
+}
+
 /**
- * Segura a transferência para humano até o telefone ser pedido, em canal SEM
- * telefone (Instagram/Messenger).
+ * Segura a transferência para humano (inclusive para outra loja) até o lead
+ * informar o WhatsApp, em canal SEM telefone (Instagram/Messenger).
  *
  * A equipe só consegue retomar o lead por WhatsApp/ligação: escalar sem número
- * deixa o humano sem como falar com ele. Caso real (Clínica Bomfim, Instagram
- * @andersonavelar310.aa, 17/10): o prompt manda pedir o telefone antes de todo
- * `escalar_humano`, mas o agente foi direto para "vou te direcionar para a
- * nossa equipe" — a CRC recebeu o lead sem número nenhum.
+ * deixa o humano sem como falar com ele. Caso real (Clínica Bomfim, Instagram,
+ * 17/10): o prompt manda pedir o telefone antes de todo `escalar_humano`, mas o
+ * agente foi direto para "vou te direcionar para a nossa equipe" — a CRC
+ * recebeu o lead sem número nenhum.
  *
- * Segura só se o telefone ainda NÃO foi pedido nas últimas 3 falas do agente:
- * depois de pedido, se o lead recusar ou ignorar, a transferência segue (regra
- * do proprietário: "se o lead se recusar, transfira mesmo assim").
+ * OBRIGATÓRIO (decisão de 28/10): antes, depois de pedir uma vez a transferência
+ * seguia mesmo sem número; agora segura até o número chegar.
  */
 export function shouldHoldEscalationForPhone(params: {
   channel: ConversationChannel;
   hasPhone: boolean;
-  history: { role: "user" | "assistant"; content: string }[];
 }): boolean {
-  if (params.channel !== "instagram" && params.channel !== "messenger") return false;
-  if (params.hasPhone) return false;
-  const askedRecently = params.history
-    .filter((m) => m.role === "assistant")
-    .slice(-3)
-    .some((m) => assistantAskedForPhone(m.content));
-  return !askedRecently;
+  return isCanalSemTelefone(params.channel) && !params.hasPhone;
+}
+
+/** Setting: pedir o WhatsApp já na primeira resposta (junto com o nome), não
+ *  só depois de o lead se identificar. */
+export const WHATSAPP_NO_INICIO_SETTING = "whatsapp_no_inicio";
+
+/**
+ * Instagram/Messenger sem telefone: o WhatsApp é OBRIGATÓRIO assim que o lead
+ * se identifica (tem nome) — ou desde a primeira resposta, com
+ * `whatsapp_no_inicio`. Enquanto faltar, toda resposta pede o número (ver
+ * comPedidoDeWhatsapp); agendar e transferir já são travados sem ele.
+ */
+export function precisaPedirWhatsapp(params: {
+  channel: ConversationChannel;
+  hasPhone: boolean;
+  leadName: string | null | undefined;
+  settings: Record<string, string>;
+}): boolean {
+  if (!isCanalSemTelefone(params.channel) || params.hasPhone) return false;
+  if (params.leadName?.trim()) return true;
+  const v = String(params.settings[WHATSAPP_NO_INICIO_SETTING] ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "sim";
+}
+
+/** A resposta já pede o WhatsApp? Senão, acrescenta o pedido no fim. */
+export function comPedidoDeWhatsapp(reply: string): string {
+  if (assistantAskedForPhone(reply)) return reply;
+  const base = reply.trimEnd();
+  const pedido = "Me passa também seu WhatsApp com DDD? É por ele que a nossa equipe fala com você 😊";
+  return base ? `${base}\n\n${pedido}` : pedido;
 }
 
 /** Trecho fixo do pedido de telefone — é por ele que o turn seguinte reconhece
  *  que há uma transferência esperando o número. */
 const ESCALATION_PHONE_ASK_MARKER = "Antes de te passar para a nossa equipe";
 
-/** Pedido de telefone que substitui a resposta quando a transferência é segurada. */
-export function escalationPhoneAskReply(leadName: string | null | undefined): string {
+/** Pedido de telefone que substitui a resposta quando a transferência é
+ *  segurada. `insistir`: o lead já foi perguntado e não mandou o número. */
+export function escalationPhoneAskReply(
+  leadName: string | null | undefined,
+  insistir = false,
+): string {
   const primeiro = (leadName ?? "").trim().split(/\s+/)[0] ?? "";
+  if (insistir) {
+    const abertura = primeiro ? `${primeiro}, ` : "";
+    return `${abertura}${ESCALATION_PHONE_ASK_MARKER.charAt(0).toLowerCase()}${ESCALATION_PHONE_ASK_MARKER.slice(1)}, preciso do seu número de WhatsApp com DDD — sem ele a equipe não consegue falar com você. Me passa, por favor? 😊`;
+  }
   const abertura = primeiro ? `Perfeito, ${primeiro}! ` : "Perfeito! ";
   return `${abertura}${ESCALATION_PHONE_ASK_MARKER}, me informa seu número de WhatsApp com DDD? Assim eles conseguem falar com você. 😊`;
 }
@@ -252,7 +287,8 @@ export function isEscalationAwaitingPhone(
 ): boolean {
   if (!escalationReason?.trim()) return false;
   const ultimaDoAgente = [...history].reverse().find((m) => m.role === "assistant");
-  return !!ultimaDoAgente?.content.includes(ESCALATION_PHONE_ASK_MARKER);
+  // Sem diferenciar caixa: o pedido insistente traz o marcador no meio da frase.
+  return !!ultimaDoAgente?.content.toLowerCase().includes(ESCALATION_PHONE_ASK_MARKER.toLowerCase());
 }
 
 /** Resposta da transferência concluída depois do pedido de telefone. */
@@ -607,6 +643,7 @@ export function getBookingFieldsForChannel(
 export function buildChannelPhonePromptBlock(
   channel: ConversationChannel,
   effectivePhone: string | null | undefined,
+  settings?: Record<string, string>,
 ): string {
   if (shouldSkipPhoneCollection(channel, effectivePhone)) {
     return `# TELEFONE — NÃO PERGUNTE
@@ -618,10 +655,14 @@ O lead está no **WhatsApp**. Telefone já confirmado: **${effectivePhone}**.
 - O agendamento usa esse número automaticamente (GCal / Clinicorp).`;
   }
   if ((channel === "instagram" || channel === "messenger") && !effectivePhone?.trim()) {
-    return `# TELEFONE — PEÇA E GUARDE
+    const noInicio = ["true", "1", "sim"].includes(
+      String(settings?.[WHATSAPP_NO_INICIO_SETTING] ?? "").trim().toLowerCase(),
+    );
+    return `# TELEFONE — OBRIGATÓRIO PEDIR E GUARDAR
 
-Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp). Peça o WhatsApp com DDD o quanto antes — de preferência já na primeira resposta, junto com o nome — e SEMPRE antes de agendar ou de transferir para a equipe (next_stage="ESCALATED"): sem o número, a equipe não consegue falar com o lead.
-
+Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp). O WhatsApp com DDD é OBRIGATÓRIO:
+${noInicio ? "- Na PRIMEIRA resposta, peça o NOME e o WhatsApp com DDD juntos." : "- Peça o WhatsApp com DDD logo depois de saber o nome do lead — de preferência já na primeira resposta, junto com o nome."}
+- Enquanto não tiver o número, NÃO agende, NÃO transfira para a equipe/loja (next_stage="ESCALATED") e NÃO avance para outro assunto sem pedir o número de novo. O sistema segura agendamento e transferência até o número chegar.
 - Ao receber o número, grave-o em \`lead_data_patch.custom_fields.${COLLECTED_PHONE_KEY}\` no MESMO turn.
 - Se ele já constar em "Já coletados", NÃO pergunte de novo — use o que está lá.`;
   }
