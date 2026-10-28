@@ -113,6 +113,7 @@ import {
   clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
   lastUserBurst,
+  leadPeriodContradictsSlot,
   classifyRequestedDay,
   filterSlotsToWeekday,
   requestedWeekdayFromText,
@@ -2567,6 +2568,25 @@ async function execCriarAgendamento(ctx: AgentContext, agendaLabel?: string): Pr
       `[scheduler] intenção confirmada pelo cadastro conv=${ctx.conversationId} slot=${ld.selected_slot_iso} — juiz LLM dispensado`,
     );
   }
+  // Turno pedido x turno do slot: barreira DETERMINÍSTICA, antes do juiz LLM e
+  // mesmo quando o cadastro "confirmou" — ver leadPeriodContradictsSlot.
+  const turnoDivergente = leadPeriodContradictsSlot(lastUserBurst(ctx.history), ld.selected_slot_iso);
+  if (turnoDivergente) {
+    const nomeTurno = { manha: "manhã", tarde: "tarde", noite: "noite" } as const;
+    console.warn(
+      `[scheduler] turno pedido (${turnoDivergente.pedido}) ≠ turno do slot (${turnoDivergente.doSlot}) — agendamento BLOQUEADO conv=${ctx.conversationId} slot=${ld.selected_slot_iso}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error_kind: "intent_hold",
+        error:
+          `O lead pediu horário de ${nomeTurno[turnoDivergente.pedido]}, e ${slotHumanLabel(ld.selected_slot_iso)} é de ${nomeTurno[turnoDivergente.doSlot]}. ` +
+          `NÃO agende esse horário. Chame listar_horarios com periodo="${turnoDivergente.pedido}" e ofereça os horários reais desse turno.`,
+      }),
+      patch: { selected_slot_iso: CLEARED_SLOT },
+    };
+  }
   if (!ctx.dryRun && !confirmadoPeloCadastro) {
     const intent = await verifyBookingIntentLLM(ctx, ld.selected_slot_iso);
     if (!intent.ok) {
@@ -3526,6 +3546,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     isValidationOnlyFailure(autoBooking.toolResult) || isGuardHoldFailure(autoBooking.toolResult);
   // Qual guard segurou o agendamento (intent_hold/slot_not_offered/date_mismatch),
   // para telemetria: distingue no banco um hold correto de uma falha real.
+  // Hold de guard no auto-booking ou no tool loop: nenhum outro create neste turn.
+  let bookingHeldThisTurn = isGuardHoldFailure(autoBooking.toolResult);
   let bookingGuardHold: string | undefined = isGuardHoldFailure(autoBooking.toolResult)
     ? (autoBooking.toolResult?.match(/"error_kind"\s*:\s*"([^"]+)"/)?.[1] ?? undefined)
     : undefined;
@@ -3658,10 +3680,23 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "agendar_google_calendar":
           case "agendar_clinup":
           case "agendar_clinic_experts":
-            outcome = await execCriarAgendamento(
-              ctx,
-              typeof args.agenda === "string" ? args.agenda : undefined,
-            );
+            // Um hold de guard (intent/turno/data) vale para o TURN inteiro. O
+            // juiz de intenção é um LLM: chamado de novo no mesmo turn, ele já
+            // APROVOU o horário que tinha acabado de segurar — e o agendamento
+            // foi criado (Bomfim, lead do Instagram, 28/10 — 29/10 09:00).
+            outcome = bookingHeldThisTurn
+              ? {
+                  result: JSON.stringify({
+                    ok: false,
+                    error_kind: "intent_hold",
+                    error:
+                      "O agendamento já foi segurado neste turno. NÃO tente agendar de novo agora: responda ao que o lead pediu e só agende depois que ele confirmar claramente o horário.",
+                  }),
+                }
+              : await execCriarAgendamento(
+                  ctx,
+                  typeof args.agenda === "string" ? args.agenda : undefined,
+                );
             break;
           case "cancelar_agendamento":
           case "cancelar_clinicorp":
@@ -3743,6 +3778,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         if (isGuardHoldFailure(outcome.result)) {
           bookingGuardHold =
             outcome.result.match(/"error_kind"\s*:\s*"([^"]+)"/)?.[1] ?? bookingGuardHold;
+          bookingHeldThisTurn = true;
         }
         const f = parseBookingFailure(outcome.result);
         if (f) {
