@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import type { AgentContext, AgentResult } from "./context";
+import { buildTransferUnitsPromptBlock, parseTransferUnits, TRANSFER_UNITS_SETTING } from "@/lib/transfer-units";
 import { AGENDA_LISTING_TOOL, AGENDA_TOOL_ALIASES_NOTE, isAgendaListingTool } from "./agenda-tool-names";
 import { cacheTtlFromSettings } from "./context";
 import {
@@ -81,6 +82,7 @@ const ResultSchema = z.object({
       interest: z.string().nullish(),
       notes: z.string().nullish(),
       escalation_reason: z.string().nullish(),
+      transfer_unit: z.string().nullish(),
       retomar_em: z.string().nullish(),
       retorno_motivo: z.string().nullish(),
       custom_fields: coercibleStringRecord.nullish(),
@@ -552,6 +554,9 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
     !!utm?.content || (m1Trimmed.length >= 20 && !isGreetingOnly && hasIntentWords);
 
   const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+  const transferBlock = buildTransferUnitsPromptBlock(
+    parseTransferUnits(ctx.agentSettings[TRANSFER_UNITS_SETTING]),
+  );
   const ownerPromptDominant = !!(ctx.basePrompt && ctx.basePrompt.trim());
 
   // Trava de pré-requisito de etiquetagem (ex.: só etiquetar após a data de
@@ -606,7 +611,7 @@ horários/slots) nem quando ele só está respondendo normalmente.`;
 - Stage corrente: ${ctx.stage}
 - Ciclos de conversa já completos: ${cycleCount}
 - Canal: ${ctx.channel}
-${phoneBlock ? `\n${phoneBlock}\n` : ""}${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}${transferBlock ? `\n${transferBlock}\n` : ""}${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
 ${utm?.source ? `- UTM Source: ${utm.source}` : ""}
 ${utm?.medium ? `- UTM Medium: ${utm.medium}` : ""}
 ${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}${turmaBlock}

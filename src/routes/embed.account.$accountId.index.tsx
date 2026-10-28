@@ -80,6 +80,13 @@ import {
   STANDARD_AGENT_MODEL_LABEL,
 } from "@/lib/llm-defaults";
 import {
+  normalizeUnitPhone,
+  parseTransferUnits,
+  serializeTransferUnits,
+  TRANSFER_TAG,
+  TRANSFER_UNITS_SETTING,
+} from "@/lib/transfer-units";
+import {
   INTEGRATION_LOGOS,
   IntegrationLogo,
   IntegrationStatus,
@@ -539,7 +546,14 @@ function EmbedHome() {
 
   // Full-screen Escalation view
   if (openSheet === "escalation") {
-    return <EscalationView agentId={agentId} onClose={() => setOpenSheet(null)} />;
+    return (
+      <EscalationView
+        agentId={agentId}
+        accountId={accountId}
+        agentSettings={agentSettings}
+        onClose={() => setOpenSheet(null)}
+      />
+    );
   }
 
   // Full-screen Automações de etiqueta view
@@ -10633,7 +10647,17 @@ function WarmupStepCard({
 // Full-screen: Escalation View
 // =================================================================
 
-function EscalationView({ agentId, onClose }: { agentId: string; onClose: () => void }) {
+function EscalationView({
+  agentId,
+  accountId,
+  agentSettings,
+  onClose,
+}: {
+  agentId: string;
+  accountId: string;
+  agentSettings: Record<string, string>;
+  onClose: () => void;
+}) {
   const qc = useQueryClient();
   const getCfg = useServerFn(getAgentEscalation);
   const saveCfg = useServerFn(saveAgentEscalation);
@@ -10737,8 +10761,132 @@ function EscalationView({ agentId, onClose }: { agentId: string; onClose: () => 
             {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Salvar configuração
           </Button>
+
+          <TransferUnitsEditor accountId={accountId} agentSettings={agentSettings} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Cadastro das lojas para onde uma CENTRAL transfere o atendimento. A IA só
+ * escolhe o NOME entre estas; o WhatsApp que recebe o alerta sai daqui.
+ * Gravado em agents.settings.transfer_units_json (merge de uma chave só).
+ */
+function TransferUnitsEditor({
+  accountId,
+  agentSettings,
+}: {
+  accountId: string;
+  agentSettings: Record<string, string>;
+}) {
+  const qc = useQueryClient();
+  const mergeSettings = useServerFn(mergeAgentSettings);
+  const inicial = useMemo(
+    () =>
+      parseTransferUnits(agentSettings[TRANSFER_UNITS_SETTING]).map((u) => ({
+        name: u.name,
+        phone: u.phone.replace(/^55/, ""),
+        hint: u.hint,
+      })),
+    [agentSettings],
+  );
+  const [rows, setRows] = useState<{ name: string; phone: string; hint: string }[]>(inicial);
+  useEffect(() => setRows(inicial), [inicial]);
+
+  const invalidas = rows.filter((r) => r.name.trim() && !normalizeUnitPhone(r.phone));
+  const validas = rows.filter((r) => r.name.trim() && normalizeUnitPhone(r.phone));
+  const update = (i: number, patch: Partial<{ name: string; phone: string; hint: string }>) =>
+    setRows((prev) => prev.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+
+  const save = useMutation({
+    mutationFn: () =>
+      mergeSettings({
+        data: {
+          accountId,
+          settings: { [TRANSFER_UNITS_SETTING]: validas.length ? serializeTransferUnits(validas) : "" },
+        },
+      }),
+    onSuccess: () => {
+      toast.success("Lojas salvas.");
+      qc.invalidateQueries({ queryKey: ["agent", accountId] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Erro ao salvar as lojas."),
+  });
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
+      <div>
+        <p className="text-sm font-semibold text-foreground">Transferir para outras lojas (central)</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Para agentes que atendem como central. Quando o atendimento precisar seguir com uma loja,
+          a IA escolhe uma das lojas abaixo, a etiqueta <strong>"{TRANSFER_TAG}"</strong> e a{" "}
+          <strong>"IA Desligada"</strong> são aplicadas, e o alerta com o resumo vai para o WhatsApp
+          da loja e para o grupo. Depois disso a IA não responde mais o contato. Descreva no prompt
+          quando transferir para cada loja; a observação abaixo também ajuda a IA a escolher.
+        </p>
+      </div>
+
+      {rows.length === 0 && (
+        <p className="rounded-xl border border-dashed border-slate-200 p-3 text-center text-xs text-muted-foreground">
+          Nenhuma loja cadastrada — a escalada continua indo só para o grupo.
+        </p>
+      )}
+
+      {rows.map((r, i) => (
+        <div key={i} className="grid gap-2 rounded-xl border border-slate-100 bg-slate-50/60 p-3 sm:grid-cols-[1fr_9rem_auto]">
+          <Input
+            value={r.name}
+            onChange={(e) => update(i, { name: e.target.value })}
+            placeholder="Nome da loja (ex.: Madureira Shopping)"
+          />
+          <Input
+            value={r.phone}
+            onChange={(e) => update(i, { phone: e.target.value })}
+            placeholder="WhatsApp com DDD"
+            className={r.name.trim() && !normalizeUnitPhone(r.phone) ? "border-red-300" : ""}
+          />
+          <button
+            type="button"
+            onClick={() => setRows((prev) => prev.filter((_, j) => j !== i))}
+            className="rounded-lg px-2 text-xs font-medium text-red-600 hover:bg-red-50"
+          >
+            Remover
+          </button>
+          <Input
+            value={r.hint}
+            onChange={(e) => update(i, { hint: e.target.value })}
+            placeholder="Observação: bairros, região ou quando usar esta loja (opcional)"
+            className="sm:col-span-3"
+          />
+        </div>
+      ))}
+
+      {invalidas.length > 0 && (
+        <p className="text-xs text-red-600">
+          WhatsApp inválido em: {invalidas.map((r) => r.name).join(", ")}. Use DDD + número (ex.: 21970672747).
+        </p>
+      )}
+
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => setRows((prev) => [...prev, { name: "", phone: "", hint: "" }])}
+        >
+          + Adicionar loja
+        </Button>
+        <Button
+          type="button"
+          onClick={() => save.mutate()}
+          disabled={save.isPending || invalidas.length > 0}
+          className="flex-1"
+        >
+          {save.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Salvar lojas
+        </Button>
+      </div>
     </div>
   );
 }
