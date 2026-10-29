@@ -125,10 +125,10 @@ function horaPedida(texto: string): string | null {
 }
 
 /**
- * Remarcação bloqueada pelo guard: o horário antigo JÁ foi cancelado
- * (remarcar_agendamento cancela e lista os novos) e o novo ainda não existe.
- * Diz isso com clareza e traz primeiro o horário que o lead pediu, se estiver
- * entre os livres — a escolha dele no turno seguinte fecha o agendamento.
+ * Remarcação bloqueada pelo guard: o novo horário ainda não existe. O antigo
+ * continua reservado (remarcar_agendamento só o cancela quando o novo é
+ * criado). Diz isso com clareza e traz primeiro o horário que o lead pediu, se
+ * estiver entre os livres — a escolha dele no turno seguinte fecha a troca.
  */
 export function remarcacaoSemReservaReply(
   offeredSlots: { date_label?: string | null; time_label?: string | null }[],
@@ -138,7 +138,7 @@ export function remarcacaoSemReservaReply(
   const label = (s: { date_label?: string | null; time_label?: string | null }) =>
     `${s.date_label ?? ""} às ${s.time_label ?? ""}`.trim();
   if (ofertados.length === 0) {
-    return "Pra remarcar, cancelei o horário anterior, mas o novo ainda não está reservado. Me diz o melhor dia e horário pra você que eu já verifico a agenda 😊";
+    return "Seu horário atual continua reservado e o novo ainda não está marcado. Me diz o melhor dia e horário pra você que eu já verifico a agenda 😊";
   }
   // Sempre como ESCOLHA ("X ou Y?"): a resposta do lead ("8:30") é o que a
   // auto-seleção reconhece; um "posso reservar?" + "sim" ficaria ambíguo.
@@ -146,5 +146,5 @@ export function remarcacaoSemReservaReply(
   const idx = pedida ? ofertados.findIndex((s) => (s.time_label ?? "").trim() === pedida) : -1;
   if (idx > 0) ofertados.unshift(...ofertados.splice(idx, 1));
   const opcoes = ofertados.slice(0, 2).map(label).join(" ou ");
-  return `Pra remarcar, cancelei o horário anterior, mas o novo ainda não está reservado. Tenho ${opcoes} — qual fica melhor pra você? 😊`;
+  return `Seu horário atual continua reservado até a gente confirmar o novo. Pra trocar, tenho ${opcoes} — qual fica melhor pra você? 😊`;
 }

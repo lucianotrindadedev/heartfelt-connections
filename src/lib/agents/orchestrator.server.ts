@@ -1314,7 +1314,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Cancelamento: a tool sinaliza appointment_cancelled (truthy, sobrevive ao
     // stripNullishFields). Aqui limpamos o appointment_id de fato (e, em
     // remarcação, o slot) e removemos os sinais transitórios antes de persistir.
-    // Remarcação neste turn: o antigo foi cancelado e o novo ainda não existe.
+    // Remarcação iniciada neste turn: o antigo saiu do lead_data (continua na
+    // agenda até o novo ser criado) e o novo ainda não existe.
     const remarcacaoNesteTurno =
       !!finalLeadData.appointment_cancelled && !!finalLeadData.reoffer_after_cancel;
     if (finalLeadData.appointment_cancelled) {
@@ -2355,11 +2356,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // 14. Notificações de agendamento — disparam na transição do appointment_id:
     //   sem→com  = agendou   → notifica "created"
     //   com→sem  = cancelou  → notifica "cancelled"
-    // (Remarcar = cancela o antigo + reoferta → gera naturalmente cancelled e,
-    //  depois, created quando o novo for marcado.) Reusa a config da escalada
+    // (Remarcar não notifica cancelamento: o antigo só sai da agenda quando o
+    //  novo é criado, e aí sai o "created".) Reusa a config da escalada
     // (instância + grupo) com toggle próprio (notificar_agendamentos).
     const justBooked = !hadAppointmentBefore && !!finalLeadData.appointment_id;
-    if (justBooked || appointmentJustCancelled) {
+    // Remarcação iniciada: o appointment_id saiu do lead_data, mas o horário
+    // antigo continua na agenda até o novo ser criado — não é cancelamento.
+    if (justBooked || (appointmentJustCancelled && !remarcacaoNesteTurno)) {
       try {
         const event = justBooked ? "created" : "cancelled";
         // Rótulo da notificação: a agenda escolhida pode definir o seu próprio

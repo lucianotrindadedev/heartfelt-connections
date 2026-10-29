@@ -30,10 +30,9 @@ describe("remarcação afirmada sem reserva", () => {
 });
 
 describe("remarcacaoSemReservaReply", () => {
-  it("diz que o anterior foi cancelado e traz primeiro o horário pedido", () => {
+  it("diz que o horário atual segue reservado e traz primeiro o pedido", () => {
     const r = remarcacaoSemReservaReply(slots, "Boa tarde tem como você marcar para 8.30hs para seria melhor?");
-    expect(r).toMatch(/cancelei o horário anterior/);
-    expect(r).toMatch(/ainda não está reservado/);
+    expect(r).toMatch(/horário atual continua reservado/);
     expect(r).toMatch(/sexta-feira, 30\/10 às 08:30 ou sexta-feira, 30\/10 às 08:00/);
   });
 
@@ -48,6 +47,6 @@ describe("remarcacaoSemReservaReply", () => {
   });
 
   it("sem horários livres: pede outro dia, sem prometer nada", () => {
-    expect(remarcacaoSemReservaReply([], "8:30")).toMatch(/novo ainda não está reservado/);
+    expect(remarcacaoSemReservaReply([], "8:30")).toMatch(/novo ainda não está marcado/);
   });
 });
