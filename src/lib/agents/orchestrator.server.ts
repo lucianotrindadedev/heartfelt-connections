@@ -14,7 +14,11 @@ import { isPlatformNotice } from "@/lib/platform-notice";
 import { detectForeignSender, isCourtesyOnlyBurst } from "@/lib/conversation-guards";
 import { decryptValue } from "@/lib/crypto.server";
 import { buildSlotOfferFallback } from "./slot-offer-fallback";
-import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
+import {
+  claimsBookingWithoutAppointment,
+  noBookingYetReply,
+  remarcacaoSemReservaReply,
+} from "./false-booking-claim";
 import {
   closedAgendaSafeReply,
   turnoNegadoSemProva,
@@ -1310,6 +1314,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Cancelamento: a tool sinaliza appointment_cancelled (truthy, sobrevive ao
     // stripNullishFields). Aqui limpamos o appointment_id de fato (e, em
     // remarcação, o slot) e removemos os sinais transitórios antes de persistir.
+    // Remarcação neste turn: o antigo foi cancelado e o novo ainda não existe.
+    const remarcacaoNesteTurno =
+      !!finalLeadData.appointment_cancelled && !!finalLeadData.reoffer_after_cancel;
     if (finalLeadData.appointment_cancelled) {
       const reoffer = !!finalLeadData.reoffer_after_cancel;
       finalLeadData = { ...finalLeadData };
@@ -1472,21 +1479,31 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const horarioEmJogo =
       !!(finalLeadData.selected_slot_iso ?? "").trim() ||
       (finalLeadData.offered_slots?.length ?? 0) > 0;
+    // Cancelamento puro: "seu agendamento foi cancelado" não é confirmação falsa.
+    // Remarcação NÃO entra nessa exceção: o horário antigo acabou de ser
+    // cancelado e "Remarquei, fica confirmado às 08:30" sem reserva nova é
+    // exatamente a confirmação falsa que este guard existe para barrar. Caso
+    // real (Sorriso Saude, 29/10): o paciente perdeu o horário das 9h e ficou
+    // achando que tinha 08:30 — nada foi reservado.
+    const cancelamentoPuro = appointmentJustCancelled && !remarcacaoNesteTurno;
     if (
       hasBookingIntegration &&
       !finalLeadData.appointment_id &&
-      !appointmentJustCancelled &&
+      !cancelamentoPuro &&
       claimsBookingWithoutAppointment({ reply, horarioEmJogo })
     ) {
       falseBookingClaimBlocked = true;
       console.warn(
-        `[orch] reply afirma agendamento sem appointment_id conv=${conversationId} — bloqueando confirmação falsa`,
+        `[orch] reply afirma agendamento sem appointment_id conv=${conversationId}${remarcacaoNesteTurno ? " (remarcação)" : ""} — bloqueando confirmação falsa`,
       );
       const missingFields = getMissingBookingFields(
         getBookingFieldsForChannel(agentSettings, channelCtx),
         finalLeadData,
       );
-      if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
+      if (remarcacaoNesteTurno) {
+        reply = remarcacaoSemReservaReply(finalLeadData.offered_slots ?? [], lastUserMsg);
+        newStage = "SLOT_OFFER";
+      } else if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
         const nextField = missingFields[0]!;
         reply = `Perfeito! Anotei esse horário para você.\n\n${bookingFieldQuestion(nextField, finalLeadData)}`;
         newStage = "NAME_COLLECT";
