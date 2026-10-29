@@ -90,6 +90,14 @@ export interface LeadData {
   appointment_cancelled?: boolean;
   /** Sinal transitório: cancelamento foi para REMARCAR — limpar também o slot. */
   reoffer_after_cancel?: boolean;
+  /** Remarcação em andamento: o agendamento ANTIGO continua na agenda até o
+   *  novo ser criado (só então é cancelado). "" = nenhuma remarcação pendente
+   *  (undefined não limpa — stripNullishFields). */
+  remarcar_de_id?: string;
+  /** Horário (ISO) do agendamento antigo da remarcação pendente. */
+  remarcar_de_slot?: string;
+  /** Agenda/unidade do agendamento antigo (multi-agenda GCal / multi-unidade CE). */
+  remarcar_de_agenda?: string;
   /** Lead já enviado ao Leads360 (POST /leads) — evita reenviar a cada turn. */
   leads360_lead_sent?: boolean;
   /** Falhas TÉCNICAS consecutivas de criar_agendamento (não conflito de horário).
