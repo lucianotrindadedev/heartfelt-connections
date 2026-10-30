@@ -470,6 +470,25 @@ export function looksLikeStallReply(reply: string): boolean {
 }
 
 /**
+ * A resposta promete passar o atendimento para uma PESSOA da equipe ("vou
+ * chamar alguém da nossa equipe", "vou passar sua solicitação para a equipe").
+ *
+ * Usada em dois lugares do orchestrator: a escalada "fantasma" (o texto promete
+ * humano mas o stage não virou ESCALATED) e a isenção da trava anti-enrolação.
+ * Essa trava lia "É só aguardar um pouquinho" como enrolação e trocava a
+ * transferência por pergunta de cadastro ou oferta de horário. Caso real
+ * (Amazing CCZ, 11 97838-1489, 27/10/2026): a vendedora pediu o responsável e
+ * recebeu "Qual é o nome da sua criança?"; pediu atendente e recebeu "Tenho
+ * estes horários disponíveis: quarta 08:00 ou 09:00" — com o stage já em
+ * ESCALATED.
+ */
+export function prometeTransferenciaHumana(reply: string): boolean {
+  return /\b(vou (chamar|acionar|pedir para) (uma pessoa|algu[ée]m|um[a]? (atendente|colega|especialista))|vou (te )?(transferir|passar|encaminhar) (voc[êe] )?(para|pra) (um[a]? |a |o )?(nossa |nosso )?(atendente|pessoa|equipe|time|especialista|administra[çc][ãa]o|secretaria|respons[áa]vel)|vou (passar|encaminhar|repassar) (a |o |sua |seu )?(solicita[çc][ãa]o|pedido|contato|mensagem|recado) (para|pra|à|a) (a |o )?(nossa |nosso )?(equipe|time|administra[çc][ãa]o|secretaria|respons[áa]vel|setor)|algu[ée]m (da (nossa )?(equipe|administra[çc][ãa]o|secretaria)|do (nosso )?(time|setor)) (vai|ir[áa]) (te )?(atender|continuar|assumir|falar|retornar|entrar em contato)|uma pessoa (da (nossa )?equipe|do (nosso )?time) (vai|ir[áa])|transferindo (seu|o) atendimento|encaminhando (seu|o) atendimento|vou (te )?transferir (seu|o|este) atendimento)\b/i.test(
+    reply ?? "",
+  );
+}
+
+/**
  * A resposta é uma enrolação que PROMETE CONSULTAR A AGENDA ("deixa eu
  * verificar a disponibilidade a partir das 15h", "vou ver os horários da
  * semana que vem", "deixa eu confirmar com a equipe e já te retorno com mais

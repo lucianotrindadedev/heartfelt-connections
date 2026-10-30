@@ -11,6 +11,7 @@ import {
   inferEffectiveStage,
   isShortAffirmative,
   looksLikeStallReply,
+  prometeTransferenciaHumana,
   type StageSignalsContext,
 } from "./stage-signals";
 
@@ -700,5 +701,37 @@ describe("proposta de CONSULTAR a agenda (nao so 'posso agendar?')", () => {
     const signals = detectSignals(ctx);
     expect(signals.userAcceptedSchedulingProposal).toBe(true);
     expect(inferEffectiveStage(ctx, signals, false).effectiveStage).toBe("QUALIFICATION");
+  });
+});
+
+// ── prometeTransferenciaHumana ────────────────────────────────────────────
+
+describe("prometeTransferenciaHumana", () => {
+  // Caso real: Amazing CCZ, (11) 97838-1489, 27/10/2026 — as duas respostas
+  // eram lidas como enrolação e trocadas por cadastro/oferta de horário.
+  it.each([
+    "Claro! Vou passar sua solicitação para a nossa equipe. Alguém da administração vai retornar seu contato por aqui mesmo. É só aguardar um pouquinho, tá bem?",
+    "Vou chamar alguém da nossa equipe para continuar seu atendimento por aqui mesmo. É só aguardar um pouquinho, tá bem?",
+    "Perfeito! Vou transferir seu atendimento para a equipe certa. Um momento! 😊",
+    "Claro! Vou encaminhar você para nossa equipe. Um momento! 😊",
+    "Vou te passar para um atendente.",
+  ])("reconhece transferência: %s", (texto) => {
+    expect(prometeTransferenciaHumana(texto)).toBe(true);
+  });
+
+  it.each([
+    "Deixa eu verificar os horários disponíveis, só um minutinho.",
+    "Vou passar os horários pra você: segunda às 10h ou 14h?",
+    "Nossa equipe pedagógica acompanha as lições de casa.",
+  ])("não confunde com enrolação ou citação da equipe: %s", (texto) => {
+    expect(prometeTransferenciaHumana(texto)).toBe(false);
+  });
+
+  it("a transferência continua parecendo enrolação para o detector antigo — a isenção é no orchestrator", () => {
+    expect(
+      looksLikeStallReply(
+        "Vou chamar alguém da nossa equipe para continuar seu atendimento por aqui mesmo. É só aguardar um pouquinho, tá bem?",
+      ),
+    ).toBe(true);
   });
 });
