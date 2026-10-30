@@ -443,7 +443,13 @@ async function upsertConversation(
         atualizado_em: new Date().toISOString(),
       };
       if (contactId) updates.helena_contact_id = contactId;
-      const inboundWa = normalizeBrazilPhone(input.inboundLeadPhone);
+      // O remetente só é telefone no WhatsApp. No Instagram/Messenger a Helena
+      // manda um identificador com cara de número que não é do lead — ver
+      // resolveEffectivePhone.
+      const inboundWa =
+        channel === "instagram" || channel === "messenger"
+          ? null
+          : normalizeBrazilPhone(input.inboundLeadPhone);
       if (inboundWa) {
         updates.lead_phone = inboundWa;
       } else {

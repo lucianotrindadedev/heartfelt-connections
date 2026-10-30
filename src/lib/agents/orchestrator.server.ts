@@ -420,13 +420,17 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
   const conversationPhone = conv.data.phone as string;
   const leadPhone = conv.data.lead_phone as string | null;
   const channelIdentifier = conv.data.channel_identifier as string | null;
-  const effectivePhone =
-    resolveEffectivePhone({
-      leadPhone,
-      contactPhone: channelIdentifier,
-      conversationPhone,
-    }).phone ?? null;
-  const channelCtx: BookingChannelContext = { channel, effectivePhone };
+  const canalSemTelefone = channel === "instagram" || channel === "messenger";
+  // Instagram/Messenger: decidido de novo depois de carregar o contato da
+  // Helena (só o telefone do cadastro vale — ver resolveEffectivePhone).
+  let effectivePhone = canalSemTelefone
+    ? null
+    : (resolveEffectivePhone({
+        leadPhone,
+        contactPhone: channelIdentifier,
+        conversationPhone,
+      }).phone ?? null);
+  let channelCtx: BookingChannelContext = { channel, effectivePhone };
 
   // 2. Lock atômico (evita dois turnos em paralelo na mesma conversa)
   await clearStaleConversationLock(conversationId);
@@ -539,6 +543,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       } catch (e) {
         console.warn("[orch] falha ao carregar contato Helena:", e);
       }
+    }
+    if (canalSemTelefone) {
+      effectivePhone =
+        resolveEffectivePhone({ channel, contactPhone: helenaContact?.phoneNumber }).phone ?? null;
+      channelCtx = { channel, effectivePhone };
     }
 
     // 7. Stage + lead_data a partir de conversations.meta
@@ -712,9 +721,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Prefere um telefone de verdade: o do canal ou o que o lead digitou. Em
     // Instagram/Messenger `conversationPhone` é a CHAVE da conversa ("ig:fulano"),
     // que a clínica não consegue ligar de volta — só cai nela como último recurso.
+    // Instagram/Messenger: a chave da conversa não é telefone (ver
+    // resolveEffectivePhone) — sem número real, o registro fica sem telefone.
     const recordPhone = (ld: LeadData): string =>
       resolveLeadPhone(ld, agentSettings, effectivePhone, normalizeBrazilPhone) ??
-      conversationPhone;
+      (canalSemTelefone ? "" : conversationPhone);
 
     if (leadData.custom_fields) {
       const cleaned: Record<string, string> = {};

@@ -1739,7 +1739,14 @@ export function buildTemplateVars(ctx: AgentContext): Record<string, string> {
     slot_date,
     slot_time,
     notes: ld.notes?.trim() ?? "",
-    phone: ctx.effectivePhone ?? ctx.conversationPhone ?? "",
+    // Instagram/Messenger: a chave da conversa não é telefone — vale só o que
+    // o lead digitou (ver resolveEffectivePhone).
+    phone:
+      ctx.effectivePhone ??
+      (ctx.channel === "instagram" || ctx.channel === "messenger"
+        ? String(cf[COLLECTED_PHONE_KEY] ?? "")
+        : ctx.conversationPhone) ??
+      "",
   };
 
   for (const [k, v] of Object.entries(cf)) {
