@@ -15,7 +15,7 @@
 
 import { requestedPeriodoFromText, requestedWeekdayFromText } from "@/lib/booking-template";
 import { perguntaSobreHorarioDoServico } from "./pergunta-informativa";
-import { detectSignals } from "./stage-signals";
+import { FALA_DE_IDADE_RE, detectSignals } from "./stage-signals";
 
 function normalizar(texto: string): string {
   return (texto ?? "")
@@ -37,7 +37,7 @@ const QUANDO_RE =
 
 // Frase sobre idade/aniversário: o "quando" ali é do nascimento, não da visita.
 // Caso real (Amazing, 11 98213-3577, 28/10): "ele tem 4 anos e faz 5 em junho".
-const IDADE_RE = /\b(\d+\s*anos?|aniversario|nasceu|nascid[ao]|nascimento|faz \d+|fara \d+|completa|completou)\b/;
+const IDADE_RE = FALA_DE_IDADE_RE;
 
 type Turno = { role: "user" | "assistant"; content: string };
 

@@ -190,6 +190,35 @@ describe("detectSignals", () => {
     expect(s.userAskedDateAvailability).toBe(true);
   });
 
+  // Caso real: Amazing CCZ, (11) 95812-7757, 27/10/2026 — aniversário sem ano.
+  it.each([
+    "Ela completou 4 anos dia 12/10",
+    "Ele faz 5 anos em 15/06",
+    "Nascida dia 03 de março, vai pro T4",
+    "Completa 3 anos dia 19/07",
+    "Por volta de uns 2/3 anos",
+  ])("NAO marca disponibilidade para aniversario sem ano: %s", (texto) => {
+    const s = detectSignals(baseCtx({ history: [{ role: "user", content: texto }] }));
+    expect(s.userAskedDateAvailability).toBe(false);
+  });
+
+  // Casa de festas: a data do aniversário é a reserva (varredura de produção).
+  it.each([
+    "Bom dia, gostaria de saber sobre festa para criança de 8 anos no dia 02/08",
+    "Seria uma festa de 2 anos, a data é para 14/02/2027",
+    "Então, ela faz 2 anos em 15/01/2027 e gostaria de uma data próxima entre 16/01 e 17/01",
+  ])("ainda marca disponibilidade em festa/evento: %s", (texto) => {
+    const s = detectSignals(baseCtx({ history: [{ role: "user", content: texto }] }));
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
+  it("ainda marca quando a frase de idade vem com pedido de horário", () => {
+    const s = detectSignals(
+      baseCtx({ history: [{ role: "user", content: "Ela tem 4 anos. Tem horário dia 15/11?" }] }),
+    );
+    expect(s.userAskedDateAvailability).toBe(true);
+  });
+
   it("NAO marca disponibilidade fora de RECEPTION/QUALIFICATION", () => {
     const s = detectSignals(
       baseCtx({

@@ -154,6 +154,43 @@ export function stripPastYearDates(text: string, currentYear: number): string {
   });
 }
 
+/**
+ * Frase sobre idade/aniversário (texto já sem acento e minúsculo): a data ali é
+ * do nascimento, não um pedido de dia.
+ */
+export const FALA_DE_IDADE_RE =
+  /\b(completou|completa|completara|completar|fez \d+|faz \d+|fara \d+|tem \d+\s*anos?|nasceu|nascid[ao]|nascimento)\b/;
+
+// Festa/evento: a data do aniversário É a reserva ("festa de 1 ano no dia 07/03").
+const FALA_DE_EVENTO_RE = /\b(festa|evento|comemora\w*|orcamento|convidad\w*|pessoas|reserva\w*|buffet)\b/;
+
+// dd/mm SEM ano e "dd de mês" sem "de aaaa" — as com ano já passam pelo stripPastYearDates.
+const DATA_SEM_ANO_REGEX =
+  /(?<![\/\d])\d{1,2}\/\d{1,2}\b(?!\/)|\b\d{1,2}\s+de\s+(?:janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b(?!\s+de\s+\d)/gi;
+
+// "2/3 anos", "15/20 anos": tempo de duração, não data.
+const FRACAO_DE_ANOS_REGEX = /\b\d{1,2}\/\d{1,2}\s*anos?\b/gi;
+
+/**
+ * Tira as datas que não são pedido de dia: aniversário sem ano dito como fato
+ * de idade e "2/3 anos". Caso real (Amazing CCZ, 11 95812-7757, 27/10/2026): a
+ * IA perguntou a turma, o lead respondeu "Ela completou 4 anos dia 12/10", o
+ * "12/10" virou pedido de data e o scheduler ofertou visita. Ficam como estão
+ * as frases de festa/evento (na casa de festas a data do aniversário é a
+ * reserva) e as que trazem o pedido junto ("tem 4 anos. Tem horário dia 15/11?").
+ */
+export function stripBirthdayDates(text: string): string {
+  return (text ?? "")
+    .replace(FRACAO_DE_ANOS_REGEX, " ")
+    .split(/(?<=[\n.!?;])/)
+    .map((frase) => {
+      const norm = frase.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+      if (!FALA_DE_IDADE_RE.test(norm) || FALA_DE_EVENTO_RE.test(norm)) return frase;
+      return frase.replace(DATA_SEM_ANO_REGEX, " ");
+    })
+    .join("");
+}
+
 export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
   const lastUserMsg =
     [...ctx.history].reverse().find((m) => m.role === "user")?.content?.trim() ?? "";
@@ -180,7 +217,9 @@ export function detectSignals(ctx: StageSignalsContext): DetectedSignals {
   // sozinha ou no meio da ficha com outros dados (ver stripPastYearDates).
   const userAskedDateAvailability =
     (ctx.stage === "RECEPTION" || ctx.stage === "QUALIFICATION") &&
-    DATE_AVAILABILITY_REGEX.test(stripPastYearDates(lastUserMsg, new Date().getFullYear())) &&
+    DATE_AVAILABILITY_REGEX.test(
+      stripBirthdayDates(stripPastYearDates(lastUserMsg, new Date().getFullYear())),
+    ) &&
     !looksLikeBirthDate(lastUserMsg);
 
   return {
