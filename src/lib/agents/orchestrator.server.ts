@@ -148,6 +148,7 @@ import { markEchoesReceivedBeforeSend } from "@/lib/early-echo.server";
 import { isTechRetryReply } from "./booking-failure";
 import { removerVocativoInformal } from "./vocativo-guard";
 import { corrigirSaudacao } from "./saudacao-guard";
+import { ofertaAguardaPedido } from "./sinal-de-agendamento";
 import {
   NEUTRAL_REPEAT_ACK,
   REPHRASE_PREFIX,
@@ -1122,7 +1123,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // Enrolação ("vou verificar a agenda") sem repasse proposto: o guard
         // anti-stall lá embaixo salvaria com um texto genérico. Melhor deixar o
         // scheduler responder de verdade.
-        const stalledOnAgenda = !handsOffToScheduler && looksLikeStallReply(result.reply);
+        // Com oferta_so_com_pedido e sem pedido do lead, a enrolação não abre a
+        // agenda: o guard anti-stall troca o texto, sem ofertar (sinal-de-agendamento.ts).
+        const stalledOnAgenda =
+          !handsOffToScheduler &&
+          looksLikeStallReply(result.reply) &&
+          !ofertaAguardaPedido(agentSettings, history, leadData.offered_slots);
 
         if (
           hasBookingIntegration &&
@@ -2335,6 +2341,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           stall_listing_forced: (result.telemetry?.stall_listing_forced as boolean) || undefined,
           invented_time_offer_scrubbed:
             (result.telemetry?.invented_time_offer_scrubbed as boolean) || undefined,
+          slot_offer_aguardando_pedido:
+            (result.telemetry?.slot_offer_aguardando_pedido as boolean) || undefined,
           // Argumentos das tool calls. Sem eles, um `periodo` errado vindo do
           // modelo so era diagnosticavel por reproducao e eliminacao — foi o
           // que custou o caso da Goreth (Sorriso Saude, 27 98800-0072, 23/09).

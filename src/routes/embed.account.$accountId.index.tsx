@@ -8224,6 +8224,24 @@ function GoogleCalendarPanel({
                   />
                 </div>
 
+                <div className="flex items-start justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+                  <div className="space-y-0.5">
+                    <Label className="text-xs font-medium">Ofertar horário só depois do pedido do lead</Label>
+                    <p className="text-[10px] text-muted-foreground">
+                      Na qualificação, o agente só consulta a agenda e oferece horário quando o lead
+                      pede (visita, horário, dia ou turno) ou aceita o convite. Antes disso ele segue o
+                      fluxo do prompt (apresentação, dúvidas, convite). Indicado para escolas; nas
+                      clínicas, deixe desligado para ofertar logo após o “sim” do paciente.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={bookingSettings.oferta_so_com_pedido === "true"}
+                    onCheckedChange={(v) =>
+                      setBookingSettings((p) => ({ ...p, oferta_so_com_pedido: v ? "true" : "false" }))
+                    }
+                  />
+                </div>
+
                 <Button
                   type="button"
                   className="w-full"
@@ -8237,6 +8255,8 @@ function GoogleCalendarPanel({
                       booking_commitment_question: bookingSettings.booking_commitment_question ?? "",
                       booking_fields_json: bookingSettings.booking_fields_json ?? "",
                       turma_auto: bookingSettings.turma_auto === "true" ? "true" : "false",
+                      oferta_so_com_pedido:
+                        bookingSettings.oferta_so_com_pedido === "true" ? "true" : "false",
                     })
                   }
                 >

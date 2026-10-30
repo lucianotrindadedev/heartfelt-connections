@@ -56,6 +56,16 @@ import { sendMediaBySlug, getAvailableMediaForPrompt } from "./send-media.server
 import { VOCATIVO_RULE } from "./vocativo-guard";
 import { linhaSaudacaoDoHorario } from "./saudacao-guard";
 import { HORARIO_DO_SERVICO_RULE, linhaPerguntaHorarioDoServico } from "./pergunta-informativa";
+import {
+  LINHA_OFERTA_AGUARDA_PEDIDO,
+  contarTurnosDoLead,
+  ofertaAguardaPedido,
+} from "./sinal-de-agendamento";
+
+/** A oferta de horário espera o pedido do lead neste turno? Ver sinal-de-agendamento.ts. */
+function aguardaPedidoDeAgenda(ctx: AgentContext): boolean {
+  return ofertaAguardaPedido(ctx.agentSettings, ctx.history, ctx.leadData.offered_slots);
+}
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -193,7 +203,7 @@ export function buildQualifierTools(ctx: AgentContext): LlmTool[] {
   if (agentUsesTurmaClassifier(ctx.agentSettings)) {
     tools = tools.filter((t) => t.function.name !== "aplicar_tag_interesse");
   }
-  if (hasBookingIntegration(ctx)) {
+  if (hasBookingIntegration(ctx) && !aguardaPedidoDeAgenda(ctx)) {
     // Multi-agenda / multi-unidade: a consulta precisa saber QUAL agenda (loja,
     // unidade) — o mesmo parâmetro `agenda` do scheduler.
     tools = [...tools, ...withAgendaParam(ctx, [QUALIFIER_AGENDA_TOOL])];
@@ -541,7 +551,7 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
   const utm = ctx.helenaContact?.utm;
   const tags = ctx.helenaContact?.tagNames ?? [];
 
-  const cycleCount = ctx.history.filter((m) => m.role === "user").length;
+  const cycleCount = contarTurnosDoLead(ctx.history);
 
   // Detecta se a M1 (primeira mensagem do lead) já carrega interesse explícito.
   // Heurística: >= 20 caracteres E não é saudação genérica E contém palavras
@@ -618,6 +628,7 @@ horários/slots) nem quando ele só está respondendo normalmente.`;
 - 📅 HOJE é ${dateStr} (horário de São Paulo). Esta é a SUA referência de tempo: antes de falar de qualquer dia/data, localize-se por ela. NUNCA mencione ou ofereça datas no PASSADO. Ao interpretar "amanhã", "semana que vem", "sexta", "dia 15", "hoje à tarde", calcule SEMPRE a partir de HOJE.
 ${linhaSaudacaoDoHorario()}
 ${linhaPerguntaHorarioDoServico(lastUserBurst(ctx.history))}
+${aguardaPedidoDeAgenda(ctx) ? LINHA_OFERTA_AGUARDA_PEDIDO : ""}
 - Stage corrente: ${ctx.stage}
 - Ciclos de conversa já completos: ${cycleCount}
 - Canal: ${ctx.channel}
@@ -832,7 +843,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   // No 1º ciclo, tools são proibidas — EXCETO quando a M1 já carrega interesse
   // explícito ("quero saber sobre tráfego pago", "tô com dor no dente").
   // Nesses casos, faz sentido aplicar a tag de interesse JÁ no 1º turno.
-  const cycleCount = ctx.history.filter((m) => m.role === "user").length;
+  const cycleCount = contarTurnosDoLead(ctx.history);
   const firstUserMsg = ctx.history.find((m) => m.role === "user")?.content ?? "";
   const m1Lower = firstUserMsg.trim().toLowerCase();
   const isGreetingOnly =
@@ -1022,7 +1033,18 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
   } as Partial<LeadData>;
 
   // Fallback: se LLM nao retornou next_stage, mantem o stage atual da conversa.
-  const finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;
+  let finalStage: Stage = (result.next_stage as Stage | undefined) ?? ctx.stage;
+  // settings.oferta_so_com_pedido: sem pedido do lead, a qualificação não passa
+  // a conversa para a oferta — mesmo que o modelo proponha (ver sinal-de-agendamento.ts).
+  const aguardaPedido = aguardaPedidoDeAgenda(ctx);
+  let slotOfferAguardandoPedido = false;
+  if (aguardaPedido && finalStage === "SLOT_OFFER") {
+    finalStage = "QUALIFICATION";
+    slotOfferAguardandoPedido = true;
+    console.warn(
+      `[qualifier] SLOT_OFFER segurado — lead ainda não pediu agenda (oferta_so_com_pedido) conv=${ctx.conversationId}`,
+    );
+  }
 
   // ── Trava anti-horário-inventado ───────────────────────────────────────────
   // Sem offered_slots o qualifier não tem agenda nenhuma: qualquer "segunda às
@@ -1053,7 +1075,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
     // segunda-feira à tarde é certo. Pra eu já te trazer os horários…: você
     // prefere de manhã ou à tarde?". Consulta a agenda de verdade (dia/turno
     // pedidos saem do histórico, dentro do execListarHorarios) e oferta os reais.
-    if (!(ctx.leadData.offered_slots?.length ?? 0) && hasBookingIntegration(ctx)) {
+    if (!(ctx.leadData.offered_slots?.length ?? 0) && hasBookingIntegration(ctx) && !aguardaPedido) {
       try {
         const outcome = await execListarHorarios(ctx);
         const reais = outcome.patch?.offered_slots ?? [];
@@ -1085,6 +1107,7 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
       const t: Record<string, unknown> = {};
       if (inventedOfferScrubbed) t.invented_time_offer_scrubbed = true;
       if (realSlotsAfterScrub) t.real_slots_after_scrub = true;
+      if (slotOfferAguardandoPedido) t.slot_offer_aguardando_pedido = true;
       if (toolArgs.length > 0) t.tool_args = toolArgs.join(" | ").slice(0, 600);
       if (turnosConsultados.size > 0) t.slot_listing_turnos = [...turnosConsultados].join(",");
       return Object.keys(t).length > 0 ? t : undefined;
