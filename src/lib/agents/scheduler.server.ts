@@ -77,6 +77,7 @@ import { agendaUnicaDoAgente, linhaDiasFechados } from "@/lib/followup-guard";
 import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import { promisesAvailabilityCheck } from "./stage-signals";
 import { VOCATIVO_RULE } from "./vocativo-guard";
+import { HORARIO_DO_SERVICO_RULE, linhaPerguntaHorarioDoServico } from "./pergunta-informativa";
 import {
   classifyBookingError,
   parseBookingFailure,
@@ -3166,6 +3167,11 @@ ${unifiedIntro}
   ⚠️ Se o lead disser um TURNO ("de manhã", "à tarde", "de noite"), passe
   \`periodo\` ("manha"/"tarde"/"noite") em listar_horarios — sem isso a busca traz
   só os horários mais cedo e pode dizer que a tarde não tem vaga mesmo tendo.
+  ❓ PERGUNTA NO MEIO DA OFERTA: se o lead fizer uma pergunta que não é sobre
+  o horário do agendamento (rotina, valores, turmas, endereço), RESPONDA primeiro
+  com o que o prompt do proprietário informa e só então retome o convite.
+  Repetir os horários sem responder faz o lead desistir.
+  ${HORARIO_DO_SERVICO_RULE}
 - **NAME_COLLECT**: só se selected_slot_iso existir. Confirme o slot. NÃO
   chame listar_horarios. Colete os campos obrigatórios (UM por mensagem).${commitmentEnabled ? ` Ao final dos campos, pergunte: "${commitmentQ}"` : ""}
 - **BOOKING**: o sistema cria o agendamento. Se criar_agendamento ok=true,
@@ -3256,6 +3262,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 1. NUNCA diga "vou verificar", "estou consultando", "já te retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores das tools.
 2b. ${VOCATIVO_RULE}
+2c. ${HORARIO_DO_SERVICO_RULE} Pergunta do lead que não é sobre o horário do agendamento (rotina, valores, turmas, endereço) se responde PRIMEIRO; só depois retome a oferta.
 3. UMA pergunta por vez. Mensagens curtas, em UM balão só no WhatsApp (a Meta cobra por balão). \\n\\n é só parágrafo dentro da mesma mensagem, não uma bolha separada.
 4. NUNCA use "dentista" ou "consulta odontológica" se o contexto for escola/educação — use "${appointmentLabel}" e linguagem do prompt do proprietário.
 5. Escale para humano (next_stage="ESCALATED" + lead_data_patch.escalation_reason) quando o lead pedir explicitamente OU quando ele demonstrar frustração real / risco de desistir (reclamar do atendimento, dizer que foi induzido/enrolado, ameaçar não vir, dizer que vai procurar outro lugar). NUNCA diga "vou chamar alguém da equipe", "vou te transferir" ou algo parecido sem usar next_stage="ESCALATED" no MESMO turno — dizer isso sem escalar deixa o lead esperando um atendimento que nunca chega.
@@ -3370,6 +3377,7 @@ ${ld.selected_agenda ? `- Unidade já escolhida nesta conversa: "${ld.selected_a
   return `# ESTADO ATUAL
 
 - 📅 HOJE é ${dateStr} (São Paulo) — data de referência ISO: ${todayIso}. Localize-se SEMPRE por ela. NUNCA ofereça, confirme ou mencione horários no PASSADO. Só ofereça horários vindos de listar_horarios (que já começa a partir de hoje). Ao passar data_alvo, calcule "amanhã"/"sexta"/"dia 15" a partir de HOJE (${todayIso}).
+${linhaPerguntaHorarioDoServico(lastUserBurst(ctx.history))}
 - Stage corrente: ${ctx.stage}
 - Telefone do lead: ${resolveBookingPhone(ctx) ?? "(nenhum telefone ainda — peça o WhatsApp com DDD)"}
 - Canal: ${ctx.channel}

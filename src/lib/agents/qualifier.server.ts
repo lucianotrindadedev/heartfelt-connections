@@ -40,6 +40,7 @@ import {
   tagGateMissingField,
   turmaTagsForLead,
   turmaTagCandidates,
+  lastUserBurst,
 } from "@/lib/booking-template";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
@@ -53,6 +54,7 @@ import {
 import { searchKnowledge, formatChunksAsContext } from "@/lib/knowledge/retrieval.server";
 import { sendMediaBySlug, getAvailableMediaForPrompt } from "./send-media.server";
 import { VOCATIVO_RULE } from "./vocativo-guard";
+import { HORARIO_DO_SERVICO_RULE, linhaPerguntaHorarioDoServico } from "./pergunta-informativa";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -336,6 +338,8 @@ CHAME a tool na hora. Chame listar_horarios sempre que o lead:
 - citar uma data ou turno ("dia 25", "quinta", "de manhã") — passe \`data_alvo\`
   (YYYY-MM-DD) e/ou \`periodo\` ("manha"/"tarde"/"noite").
 
+${HORARIO_DO_SERVICO_RULE}
+
 🚫 HORÁRIOS: NUNCA cite dia, data ou hora que não tenha vindo de listar_horarios
 nesta conversa — seriam inventados e podem cair em dia bloqueado. Ao ofertar,
 copie \`date_label\` e \`time_label\` LITERALMENTE como vieram da tool e ofereça
@@ -458,6 +462,7 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 4. NUNCA mencione ferramentas, automações, CRM, tags ou sistemas.
 5. NUNCA invente fatos clínicos ou prometa resultados.
 5a. ${VOCATIVO_RULE}
+5a2. ${HORARIO_DO_SERVICO_RULE}
 ${
   ctx.integrations.googleSheets
     ? `5b. 🚫 **PREÇO/VALOR:** a ÚNICA fonte de valor é a tool \`consultar_planilha\`. Perguntou preço → CHAME a tool e copie o valor LITERALMENTE. Não achou na planilha → diga que vai confirmar com a equipe. NUNCA invente, estime, arredonde nem calcule total, mesmo sob insistência.`
@@ -610,6 +615,7 @@ horários/slots) nem quando ele só está respondendo normalmente.`;
   const stateBlock = `# ESTADO ATUAL
 
 - 📅 HOJE é ${dateStr} (horário de São Paulo). Esta é a SUA referência de tempo: antes de falar de qualquer dia/data, localize-se por ela. NUNCA mencione ou ofereça datas no PASSADO. Ao interpretar "amanhã", "semana que vem", "sexta", "dia 15", "hoje à tarde", calcule SEMPRE a partir de HOJE.
+${linhaPerguntaHorarioDoServico(lastUserBurst(ctx.history))}
 - Stage corrente: ${ctx.stage}
 - Ciclos de conversa já completos: ${cycleCount}
 - Canal: ${ctx.channel}
