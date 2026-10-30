@@ -111,7 +111,20 @@ export function resolveEffectivePhone(params: {
   leadPhone?: string | null;
   contactPhone?: string | null;
   conversationPhone?: string | null;
+  channel?: ConversationChannel;
 }): EffectivePhoneResult {
+  // Instagram/Messenger: o "remetente" que a Helena manda no webhook NÃO é
+  // telefone — às vezes parece celular, às vezes tem DDD inexistente (00, 20,
+  // 90…). Ele acabava em lead_phone e na chave da conversa, o agente achava que
+  // já tinha o WhatsApp, nunca pedia, e o agendamento ia com um número que não
+  // é do lead. Caso real (Clínica Bomfim, Instagram, 26/10): contato SEM
+  // telefone na Helena, agendado com o "número" do remetente. Aqui só vale o
+  // telefone do CADASTRO do contato; o que o lead digitar entra por
+  // custom_fields (resolveLeadPhone).
+  if (params.channel === "instagram" || params.channel === "messenger") {
+    const fromCrm = normalizeBrazilPhone(params.contactPhone);
+    return fromCrm ? { phone: fromCrm, source: "crm" } : { phone: null, source: null };
+  }
   const fromLead = normalizeBrazilPhone(params.leadPhone);
   if (fromLead) return { phone: fromLead, source: "lead_phone" };
 
