@@ -14,7 +14,11 @@ import { isPlatformNotice } from "@/lib/platform-notice";
 import { detectForeignSender, isCourtesyOnlyBurst } from "@/lib/conversation-guards";
 import { decryptValue } from "@/lib/crypto.server";
 import { buildSlotOfferFallback } from "./slot-offer-fallback";
-import { claimsBookingWithoutAppointment, noBookingYetReply } from "./false-booking-claim";
+import {
+  claimsBookingWithoutAppointment,
+  noBookingYetReply,
+  remarcacaoSemReservaReply,
+} from "./false-booking-claim";
 import {
   closedAgendaSafeReply,
   turnoNegadoSemProva,
@@ -36,6 +40,8 @@ import {
   isEscalationAwaitingPhone,
   hasBookingPhone,
   shouldHoldEscalationForPhone,
+  precisaPedirWhatsapp,
+  comPedidoDeWhatsapp,
   resolveLeadPhone,
   defaultCommitmentQuestion,
   getBookingFieldsForChannel,
@@ -97,7 +103,15 @@ import {
 import { haltConversationForNoCredits } from "@/lib/credits.server";
 import { isInsufficientCreditsError } from "@/lib/agents/llm.server";
 import { escalateToHuman } from "@/lib/tools/escalate-human.server";
+import {
+  parseTransferUnits,
+  resolveTransferUnit,
+  TRANSFER_TAG,
+  TRANSFER_UNITS_SETTING,
+} from "@/lib/transfer-units";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
+import { midiaInicioPendente } from "./midia-inicio";
+import { sendMediaBySlug } from "./send-media.server";
 import { notifyBooking } from "@/lib/agents/notify-booking.server";
 import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
 import type { AgentContext, AgentResult } from "./context";
@@ -678,7 +692,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // sob o contexto de "isto aqui precisa de humano". String vazia, não
       // undefined — stripNullishFields apaga a chave em vez de zerar o valor
       // (o campo ficava grudento e voltava no turn seguinte).
-      leadData = { ...leadData, escalation_reason: "" };
+      // A loja da transferência anterior (central de lojas) idem: sem isto, a
+      // loja ainda gravada forçaria uma nova transferência já no próximo turn.
+      leadData = { ...leadData, escalation_reason: "", transfer_unit: "" };
     }
     // Captura ANTES de qualquer mutação — usado para detectar transições de
     // agendamento (sem→com = agendou; com→sem = cancelou) e disparar a
@@ -1299,6 +1315,10 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Cancelamento: a tool sinaliza appointment_cancelled (truthy, sobrevive ao
     // stripNullishFields). Aqui limpamos o appointment_id de fato (e, em
     // remarcação, o slot) e removemos os sinais transitórios antes de persistir.
+    // Remarcação iniciada neste turn: o antigo saiu do lead_data (continua na
+    // agenda até o novo ser criado) e o novo ainda não existe.
+    const remarcacaoNesteTurno =
+      !!finalLeadData.appointment_cancelled && !!finalLeadData.reoffer_after_cancel;
     if (finalLeadData.appointment_cancelled) {
       const reoffer = !!finalLeadData.reoffer_after_cancel;
       finalLeadData = { ...finalLeadData };
@@ -1475,21 +1495,31 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     const horarioEmJogo =
       !!(finalLeadData.selected_slot_iso ?? "").trim() ||
       (finalLeadData.offered_slots?.length ?? 0) > 0;
+    // Cancelamento puro: "seu agendamento foi cancelado" não é confirmação falsa.
+    // Remarcação NÃO entra nessa exceção: o horário antigo acabou de ser
+    // cancelado e "Remarquei, fica confirmado às 08:30" sem reserva nova é
+    // exatamente a confirmação falsa que este guard existe para barrar. Caso
+    // real (Sorriso Saude, 29/10): o paciente perdeu o horário das 9h e ficou
+    // achando que tinha 08:30 — nada foi reservado.
+    const cancelamentoPuro = appointmentJustCancelled && !remarcacaoNesteTurno;
     if (
       hasBookingIntegration &&
       !finalLeadData.appointment_id &&
-      !appointmentJustCancelled &&
+      !cancelamentoPuro &&
       claimsBookingWithoutAppointment({ reply, horarioEmJogo })
     ) {
       falseBookingClaimBlocked = true;
       console.warn(
-        `[orch] reply afirma agendamento sem appointment_id conv=${conversationId} — bloqueando confirmação falsa`,
+        `[orch] reply afirma agendamento sem appointment_id conv=${conversationId}${remarcacaoNesteTurno ? " (remarcação)" : ""} — bloqueando confirmação falsa`,
       );
       const missingFields = getMissingBookingFields(
         getBookingFieldsForChannel(agentSettings, channelCtx),
         finalLeadData,
       );
-      if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
+      if (remarcacaoNesteTurno) {
+        reply = remarcacaoSemReservaReply(finalLeadData.offered_slots ?? [], lastUserMsg);
+        newStage = "SLOT_OFFER";
+      } else if (finalLeadData.selected_slot_iso && missingFields.length > 0) {
         const nextField = missingFields[0]!;
         reply = `Perfeito! Anotei esse horário para você.\n\n${bookingFieldQuestion(nextField, finalLeadData)}`;
         newStage = "NAME_COLLECT";
@@ -2051,8 +2081,42 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // Instagram/Messenger sem telefone: a transferência espera o número. Roda
     // DEPOIS do ghost-escalation acima (que pode ter forçado o ESCALATED) e
     // troca a resposta pelo pedido do WhatsApp; o escalation_reason fica no
-    // lead_data, e no próximo turn — com o número capturado ou recusado — a
-    // transferência segue. Ver shouldHoldEscalationForPhone.
+    // lead_data, e a transferência só segue quando o número chegar — sem ele,
+    // pede de novo (obrigatório). Ver shouldHoldEscalationForPhone.
+    // Central de lojas: a IA indicou a loja (transfer_unit) mas não mudou o
+    // estágio. Loja cadastrada = transferência; o estágio vem junto. Roda antes
+    // da trava de telefone do Instagram, que continua valendo para a transferência.
+    const transferUnits = parseTransferUnits(agentSettings[TRANSFER_UNITS_SETTING]);
+    const transferUnit = resolveTransferUnit(transferUnits, finalLeadData.transfer_unit);
+    // Só força o estágio quando a IA indicou a loja NESTE turn — a loja já
+    // gravada (ex.: transferência segurada pela trava de telefone) segue o
+    // fluxo normal da escalada.
+    const transferUnitThisTurn = !!resolveTransferUnit(
+      transferUnits,
+      ((result.lead_data_patch ?? {}) as Partial<LeadData>).transfer_unit,
+    );
+    if (transferUnit && transferUnitThisTurn && newStage !== "ESCALATED" && stage !== "ESCALATED") {
+      console.warn(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "transfer_unit_forced_escalation",
+          conv: conversationId,
+          account: accountId,
+          agent: agentId,
+          unit: transferUnit.name,
+          stage_from: stage,
+        })}`,
+      );
+      newStage = "ESCALATED";
+    }
+    if (transferUnit && newStage === "ESCALATED") {
+      finalLeadData = {
+        ...finalLeadData,
+        transfer_unit: transferUnit.name,
+        escalation_reason:
+          finalLeadData.escalation_reason?.trim() || `Transferido para ${transferUnit.name}`,
+      };
+    }
+
     let escalationHeldForPhone = false;
     let escalationResumedAfterPhone = false;
     if (
@@ -2060,8 +2124,9 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       stage !== "ESCALATED" &&
       isEscalationAwaitingPhone(history, finalLeadData.escalation_reason)
     ) {
-      // Turn seguinte ao pedido: o lead mandou o número (já capturado em
-      // custom_fields) ou recusou. A transferência segurada acontece agora.
+      // Turn seguinte ao pedido: com o número capturado em custom_fields, a
+      // transferência segurada acontece agora; sem ele, a trava abaixo segura
+      // de novo e insiste no pedido.
       escalationResumedAfterPhone = true;
       newStage = "ESCALATED";
       reply = escalationDoneReply(finalLeadData.name);
@@ -2072,7 +2137,6 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       shouldHoldEscalationForPhone({
         channel,
         hasPhone: hasBookingPhone(finalLeadData, agentSettings, effectivePhone, normalizeBrazilPhone),
-        history,
       })
     ) {
       escalationHeldForPhone = true;
@@ -2088,7 +2152,37 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         })}`,
       );
       newStage = stage;
-      reply = escalationPhoneAskReply(finalLeadData.name);
+      reply = escalationPhoneAskReply(finalLeadData.name, escalationResumedAfterPhone);
+    }
+
+    // WhatsApp OBRIGATÓRIO em Instagram/Messenger: identificado o lead (ou
+    // desde a 1ª resposta, com whatsapp_no_inicio), toda resposta pede o número
+    // até ele chegar. O prompt já manda pedir; isto garante quando o modelo
+    // esquece. Agendar e transferir continuam travados sem número.
+    if (
+      !escalationHeldForPhone &&
+      newStage !== "ESCALATED" &&
+      stage !== "ESCALATED" &&
+      precisaPedirWhatsapp({
+        channel,
+        hasPhone: hasBookingPhone(finalLeadData, agentSettings, effectivePhone, normalizeBrazilPhone),
+        leadName: finalLeadData.name,
+        settings: agentSettings,
+      })
+    ) {
+      const comPedido = comPedidoDeWhatsapp(reply);
+      if (comPedido !== reply) {
+        console.warn(
+          `[orch:telemetry] ${JSON.stringify({
+            event: "whatsapp_obrigatorio_pedido",
+            conv: conversationId,
+            account: accountId,
+            agent: agentId,
+            channel,
+          })}`,
+        );
+        reply = comPedido;
+      }
     }
 
     // Leads360: decide o que sincronizar neste turn. O envio HTTP é best-effort
@@ -2124,6 +2218,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       reply = limpezaMarcadores.texto || "Me conta um pouquinho mais pra eu te ajudar certinho? 😊";
     }
 
+    // Mídia de abertura (arte de campanha etc.): sai antes da 1ª resposta, uma
+    // vez só — ver midia-inicio.ts. Marcada antes do persist para um
+    // reprocessamento do turno não reenviar.
+    const midiaInicio =
+      newStage !== "ESCALATED" ? midiaInicioPendente(agentSettings, finalLeadData, history) : null;
+    if (midiaInicio) finalLeadData.midia_inicio_enviada = true;
+
     // 12. Persiste e entrega
     await persistStageAndLeadData(conversationId, meta, newStage, finalLeadData, route);
 
@@ -2136,6 +2237,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // e a notificação pra equipe (WhatsApp/Leads360) ficava perdida PARA SEMPRE,
     // mesmo que o lead recebesse a resposta depois num retry.
     try {
+      if (midiaInicio) {
+        // Falha no envio da mídia não segura a resposta em texto.
+        const enviada = await sendMediaBySlug(ctx, midiaInicio);
+        console.log(
+          `[orch] mídia de abertura "${midiaInicio}" conv=${conversationId} → ${enviada.ok ? "enviada" : `falhou: ${enviada.error}`}`,
+        );
+      }
       await deliverReply(
         accountId,
         agentId,
@@ -2250,6 +2358,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
           orKey,
           summaryModel: ctx.ragGateModel,
           disableTags: ctx.disableTags,
+          // Central de lojas: alerta também no WhatsApp da loja + etiqueta "Transferido".
+          transferUnit: resolveTransferUnit(transferUnits, finalLeadData.transfer_unit) ?? undefined,
+          extraTags: resolveTransferUnit(transferUnits, finalLeadData.transfer_unit)
+            ? [TRANSFER_TAG]
+            : undefined,
         });
       } catch (e) {
         console.error("[orch] escalateToHuman falhou:", e);
@@ -2259,11 +2372,13 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // 14. Notificações de agendamento — disparam na transição do appointment_id:
     //   sem→com  = agendou   → notifica "created"
     //   com→sem  = cancelou  → notifica "cancelled"
-    // (Remarcar = cancela o antigo + reoferta → gera naturalmente cancelled e,
-    //  depois, created quando o novo for marcado.) Reusa a config da escalada
+    // (Remarcar não notifica cancelamento: o antigo só sai da agenda quando o
+    //  novo é criado, e aí sai o "created".) Reusa a config da escalada
     // (instância + grupo) com toggle próprio (notificar_agendamentos).
     const justBooked = !hadAppointmentBefore && !!finalLeadData.appointment_id;
-    if (justBooked || appointmentJustCancelled) {
+    // Remarcação iniciada: o appointment_id saiu do lead_data, mas o horário
+    // antigo continua na agenda até o novo ser criado — não é cancelamento.
+    if (justBooked || (appointmentJustCancelled && !remarcacaoNesteTurno)) {
       try {
         const event = justBooked ? "created" : "cancelled";
         // Rótulo da notificação: a agenda escolhida pode definir o seu próprio
@@ -2355,6 +2470,8 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         await sendLeads360Transfer(leads360, {
           name: leads360Name,
           phone: leads360Phone,
+          // Central de lojas: a loja de destino; sem loja, "Atendimento Humano".
+          destination: resolveTransferUnit(transferUnits, finalLeadData.transfer_unit)?.name,
         });
       }
     }

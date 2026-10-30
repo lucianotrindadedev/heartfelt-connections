@@ -15,7 +15,9 @@
 // PURO: sem I/O.
 
 /** Verbo de agendamento em 1ª PESSOA — só nós podemos ter feito. */
-const PRIMEIRA_PESSOA_RE = /\b(agendei|marquei|reservei)\b/i;
+// "remarquei"/"reagendei": caso real (Sorriso Saude, 29/10) — "Remarquei pra
+// você. Sexta-feira, 30/10 às 08:30 fica confirmado agora." sem reserva nenhuma.
+const PRIMEIRA_PESSOA_RE = /\b(agendei|marquei|reservei|remarquei|reagendei)\b/i;
 
 /**
  * Particípio + "pra/para" + um marcador REAL de dia/horário.
@@ -27,7 +29,7 @@ const PRIMEIRA_PESSOA_RE = /\b(agendei|marquei|reservei)\b/i;
  */
 const DIA_OU_HORA = String.raw`(?:segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|hoje|amanh[ãa]|\d{1,2}\s*[/h:]|\d{1,2}\s*(?:horas?|hrs?)\b|\d{1,2}\s+de\s+\w+)`;
 const PARTICIPIO_COM_DATA_RE = new RegExp(
-  String.raw`\b(?:reservad[oa]|marcad[oa]|agendad[oa]|confirmad[oa])\s+(?:pra|para)\s+(?:[aàoás]s?\s+)?` +
+  String.raw`\b(?:reservad[oa]|marcad[oa]|agendad[oa]|confirmad[oa]|remarcad[oa]|reagendad[oa])\s+(?:pra|para)\s+(?:[aàoás]s?\s+)?` +
     DIA_OU_HORA,
   "i",
 );
@@ -52,7 +54,7 @@ const ALEGACAO_FORTE_RE = {
  * dentista marcou, de uma consulta antiga ou do plano de tratamento. Só contam
  * quando já existe horário em jogo nesta conversa.
  */
-const ALEGACAO_FRACA_RE = /\b(agendad[oa]|confirmad[oa])\b/i;
+const ALEGACAO_FRACA_RE = /\b(agendad[oa]|confirmad[oa]|remarcad[oa]|reagendad[oa])\b/i;
 
 export interface FalseClaimInput {
   /** Texto que o LLM produziu neste turno. */
@@ -109,4 +111,40 @@ export function noBookingYetReply(
     return `Só pra deixar claro: ainda não reservei nada, tá? 😊 Qual desses fica melhor pra você — ${opcoes}?`;
   }
   return "Ainda não reservei nada, viu? 😊 Me diz o melhor dia e horário pra você que eu já verifico a agenda.";
+}
+
+/** "8.30hs", "8:30", "08h30", "9h" → "08:30"/"09:00"; null sem horário. */
+function horaPedida(texto: string): string | null {
+  for (const m of (texto ?? "").matchAll(/(?<![\d/])(\d{1,2})\s*(?:([:h.])\s*([0-5]\d))?\s*(hs?|hrs?|horas?)?(?![\d/])/gi)) {
+    const h = Number(m[1]);
+    // Número solto sem minutos nem "h" não é horário ("dia 30").
+    if (h > 23 || (!m[3] && !m[4] && m[2] !== "h")) continue;
+    return `${String(h).padStart(2, "0")}:${m[3] ?? "00"}`;
+  }
+  return null;
+}
+
+/**
+ * Remarcação bloqueada pelo guard: o novo horário ainda não existe. O antigo
+ * continua reservado (remarcar_agendamento só o cancela quando o novo é
+ * criado). Diz isso com clareza e traz primeiro o horário que o lead pediu, se
+ * estiver entre os livres — a escolha dele no turno seguinte fecha a troca.
+ */
+export function remarcacaoSemReservaReply(
+  offeredSlots: { date_label?: string | null; time_label?: string | null }[],
+  ultimaDoLead: string,
+): string {
+  const ofertados = [...(offeredSlots ?? [])];
+  const label = (s: { date_label?: string | null; time_label?: string | null }) =>
+    `${s.date_label ?? ""} às ${s.time_label ?? ""}`.trim();
+  if (ofertados.length === 0) {
+    return "Seu horário atual continua reservado e o novo ainda não está marcado. Me diz o melhor dia e horário pra você que eu já verifico a agenda 😊";
+  }
+  // Sempre como ESCOLHA ("X ou Y?"): a resposta do lead ("8:30") é o que a
+  // auto-seleção reconhece; um "posso reservar?" + "sim" ficaria ambíguo.
+  const pedida = horaPedida(ultimaDoLead);
+  const idx = pedida ? ofertados.findIndex((s) => (s.time_label ?? "").trim() === pedida) : -1;
+  if (idx > 0) ofertados.unshift(...ofertados.splice(idx, 1));
+  const opcoes = ofertados.slice(0, 2).map(label).join(" ou ");
+  return `Seu horário atual continua reservado até a gente confirmar o novo. Pra trocar, tenho ${opcoes} — qual fica melhor pra você? 😊`;
 }

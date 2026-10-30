@@ -5,6 +5,7 @@ import type { LeadData } from "@/lib/agents/stage";
 import type { AgentContext } from "@/lib/agents/context";
 import type { ConversationChannel } from "@/lib/conversation-channel.server";
 import { stripQuotePrefix } from "./quote-prefix";
+import { isUnsupportedContentPlaceholder } from "./platform-notice";
 
 export interface BookingFieldDef {
   /** Chave em lead_data.custom_fields (ou "name" para lead_data.name). */
@@ -200,41 +201,76 @@ export function assistantAskedForPhone(text: string | null | undefined): boolean
   return ASKED_FOR_PHONE_RE.test(text ?? "");
 }
 
+/** Canal sem telefone no contexto: o WhatsApp do lead só existe se ele digitar. */
+function isCanalSemTelefone(channel: ConversationChannel): boolean {
+  return channel === "instagram" || channel === "messenger";
+}
+
 /**
- * Segura a transferência para humano até o telefone ser pedido, em canal SEM
- * telefone (Instagram/Messenger).
+ * Segura a transferência para humano (inclusive para outra loja) até o lead
+ * informar o WhatsApp, em canal SEM telefone (Instagram/Messenger).
  *
  * A equipe só consegue retomar o lead por WhatsApp/ligação: escalar sem número
- * deixa o humano sem como falar com ele. Caso real (Clínica Bomfim, Instagram
- * @andersonavelar310.aa, 17/10): o prompt manda pedir o telefone antes de todo
- * `escalar_humano`, mas o agente foi direto para "vou te direcionar para a
- * nossa equipe" — a CRC recebeu o lead sem número nenhum.
+ * deixa o humano sem como falar com ele. Caso real (Clínica Bomfim, Instagram,
+ * 17/10): o prompt manda pedir o telefone antes de todo `escalar_humano`, mas o
+ * agente foi direto para "vou te direcionar para a nossa equipe" — a CRC
+ * recebeu o lead sem número nenhum.
  *
- * Segura só se o telefone ainda NÃO foi pedido nas últimas 3 falas do agente:
- * depois de pedido, se o lead recusar ou ignorar, a transferência segue (regra
- * do proprietário: "se o lead se recusar, transfira mesmo assim").
+ * OBRIGATÓRIO (decisão de 28/10): antes, depois de pedir uma vez a transferência
+ * seguia mesmo sem número; agora segura até o número chegar.
  */
 export function shouldHoldEscalationForPhone(params: {
   channel: ConversationChannel;
   hasPhone: boolean;
-  history: { role: "user" | "assistant"; content: string }[];
 }): boolean {
-  if (params.channel !== "instagram" && params.channel !== "messenger") return false;
-  if (params.hasPhone) return false;
-  const askedRecently = params.history
-    .filter((m) => m.role === "assistant")
-    .slice(-3)
-    .some((m) => assistantAskedForPhone(m.content));
-  return !askedRecently;
+  return isCanalSemTelefone(params.channel) && !params.hasPhone;
+}
+
+/** Setting: pedir o WhatsApp já na primeira resposta (junto com o nome), não
+ *  só depois de o lead se identificar. */
+export const WHATSAPP_NO_INICIO_SETTING = "whatsapp_no_inicio";
+
+/**
+ * Instagram/Messenger sem telefone: o WhatsApp é OBRIGATÓRIO assim que o lead
+ * se identifica (tem nome) — ou desde a primeira resposta, com
+ * `whatsapp_no_inicio`. Enquanto faltar, toda resposta pede o número (ver
+ * comPedidoDeWhatsapp); agendar e transferir já são travados sem ele.
+ */
+export function precisaPedirWhatsapp(params: {
+  channel: ConversationChannel;
+  hasPhone: boolean;
+  leadName: string | null | undefined;
+  settings: Record<string, string>;
+}): boolean {
+  if (!isCanalSemTelefone(params.channel) || params.hasPhone) return false;
+  if (params.leadName?.trim()) return true;
+  const v = String(params.settings[WHATSAPP_NO_INICIO_SETTING] ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "sim";
+}
+
+/** A resposta já pede o WhatsApp? Senão, acrescenta o pedido no fim. */
+export function comPedidoDeWhatsapp(reply: string): string {
+  if (assistantAskedForPhone(reply)) return reply;
+  const base = reply.trimEnd();
+  const pedido = "Me passa também seu WhatsApp com DDD? É por ele que a nossa equipe fala com você 😊";
+  return base ? `${base}\n\n${pedido}` : pedido;
 }
 
 /** Trecho fixo do pedido de telefone — é por ele que o turn seguinte reconhece
  *  que há uma transferência esperando o número. */
 const ESCALATION_PHONE_ASK_MARKER = "Antes de te passar para a nossa equipe";
 
-/** Pedido de telefone que substitui a resposta quando a transferência é segurada. */
-export function escalationPhoneAskReply(leadName: string | null | undefined): string {
+/** Pedido de telefone que substitui a resposta quando a transferência é
+ *  segurada. `insistir`: o lead já foi perguntado e não mandou o número. */
+export function escalationPhoneAskReply(
+  leadName: string | null | undefined,
+  insistir = false,
+): string {
   const primeiro = (leadName ?? "").trim().split(/\s+/)[0] ?? "";
+  if (insistir) {
+    const abertura = primeiro ? `${primeiro}, ` : "";
+    return `${abertura}${ESCALATION_PHONE_ASK_MARKER.charAt(0).toLowerCase()}${ESCALATION_PHONE_ASK_MARKER.slice(1)}, preciso do seu número de WhatsApp com DDD — sem ele a equipe não consegue falar com você. Me passa, por favor? 😊`;
+  }
   const abertura = primeiro ? `Perfeito, ${primeiro}! ` : "Perfeito! ";
   return `${abertura}${ESCALATION_PHONE_ASK_MARKER}, me informa seu número de WhatsApp com DDD? Assim eles conseguem falar com você. 😊`;
 }
@@ -251,7 +287,8 @@ export function isEscalationAwaitingPhone(
 ): boolean {
   if (!escalationReason?.trim()) return false;
   const ultimaDoAgente = [...history].reverse().find((m) => m.role === "assistant");
-  return !!ultimaDoAgente?.content.includes(ESCALATION_PHONE_ASK_MARKER);
+  // Sem diferenciar caixa: o pedido insistente traz o marcador no meio da frase.
+  return !!ultimaDoAgente?.content.toLowerCase().includes(ESCALATION_PHONE_ASK_MARKER.toLowerCase());
 }
 
 /** Resposta da transferência concluída depois do pedido de telefone. */
@@ -606,6 +643,7 @@ export function getBookingFieldsForChannel(
 export function buildChannelPhonePromptBlock(
   channel: ConversationChannel,
   effectivePhone: string | null | undefined,
+  settings?: Record<string, string>,
 ): string {
   if (shouldSkipPhoneCollection(channel, effectivePhone)) {
     return `# TELEFONE — NÃO PERGUNTE
@@ -617,10 +655,14 @@ O lead está no **WhatsApp**. Telefone já confirmado: **${effectivePhone}**.
 - O agendamento usa esse número automaticamente (GCal / Clinicorp).`;
   }
   if ((channel === "instagram" || channel === "messenger") && !effectivePhone?.trim()) {
-    return `# TELEFONE — PEÇA E GUARDE
+    const noInicio = ["true", "1", "sim"].includes(
+      String(settings?.[WHATSAPP_NO_INICIO_SETTING] ?? "").trim().toLowerCase(),
+    );
+    return `# TELEFONE — OBRIGATÓRIO PEDIR E GUARDAR
 
-Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp). Peça o WhatsApp com DDD o quanto antes — de preferência já na primeira resposta, junto com o nome — e SEMPRE antes de agendar ou de transferir para a equipe (next_stage="ESCALATED"): sem o número, a equipe não consegue falar com o lead.
-
+Canal ${channel}: aqui NÃO existe telefone no contexto (diferente do WhatsApp). O WhatsApp com DDD é OBRIGATÓRIO:
+${noInicio ? "- Na PRIMEIRA resposta, peça o NOME e o WhatsApp com DDD juntos." : "- Peça o WhatsApp com DDD logo depois de saber o nome do lead — de preferência já na primeira resposta, junto com o nome."}
+- Enquanto não tiver o número, NÃO agende, NÃO transfira para a equipe/loja (next_stage="ESCALATED") e NÃO avance para outro assunto sem pedir o número de novo. O sistema segura agendamento e transferência até o número chegar.
 - Ao receber o número, grave-o em \`lead_data_patch.custom_fields.${COLLECTED_PHONE_KEY}\` no MESMO turn.
 - Se ele já constar em "Já coletados", NÃO pergunte de novo — use o que está lá.`;
   }
@@ -3215,6 +3257,19 @@ function clausulaImpede(clausula: string, p: string): boolean {
   const J20 = `${SEM_OUTRO_TURNO}{0,20}`;
   const J30 = `${SEM_OUTRO_TURNO}{0,30}`;
   const S = IMPEDIMENTO_SOLTO;
+  // Pergunta pela VAGA no turno ("Não tem nenhum horário à tarde?", "não teria
+  // vaga de manhã?") é PEDIDO desse turno, não impedimento — o "não" é da
+  // pergunta, não do lead. Só 3ª pessoa (tem/teria/há): "não TENHO horário de
+  // manhã" é o lead dizendo que não pode, e continua excluindo.
+  // Caso real (Bomfim, lead do Instagram, 28/10): lida como exclusão da
+  // tarde, a frase não bloqueou o agendamento das 09:00.
+  if (
+    new RegExp(
+      `\\bn[ãa]o\\s+(?:tem|teria|haveria|h[áa]|existe)\\s+(?:nenhum[a]?\\s+|algum[a]?\\s+|mais\\s+)?(?:hor[áa]rios?|vagas?|op[çc](?:[ãa]o|[õo]es)|disponibilidade)${SEM_OUTRO_TURNO}{0,20}${p}`,
+    ).test(clausula)
+  ) {
+    return false;
+  }
   return (
     new RegExp(
       `(?:trabalh|ocupad|aula|estud|curso|escola|faculdad)\\w*\\s*(?:de|pela|pelo|[àa]|no|na)?\\s*${p}`,
@@ -3622,6 +3677,41 @@ export function rankSlotsByRequestedHour<T>(
 /** Turno de um horário, pelos minutos do dia. Fronteiras iguais às de
  *  periodoParaHoras/pickSlotByPreference: manhã <12, tarde 12–18, noite ≥18. */
 export type TurnoSlot = "manha" | "tarde" | "noite";
+/**
+ * O lead pediu um turno na última rajada ("Não tem nenhum horário à tarde?") e o
+ * horário escolhido é de OUTRO turno? Barreira determinística do agendamento.
+ *
+ * Caso real (Clínica Bomfim, lead do Instagram, 28/10): oferta "quarta
+ * 28/10 às 11:30 ou quinta 29/10 às 09:00"; a lead respondeu "Nao tem nenhum
+ * horario a tarde" + "Amanha". O "amanhã" casou com o único slot ofertado de
+ * quinta (09:00) e o agendamento das 09:00 foi criado no Clinicorp — enquanto a
+ * própria resposta perguntava qual horário da TARDE ela queria.
+ *
+ * Devolve o turno pedido e o do slot quando divergem; null quando não há
+ * pedido de turno ou quando bate.
+ */
+export function leadPeriodContradictsSlot(
+  burst: readonly string[],
+  slotIso: string | null | undefined,
+): { pedido: TurnoSlot; doSlot: TurnoSlot } | null {
+  if (!slotIso) return null;
+  const d = new Date(slotIso);
+  if (isNaN(d.getTime())) return null;
+  const pedido = requestedPeriodoFromText(burst.join("\n"));
+  if (!pedido) return null;
+  const [hh, mm] = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  })
+    .format(d)
+    .split(":")
+    .map(Number);
+  const doSlot = turnoDeMinutos((hh! % 24) * 60 + mm!);
+  return doSlot === pedido ? null : { pedido, doSlot };
+}
+
 export function turnoDeMinutos(minutos: number): TurnoSlot {
   if (minutos < 12 * 60) return "manha";
   if (minutos < 18 * 60) return "tarde";
@@ -3990,6 +4080,9 @@ export function sanitizeLeadDataPatch(
       // era consultado aqui — nomes assim entravam no cadastro do paciente.
       mentionsUnavailability(next.name) ||
       looksLikeSentenceNotName(next.name) ||
+      // Placeholder de conteúdo não suportado ("Mensagem"), sozinho ou grudado
+      // ao nome ("<Nome> Mensagem") — ver isUnsupportedContentPlaceholder.
+      nameHasPlaceholderWord(next.name) ||
       nameHasDigitsOrLink(next.name)
     ) {
       delete next.name;
@@ -4928,6 +5021,11 @@ export function stripNameIntroduction(text: string): string {
   return semIntro.trim() || t;
 }
 
+/** Alguma palavra do nome é o placeholder "Mensagem"/"Message" da Helena? */
+export function nameHasPlaceholderWord(name: string | null | undefined): boolean {
+  return (name ?? "").trim().split(/\s+/).some((w) => isUnsupportedContentPlaceholder(w));
+}
+
 /**
  * O lead respondeu o primeiro nome ("Ana") e, quando pedimos o sobrenome,
  * respondeu só "Souza". Sem juntar, a captura sobrescreveria "Ana" por "Souza",
@@ -4943,6 +5041,8 @@ export function mergePartialName(
   const prev = (existing ?? "").trim();
   const next = answer.trim();
   if (!prev) return next;
+  // "Mensagem" não é sobrenome — é o placeholder de conteúdo não suportado.
+  if (nameHasPlaceholderWord(next)) return prev;
   if (field && !requiresFullName(field)) return next;
   // Já estava completo, ou o lead repetiu o nome inteiro → a resposta nova manda.
   if (hasSurname(prev) || hasSurname(next)) return next;

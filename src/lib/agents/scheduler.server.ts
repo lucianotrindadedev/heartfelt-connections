@@ -60,6 +60,7 @@ import {
   execConsultarPlanilha,
 } from "./sheets.server";
 import type { AgentContext, AgentResult } from "./context";
+import { buildTransferUnitsPromptBlock, parseTransferUnits, TRANSFER_UNITS_SETTING } from "@/lib/transfer-units";
 import { AGENDA_LISTING_TOOL_NAMES } from "./agenda-tool-names";
 import { cacheTtlFromSettings } from "./context";
 import type { LeadData, Stage } from "./stage";
@@ -77,6 +78,7 @@ import { stripLlmForbiddenFields } from "./lead-patch-guard";
 import { promisesAvailabilityCheck } from "./stage-signals";
 import { VOCATIVO_RULE } from "./vocativo-guard";
 import { linhaSaudacaoDoHorario } from "./saudacao-guard";
+import { HORARIO_DO_SERVICO_RULE, linhaPerguntaHorarioDoServico } from "./pergunta-informativa";
 import {
   classifyBookingError,
   parseBookingFailure,
@@ -114,6 +116,7 @@ import {
   clearRejectedBookingName,
   tryAutoSelectOfferedSlot,
   lastUserBurst,
+  leadPeriodContradictsSlot,
   classifyRequestedDay,
   filterSlotsToWeekday,
   requestedWeekdayFromText,
@@ -328,6 +331,7 @@ const leadDataPatchShape = {
   appointment_id: z.union([z.number(), z.string()]).nullish(),
   notes: z.string().nullish(),
   escalation_reason: z.string().nullish(),
+  transfer_unit: z.string().nullish(),
   retomar_em: z.string().nullish(),
   retorno_motivo: z.string().nullish(),
   custom_fields: coercibleStringRecord.nullish(),
@@ -464,10 +468,21 @@ const SCHEDULER_TOOLS: LlmTool[] = [
     function: {
       name: "remarcar_agendamento",
       description:
-        "Cancela o agendamento ATIVO do lead e REINICIA a oferta de horários para marcar um novo. " +
-        "Use quando o lead quiser MUDAR a data/horário do agendamento existente. Após esta tool, " +
-        'ofereça novos horários (chame listar_horarios) e use next_stage="SLOT_OFFER". ' +
-        "Retorna {ok, cancelled, reoffer:true} ou {ok:false, error}.",
+        "Inicia a REMARCAÇÃO: reabre a oferta de horários para o lead trocar o agendamento existente e já devolve os horários livres. " +
+        "NÃO cancela o horário atual: ele continua reservado até o novo ser criado com criar_agendamento (o sistema cancela o antigo sozinho nessa hora). " +
+        "Use quando o lead quiser MUDAR a data/horário. Depois, ofereça os horários devolvidos e use next_stage=\"SLOT_OFFER\". " +
+        "NUNCA diga que remarcou antes de criar_agendamento retornar ok=true. " +
+        "Retorna {ok, remarcacao:true, horario_atual_mantido} ou {ok:false, error}.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "manter_agendamento",
+      description:
+        "Desfaz uma remarcação em andamento: o lead desistiu de trocar e quer manter o horário original (que nunca saiu da agenda). " +
+        "Depois, confirme ao lead o horário original. Retorna {ok, mantido, horario} ou {ok:false, error}.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -544,7 +559,18 @@ export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
   const sheetTool = buildConsultarPlanilhaTool(ctx);
   if (sheetTool) base = [...base, sheetTool];
 
-  if (!agendaParamActive(ctx)) return base;
+  return withAgendaParam(ctx, base);
+}
+
+/**
+ * Em multi-agenda (2+ agendas Google) ou multi-unidade (2+ unidades Clinic
+ * Experts), injeta o parâmetro obrigatório `agenda` (enum dos labels) em
+ * listar_horarios e criar_agendamento. Fora disso, devolve as tools como estão.
+ * Usado pelo scheduler e pela consulta de horários do qualifier — sem o
+ * parâmetro, a busca do qualifier numa conta multi-agenda sempre voltava erro.
+ */
+export function withAgendaParam(ctx: AgentContext, tools: LlmTool[]): LlmTool[] {
+  if (!agendaParamActive(ctx)) return tools;
 
   // GCal tem precedência (ver isMultiUnidadeCe). O enum lista agendas Google
   // OU unidades Clinic Experts — nunca a mistura dos dois.
@@ -563,7 +589,7 @@ export function buildSchedulerTools(ctx: AgentContext): LlmTool[] {
       options.map((o) => `- "${o.label}": ${o.descricao || "(sem descrição)"}`).join("\n"),
   };
 
-  return base.map((t) => {
+  return tools.map((t) => {
     if (t.function.name !== "listar_horarios" && t.function.name !== "criar_agendamento") {
       return t;
     }
@@ -952,6 +978,26 @@ function parseDataAlvoBrt(dataAlvo?: string): Date | null {
  * e o "11h" da lead casou o slot de segunda — agendou no dia ERRADO (e num
  * profissional que nem atende quinta).
  */
+/** Ver historicoParaPreferencias. */
+export const AGENDA_IGNORA_DATAS_SETTING = "agenda_ignora_datas_da_conversa";
+
+/**
+ * Histórico de onde a busca de horários tira as preferências do lead (dia,
+ * dia da semana, turno, hora) quando o modelo não as passa.
+ *
+ * Com `agenda_ignora_datas_da_conversa = "true"` devolve vazio: a agenda é de
+ * outra coisa que a conversa (Game Point: a agenda é da VISITA, mas o lead fala
+ * da data da FESTA — "sábado de julho", "dia 14 de março"). Sem isso a busca se
+ * prendia a sábado/julho e a visita saía longe ou no dia errado. Nesse modo só
+ * vale o que o modelo pedir explicitamente (data_alvo/periodo).
+ */
+export function historicoParaPreferencias(
+  ctx: Pick<AgentContext, "history" | "agentSettings">,
+): { role: "user" | "assistant"; content: string }[] {
+  const v = String(ctx.agentSettings?.[AGENDA_IGNORA_DATAS_SETTING] ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "sim" ? [] : ctx.history;
+}
+
 function requestedDateFromHistory(
   history: { role: "user" | "assistant"; content: string }[],
 ): string | null {
@@ -1059,7 +1105,7 @@ export function turnoDaBusca(
 ): "manha" | "tarde" | "noite" | undefined {
   return resolvePeriodoBusca({
     doModelo: periodoDoModelo,
-    doLead: requestedPeriodoFromHistory(ctx.history),
+    doLead: requestedPeriodoFromHistory(historicoParaPreferencias(ctx)),
   }).periodo;
 }
 
@@ -1112,7 +1158,7 @@ export async function execListarHorarios(
   // a quinta tinha 35 vagas e o agente disse que não tinha horário. O dia pedido
   // vem do data_alvo (LLM) ou é inferido do histórico (ex.: "quinta").
   const requestedDay =
-    (dataAlvo && dataAlvo.slice(0, 10)) || requestedDateFromHistory(ctx.history) || null;
+    (dataAlvo && dataAlvo.slice(0, 10)) || requestedDateFromHistory(historicoParaPreferencias(ctx)) || null;
   const askingDifferentDay = isAskingDifferentDay(selected, requestedDay);
   if (selected && askingDifferentDay) {
     console.log(
@@ -1158,7 +1204,7 @@ export async function execListarHorarios(
   // dias_a_frente). Com dias_a_frente explícito o LLM está fazendo uma busca
   // ampla de propósito (ex.: achar alternativas) — respeita isso.
   const resolvedDataAlvo =
-    dataAlvo ?? (diasAFrente == null ? requestedDateFromHistory(ctx.history) : null) ?? undefined;
+    dataAlvo ?? (diasAFrente == null ? requestedDateFromHistory(historicoParaPreferencias(ctx)) : null) ?? undefined;
   if (!dataAlvo && resolvedDataAlvo) {
     console.log(
       `[scheduler] listar_horarios conv=${ctx.conversationId}: data_alvo ausente do LLM — ancorando no dia pedido pelo lead (${resolvedDataAlvo})`,
@@ -1176,7 +1222,7 @@ export async function execListarHorarios(
   // de manhã" com a manhã livre (ver requestedPeriodoFromHistory).
   const turno = resolvePeriodoBusca({
     doModelo: periodo,
-    doLead: requestedPeriodoFromHistory(ctx.history),
+    doLead: requestedPeriodoFromHistory(historicoParaPreferencias(ctx)),
   });
   // Mesmo resultado que turnoDaBusca(ctx, periodo) — a funcao exportada existe
   // para quem precisa saber o turno SEM disparar a busca.
@@ -1193,7 +1239,7 @@ export async function execListarHorarios(
   // Hora exata pedida pelo lead ("16h", "às 16 horas"): usada para priorizar,
   // dentro do turno, os horários mais próximos dela antes do corte de 6 — ver
   // requestedHoraFromHistory.
-  const resolvedHora = requestedHoraFromHistory(ctx.history);
+  const resolvedHora = requestedHoraFromHistory(historicoParaPreferencias(ctx));
 
   // DIA DA SEMANA pedido ("tem que ser no sábado"). É uma RESTRIÇÃO, não uma
   // data: quando aquele sábado não tem vaga, o certo é procurar o PRÓXIMO
@@ -1211,7 +1257,7 @@ export async function execListarHorarios(
   const anchorKeyRaw = anchor
     ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
     : null;
-  const diaSemanaPedido = requestedWeekdayFromHistory(ctx.history);
+  const diaSemanaPedido = requestedWeekdayFromHistory(historicoParaPreferencias(ctx));
   const restringeDiaSemana =
     diaSemanaPedido && anchorKeyRaw && weekdayKeyOfIso(anchorKeyRaw) === diaSemanaPedido
       ? diaSemanaPedido
@@ -2311,7 +2357,58 @@ export function isSlotNotOffered(
   return !offeredSlots.some((s) => s.iso === sel);
 }
 
+/**
+ * Cria o agendamento e, se ele fecha uma REMARCAÇÃO, cancela o antigo — só
+ * agora, com o novo garantido (ver execCancelarAgendamento). Se o cancelamento
+ * do antigo falhar, o novo vale do mesmo jeito: o antigo fica na agenda e o
+ * erro vai para o log/telemetria para a equipe remover.
+ */
 async function execCriarAgendamento(ctx: AgentContext, agendaLabel?: string): Promise<ToolOutcome> {
+  const out = await criarAgendamentoNoProvedor(ctx, agendaLabel);
+  // Lido DEPOIS: a criação também pode abrir a remarcação (lead com
+  // agendamento pedindo outro horário direto).
+  const antigoId = remarcacaoACancelar(ctx.leadData, out.patch);
+  const antigoAgenda = (ctx.leadData.remarcar_de_agenda ?? "").trim() || undefined;
+  if (!antigoId || !out.patch) return out;
+  if (!ctx.dryRun) {
+    try {
+      await cancelarNoProvedor(ctx, antigoId, antigoAgenda, "Remarcação solicitada pelo paciente");
+      console.log(
+        `[scheduler] remarcação concluída conv=${ctx.conversationId} antigo=${antigoId} cancelado → novo=${out.patch.appointment_id}`,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(
+        `[orch:telemetry] ${JSON.stringify({
+          event: "remarcacao_antigo_nao_cancelado",
+          conv: ctx.conversationId,
+          account: ctx.accountId,
+          antigo: antigoId,
+          novo: out.patch.appointment_id,
+          erro: msg.slice(0, 200),
+        })}`,
+      );
+    }
+  }
+  return { ...out, patch: { ...out.patch, ...SEM_REMARCACAO } };
+}
+
+/** Id do agendamento antigo a cancelar depois de criar o novo, ou null (sem
+ *  remarcação pendente, criação sem sucesso, ou o "novo" é o próprio antigo). */
+export function remarcacaoACancelar(
+  leadData: Pick<LeadData, "remarcar_de_id">,
+  patchDaCriacao: Partial<LeadData> | undefined,
+): string | null {
+  const antigo = (leadData.remarcar_de_id ?? "").trim();
+  const novo = patchDaCriacao?.appointment_id;
+  if (!antigo || novo == null || String(novo) === antigo) return null;
+  return antigo;
+}
+
+async function criarAgendamentoNoProvedor(
+  ctx: AgentContext,
+  agendaLabel?: string,
+): Promise<ToolOutcome> {
   const ld = ctx.leadData;
 
   // GUARD DE IDEMPOTENCIA — bug "agendamento duplo" (27/05/2026):
@@ -2352,50 +2449,21 @@ async function execCriarAgendamento(ctx: AgentContext, agendaLabel?: string): Pr
       };
     }
 
-    // Remarcação: cancela o agendamento anterior antes de criar o novo.
+    // Remarcação: o anterior NÃO é cancelado aqui. Vai para remarcar_de_* e
+    // execCriarAgendamento só o cancela depois de o novo ser criado — se a
+    // criação falhar, o lead continua com o horário antigo (antes ficava sem
+    // nenhum).
     console.log(
-      `[scheduler] REMARCAÇÃO conv=${ctx.conversationId}: cancela ${ld.appointment_id} (${bookedSlot}) → cria novo (${requestedSlot})`,
+      `[scheduler] REMARCAÇÃO conv=${ctx.conversationId}: ${ld.appointment_id} (${bookedSlot}) mantido até criar o novo (${requestedSlot})`,
     );
-    if (!ctx.dryRun) {
-      try {
-        if (ctx.integrations.googleCalendar) {
-          const resolved = resolveGcalAgenda(ctx, ld.selected_agenda);
-          await cancelGoogleCalendarEvent(
-            ctx.accountId,
-            String(ld.appointment_id),
-            resolved.calendarId,
-          );
-        } else if (ctx.integrations.clinup) {
-          await manageClinupAppointment(ctx.accountId, {
-            consultaId: ld.appointment_id,
-            confirmada: false,
-            motivo: "Remarcação solicitada pelo paciente",
-          });
-        } else if (ctx.integrations.clinicExperts) {
-          // Multi-unidade: cancela na unidade ORIGINAL do agendamento
-          // (selected_agenda travado quando ele foi criado).
-          await cancelClinicExpertsAppointment(
-            ctx.accountId,
-            String(ld.appointment_id),
-            undefined,
-            ld.selected_agenda,
-          );
-        } else {
-          await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
-        }
-        await applyUnbookedTagSwap(ctx);
-      } catch (e) {
-        console.error(
-          `[scheduler] cancelamento do anterior falhou na remarcação conv=${ctx.conversationId}: ${e instanceof Error ? e.message : e}`,
-        );
-        // Não bloqueia a criação do novo — melhor um duplicado do que o lead
-        // sem o novo horário. Fica logado para limpeza.
-      }
-    }
-    // Limpa o appointment_id antigo para o create abaixo prosseguir (o patch de
-    // sucesso grava o NOVO id + booked_slot_iso).
-    ld.appointment_id = undefined;
-    ctx.leadData = { ...ctx.leadData, appointment_id: undefined };
+    const anterior: Partial<LeadData> = {
+      remarcar_de_id: String(ld.appointment_id),
+      remarcar_de_slot: bookedSlot,
+      remarcar_de_agenda: ld.selected_agenda ?? "",
+    };
+    // Sem mutar `ld` (o mesmo objeto do orquestrador): se a criação falhar, o
+    // lead_data persistido segue com o agendamento antigo, que continua na agenda.
+    ctx.leadData = { ...ctx.leadData, ...anterior, appointment_id: undefined };
   }
 
   const bookingFields = getBookingFieldsForChannel(ctx.agentSettings, {
@@ -2567,6 +2635,25 @@ async function execCriarAgendamento(ctx: AgentContext, agendaLabel?: string): Pr
     console.log(
       `[scheduler] intenção confirmada pelo cadastro conv=${ctx.conversationId} slot=${ld.selected_slot_iso} — juiz LLM dispensado`,
     );
+  }
+  // Turno pedido x turno do slot: barreira DETERMINÍSTICA, antes do juiz LLM e
+  // mesmo quando o cadastro "confirmou" — ver leadPeriodContradictsSlot.
+  const turnoDivergente = leadPeriodContradictsSlot(lastUserBurst(ctx.history), ld.selected_slot_iso);
+  if (turnoDivergente) {
+    const nomeTurno = { manha: "manhã", tarde: "tarde", noite: "noite" } as const;
+    console.warn(
+      `[scheduler] turno pedido (${turnoDivergente.pedido}) ≠ turno do slot (${turnoDivergente.doSlot}) — agendamento BLOQUEADO conv=${ctx.conversationId} slot=${ld.selected_slot_iso}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error_kind: "intent_hold",
+        error:
+          `O lead pediu horário de ${nomeTurno[turnoDivergente.pedido]}, e ${slotHumanLabel(ld.selected_slot_iso)} é de ${nomeTurno[turnoDivergente.doSlot]}. ` +
+          `NÃO agende esse horário. Chame listar_horarios com periodo="${turnoDivergente.pedido}" e ofereça os horários reais desse turno.`,
+      }),
+      patch: { selected_slot_iso: CLEARED_SLOT },
+    };
   }
   if (!ctx.dryRun && !confirmadoPeloCadastro) {
     const intent = await verifyBookingIntentLLM(ctx, ld.selected_slot_iso);
@@ -2801,84 +2888,147 @@ async function applyUnbookedTagSwap(ctx: AgentContext): Promise<void> {
 }
 
 /**
- * Cancela o agendamento ativo do lead (Clinicorp, Google Calendar ou Clinic Experts) e limpa
- * o appointment_id. Com `reoffer=true` (remarcação), também limpa o slot e os
- * horários oferecidos para reiniciar a oferta. Determinístico — não precisa de
- * outro turn de LLM para efetivar o cancelamento.
+ * Cancela UM agendamento na agenda integrada (Google Calendar, Clinup, Clinic
+ * Experts ou Clinicorp). `agenda` = label da agenda/unidade em que ele está
+ * (multi-agenda GCal / multi-unidade CE); vazio = a padrão. Lança em falha.
+ */
+async function cancelarNoProvedor(
+  ctx: AgentContext,
+  appointmentId: number | string,
+  agenda: string | undefined,
+  motivo: string,
+): Promise<void> {
+  if (ctx.integrations.googleCalendar) {
+    // Multi-agenda: tenta primeiro a agenda conhecida; se não houver,
+    // cancelGoogleCalendarEvent varre todas as agendas.
+    const resolved = resolveGcalAgenda(ctx, agenda);
+    await cancelGoogleCalendarEvent(ctx.accountId, String(appointmentId), resolved.calendarId);
+  } else if (ctx.integrations.clinup) {
+    // O Clinup não tem endpoint de cancelamento próprio: é o mesmo PUT
+    // /consultas com confirmada=false (é assim que o fluxo n8n de referência
+    // cancela). Retorno false = a API recusou; tratamos como falha explícita
+    // em vez de seguir como se tivesse cancelado.
+    const ok = await manageClinupAppointment(ctx.accountId, {
+      consultaId: appointmentId,
+      confirmada: false,
+      motivo,
+    });
+    if (!ok) throw new Error("Clinup recusou o cancelamento da consulta");
+  } else if (ctx.integrations.clinicExperts) {
+    // Multi-unidade: o cancel bate na unidade original.
+    await cancelClinicExpertsAppointment(ctx.accountId, String(appointmentId), undefined, agenda);
+  } else {
+    await cancelClinicorpAppointment(ctx.accountId, appointmentId);
+  }
+}
+
+/**
+ * Patch que INICIA uma remarcação: o agendamento ativo vai para remarcar_de_*
+ * (continua na agenda) e a oferta de horários reabre. Com uma remarcação já
+ * pendente (sem appointment_id), só reabre a oferta.
+ */
+export function patchInicioRemarcacao(ld: LeadData): Partial<LeadData> {
+  return {
+    // "" / [] limpam de verdade (undefined some no stripNullishFields).
+    selected_slot_iso: "",
+    offered_slots: [],
+    dentist_person_id: undefined,
+    professional_uuid: undefined,
+    clinup_profissional_id: undefined,
+    commitment_confirmed: false,
+    ...(ld.appointment_id
+      ? {
+          appointment_id: undefined,
+          // Sinais para o orquestrador tirar o appointment_id e o slot do
+          // lead_data — o evento continua na agenda.
+          appointment_cancelled: true,
+          reoffer_after_cancel: true,
+          remarcar_de_id: String(ld.appointment_id),
+          remarcar_de_slot: ld.booked_slot_iso ?? ld.selected_slot_iso ?? "",
+          remarcar_de_agenda: ld.selected_agenda ?? "",
+        }
+      : {}),
+  };
+}
+
+/** Limpa a remarcação pendente (ver LeadData.remarcar_de_id). */
+const SEM_REMARCACAO: Partial<LeadData> = {
+  remarcar_de_id: "",
+  remarcar_de_slot: "",
+  remarcar_de_agenda: "",
+};
+
+/**
+ * Cancela o agendamento ativo do lead, ou inicia uma REMARCAÇÃO (`reoffer`).
+ *
+ * Remarcação NÃO cancela nada na hora: o agendamento atual vai para
+ * `remarcar_de_*` e continua na agenda; o appointment_id sai do lead_data para
+ * o fluxo de agendamento reabrir, e os horários novos já vêm no mesmo turn. O
+ * antigo só é cancelado quando o novo é criado (execCriarAgendamento). Antes
+ * cancelava primeiro — caso real (Sorriso Saude, 29/10): o paciente pediu para
+ * passar das 09:00 para as 08:30, o das 09:00 foi cancelado, o das 08:30 nunca
+ * foi criado e ele ficou sem horário nenhum.
+ *
+ * Cancelamento puro durante uma remarcação pendente cancela o antigo.
  */
 async function execCancelarAgendamento(
   ctx: AgentContext,
   opts?: { reoffer?: boolean },
 ): Promise<ToolOutcome> {
   const ld = ctx.leadData;
-  if (!ld.appointment_id) {
+  const pendenteId = (ld.remarcar_de_id ?? "").trim();
+
+  if (opts?.reoffer) {
+    if (!ld.appointment_id && !pendenteId) {
+      return {
+        result: JSON.stringify({ ok: false, error: "Nenhum agendamento ativo para remarcar." }),
+      };
+    }
+    const reofferPatchBase = patchInicioRemarcacao(ld);
+    console.log(
+      `[scheduler] remarcação iniciada conv=${ctx.conversationId} antigo=${ld.appointment_id ?? pendenteId} (mantido até o novo ser criado)`,
+    );
+    ctx.leadData = mergeLeadDataPatch(ctx.leadData, reofferPatchBase);
+    const listing = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
+    const atualSlot = (ctx.leadData.remarcar_de_slot ?? "").trim();
+    const atualLabel = atualSlot ? slotHumanLabel(atualSlot) : "o horário atual";
     return {
-      result: JSON.stringify({
-        ok: false,
-        error: "Nenhum agendamento ativo para cancelar.",
-      }),
+      result:
+        JSON.stringify({
+          ok: true,
+          remarcacao: true,
+          horario_atual_mantido: atualLabel,
+          note: `O horário atual (${atualLabel}) CONTINUA reservado até o novo ser criado — o sistema cancela o antigo sozinho quando o novo for agendado. OFEREÇA JÁ os horários abaixo nesta MESMA resposta (next_stage=SLOT_OFFER). NUNCA diga que remarcou ou confirmou o novo antes de criar_agendamento retornar ok=true. Se o lead desistir de trocar, chame manter_agendamento.`,
+        }) + `\n\n# NOVOS HORÁRIOS DISPONÍVEIS (listar_horarios)\n${listing.result}`,
+      patch: mergeLeadDataPatch(reofferPatchBase as LeadData, listing.patch ?? {}),
     };
   }
+
+  const alvoId = ld.appointment_id ?? (pendenteId || undefined);
+  if (!alvoId) {
+    return {
+      result: JSON.stringify({ ok: false, error: "Nenhum agendamento ativo para cancelar." }),
+    };
+  }
+  const alvoAgenda = ld.appointment_id ? ld.selected_agenda : ld.remarcar_de_agenda || undefined;
 
   const clearPatch: Partial<LeadData> = {
     appointment_id: undefined,
     booked_tag_applied: false,
     commitment_confirmed: false,
     appointment_cancelled: true, // sinal p/ o orquestrador limpar o appointment_id de fato
+    ...(pendenteId ? SEM_REMARCACAO : {}),
   };
-  if (opts?.reoffer) {
-    clearPatch.selected_slot_iso = undefined;
-    clearPatch.offered_slots = undefined;
-    clearPatch.dentist_person_id = undefined;
-    clearPatch.professional_uuid = undefined;
-    clearPatch.clinup_profissional_id = undefined;
-    clearPatch.reoffer_after_cancel = true;
-  }
 
   if (ctx.dryRun) {
     return {
-      result: JSON.stringify({
-        ok: true,
-        cancelled: true,
-        dry_run: true,
-        reoffer: !!opts?.reoffer,
-      }),
+      result: JSON.stringify({ ok: true, cancelled: true, dry_run: true, reoffer: false }),
       patch: clearPatch,
     };
   }
 
   try {
-    if (ctx.integrations.googleCalendar) {
-      // Multi-agenda: tenta primeiro a agenda conhecida (selected_agenda); se
-      // não houver, cancelGoogleCalendarEvent varre todas as agendas.
-      const resolved = resolveGcalAgenda(ctx, ld.selected_agenda);
-      await cancelGoogleCalendarEvent(
-        ctx.accountId,
-        String(ld.appointment_id),
-        resolved.calendarId,
-      );
-    } else if (ctx.integrations.clinup) {
-      // O Clinup não tem endpoint de cancelamento próprio: é o mesmo PUT
-      // /consultas com confirmada=false (é assim que o fluxo n8n de referência
-      // cancela). Retorno false = a API recusou; tratamos como falha explícita
-      // em vez de seguir como se tivesse cancelado.
-      const ok = await manageClinupAppointment(ctx.accountId, {
-        consultaId: ld.appointment_id,
-        confirmada: false,
-        motivo: opts?.reoffer ? "Remarcação solicitada pelo paciente" : "Cancelado pelo paciente",
-      });
-      if (!ok) throw new Error("Clinup recusou o cancelamento da consulta");
-    } else if (ctx.integrations.clinicExperts) {
-      // Multi-unidade: o cancel bate na unidade original (selected_agenda).
-      await cancelClinicExpertsAppointment(
-        ctx.accountId,
-        String(ld.appointment_id),
-        undefined,
-        ld.selected_agenda,
-      );
-    } else {
-      await cancelClinicorpAppointment(ctx.accountId, ld.appointment_id);
-    }
+    await cancelarNoProvedor(ctx, alvoId, alvoAgenda, "Cancelado pelo paciente");
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[scheduler] cancelamento falhou conv=${ctx.conversationId}: ${msg}`);
@@ -2886,38 +3036,47 @@ async function execCancelarAgendamento(
   }
 
   await applyUnbookedTagSwap(ctx);
-  console.log(
-    `[scheduler] agendamento cancelado conv=${ctx.conversationId} appt=${ld.appointment_id} reoffer=${!!opts?.reoffer}`,
-  );
+  console.log(`[scheduler] agendamento cancelado conv=${ctx.conversationId} appt=${alvoId}`);
+  return {
+    result: JSON.stringify({
+      ok: true,
+      cancelled: true,
+      reoffer: false,
+      note: "Agendamento cancelado com sucesso. Confirme ao lead.",
+    }),
+    patch: clearPatch,
+  };
+}
 
-  if (!opts?.reoffer) {
+/**
+ * Lead desistiu de remarcar: o agendamento antigo (que nunca saiu da agenda)
+ * volta a ser o ativo da conversa.
+ */
+export function execManterAgendamento(ctx: Pick<AgentContext, "leadData">): ToolOutcome {
+  const ld = ctx.leadData;
+  const id = (ld.remarcar_de_id ?? "").trim();
+  if (!id) {
     return {
-      result: JSON.stringify({
-        ok: true,
-        cancelled: true,
-        reoffer: false,
-        note: "Agendamento cancelado com sucesso. Confirme ao lead.",
-      }),
-      patch: clearPatch,
+      result: JSON.stringify({ ok: false, error: "Não há remarcação em andamento para desfazer." }),
     };
   }
-
-  // REMARCAÇÃO: já traz os NOVOS horários no MESMO turn. O lead não pode ficar
-  // esperando "vou buscar e já volto" — caso real (21 97558-2703): cancelou o
-  // horário antigo e nunca trouxe/remarcou os novos. Listamos aqui e devolvemos
-  // os slots no resultado da tool para o agente ofertar de imediato.
-  ctx.leadData = mergeLeadDataPatch(ctx.leadData, clearPatch);
-  const listing = await execListarHorarios(ctx, undefined, ctx.leadData.selected_agenda);
-  const reofferPatch = mergeLeadDataPatch(clearPatch as LeadData, listing.patch ?? {});
+  const slot = (ld.remarcar_de_slot ?? "").trim();
+  const agenda = (ld.remarcar_de_agenda ?? "").trim();
   return {
-    result:
-      JSON.stringify({
-        ok: true,
-        cancelled: true,
-        reoffer: true,
-        note: "Agendamento anterior cancelado. OFEREÇA JÁ os horários abaixo ao lead nesta MESMA resposta (next_stage=SLOT_OFFER). NÃO diga que vai buscar/verificar depois — os horários já estão aqui.",
-      }) + `\n\n# NOVOS HORÁRIOS DISPONÍVEIS (listar_horarios)\n${listing.result}`,
-    patch: reofferPatch,
+    result: JSON.stringify({
+      ok: true,
+      mantido: true,
+      horario: slot ? slotHumanLabel(slot) : null,
+      note: "O agendamento original foi mantido. Confirme ao lead o horário original.",
+    }),
+    patch: {
+      appointment_id: /^\d+$/.test(id) && Number.isSafeInteger(Number(id)) ? Number(id) : id,
+      ...(slot ? { booked_slot_iso: slot, selected_slot_iso: slot } : {}),
+      ...(agenda ? { selected_agenda: agenda } : {}),
+      booked_tag_applied: true,
+      offered_slots: [],
+      ...SEM_REMARCACAO,
+    },
   };
 }
 
@@ -3009,6 +3168,11 @@ ${unifiedIntro}
   ⚠️ Se o lead disser um TURNO ("de manhã", "à tarde", "de noite"), passe
   \`periodo\` ("manha"/"tarde"/"noite") em listar_horarios — sem isso a busca traz
   só os horários mais cedo e pode dizer que a tarde não tem vaga mesmo tendo.
+  ❓ PERGUNTA NO MEIO DA OFERTA: se o lead fizer uma pergunta que não é sobre
+  o horário do agendamento (rotina, valores, turmas, endereço), RESPONDA primeiro
+  com o que o prompt do proprietário informa e só então retome o convite.
+  Repetir os horários sem responder faz o lead desistir.
+  ${HORARIO_DO_SERVICO_RULE}
 - **NAME_COLLECT**: só se selected_slot_iso existir. Confirme o slot. NÃO
   chame listar_horarios. Colete os campos obrigatórios (UM por mensagem).${commitmentEnabled ? ` Ao final dos campos, pergunte: "${commitmentQ}"` : ""}
 - **BOOKING**: o sistema cria o agendamento. Se criar_agendamento ok=true,
@@ -3099,6 +3263,7 @@ Você está no MÓDULO DE AGENDAMENTO. Seu objetivo é converter um lead já qua
 1. NUNCA diga "vou verificar", "estou consultando", "já te retorno" — chame a tool de verdade.
 2. NUNCA invente horários, IDs ou nomes. Use APENAS valores das tools.
 2b. ${VOCATIVO_RULE}
+2c. ${HORARIO_DO_SERVICO_RULE} Pergunta do lead que não é sobre o horário do agendamento (rotina, valores, turmas, endereço) se responde PRIMEIRO; só depois retome a oferta.
 3. UMA pergunta por vez. Mensagens curtas, em UM balão só no WhatsApp (a Meta cobra por balão). \\n\\n é só parágrafo dentro da mesma mensagem, não uma bolha separada.
 4. NUNCA use "dentista" ou "consulta odontológica" se o contexto for escola/educação — use "${appointmentLabel}" e linguagem do prompt do proprietário.
 5. Escale para humano (next_stage="ESCALATED" + lead_data_patch.escalation_reason) quando o lead pedir explicitamente OU quando ele demonstrar frustração real / risco de desistir (reclamar do atendimento, dizer que foi induzido/enrolado, ameaçar não vir, dizer que vai procurar outro lugar). NUNCA diga "vou chamar alguém da equipe", "vou te transferir" ou algo parecido sem usar next_stage="ESCALATED" no MESMO turno — dizer isso sem escalar deixa o lead esperando um atendimento que nunca chega.
@@ -3169,7 +3334,10 @@ function buildDynamicSystemPrompt(ctx: AgentContext): string {
   // mudam a cada turno — mantê-los fora do systemCached preserva o prefix-match
   // do prompt caching. Ver buildCachedSystemPrompt.
   const fieldsBlock = buildBookingFieldsPromptBlock(bookingFields, ctx.leadData);
-  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone, ctx.agentSettings);
+  const transferBlock = buildTransferUnitsPromptBlock(
+    parseTransferUnits(ctx.agentSettings[TRANSFER_UNITS_SETTING]),
+  );
 
   // Bloco de agendas (multi-agenda). Lista os labels + quando usar cada uma,
   // e instrui o agente a passar o parâmetro `agenda` nas tools de agenda.
@@ -3211,11 +3379,20 @@ ${ld.selected_agenda ? `- Unidade já escolhida nesta conversa: "${ld.selected_a
 
 - 📅 HOJE é ${dateStr} (São Paulo) — data de referência ISO: ${todayIso}. Localize-se SEMPRE por ela. NUNCA ofereça, confirme ou mencione horários no PASSADO. Só ofereça horários vindos de listar_horarios (que já começa a partir de hoje). Ao passar data_alvo, calcule "amanhã"/"sexta"/"dia 15" a partir de HOJE (${todayIso}).
 ${linhaSaudacaoDoHorario()}
+${linhaPerguntaHorarioDoServico(lastUserBurst(ctx.history))}
 - Stage corrente: ${ctx.stage}
 - Telefone do lead: ${resolveBookingPhone(ctx) ?? "(nenhum telefone ainda — peça o WhatsApp com DDD)"}
 - Canal: ${ctx.channel}
-${phoneBlock ? `\n${phoneBlock}\n` : ""}${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
-${agendasBlock}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}${transferBlock ? `\n${transferBlock}\n` : ""}${ctx.helenaContact?.utm.content ? `- UTM Content: ${ctx.helenaContact.utm.content}` : ""}
+${agendasBlock}${
+    (ld.remarcar_de_id ?? "").trim()
+      ? `
+# REMARCAÇÃO EM ANDAMENTO
+
+O lead está trocando o horário. O agendamento atual${(ld.remarcar_de_slot ?? "").trim() ? ` (${slotHumanLabel(ld.remarcar_de_slot!)})` : ""} CONTINUA reservado até o novo ser criado com criar_agendamento — aí o sistema cancela o antigo sozinho. Se o lead desistir de trocar, chame manter_agendamento. Nunca diga que remarcou antes de criar_agendamento retornar ok=true.
+`
+      : ""
+  }
 # LEAD_DATA ACUMULADO
 
 ${JSON.stringify(
@@ -3528,6 +3705,8 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
     isValidationOnlyFailure(autoBooking.toolResult) || isGuardHoldFailure(autoBooking.toolResult);
   // Qual guard segurou o agendamento (intent_hold/slot_not_offered/date_mismatch),
   // para telemetria: distingue no banco um hold correto de uma falha real.
+  // Hold de guard no auto-booking ou no tool loop: nenhum outro create neste turn.
+  let bookingHeldThisTurn = isGuardHoldFailure(autoBooking.toolResult);
   let bookingGuardHold: string | undefined = isGuardHoldFailure(autoBooking.toolResult)
     ? (autoBooking.toolResult?.match(/"error_kind"\s*:\s*"([^"]+)"/)?.[1] ?? undefined)
     : undefined;
@@ -3660,10 +3839,23 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "agendar_google_calendar":
           case "agendar_clinup":
           case "agendar_clinic_experts":
-            outcome = await execCriarAgendamento(
-              ctx,
-              typeof args.agenda === "string" ? args.agenda : undefined,
-            );
+            // Um hold de guard (intent/turno/data) vale para o TURN inteiro. O
+            // juiz de intenção é um LLM: chamado de novo no mesmo turn, ele já
+            // APROVOU o horário que tinha acabado de segurar — e o agendamento
+            // foi criado (Bomfim, lead do Instagram, 28/10 — 29/10 09:00).
+            outcome = bookingHeldThisTurn
+              ? {
+                  result: JSON.stringify({
+                    ok: false,
+                    error_kind: "intent_hold",
+                    error:
+                      "O agendamento já foi segurado neste turno. NÃO tente agendar de novo agora: responda ao que o lead pediu e só agende depois que ele confirmar claramente o horário.",
+                  }),
+                }
+              : await execCriarAgendamento(
+                  ctx,
+                  typeof args.agenda === "string" ? args.agenda : undefined,
+                );
             break;
           case "cancelar_agendamento":
           case "cancelar_clinicorp":
@@ -3676,6 +3868,9 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "reagendar":
           case "reagendar_agendamento":
             outcome = await execCancelarAgendamento(ctx, { reoffer: true });
+            break;
+          case "manter_agendamento":
+            outcome = execManterAgendamento(ctx);
             break;
           case "aplicar_tag_interesse": {
             // Só existe em modo unificado (ver buildSchedulerTools).
@@ -3745,6 +3940,7 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
         if (isGuardHoldFailure(outcome.result)) {
           bookingGuardHold =
             outcome.result.match(/"error_kind"\s*:\s*"([^"]+)"/)?.[1] ?? bookingGuardHold;
+          bookingHeldThisTurn = true;
         }
         const f = parseBookingFailure(outcome.result);
         if (f) {

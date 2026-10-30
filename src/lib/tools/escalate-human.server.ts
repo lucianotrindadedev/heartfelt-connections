@@ -20,6 +20,7 @@ import {
 } from "@/lib/evolution.server";
 import { loadHelenaAccount, setHelenaContactTags } from "@/lib/helena.server";
 import type { LeadData, Stage } from "@/lib/agents/stage";
+import type { TransferUnit } from "@/lib/transfer-units";
 
 const AI_DISABLED_TAG = "IA Desligada";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -61,7 +62,13 @@ export async function escalateToHuman(params: {
   /** Modo teste: NÃO aplica a tag "IA Desligada" (mantém o contato de teste
    *  ativo). O alerta da escalada AINDA é enviado, para testar a ferramenta. */
   disableTags?: boolean;
-}): Promise<{ tagged: boolean; alerted: boolean }> {
+  /** Central de lojas: a loja que assume o atendimento. O alerta vai também
+   *  para o WhatsApp dela (além do grupo) e o título vira "ATENDIMENTO
+   *  TRANSFERIDO → <loja>". Ver transfer-units.ts. */
+  transferUnit?: TransferUnit;
+  /** Etiquetas extras aplicadas junto com "IA Desligada" (ex.: "Transferido"). */
+  extraTags?: string[];
+}): Promise<{ tagged: boolean; alerted: boolean; unitAlerted?: boolean }> {
   const sb = getSelfhost();
 
   const { data: cfg } = await sb
@@ -87,7 +94,7 @@ export async function escalateToHuman(params: {
       const res = await setHelenaContactTags(
         helena,
         params.helenaContactId,
-        [AI_DISABLED_TAG],
+        [AI_DISABLED_TAG, ...(params.extraTags ?? [])],
         "InsertIfNotExists",
       );
       tagged = res.ok;
@@ -109,8 +116,19 @@ export async function escalateToHuman(params: {
     );
   }
 
-  // 2. Alerta no grupo Evolution API (apenas se o agente tem instancia+grupo configurados)
-  if (cfg?.ativo && cfg.grupo_alerta && cfg.evolution_instance) {
+  // 2. Alerta via Evolution API: no grupo do agente e, na transferência para uma
+  //    loja, também no WhatsApp da loja. Ambos usam a instância do agente.
+  let unitAlerted = false;
+  const destinos: string[] = [];
+  if (cfg?.ativo && cfg.evolution_instance) {
+    if (cfg.grupo_alerta) destinos.push(cfg.grupo_alerta as string);
+    if (params.transferUnit?.phone) destinos.push(params.transferUnit.phone);
+  } else if (params.transferUnit) {
+    console.warn(
+      `[escalate] transferência para "${params.transferUnit.name}" SEM alerta: escalada desativada ou sem instância Evolution no agente`,
+    );
+  }
+  if (destinos.length > 0) {
     try {
       // Resumo IA — best-effort, segue sem se falhar
       let enriched: EnrichedContext | null = null;
@@ -134,18 +152,32 @@ export async function escalateToHuman(params: {
         helenaContactName: params.helenaContactName,
         history: params.history,
         enriched,
+        transferUnitName: params.transferUnit?.name,
       });
 
-      const res = await evoSendText({
-        instance: cfg.evolution_instance as string,
-        number: cfg.grupo_alerta as string,
-        text: alertText,
-      });
-      alerted = res.ok;
-      if (!res.ok) {
-        console.error(
-          `[escalate] Evolution sendText falhou ${res.status}: ${res.body.slice(0, 200)}`,
-        );
+      // Cada destino é independente: a falha no grupo não impede o alerta da loja.
+      for (const number of destinos) {
+        try {
+          const res = await evoSendText({
+            instance: cfg!.evolution_instance as string,
+            number,
+            text: alertText,
+          });
+          if (res.ok) {
+            alerted = true;
+            if (number === params.transferUnit?.phone) unitAlerted = true;
+          } else {
+            console.error(
+              `[escalate] Evolution sendText falhou ${res.status} (destino ${number === cfg!.grupo_alerta ? "grupo" : "loja"}): ${res.body.slice(0, 200)}`,
+            );
+          }
+        } catch (e) {
+          if (e instanceof EvolutionConfigMissingError) throw e;
+          console.error(
+            `[escalate] falha ao alertar ${number === cfg!.grupo_alerta ? "o grupo" : "a loja"}:`,
+            e,
+          );
+        }
       }
     } catch (e) {
       if (e instanceof EvolutionConfigMissingError) {
@@ -160,7 +192,7 @@ export async function escalateToHuman(params: {
     }
   }
 
-  return { tagged, alerted };
+  return { tagged, alerted, unitAlerted };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,10 +255,14 @@ function buildEscalationMessage(args: {
   helenaContactName?: string;
   history?: { role: "user" | "assistant"; content: string }[];
   enriched: EnrichedContext | null;
+  /** Loja que assume (central de lojas). */
+  transferUnitName?: string;
 }): string {
   const lines: string[] = [];
-  const title =
-    args.enriched && args.enriched.urgencia === "alta"
+  const urgente = !!args.enriched && args.enriched.urgencia === "alta";
+  const title = args.transferUnitName
+    ? `⚠️ *ATENDIMENTO TRANSFERIDO${urgente ? " — URGENTE" : ""}* → *${args.transferUnitName}*`
+    : urgente
       ? "🚨 *ESCALADA HUMANA — URGENTE*"
       : "🚨 *ESCALADA HUMANA*";
   lines.push(args.agentName ? `${title}  •  _${args.agentName}_` : title);

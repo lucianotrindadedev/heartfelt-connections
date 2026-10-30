@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import type { AgentContext, AgentResult } from "./context";
+import { buildTransferUnitsPromptBlock, parseTransferUnits, TRANSFER_UNITS_SETTING } from "@/lib/transfer-units";
 import { AGENDA_LISTING_TOOL, AGENDA_TOOL_ALIASES_NOTE, isAgendaListingTool } from "./agenda-tool-names";
 import { cacheTtlFromSettings } from "./context";
 import {
@@ -20,7 +21,7 @@ import {
   type LlmTool,
 } from "./llm.server";
 import { decideRagNeed } from "./rag-gate.server";
-import { execListarHorarios, turnoDaBusca } from "./scheduler.server";
+import { execListarHorarios, turnoDaBusca, withAgendaParam } from "./scheduler.server";
 import { APLICAR_TAG_TOOL, execAplicarTagInteresse } from "./tags.server";
 import {
   buildConsultarPlanilhaTool,
@@ -39,6 +40,7 @@ import {
   tagGateMissingField,
   turmaTagsForLead,
   turmaTagCandidates,
+  lastUserBurst,
 } from "@/lib/booking-template";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import type { LeadData, Stage } from "./stage";
@@ -53,6 +55,7 @@ import { searchKnowledge, formatChunksAsContext } from "@/lib/knowledge/retrieva
 import { sendMediaBySlug, getAvailableMediaForPrompt } from "./send-media.server";
 import { VOCATIVO_RULE } from "./vocativo-guard";
 import { linhaSaudacaoDoHorario } from "./saudacao-guard";
+import { HORARIO_DO_SERVICO_RULE, linhaPerguntaHorarioDoServico } from "./pergunta-informativa";
 
 const VALID_STAGES = ["RECEPTION", "QUALIFICATION", "SLOT_OFFER", "ESCALATED"] as const;
 
@@ -82,6 +85,7 @@ const ResultSchema = z.object({
       interest: z.string().nullish(),
       notes: z.string().nullish(),
       escalation_reason: z.string().nullish(),
+      transfer_unit: z.string().nullish(),
       retomar_em: z.string().nullish(),
       retorno_motivo: z.string().nullish(),
       custom_fields: coercibleStringRecord.nullish(),
@@ -184,13 +188,15 @@ const QUALIFIER_AGENDA_TOOL: LlmTool = {
  *  determinística de turma (turma_auto), removemos aplicar_tag_interesse — a
  *  tag de turma é aplicada pelo código, nunca pelo LLM (evita etiqueta no chute
  *  ou turma errada). Com agenda ativa, ganha a consulta de horários (read-only). */
-function buildQualifierTools(ctx: AgentContext): LlmTool[] {
+export function buildQualifierTools(ctx: AgentContext): LlmTool[] {
   let tools = QUALIFIER_TOOLS;
   if (agentUsesTurmaClassifier(ctx.agentSettings)) {
     tools = tools.filter((t) => t.function.name !== "aplicar_tag_interesse");
   }
   if (hasBookingIntegration(ctx)) {
-    tools = [...tools, QUALIFIER_AGENDA_TOOL];
+    // Multi-agenda / multi-unidade: a consulta precisa saber QUAL agenda (loja,
+    // unidade) — o mesmo parâmetro `agenda` do scheduler.
+    tools = [...tools, ...withAgendaParam(ctx, [QUALIFIER_AGENDA_TOOL])];
   }
   // Planilha (tabela de preços etc.): pergunta de valor chega quase sempre na
   // qualificação, então a consulta precisa existir aqui — não só no scheduler.
@@ -333,6 +339,8 @@ CHAME a tool na hora. Chame listar_horarios sempre que o lead:
 - citar uma data ou turno ("dia 25", "quinta", "de manhã") — passe \`data_alvo\`
   (YYYY-MM-DD) e/ou \`periodo\` ("manha"/"tarde"/"noite").
 
+${HORARIO_DO_SERVICO_RULE}
+
 🚫 HORÁRIOS: NUNCA cite dia, data ou hora que não tenha vindo de listar_horarios
 nesta conversa — seriam inventados e podem cair em dia bloqueado. Ao ofertar,
 copie \`date_label\` e \`time_label\` LITERALMENTE como vieram da tool e ofereça
@@ -455,6 +463,7 @@ Você está no MÓDULO DE QUALIFICAÇÃO. Seu objetivo é entender o que o lead 
 4. NUNCA mencione ferramentas, automações, CRM, tags ou sistemas.
 5. NUNCA invente fatos clínicos ou prometa resultados.
 5a. ${VOCATIVO_RULE}
+5a2. ${HORARIO_DO_SERVICO_RULE}
 ${
   ctx.integrations.googleSheets
     ? `5b. 🚫 **PREÇO/VALOR:** a ÚNICA fonte de valor é a tool \`consultar_planilha\`. Perguntou preço → CHAME a tool e copie o valor LITERALMENTE. Não achou na planilha → diga que vai confirmar com a equipe. NUNCA invente, estime, arredonde nem calcule total, mesmo sob insistência.`
@@ -552,7 +561,10 @@ function buildDynamicSystemPrompt(ctx: AgentContext, candidateTags: string[]): s
   const hasExplicitInterestInM1 =
     !!utm?.content || (m1Trimmed.length >= 20 && !isGreetingOnly && hasIntentWords);
 
-  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone);
+  const phoneBlock = buildChannelPhonePromptBlock(ctx.channel, ctx.effectivePhone, ctx.agentSettings);
+  const transferBlock = buildTransferUnitsPromptBlock(
+    parseTransferUnits(ctx.agentSettings[TRANSFER_UNITS_SETTING]),
+  );
   const ownerPromptDominant = !!(ctx.basePrompt && ctx.basePrompt.trim());
 
   // Trava de pré-requisito de etiquetagem (ex.: só etiquetar após a data de
@@ -605,10 +617,11 @@ horários/slots) nem quando ele só está respondendo normalmente.`;
 
 - 📅 HOJE é ${dateStr} (horário de São Paulo). Esta é a SUA referência de tempo: antes de falar de qualquer dia/data, localize-se por ela. NUNCA mencione ou ofereça datas no PASSADO. Ao interpretar "amanhã", "semana que vem", "sexta", "dia 15", "hoje à tarde", calcule SEMPRE a partir de HOJE.
 ${linhaSaudacaoDoHorario()}
+${linhaPerguntaHorarioDoServico(lastUserBurst(ctx.history))}
 - Stage corrente: ${ctx.stage}
 - Ciclos de conversa já completos: ${cycleCount}
 - Canal: ${ctx.channel}
-${phoneBlock ? `\n${phoneBlock}\n` : ""}${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
+${phoneBlock ? `\n${phoneBlock}\n` : ""}${transferBlock ? `\n${transferBlock}\n` : ""}${utm?.content ? `- UTM Content (interesse PRIMÁRIO): "${utm.content}"` : "- UTM Content: (vazio — identifique pelo histórico)"}
 ${utm?.source ? `- UTM Source: ${utm.source}` : ""}
 ${utm?.medium ? `- UTM Medium: ${utm.medium}` : ""}
 ${tags.length > 0 ? `- Tags atuais no CRM neste contato: ${tags.join(", ")}` : "- Sem tags ainda neste contato"}${turmaBlock}
@@ -897,7 +910,12 @@ export async function runQualifierAgent(ctx: AgentContext): Promise<AgentResult>
           outcome = await execListarHorarios(
             ctx,
             undefined,
-            undefined,
+            // Sem `agenda` (conta de agenda única, ou o modelo omitiu), segue a
+            // agenda já escolhida na conversa — numa central de lojas, sem
+            // nenhuma das duas a busca devolve erro pedindo a loja.
+            typeof args.agenda === "string" && args.agenda.trim()
+              ? args.agenda
+              : (ctx.leadData.selected_agenda ?? undefined),
             typeof args.data_alvo === "string" ? args.data_alvo : undefined,
             typeof args.periodo === "string" ? args.periodo : undefined,
           );

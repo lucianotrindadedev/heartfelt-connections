@@ -31,6 +31,9 @@ export interface LeadData {
   interest?: string;
   /** Reason quando estado for ESCALATED. */
   escalation_reason?: string;
+  /** Loja/unidade de destino quando a central TRANSFERE o atendimento (nome de
+   *  uma loja de agents.settings.transfer_units_json) — ver transfer-units.ts. */
+  transfer_unit?: string;
   /** ISO 8601 (com fuso) em que o lead pediu para ser contatado. Enquanto for
    *  futuro, SEGURA os follow-ups automáticos até essa data ("me chama amanhã").
    *  Limpo quando o lead volta a responder (re-engajou). */
@@ -54,6 +57,8 @@ export interface LeadData {
   /** Label da agenda Google escolhida (multi-agenda). Definido ao listar/oferecer
    *  horários e reusado no booking/cancelamento para agir na agenda certa. */
   selected_agenda?: string;
+  /** Mídia de abertura (settings.midia_inicio_slug) já enviada nesta conversa. */
+  midia_inicio_enviada?: boolean;
   /** Lista atual de horários oferecidos (para validar escolha do lead).
    *  end_iso = fim real do slot conforme a grade da agenda (Clinicorp), usado
    *  no booking para não estourar a grade com a duração padrão. */
@@ -85,6 +90,14 @@ export interface LeadData {
   appointment_cancelled?: boolean;
   /** Sinal transitório: cancelamento foi para REMARCAR — limpar também o slot. */
   reoffer_after_cancel?: boolean;
+  /** Remarcação em andamento: o agendamento ANTIGO continua na agenda até o
+   *  novo ser criado (só então é cancelado). "" = nenhuma remarcação pendente
+   *  (undefined não limpa — stripNullishFields). */
+  remarcar_de_id?: string;
+  /** Horário (ISO) do agendamento antigo da remarcação pendente. */
+  remarcar_de_slot?: string;
+  /** Agenda/unidade do agendamento antigo (multi-agenda GCal / multi-unidade CE). */
+  remarcar_de_agenda?: string;
   /** Lead já enviado ao Leads360 (POST /leads) — evita reenviar a cada turn. */
   leads360_lead_sent?: boolean;
   /** Falhas TÉCNICAS consecutivas de criar_agendamento (não conflito de horário).
