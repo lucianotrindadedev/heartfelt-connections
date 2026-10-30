@@ -135,6 +135,7 @@ import {
   inferEffectiveStage,
   looksLikeStallReply,
   hasRealQuestion,
+  prometeTransferenciaHumana,
 } from "./stage-signals";
 import { isReplyTooSimilar } from "./reply-similarity";
 import {
@@ -1785,7 +1786,12 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
       // O aviso de retry técnico é fala nossa e verdadeira — não é enrolação
       // do modelo. Sem esta isenção a trava o engolia e a lead recebia
       // "Quase lá! Só me confirma..." no lugar (ver isTechRetryReply).
-      !isTechRetryReply(reply)
+      !isTechRetryReply(reply) &&
+      // "Vou chamar alguém da equipe, é só aguardar" é transferência, não
+      // enrolação: trocá-la por cadastro/oferta respondia "horários de visita"
+      // a quem pediu atendente (ver prometeTransferenciaHumana).
+      newStage !== "ESCALATED" &&
+      !prometeTransferenciaHumana(result.reply)
     ) {
       stallReplyBlocked = true;
       console.warn(
@@ -2066,10 +2072,7 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // ORIGINAL do LLM (antes dos guards acima) porque é o texto que carrega o
     // sinal — os guards de booking/stall podem tê-lo substituído por algo sem
     // esse sinal, mas a decisão de escalar continua válida.
-    const claimsHumanHandoff =
-      /\b(vou (chamar|acionar|pedir para) (uma pessoa|algu[ée]m|um[a]? (atendente|colega|especialista))|vou te (transferir|passar|encaminhar) (para|pra) (um[a]? )?(atendente|pessoa|equipe|time|especialista)|algu[ée]m (da (nossa )?equipe|do (nosso )?time) (vai|ir[áa]) (te )?(atender|continuar|assumir|falar)|uma pessoa (da (nossa )?equipe|do (nosso )?time) (vai|ir[áa])|transferindo (seu|o) atendimento|encaminhando (seu|o) atendimento|vou (te )?transferir (seu|o|este) atendimento)\b/i.test(
-        result.reply,
-      );
+    const claimsHumanHandoff = prometeTransferenciaHumana(result.reply);
     let ghostEscalationForced = false;
     if (claimsHumanHandoff && newStage !== "ESCALATED") {
       ghostEscalationForced = true;
