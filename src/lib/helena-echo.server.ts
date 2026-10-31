@@ -89,6 +89,17 @@ export function classifyEchoAgainstOwnSends(
     // Igualdade exata é eco em qualquer tamanho — era exatamente o furo do piso
     // de 25 chars, que deixava passar "Como você se chama?" (19).
     if (stored === target) return hit("confirmed");
+    if (fromLead) {
+      // Mensagem do LEAD só é eco se for uma BOLHA inteira nossa (parágrafos
+      // consecutivos) — nunca um trecho no meio de uma frase. Caso real (Clínica
+      // Bomfim, 30/10): o agente escreveu "Vi que você gostaria de agendar uma
+      // consulta de avaliação…" e, por 24h, todo lead do Instagram que chegou
+      // com essa frase pronta do anúncio foi marcado como eco e ficou sem
+      // resposta (28 leads). E texto do lead que CONTÉM a nossa mensagem é ele
+      // citando a gente, não eco.
+      if (ehBolhaInteira(raw ?? "", target)) contained = true;
+      continue;
+    }
     if (stored.includes(target) || target.includes(stored)) contained = true;
   }
 
@@ -98,6 +109,21 @@ export function classifyEchoAgainstOwnSends(
   // ("Perfeito!", "(dia, mês e ano)") isso pode coincidir com fala real de
   // atendente: grava, mas marcado como eco.
   return short ? "suspect" : hit("confirmed");
+}
+
+/** `target` (normalizado) é uma sequência de parágrafos INTEIROS de `raw` —
+ *  o formato de uma bolha do nosso envio. */
+function ehBolhaInteira(raw: string, target: string): boolean {
+  const paragrafos = raw.split(/\n+/).map(normalizeEcho).filter(Boolean);
+  for (let i = 0; i < paragrafos.length; i++) {
+    let junto = "";
+    for (let j = i; j < paragrafos.length; j++) {
+      junto = junto ? `${junto} ${paragrafos[j]}` : paragrafos[j]!;
+      if (junto === target) return true;
+      if (junto.length > target.length) break;
+    }
+  }
+  return false;
 }
 
 /** Mensagem gravada ANTES da nossa — candidata a eco antecipado. */

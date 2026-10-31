@@ -208,3 +208,35 @@ describe("earlyEchoIds", () => {
     ).toEqual([]);
   });
 });
+
+// Clínica Bomfim, 30/10: o agente escreveu "Vi que você gostaria de agendar uma
+// consulta de avaliação…" e, por 24h, todo lead do Instagram que chegou com a
+// frase pronta do anúncio ("Gostaria de agendar uma consulta de avaliação") foi
+// marcado como eco e ficou sem resposta.
+describe("frase pronta do anúncio citada por nós não silencia o lead", () => {
+  const nossa =
+    "Perfeito, Cristiane! Que bom falar com você 😊\n\nVi que você gostaria de agendar uma consulta de avaliação. Antes de garantir seu horário, preciso entender melhor seu caso.";
+  const anuncio = "Gostaria de agendar uma consulta de avaliação";
+
+  it("trecho no meio de uma frase nossa não é eco — nem na janela recente nem na longa", () => {
+    expect(classifyEchoAgainstOwnSends(anuncio, [nossa], { fromLead: true })).toBe("none");
+    expect(classifyEchoAgainstOwnSends(anuncio, [nossa], { fromLead: true, stale: true })).toBe("none");
+  });
+
+  it("bolha inteira nossa reentregue como FROM_HUB continua sendo eco", () => {
+    const bolha =
+      "Vi que você gostaria de agendar uma consulta de avaliação. Antes de garantir seu horário, preciso entender melhor seu caso.";
+    expect(classifyEchoAgainstOwnSends(bolha, [nossa], { fromLead: true })).toBe("confirmed");
+  });
+
+  it("lead que cita a nossa mensagem inteira não é eco", () => {
+    expect(
+      classifyEchoAgainstOwnSends(`[Em resposta à mensagem: ${nossa}] quero sim`, [nossa], { fromLead: true }),
+    ).toBe("none");
+  });
+
+  it("do lado da atendente (TO_HUB) o containment continua valendo", () => {
+    const bolha = "Vi que você gostaria de agendar uma consulta de avaliação.";
+    expect(classifyEchoAgainstOwnSends(bolha, [nossa], { fromLead: false })).toBe("confirmed");
+  });
+});
