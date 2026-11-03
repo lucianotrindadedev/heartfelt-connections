@@ -1,7 +1,7 @@
 // Trava do follow-up contextual. Casos reais tirados de followup_step_runs
 // (varredura de 90 dias, scripts/diag/followup-trava-corpus.diag.ts).
 import { describe, expect, it } from "vitest";
-import { avaliarTextoDoFollowup, FOLLOWUP_SKIP_TOKEN } from "@/lib/followup-guard";
+import { avaliarTextoDoFollowup, FOLLOWUP_SKIP_TOKEN, horariosVencidos } from "@/lib/followup-guard";
 
 const pula = (t: string) => avaliarTextoDoFollowup(t).action === "skip";
 
@@ -79,5 +79,63 @@ describe("avaliarTextoDoFollowup — barra explicação de 'não há mensagem a 
     "Pra não enviar coisas que não te interessam: você procura uma formação pessoal, algo pra sua escola/equipe, ou consultoria estratégica? 😊",
   ])("passa: %s", (t) => {
     expect(avaliarTextoDoFollowup(t)).toEqual({ action: "send" });
+  });
+});
+
+// Caso real (Amazing CCZ, 11 97132-3236, 03/11/2026): às 14:00 o follow-up
+// ofereceu "terça-feira, 03/11 às 13h ou às 14h" — 13h já tinha passado e a
+// escola exige 48h de antecedência.
+describe("follow-up não oferece horário vencido", () => {
+  const AGORA = new Date("2026-11-03T14:00:58-03:00");
+  const OFERTA = [
+    { iso: "2026-11-03T13:00:00-03:00" },
+    { iso: "2026-11-03T14:00:00-03:00" },
+    { iso: "2026-11-03T15:30:00-03:00" },
+    { iso: "2026-11-09T09:00:00-03:00" },
+  ];
+  const TEXTO_REAL =
+    "Que legal que vocês já conhecem a escola! Na visita, o time de matrículas explica tudo direitinho — valores, modalidades, tudo que você precisa saber.\n\nQual desses horários funciona melhor: terça-feira, 03/11 às 13h ou às 14h?";
+
+  it("lista o que já passou ou está dentro da antecedência", () => {
+    const v = horariosVencidos(OFERTA, AGORA, 2 * 3_600_000);
+    expect(v.map((h) => `${h.ddmm} ${h.hora}:${h.minuto}`)).toEqual([
+      "03/11 13:0",
+      "03/11 14:0",
+      "03/11 15:30",
+    ]);
+    expect(v.every((h) => h.hoje)).toBe(true);
+  });
+
+  it("barra o texto real", () => {
+    const v = avaliarTextoDoFollowup(TEXTO_REAL, {
+      horariosVencidos: horariosVencidos(OFERTA, AGORA, 48 * 3_600_000),
+    });
+    expect(v.action).toBe("skip");
+  });
+
+  it.each([
+    "Oi! Hoje às 15:30 ainda dá certo pra você?",
+    "Consegue vir dia 3/11 às 15h30?",
+  ])("barra horário vencido em outros formatos: %s", (texto) => {
+    const v = avaliarTextoDoFollowup(texto, {
+      horariosVencidos: horariosVencidos(OFERTA, AGORA, 2 * 3_600_000),
+    });
+    expect(v.action).toBe("skip");
+  });
+
+  it.each([
+    // horário válido (09/11 está fora da janela de 48h)
+    "Segunda-feira, 09/11 às 09:00 funciona pra você?",
+    // mesma hora, outro dia
+    "Quarta, 04/11 às 13h fica bom?",
+    // sem horário
+    "Quer que eu veja os horários disponíveis pra sua visita?",
+  ])("não barra: %s", (texto) => {
+    const v = avaliarTextoDoFollowup(texto, {
+      horariosVencidos: horariosVencidos(OFERTA, AGORA, 48 * 3_600_000).filter(
+        (h) => h.ddmm === "03/11",
+      ),
+    });
+    expect(v.action).toBe("send");
   });
 });

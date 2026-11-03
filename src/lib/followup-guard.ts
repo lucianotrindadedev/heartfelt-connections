@@ -190,6 +190,71 @@ export function agendaUnicaDoAgente(ctx: {
 export interface FollowupContexto {
   /** Dias fechados da clínica — ver diasFechadosDoExpediente. */
   diasFechados?: string[];
+  /** Horários ofertados na conversa que já passaram ou estão dentro da
+   *  antecedência mínima — ver horariosVencidos. */
+  horariosVencidos?: HorarioVencido[];
+}
+
+export interface HorarioVencido {
+  /** "03/11" (BRT). */
+  ddmm: string;
+  hora: number;
+  minuto: number;
+  /** O horário é de hoje (BRT) — aí "hoje às 13h" também conta. */
+  hoje: boolean;
+}
+
+const BRT = "America/Sao_Paulo";
+const diaBrt = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: BRT }).format(d);
+
+/**
+ * Horários de offered_slots que um follow-up não pode mais oferecer: começam
+ * antes de `agora + antecedenciaMs`. O follow-up é gerado horas depois da
+ * oferta e só vê o histórico; ele repete o horário que está lá. Caso real
+ * (Amazing CCZ, 11 97132-3236, 03/11/2026): às 14:00 o follow-up perguntou
+ * "terça-feira, 03/11 às 13h ou às 14h?" — 13h já tinha passado, e a escola
+ * exige 48h de antecedência.
+ */
+export function horariosVencidos(
+  slots: { iso?: string | null }[] | null | undefined,
+  agora: Date,
+  antecedenciaMs: number,
+): HorarioVencido[] {
+  const limite = agora.getTime() + antecedenciaMs;
+  const out: HorarioVencido[] = [];
+  for (const s of slots ?? []) {
+    if (!s?.iso) continue;
+    const d = new Date(s.iso);
+    if (isNaN(d.getTime()) || d.getTime() >= limite) continue;
+    const partes = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: BRT,
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(d);
+    const p = (t: string) => partes.find((x) => x.type === t)?.value ?? "";
+    out.push({
+      ddmm: `${p("day")}/${p("month")}`,
+      hora: Number(p("hour")),
+      minuto: Number(p("minute")),
+      hoje: diaBrt(d) === diaBrt(agora),
+    });
+  }
+  return out;
+}
+
+function citaHorarioVencido(texto: string, h: HorarioVencido): boolean {
+  const mm = String(h.minuto).padStart(2, "0");
+  const hora =
+    h.minuto === 0
+      ? new RegExp(`(?<!\\d)0?${h.hora}(?::00|h(?:00)?)(?!\\d)`, "i")
+      : new RegExp(`(?<!\\d)0?${h.hora}(?::|h)${mm}(?!\\d)`, "i");
+  if (!hora.test(texto)) return false;
+  const [dd, mes] = h.ddmm.split("/");
+  const dia = new RegExp(`(?<!\\d)0?${Number(dd)}/0?${Number(mes)}(?!\\d)`);
+  return dia.test(texto) || (h.hoje && /(?<!\p{L})hoje(?!\p{L})/iu.test(texto));
 }
 
 /**
@@ -220,6 +285,13 @@ export function avaliarTextoDoFollowup(
   }
   if (PROMETE_AGENDAMENTO.test(t)) {
     return { action: "skip", reason: "follow-up prometeu/afirmou agendamento (não tem agenda)" };
+  }
+  const vencido = (contexto.horariosVencidos ?? []).find((h) => citaHorarioVencido(t, h));
+  if (vencido) {
+    return {
+      action: "skip",
+      reason: `follow-up ofereceu ${vencido.ddmm} ${String(vencido.hora).padStart(2, "0")}:${String(vencido.minuto).padStart(2, "0")}, horário passado ou dentro da antecedência mínima`,
+    };
   }
   for (const dia of contexto.diasFechados ?? []) {
     const re = NOME_DO_DIA[dia];

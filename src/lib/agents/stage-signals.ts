@@ -520,9 +520,16 @@ export function looksLikeStallReply(reply: string): boolean {
  * recebeu "Qual é o nome da sua criança?"; pediu atendente e recebeu "Tenho
  * estes horários disponíveis: quarta 08:00 ou 09:00" — com o stage já em
  * ESCALATED.
+ *
+ * O assunto pode vir qualificado entre o substantivo e o destino: "vou passar
+ * sua dúvida sobre valores e condições para o setor responsável" é a mensagem
+ * de valores do prompt da Amazing CCZ, palavra por palavra, e não era
+ * reconhecida. Caso real (11 97132-3236, 03/11/2026): a mãe perguntou valores,
+ * a trava trocou a escalada por "terça 03/11 às 13:00 ou 14:00" às 12:58, e a
+ * escalada fantasma também não disparou — a conversa nunca chegou à equipe.
  */
 export function prometeTransferenciaHumana(reply: string): boolean {
-  return /\b(vou (chamar|acionar|pedir para) (uma pessoa|algu[ée]m|um[a]? (atendente|colega|especialista))|vou (te )?(transferir|passar|encaminhar) (voc[êe] )?(para|pra) (um[a]? |a |o )?(nossa |nosso )?(atendente|pessoa|equipe|time|especialista|administra[çc][ãa]o|secretaria|respons[áa]vel)|vou (passar|encaminhar|repassar) (a |o |sua |seu )?(solicita[çc][ãa]o|pedido|contato|mensagem|recado) (para|pra|à|a) (a |o )?(nossa |nosso )?(equipe|time|administra[çc][ãa]o|secretaria|respons[áa]vel|setor)|algu[ée]m (da (nossa )?(equipe|administra[çc][ãa]o|secretaria)|do (nosso )?(time|setor)) (vai|ir[áa]) (te )?(atender|continuar|assumir|falar|retornar|entrar em contato)|uma pessoa (da (nossa )?equipe|do (nosso )?time) (vai|ir[áa])|transferindo (seu|o) atendimento|encaminhando (seu|o) atendimento|vou (te )?transferir (seu|o|este) atendimento)\b/i.test(
+  return /\b(vou (chamar|acionar|pedir para) (uma pessoa|algu[ée]m|um[a]? (atendente|colega|especialista))|vou (te )?(transferir|passar|encaminhar) (voc[êe] )?(para|pra) (um[a]? |a |o )?(nossa |nosso )?(atendente|pessoa|equipe|time|especialista|administra[çc][ãa]o|secretaria|respons[áa]vel)|vou (passar|encaminhar|repassar) (a |o |sua |seu )?(solicita[çc][ãa]o|pedido|contato|mensagem|recado) (para|pra|à|a) (a |o )?(nossa |nosso )?(equipe|time|administra[çc][ãa]o|secretaria|respons[áa]vel|setor)|vou (passar|encaminhar|repassar|levar) (a |o |as |os |sua |seu |suas |seus |essa |esse |esta |este )?(d[úu]vidas?|quest[ãa]o|quest[õo]es|perguntas?|situa[çc][ãa]o|caso|assunto|solicita[çc][ãa]o|pedido|contato|mensagem|recado)( [^.!?\n]{0,60}?)? (para|pra|ao|à|a) (a |o )?(nossa |nosso )?(equipe|time|administra[çc][ãa]o|secretaria|respons[áa]vel|setor|atendente|especialista)|algu[ée]m (da (nossa )?(equipe|administra[çc][ãa]o|secretaria)|do (nosso )?(time|setor)) (vai|ir[áa]) (te )?(atender|continuar|assumir|falar|retornar|entrar em contato)|uma pessoa (da (nossa )?equipe|do (nosso )?time) (vai|ir[áa])|transferindo (seu|o) atendimento|encaminhando (seu|o) atendimento|vou (te )?transferir (seu|o|este) atendimento)\b/i.test(
     reply ?? "",
   );
 }

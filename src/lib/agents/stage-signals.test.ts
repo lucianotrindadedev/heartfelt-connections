@@ -744,6 +744,11 @@ describe("prometeTransferenciaHumana", () => {
     "Perfeito! Vou transferir seu atendimento para a equipe certa. Um momento! 😊",
     "Claro! Vou encaminhar você para nossa equipe. Um momento! 😊",
     "Vou te passar para um atendente.",
+    // Mensagem de valores do prompt da Amazing CCZ — caso real (11) 97132-3236,
+    // 03/11/2026: trocada por oferta de horário e nunca escalada.
+    "Vou passar sua dúvida sobre valores e condições para o setor responsável, que vai continuar seu atendimento por aqui mesmo. É só aguardar um pouquinho, tá bem?",
+    "Vou passar sua situação para o setor responsável e já te retorno, tá bem?",
+    "Vou encaminhar sua pergunta sobre a mensalidade ao setor de matrículas.",
   ])("reconhece transferência: %s", (texto) => {
     expect(prometeTransferenciaHumana(texto)).toBe(true);
   });
@@ -752,6 +757,8 @@ describe("prometeTransferenciaHumana", () => {
     "Deixa eu verificar os horários disponíveis, só um minutinho.",
     "Vou passar os horários pra você: segunda às 10h ou 14h?",
     "Nossa equipe pedagógica acompanha as lições de casa.",
+    "Mas deixa eu verificar com o setor responsável se tem alguma possibilidade, tá bem?",
+    "Vou passar sua dúvida para a dentista na consulta, ela explica tudo.",
   ])("não confunde com enrolação ou citação da equipe: %s", (texto) => {
     expect(prometeTransferenciaHumana(texto)).toBe(false);
   });

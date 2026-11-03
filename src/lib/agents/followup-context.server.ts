@@ -11,6 +11,7 @@ import {
   avaliarTextoDoFollowup,
   diasFechadosDoExpediente,
   FOLLOWUP_SKIP_TOKEN,
+  horariosVencidos,
   NOME_POR_EXTENSO,
   recorteSemValores,
   type FollowupVeredito,
@@ -26,6 +27,7 @@ import { removerVocativoInformal, VOCATIVO_RULE } from "@/lib/agents/vocativo-gu
 import { listClinicExpertsUnidades } from "@/lib/tools/clinic-experts.server";
 import { listAccountAgendas } from "@/lib/tools/google-calendar.server";
 import { callLlmWithFallback, type LlmMessage } from "./llm.server";
+import { antecedenciaMinimaMs } from "./slot-offer-fallback";
 
 interface FollowupContextInput {
   accountId: string;
@@ -235,9 +237,15 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
     );
   }
 
+  const offeredSlots = (conv?.meta as { lead_data?: { offered_slots?: { iso?: string }[] } } | null)
+    ?.lead_data?.offered_slots;
+
   return {
     reply,
-    veredito: avaliarTextoDoFollowup(reply, { diasFechados }),
+    veredito: avaliarTextoDoFollowup(reply, {
+      diasFechados,
+      horariosVencidos: horariosVencidos(offeredSlots, new Date(), antecedenciaMinimaMs(settings)),
+    }),
     model: turn.modelUsed,
     tokens_in: turn.tokensIn,
     tokens_out: turn.tokensOut,
