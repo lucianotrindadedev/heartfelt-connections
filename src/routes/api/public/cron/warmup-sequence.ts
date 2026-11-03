@@ -18,6 +18,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import {
+  findHelenaSessionByPhone,
   loadHelenaAccount,
   loadHelenaSession,
   findHelenaTemplateByName,
@@ -67,11 +68,16 @@ interface ConvMatch {
  *      sessão nem tentava de novo).
  *   2. Por telefone (com variantes do "9"), pra agendamentos feitos fora do
  *      bot (ex.: direto na recepção/Clinicorp), que não têm lead_data.
+ *   3. Direto na Helena pelo telefone (contato + sessão mais recente), para o
+ *      paciente que nunca falou com o agente — só com a equipe, ou marcou na
+ *      recepção. Era o que o fluxo n8n "04. Buscar ou criar contato + conversa"
+ *      fazia; sem isso esses lembretes falhavam com no_helena_session_for_phone.
  */
 async function resolveWarmupConversation(
   sb: ReturnType<typeof getSelfhost>,
   agentId: string,
   appt: { externalId: string; patientPhone: string; resolvePhone?: () => Promise<string> },
+  helena?: Awaited<ReturnType<typeof loadHelenaAccount>>,
 ): Promise<ConvMatch | null> {
   const byAppt = await sb
     .from("conversations")
@@ -99,6 +105,11 @@ async function resolveWarmupConversation(
       .limit(1)
       .maybeSingle();
     if (data?.helena_session_id) return data as ConvMatch;
+
+    if (helena) {
+      const sess = await findHelenaSessionByPhone(helena, appt.patientPhone);
+      if (sess) return { helena_session_id: sess.sessionId, meta: null };
+    }
   }
 
   return null;
@@ -264,7 +275,7 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
 
               // Resolve sessionId: por appointment_id (lead_data) primeiro,
               // com fallback por telefone (ver resolveWarmupConversation).
-              const conv = await resolveWarmupConversation(sb, agentId, appt);
+              const conv = await resolveWarmupConversation(sb, agentId, appt, helena);
 
               const sessionId = conv?.helena_session_id ?? undefined;
 

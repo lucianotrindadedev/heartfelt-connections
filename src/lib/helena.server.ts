@@ -64,6 +64,56 @@ export async function loadHelenaSession(
   }
 }
 
+/**
+ * Sessão (conversa) da Helena de um paciente pelo TELEFONE, sem depender de
+ * conversa no nosso banco: contato por `/core/v1/contact/phonenumber/{fone}` e a
+ * sessão mais recente dele em `/chat/v2/session?ContactId=`. É o que o fluxo n8n
+ * "04. Buscar ou criar contato + conversa" fazia para os lembretes — paciente
+ * que só falou com a equipe (ou marcou direto na clínica) não tem conversa
+ * conosco, e sem isto o lembrete não saía. Não cria contato nem sessão.
+ */
+export async function findHelenaSessionByPhone(
+  account: HelenaAccount,
+  phone: string,
+): Promise<{ sessionId: string; contactId: string; channelId: string | null } | null> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const headers = { Authorization: account.token, accept: "application/json" };
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 10) return null;
+  const local = digits.startsWith("55") && digits.length >= 12 ? digits.slice(2) : digits;
+  try {
+    let contactId: string | null = null;
+    for (const fone of [local, `55${local}`]) {
+      const res = await fetch(`${base}/core/v1/contact/phonenumber/${fone}`, { headers });
+      if (!res.ok) continue;
+      const c = (await res.json()) as { id?: string | number };
+      if (c?.id) {
+        contactId = String(c.id);
+        break;
+      }
+    }
+    if (!contactId) return null;
+
+    const res = await fetch(`${base}/chat/v2/session?ContactId=${encodeURIComponent(contactId)}`, {
+      headers,
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { items?: Record<string, unknown>[] } | Record<string, unknown>[];
+    const items = Array.isArray(json) ? json : (json.items ?? []);
+    const quando = (s: Record<string, unknown>) =>
+      Date.parse(String(s.updatedAt ?? s.lastInteractionDate ?? s.createdAt ?? "")) || 0;
+    const sessao = [...items].sort((a, b) => quando(b) - quando(a))[0];
+    if (!sessao?.id) return null;
+    return {
+      sessionId: String(sessao.id),
+      contactId,
+      channelId: (sessao.channelId as string | null | undefined) ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function parseHelenaContactRaw(raw: Record<string, unknown>, contactId: string): HelenaContact {
   const rawTags = raw.tagNames as unknown;
   let tagNames: string[] = [];

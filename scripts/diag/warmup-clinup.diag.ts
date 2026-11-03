@@ -51,7 +51,7 @@ it("warm-up Clinup — ensaio seco", async () => {
   const unitMs: Record<string, number> = { minutes: 60_000, hours: 3_600_000, days: 86_400_000 };
 
   log(`\nconsultas Clinup nos próximos 7 dias (situação 3/4/5): ${appts.length}`);
-  let comConversa = 0, semConversa = 0, semTelefone = 0;
+  let comConversa = 0, semConversa = 0, semTelefone = 0, helenaAchou = 0;
   for (const a of appts) {
     // conversa: por appointment_id; senão pelo telefone (buscado sob demanda)
     let via = "";
@@ -66,7 +66,14 @@ it("warm-up Clinup — ensaio seco", async () => {
         if (phone.length === 11 && phone[2] === "9") v.add(phone.slice(0, 2) + phone.slice(3));
         const byPhone = await sb.from("conversations").select("id").eq("agent_id", agent!.id)
           .in("phone", [...v]).not("helena_session_id", "is", null).limit(1).maybeSingle();
-        via = byPhone.data ? "telefone" : "sem conversa conosco (n8n criaria o contato)";
+        if (byPhone.data) via = "telefone";
+        else {
+          const { loadHelenaAccount, findHelenaSessionByPhone } = await import("@/lib/helena.server");
+          const helena = await loadHelenaAccount(ACCOUNT);
+          const sess = await findHelenaSessionByPhone(helena, phone);
+          via = sess ? `helena (sessão ${sess.sessionId.slice(0, 8)}${sess.channelId ? "" : ", sem canal"})` : "sem conversa conosco nem na Helena";
+          if (sess) helenaAchou++;
+        }
       }
     }
     if (via === "appointment_id" || via === "telefone") comConversa++; else if (!via.startsWith("SEM")) semConversa++;
@@ -78,6 +85,6 @@ it("warm-up Clinup — ensaio seco", async () => {
     });
     log(`  ${br(a.start)} consulta ${a.externalId} sit=${a.status} | conversa: ${via}\n      ${plano.join(" | ")}`);
   }
-  log(`\nresumo: com conversa ${comConversa} | sem conversa ${semConversa} | sem telefone ${semTelefone}`);
+  log(`\nresumo: com conversa ${comConversa} | sem conversa ${semConversa} (achadas direto na Helena: ${helenaAchou}) | sem telefone ${semTelefone}`);
   fs.writeFileSync(REPORT, OUT.join("\n"));
 });
