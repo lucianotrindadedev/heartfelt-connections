@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSlotOfferFallback, chaveDoDiaBrt, canonizaDia } from "./slot-offer-fallback";
+import {
+  ANTECEDENCIA_PADRAO_MS,
+  antecedenciaMinimaMs,
+  buildSlotOfferFallback,
+  canonizaDia,
+  chaveDoDiaBrt,
+  slotsComAntecedencia,
+} from "./slot-offer-fallback";
 
 // Expediente do caso real: Odonto Carioca Campo Grande atende Seg–Sex.
 const SEG_A_SEX = ["seg", "ter", "qua", "qui", "sex"];
@@ -335,5 +342,69 @@ describe("prioriza o dia pedido na oferta", () => {
     });
     expect(r.reply).toContain(`${quinta.date_label} às ${quinta.time_label}`);
     expect(r.reply).not.toContain(terca.date_label);
+  });
+});
+
+// Caso real (Amazing CCZ, 11 97132-3236, 03/11/2026): o prompt manda 48h de
+// antecedência; às 12:58 o fallback ofereceu "terça 03/11 às 13:00 ou 14:00".
+describe("antecedência mínima da oferta", () => {
+  const AGORA = new Date("2026-11-03T12:58:04-03:00");
+  const OFERTA_REAL = [
+    { iso: "2026-11-03T13:00:00-03:00", date_label: "terça-feira, 03/11", time_label: "13:00" },
+    { iso: "2026-11-03T14:00:00-03:00", date_label: "terça-feira, 03/11", time_label: "14:00" },
+    { iso: "2026-11-03T15:00:00-03:00", date_label: "terça-feira, 03/11", time_label: "15:00" },
+    { iso: "2026-11-04T09:00:00-03:00", date_label: "quarta-feira, 04/11", time_label: "09:00" },
+    { iso: "2026-11-05T14:00:00-03:00", date_label: "quinta-feira, 05/11", time_label: "14:00" },
+    { iso: "2026-11-06T09:00:00-03:00", date_label: "sexta-feira, 06/11", time_label: "09:00" },
+  ];
+
+  it("lê antecedencia_minima_horas e cai no padrão quando ausente ou inválida", () => {
+    expect(antecedenciaMinimaMs({ antecedencia_minima_horas: "48" })).toBe(48 * 3_600_000);
+    expect(antecedenciaMinimaMs({ antecedencia_minima_horas: "1,5" })).toBe(90 * 60_000);
+    expect(antecedenciaMinimaMs({})).toBe(ANTECEDENCIA_PADRAO_MS);
+    expect(antecedenciaMinimaMs({ antecedencia_minima_horas: "abc" })).toBe(ANTECEDENCIA_PADRAO_MS);
+    expect(antecedenciaMinimaMs({ antecedencia_minima_horas: "0" })).toBe(ANTECEDENCIA_PADRAO_MS);
+    expect(antecedenciaMinimaMs(null)).toBe(ANTECEDENCIA_PADRAO_MS);
+  });
+
+  it("sem configuração, nunca oferece horário a 2 minutos", () => {
+    const r = buildSlotOfferFallback({
+      lastUserMsg: "Gostaria de saber os valores a após marcaria uma visita",
+      offeredSlots: slotsComAntecedencia(OFERTA_REAL, AGORA, antecedenciaMinimaMs({})),
+      diasAtivos: [],
+    });
+    expect(r.reply).not.toContain("13:00");
+    expect(r.reply).toContain("14:00");
+  });
+
+  it("com 48h configuradas, só cita a partir de 48h depois", () => {
+    const ms = antecedenciaMinimaMs({ antecedencia_minima_horas: "48" });
+    const r = buildSlotOfferFallback({
+      lastUserMsg: "Gostaria de saber os valores a após marcaria uma visita",
+      offeredSlots: slotsComAntecedencia(OFERTA_REAL, AGORA, ms),
+      diasAtivos: [],
+    });
+    expect(r.reply).not.toContain("03/11");
+    expect(r.reply).not.toContain("04/11");
+    // 05/11 14:00 fica a 49h — vale.
+    expect(r.reply).toContain("quinta-feira, 05/11 às 14:00 ou sexta-feira, 06/11 às 09:00");
+  });
+
+  it("tudo dentro da antecedência → não cita horário nenhum", () => {
+    const r = buildSlotOfferFallback({
+      lastUserMsg: "ok",
+      offeredSlots: slotsComAntecedencia(OFERTA_REAL.slice(0, 2), AGORA, 48 * 3_600_000),
+      diasAtivos: [],
+    });
+    expect(r.motivo).toBe("sem_slots");
+    expect(r.reply).not.toMatch(/\d{2}:\d{2}/);
+  });
+
+  it("slot sem iso fica (não dá para afirmar que está em cima da hora)", () => {
+    const semIso: { iso?: string; date_label: string; time_label: string } = {
+      date_label: "quinta-feira, 05/11",
+      time_label: "10:00",
+    };
+    expect(slotsComAntecedencia([semIso], AGORA, 48 * 3_600_000)).toEqual([semIso]);
   });
 });

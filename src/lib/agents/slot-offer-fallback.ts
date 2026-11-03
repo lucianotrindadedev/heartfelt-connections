@@ -83,6 +83,44 @@ export function canonizaDia(chave: string): string {
   return base.slice(0, 3);
 }
 
+/** Antecedência mínima quando o agente não configura `antecedencia_minima_horas`. */
+export const ANTECEDENCIA_PADRAO_MS = 60 * 60_000;
+
+/**
+ * Antecedência mínima de uma oferta, em ms, lida de
+ * `settings.antecedencia_minima_horas` (aceita "48", "1,5"). Ausente ou
+ * inválida → ANTECEDENCIA_PADRAO_MS.
+ *
+ * Antes a antecedência só existia no prompt. O modelo respeitava, mas as
+ * respostas montadas pelo código (esta oferta de fallback) citavam qualquer
+ * horário guardado em offered_slots. Caso real (Amazing CCZ, 11 97132-3236,
+ * 03/11/2026): o prompt manda 48h, a agenda devolveu horários do mesmo dia às
+ * 12:54 e às 12:58 o fallback ofereceu "terça 03/11 às 13:00".
+ */
+export function antecedenciaMinimaMs(settings: Record<string, string> | null | undefined): number {
+  const raw = String(settings?.antecedencia_minima_horas ?? "").trim().replace(",", ".");
+  const horas = Number(raw);
+  if (!raw || !Number.isFinite(horas) || horas <= 0) return ANTECEDENCIA_PADRAO_MS;
+  return Math.round(horas * 3_600_000);
+}
+
+/**
+ * Tira os horários que começam antes de `agora + antecedenciaMs`. Slot sem
+ * `iso` (ou com iso ilegível) fica: não dá para afirmar que está em cima da hora.
+ */
+export function slotsComAntecedencia<T extends { iso?: string | null }>(
+  slots: T[],
+  agora: Date,
+  antecedenciaMs: number,
+): T[] {
+  const limite = agora.getTime() + antecedenciaMs;
+  return slots.filter((s) => {
+    if (!s.iso) return true;
+    const t = new Date(s.iso).getTime();
+    return isNaN(t) || t >= limite;
+  });
+}
+
 export interface SlotOfferFallbackInput {
   /** Última mensagem do lead. */
   lastUserMsg: string;

@@ -13,7 +13,11 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { isPlatformNotice } from "@/lib/platform-notice";
 import { detectForeignSender, isCourtesyOnlyBurst } from "@/lib/conversation-guards";
 import { decryptValue } from "@/lib/crypto.server";
-import { buildSlotOfferFallback } from "./slot-offer-fallback";
+import {
+  antecedenciaMinimaMs,
+  buildSlotOfferFallback,
+  slotsComAntecedencia,
+} from "./slot-offer-fallback";
 import {
   claimsBookingWithoutAppointment,
   noBookingYetReply,
@@ -205,23 +209,28 @@ function readLeadDataFromMeta(meta: ConversationMeta | null): LeadData {
  * reofertava os slots antigos (ex.: hoje 30/06 oferecendo 26/06) em vez de
  * consultar a agenda de novo. Ao esvaziar os slots, o scheduler é forçado a
  * chamar listar_horarios antes de ofertar.
+ *
+ * Os slots ofertados saem também quando já estão dentro da antecedência
+ * mínima do agente (ver antecedenciaMinimaMs): "13:00" guardado às 12:54 não
+ * pode voltar como oferta às 12:58. O horário ESCOLHIDO só sai se já passou.
  */
 function pruneStalePastSlots(
   leadData: LeadData,
   now: Date,
+  antecedenciaMs: number,
 ): { leadData: LeadData; changed: boolean } {
   const nowMs = now.getTime();
-  const isFuture = (iso?: string): boolean => {
+  const isFuture = (iso?: string, margemMs = 0): boolean => {
     if (!iso) return false;
     const t = new Date(iso).getTime();
-    return !isNaN(t) && t > nowMs;
+    return !isNaN(t) && t > nowMs + margemMs;
   };
 
   let changed = false;
   const next: LeadData = { ...leadData };
 
   if (Array.isArray(next.offered_slots) && next.offered_slots.length > 0) {
-    const future = next.offered_slots.filter((s) => isFuture(s.iso));
+    const future = next.offered_slots.filter((s) => isFuture(s.iso, antecedenciaMs));
     if (future.length !== next.offered_slots.length) {
       changed = true;
       if (future.length > 0) next.offered_slots = future;
@@ -657,7 +666,11 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
     // qualquer lógica de slot — evita reofertar horário no passado quando a
     // conversa reativa depois de dias.
     {
-      const pruned = pruneStalePastSlots(leadData, new Date());
+      const pruned = pruneStalePastSlots(
+        leadData,
+        new Date(),
+        antecedenciaMinimaMs((agent.data.settings as Record<string, string> | null) ?? {}),
+      );
       if (pruned.changed) {
         leadData = pruned.leadData;
         console.log(`[orch] slots passados removidos conv=${conversationId}`);
@@ -1848,9 +1861,15 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         // Campo Grande, 21 97558-2703): lead pediu SÁBADO, o guard respondeu
         // "quinta 13:30 ou 13:45" três vezes idênticas — e nunca disse que a
         // clínica não abre sábado (o guard corta antes de chamar a agenda).
+        // Slots que a agenda devolveu NESTE turn não passaram pela poda do
+        // início do turn — a antecedência é reaplicada aqui.
         const fallback = buildSlotOfferFallback({
           lastUserMsg,
-          offeredSlots: finalLeadData.offered_slots ?? [],
+          offeredSlots: slotsComAntecedencia(
+            finalLeadData.offered_slots ?? [],
+            new Date(),
+            antecedenciaMinimaMs(agentSettings),
+          ),
           diasAtivos: activeWeekdayKeys(agentSettings.business_hours_json),
         });
         reply = fallback.reply;
