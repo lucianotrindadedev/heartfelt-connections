@@ -12,6 +12,7 @@ import {
   diasFechadosDoExpediente,
   FOLLOWUP_SKIP_TOKEN,
   horariosVencidos,
+  removerAberturaDeReacao,
   NOME_POR_EXTENSO,
   recorteSemValores,
   type FollowupVeredito,
@@ -146,6 +147,9 @@ soar como cobrança.
    formal de repente se foi descontraído antes, e vice-versa).
 4b. ${VOCATIVO_RULE}
 5. NUNCA peça desculpa por "incomodar" nem use palavras como "perdão", "desculpe".
+5b. Se a última mensagem do histórico é SUA, o lead não respondeu nada: não
+    comece reagindo como se ele tivesse respondido ("Ótimo!", "Perfeito!",
+    "Que bom!", "Que legal!", "Tudo bem!", "Entendi!", "Claro!").
 6. NUNCA mande lembretes do tipo "lembre-se que..." — soa robótico.
 7. Não mencione que é "follow-up" nem que o lead "não respondeu".
 8. Se NÃO deve haver mensagem — o lead pediu para parar, disse que não tem
@@ -194,8 +198,15 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
       // follow-up #N)" e, quando decidia não cumprir, o modelo respondia ao
       // "sistema" pedindo o histórico — e isso ia para o lead (ver
       // followup-guard.ts).
+      // A frase sobre o silêncio do lead está aqui, e não só no system: esta
+      // é a última coisa que o modelo lê, e ele abria reagindo a ela como se
+      // fosse uma resposta ("Ótimo!" — ver removerAberturaDeReacao).
       content:
-        `[Instrução interna — não é o lead falando.] Escreva agora a próxima mensagem para o lead, ` +
+        `[Instrução interna — não é o lead falando.] ` +
+        (history[history.length - 1]?.role === "assistant"
+          ? `O lead ainda não respondeu à sua última mensagem; não comece reagindo como se tivesse respondido. `
+          : "") +
+        `Escreva agora a próxima mensagem para o lead, ` +
         `exatamente como ela será enviada a ele no WhatsApp (ou ${FOLLOWUP_SKIP_TOKEN}).`,
     },
   ];
@@ -226,10 +237,14 @@ ${FOLLOWUP_SKIP_TOKEN}). Sem JSON, sem prefixos, sem "Resposta:", apenas o texto
   const nomeDoLead =
     ((conv?.meta as { lead_data?: { name?: string } } | null)?.lead_data?.name as string | undefined) ??
     null;
-  const reply = removerVocativoInformal(
+  const limpo = removerVocativoInformal(
     stripHumanStaffLabel(limparMarcadoresDeModelo(bruto, nomeDoLead).texto),
     nomeDoLead,
   );
+  // Última fala da conversa é nossa = o lead não respondeu, não há a que reagir
+  // ("Ótimo!", "Que legal!"). Ver removerAberturaDeReacao.
+  const reply =
+    history[history.length - 1]?.role === "assistant" ? removerAberturaDeReacao(limpo) : limpo;
   // Salvaguarda: se ainda truncou mesmo após o retry de budget maior, descarta.
   if (turn.finishReason === "length") {
     throw new Error(
