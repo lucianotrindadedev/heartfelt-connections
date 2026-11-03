@@ -19,10 +19,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
 import {
   findHelenaSessionByPhone,
+  listHelenaChannels,
   loadHelenaAccount,
   loadHelenaSession,
   findHelenaTemplateByName,
   sendHelenaTemplate,
+  sendHelenaTemplateToPhone,
 } from "@/lib/helena.server";
 import { listAllUpcomingAppointments } from "@/lib/warmup/sources.server";
 import { effectiveWarmupSendAt } from "@/lib/warmup/send-window";
@@ -113,6 +115,41 @@ async function resolveWarmupConversation(
   }
 
   return null;
+}
+
+/**
+ * Setting do agente: paciente que não existe na Helena recebe o lembrete por
+ * `POST /chat/v1/message/send` (a Helena cadastra o contato e abre a conversa).
+ * Opt-in porque CRIA contatos no CRM do cliente.
+ */
+const WARMUP_CRIAR_CONVERSA_SETTING = "warmup_criar_conversa";
+
+function criaConversaNoLembrete(settings: Record<string, string> | null | undefined): boolean {
+  const v = String(settings?.[WARMUP_CRIAR_CONVERSA_SETTING] ?? "").trim().toLowerCase();
+  return v === "true" || v === "1" || v === "sim";
+}
+
+/** Variáveis do modelo de lembrete. O Helena substitui {{horario}} etc. */
+function parametrosDoLembrete(start: Date, nome: string): Record<string, string> {
+  const horario = start
+    .toLocaleString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    .replace(",", " às");
+  return {
+    horario,
+    nome,
+    data: start.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }),
+    hora: start.toLocaleTimeString("pt-BR", {
+      timeZone: "America/Sao_Paulo",
+      hour: "2-digit",
+      minute: "2-digit",
+    }),
+  };
 }
 
 interface WarmupStep {
@@ -230,6 +267,48 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
 
           // Cache de channelId por sessionId (evita refetch entre múltiplos steps)
           const channelCache = new Map<string, string>();
+          // Envio sem conversa: canal WhatsApp que tem o modelo + id do modelo,
+          // por nome de modelo (null = nenhum canal tem esse modelo).
+          const canalDoModelo = new Map<string, { from: string; templateId: string } | null>();
+          // Conta com mais de um WhatsApp ativo (ex.: número antigo ainda
+          // conectado): vale o canal da conversa mais recente do agente — o
+          // número em uso hoje. Sem isso o lembrete podia sair pelo número antigo.
+          let canalPreferido: string | null | undefined;
+          const resolverCanalPreferido = async () => {
+            if (canalPreferido !== undefined) return canalPreferido;
+            const { data: recente } = await sb
+              .from("conversations")
+              .select("helena_session_id")
+              .eq("agent_id", agentId)
+              .eq("channel", "whatsapp")
+              .not("helena_session_id", "is", null)
+              .order("atualizado_em", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+            const sess = recente?.helena_session_id
+              ? await loadHelenaSession(helena, recente.helena_session_id as string).catch(() => null)
+              : null;
+            canalPreferido = sess?.channelId ?? null;
+            return canalPreferido;
+          };
+          const resolverCanalDoModelo = async (nomeModelo: string) => {
+            if (canalDoModelo.has(nomeModelo)) return canalDoModelo.get(nomeModelo)!;
+            let achado: { from: string; templateId: string } | null = null;
+            const preferido = await resolverCanalPreferido();
+            const canais = (await listHelenaChannels(helena)).sort(
+              (x, y) => Number(y.id === preferido) - Number(x.id === preferido),
+            );
+            for (const canal of canais) {
+              if (!canal.active || !canal.number || !/whatsapp/i.test(canal.type)) continue;
+              const t = await findHelenaTemplateByName(helena, canal.id, nomeModelo);
+              if (t) {
+                achado = { from: canal.number, templateId: t.id };
+                break;
+              }
+            }
+            canalDoModelo.set(nomeModelo, achado);
+            return achado;
+          };
 
           for (const appt of appointments) {
             for (const step of agentSteps) {
@@ -290,6 +369,39 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
                 ldWarm.name?.trim() ||
                 ldWarm.custom_fields?.guardians?.trim() ||
                 appt.patientName;
+              if (!sessionId && appt.patientPhone && criaConversaNoLembrete(agentSettings)) {
+                // Paciente sem conversa nem contato na Helena: o envio por
+                // telefone cadastra o contato e abre a conversa.
+                const canal = await resolverCanalDoModelo(step.helena_template_name);
+                if (!canal) {
+                  await sb.from("warmup_sends").insert({
+                    step_id: step.id, agent_id: agentId, account_id: accountId,
+                    source: appt.source, external_id: appt.externalId,
+                    appointment_start: appt.start.toISOString(),
+                    patient_phone: appt.patientPhone, patient_name: appt.patientName,
+                    status: "failed",
+                    error: `template_not_found_any_channel:${step.helena_template_name}`,
+                  });
+                  continue;
+                }
+                const envio = await sendHelenaTemplateToPhone(helena, {
+                  from: canal.from,
+                  to: appt.patientPhone,
+                  templateId: canal.templateId,
+                  parameters: parametrosDoLembrete(appt.start, responsavelNome),
+                });
+                await sb.from("warmup_sends").insert({
+                  step_id: step.id, agent_id: agentId, account_id: accountId,
+                  source: appt.source, external_id: appt.externalId,
+                  appointment_start: appt.start.toISOString(),
+                  patient_phone: appt.patientPhone, patient_name: appt.patientName,
+                  helena_session_id: envio.sessionId, helena_template_id: canal.templateId,
+                  status: envio.ok ? "sent" : "failed",
+                  ...(envio.ok ? {} : { error: `Helena ${envio.status} (sem conversa): ${envio.body.slice(0, 180)}` }),
+                });
+                if (envio.ok) processed++;
+                continue;
+              }
               if (!sessionId) {
                 await sb.from("warmup_sends").insert({
                   step_id: step.id, agent_id: agentId, account_id: accountId,
@@ -342,21 +454,7 @@ export const Route = createFileRoute("/api/public/cron/warmup-sequence")({
                 continue;
               }
 
-              // Variáveis comuns. O Helena substitui {{horario}} no template.
-              const horario = appt.start.toLocaleString("pt-BR", {
-                timeZone: "America/Sao_Paulo",
-                day: "2-digit", month: "2-digit",
-                hour: "2-digit", minute: "2-digit",
-              }).replace(",", " às");
-              const parameters: Record<string, string> = {
-                horario,
-                nome: responsavelNome,
-                data: appt.start.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }),
-                hora: appt.start.toLocaleTimeString("pt-BR", {
-                  timeZone: "America/Sao_Paulo",
-                  hour: "2-digit", minute: "2-digit",
-                }),
-              };
+              const parameters = parametrosDoLembrete(appt.start, responsavelNome);
 
               const sendRes = await sendHelenaTemplate(helena, {
                 sessionId, templateId: template.id, parameters,

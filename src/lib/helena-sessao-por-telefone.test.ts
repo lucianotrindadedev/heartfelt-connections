@@ -2,7 +2,7 @@
 // Helena pelo telefone (o que o fluxo n8n "04. Buscar ou criar contato +
 // conversa" fazia para a Implanto).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { findHelenaSessionByPhone, type HelenaAccount } from "./helena.server";
+import { findHelenaSessionByPhone, sendHelenaTemplateToPhone, type HelenaAccount } from "./helena.server";
 
 const conta = { baseUrl: "https://helena.test/", token: "tok" } as HelenaAccount;
 
@@ -66,5 +66,39 @@ describe("findHelenaSessionByPhone", () => {
     const chamadas = api({});
     expect(await findHelenaSessionByPhone(conta, "123")).toBeNull();
     expect(chamadas).toEqual([]);
+  });
+});
+
+describe("sendHelenaTemplateToPhone (paciente sem conversa na Helena)", () => {
+  it("POST /chat/v1/message/send com from do canal, to com 55 e o modelo", async () => {
+    const corpos: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        corpos.push({ url, body: JSON.parse(String(init?.body)) });
+        return new Response(JSON.stringify({ id: "m1", status: "Queued", sessionId: "s9" }), { status: 200 });
+      }),
+    );
+    const r = await sendHelenaTemplateToPhone(conta, {
+      from: "+55 31 99999-8400",
+      to: "(31) 98888-7777",
+      templateId: "t1",
+      parameters: { horario: "05/11 às 09:00" },
+    });
+    expect(r).toMatchObject({ ok: true, sessionId: "s9" });
+    expect(corpos[0]).toEqual({
+      url: "https://helena.test/chat/v1/message/send",
+      body: {
+        from: "5531999998400",
+        to: "5531988887777",
+        body: { templateId: "t1", parameters: { horario: "05/11 às 09:00" } },
+      },
+    });
+  });
+
+  it("falha da Helena volta como ok=false com o corpo para o registro", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad", { status: 400 })));
+    const r = await sendHelenaTemplateToPhone(conta, { from: "5531999998400", to: "31988887777", templateId: "t1" });
+    expect(r).toMatchObject({ ok: false, status: 400, body: "bad", sessionId: null });
   });
 });

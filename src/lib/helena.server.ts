@@ -859,6 +859,87 @@ export async function sendHelenaTemplate(
   return { ok: res.ok, status: res.status, body };
 }
 
+export interface HelenaChannel {
+  id: string;
+  type: string;
+  active: boolean;
+  /** Número do canal (ex.: "5531999998400") — é o `from` do envio por telefone. */
+  number: string | null;
+}
+
+/** Canais de atendimento da conta (`GET /chat/v1/channel`). */
+export async function listHelenaChannels(account: HelenaAccount): Promise<HelenaChannel[]> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}/chat/v1/channel?ChannelType=Whatsapp`, {
+      headers: { Authorization: account.token, accept: "application/json" },
+    });
+    if (!res.ok) return [];
+    const json = (await res.json()) as unknown;
+    const arr = Array.isArray(json) ? json : ((json as { items?: unknown[] })?.items ?? []);
+    return (arr as Record<string, unknown>[])
+      .map((c) => ({
+        id: String(c.id ?? ""),
+        type: String(c.type ?? ""),
+        active: c.active !== false,
+        number: c.number ? String(c.number) : null,
+      }))
+      .filter((c) => c.id);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Envia um MODELO para um telefone que ainda não tem conversa
+ * (`POST /chat/v1/message/send`). Pela documentação da Helena, o contato é
+ * cadastrado automaticamente se não existir e uma conversa nova é aberta — no
+ * WhatsApp, conversa só começa com modelo aprovado. O envio é assíncrono: a
+ * resposta traz o id da mensagem e, quando já houver, o `sessionId`.
+ */
+export async function sendHelenaTemplateToPhone(
+  account: HelenaAccount,
+  params: {
+    /** Número do canal de envio (HelenaChannel.number). */
+    from: string;
+    /** Telefone do paciente (com ou sem 55). */
+    to: string;
+    templateId: string;
+    parameters?: Record<string, string>;
+  },
+): Promise<{ ok: boolean; status: number; body: string; sessionId: string | null }> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  const digits = params.to.replace(/\D/g, "");
+  const to = digits.startsWith("55") && digits.length >= 12 ? digits : `55${digits}`;
+  const res = await fetch(`${base}/chat/v1/message/send`, {
+    method: "POST",
+    headers: {
+      Authorization: account.token,
+      accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: params.from.replace(/\D/g, ""),
+      to,
+      body: { templateId: params.templateId, parameters: params.parameters ?? {} },
+    }),
+  });
+  const body = await res.text();
+  let sessionId: string | null = null;
+  try {
+    const j = JSON.parse(body) as { sessionId?: string | null; failureReason?: string | null };
+    sessionId = j.sessionId ?? null;
+  } catch {
+    /* corpo não-JSON: fica só o texto */
+  }
+  if (!res.ok) {
+    console.error(
+      `[helena] envio de modelo por telefone falhou ${res.status} — templateId=${params.templateId} body=${body.slice(0, 300)}`,
+    );
+  }
+  return { ok: res.ok, status: res.status, body, sessionId };
+}
+
 export async function sendHelenaAudio(
   account: HelenaAccount,
   params: { phone?: string; audioUrl: string; sessionId?: string },
