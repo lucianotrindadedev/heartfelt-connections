@@ -146,6 +146,36 @@ export const NOME_POR_EXTENSO: Record<string, string> = {
   sabado: "sábado",
 };
 
+/** Interjeições que só fazem sentido reagindo a uma resposta do lead. */
+const REACAO =
+  "ótim[oa]|perfeit[oa]|que bom|que legal|que ótimo|que maravilha|maravilha|tudo bem|tudo certo|entendi(?:do)?|claro|certo|beleza|show|legal|combinado|ok(?:ay)?";
+
+const ABERTURA_DE_REACAO = new RegExp(
+  String.raw`^\s*(?:${REACAO})(?:\s*,\s*\p{Lu}\p{L}*)?\s*[!.,…]+\s*(?:\p{Extended_Pictographic}️?\s*)*`,
+  "iu",
+);
+
+/**
+ * Tira a interjeição de reação do começo do follow-up: "Ótimo! Qual série…" →
+ * "Qual série…". O follow-up só sai quando o lead NÃO respondeu, então não há
+ * nada a que reagir — e o modelo abre assim mesmo, porque recebe a instrução
+ * no papel de quem fala com ele. Caso real (Amazing CCZ, 11 91012-7128,
+ * 31/10/2026): o lead só pediu informações às 12:20 e não respondeu mais; os
+ * follow-ups saíram "Ótimo! Qual série…" e "Que legal! Pra eu te passar…",
+ * com a instrução do passo proibindo exatamente isso. Em 39 follow-ups da
+ * Amazing, uns 10 abriam assim.
+ *
+ * Só a interjeição solta, seguida de ! . , ou …: "Que legal que vocês já
+ * conhecem a escola!" fica, porque reage a algo dito antes; "Tudo bem?" também,
+ * porque é pergunta. Se não sobrar nada, o texto volta como estava.
+ */
+export function removerAberturaDeReacao(texto: string): string {
+  if (!texto) return texto;
+  const resto = texto.replace(ABERTURA_DE_REACAO, "");
+  if (resto === texto || !resto.trim()) return texto;
+  return resto.charAt(0).toUpperCase() + resto.slice(1);
+}
+
 /**
  * Recorte do prompt da clínica para o follow-up, sem as linhas que citam valor.
  * O corte é feito DEPOIS de remover as linhas, então o recorte não perde

@@ -1,7 +1,12 @@
 // Trava do follow-up contextual. Casos reais tirados de followup_step_runs
 // (varredura de 90 dias, scripts/diag/followup-trava-corpus.diag.ts).
 import { describe, expect, it } from "vitest";
-import { avaliarTextoDoFollowup, FOLLOWUP_SKIP_TOKEN, horariosVencidos } from "@/lib/followup-guard";
+import {
+  avaliarTextoDoFollowup,
+  FOLLOWUP_SKIP_TOKEN,
+  horariosVencidos,
+  removerAberturaDeReacao,
+} from "@/lib/followup-guard";
 
 const pula = (t: string) => avaliarTextoDoFollowup(t).action === "skip";
 
@@ -137,5 +142,37 @@ describe("follow-up não oferece horário vencido", () => {
       ),
     });
     expect(v.action).toBe("send");
+  });
+});
+
+// Caso real (Amazing CCZ, 11 91012-7128, 31/10/2026): o lead não respondeu e os
+// follow-ups abriram reagindo a uma resposta que não existiu.
+describe("removerAberturaDeReacao", () => {
+  it.each([
+    [
+      "Ótimo! Qual série seu filho(a) está ou vai estar? Assim consigo passar tudo que você precisa saber sobre a gente.",
+      "Qual série seu filho(a) está ou vai estar? Assim consigo passar tudo que você precisa saber sobre a gente.",
+    ],
+    [
+      "Que legal! Pra eu te passar as informações certas, qual é o nome da criança e qual série você está procurando?",
+      "Pra eu te passar as informações certas, qual é o nome da criança e qual série você está procurando?",
+    ],
+    ["Perfeito, Maria! Qual horário fica melhor?", "Qual horário fica melhor?"],
+    ["Tudo bem! 😊 Quer que eu veja os horários?", "Quer que eu veja os horários?"],
+    ["Entendi, vou te mandar as opções da manhã?", "Vou te mandar as opções da manhã?"],
+    ["Claro... sem pressa. Quando puder, me conta?", "Sem pressa. Quando puder, me conta?"],
+  ])("tira a reação: %s", (antes, depois) => {
+    expect(removerAberturaDeReacao(antes)).toBe(depois);
+  });
+
+  it.each([
+    "Que legal que vocês já conhecem a escola! Qual série vocês procuram?",
+    "Tudo bem? Conseguiu ver os horários que te mandei?",
+    "Oi, Maria! Qual série você procura?",
+    "Ótimo dia pra conhecer a escola! Manhã ou tarde?",
+    "Perfeito!",
+    "",
+  ])("não mexe: %s", (texto) => {
+    expect(removerAberturaDeReacao(texto)).toBe(texto);
   });
 });
