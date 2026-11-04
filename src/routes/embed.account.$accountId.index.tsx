@@ -6663,9 +6663,6 @@ function IntegrationsTab({
         </p>
       </div>
 
-      {/* Custo de IA — últimos 30 dias (soma local do que passou por este app) */}
-      <CostMiniCard accountId={accountId} />
-
       {/* OpenRouter: a chave que faz a IA responder. Sem ela o agente fica mudo,
           por isso o cartão fica fora do grupo e ganha a barra âmbar. */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 border-l-[3px] border-l-amber-400 bg-white shadow-sm">
@@ -6755,8 +6752,7 @@ function IntegrationsTab({
 
 /**
  * Uso da chave direto na OpenRouter (fonte autoritativa, inclui o que outras
- * ferramentas gastaram com a mesma chave). Não confundir com o CostMiniCard,
- * que soma só o que passou por este app.
+ * ferramentas gastaram com a mesma chave).
  */
 function OpenRouterLiveUsage({ accountId }: { accountId: string }) {
   const usageFn = useServerFn(getOpenRouterUsage);
@@ -11322,42 +11318,3 @@ function KeyBlock({
   );
 }
 
-// =================================================================
-// Mini cost dashboard card
-// =================================================================
-
-function CostMiniCard({ accountId }: { accountId: string }) {
-  const usageFn = useServerFn(getUsageSummary);
-  const { data, isLoading } = useQuery({
-    queryKey: ["usage-mini", accountId],
-    queryFn: () => usageFn({ data: { accountId } }),
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const rows = (data?.rows ?? []) as { cost_usd?: unknown; requests?: unknown; tokens_in?: unknown; tokens_out?: unknown }[];
-  const totalCost = rows.reduce((s, r) => s + Number(r.cost_usd ?? 0), 0);
-  const totalReq = rows.reduce((s, r) => s + Number(r.requests ?? 0), 0);
-  const totalTokens = rows.reduce((s, r) => s + Number(r.tokens_in ?? 0) + Number(r.tokens_out ?? 0), 0);
-
-  return (
-    <section>
-      <SectionTitle>Custo de IA — últimos 30 dias</SectionTitle>
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { label: "Custo total", value: isLoading ? "…" : `$${totalCost.toFixed(4)}`, color: "text-amber-600", bg: "bg-amber-50 border-amber-200" },
-          { label: "Requisições", value: isLoading ? "…" : totalReq.toLocaleString(), color: "text-blue-600", bg: "bg-blue-50 border-blue-200" },
-          { label: "Tokens", value: isLoading ? "…" : totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(1)}K` : String(totalTokens), color: "text-violet-600", bg: "bg-violet-50 border-violet-200" },
-        ].map((item) => (
-          <div key={item.label} className={`rounded-2xl border ${item.bg} p-4 text-center shadow-sm`}>
-            {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin mx-auto text-muted-foreground" />
-            ) : (
-              <p className={`text-lg font-bold tabular-nums ${item.color}`}>{item.value}</p>
-            )}
-            <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{item.label}</p>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
