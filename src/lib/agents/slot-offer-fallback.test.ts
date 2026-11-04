@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ANTECEDENCIA_PADRAO_MS,
+  antecedenciaDaBuscaMs,
   antecedenciaMinimaMs,
   buildSlotOfferFallback,
   canonizaDia,
@@ -406,5 +407,29 @@ describe("antecedência mínima da oferta", () => {
       time_label: "10:00",
     };
     expect(slotsComAntecedencia([semIso], AGORA, 48 * 3_600_000)).toEqual([semIso]);
+  });
+});
+
+describe("antecedenciaDaBuscaMs — busca e agendamento só mudam com antecedência configurada", () => {
+  it("48h configuradas (Amazing CCZ)", () => {
+    expect(antecedenciaDaBuscaMs({ antecedencia_minima_horas: "48" })).toBe(48 * 3_600_000);
+  });
+  it("aceita vírgula e o valor 1 explícito", () => {
+    expect(antecedenciaDaBuscaMs({ antecedencia_minima_horas: "1,5" })).toBe(1.5 * 3_600_000);
+    expect(antecedenciaDaBuscaMs({ antecedencia_minima_horas: "1" })).toBe(3_600_000);
+  });
+  it("sem configuração, vazio ou inválido: 0 (busca a partir de agora, como sempre)", () => {
+    expect(antecedenciaDaBuscaMs({})).toBe(0);
+    expect(antecedenciaDaBuscaMs(null)).toBe(0);
+    expect(antecedenciaDaBuscaMs({ antecedencia_minima_horas: "" })).toBe(0);
+    expect(antecedenciaDaBuscaMs({ antecedencia_minima_horas: "abc" })).toBe(0);
+    expect(antecedenciaDaBuscaMs({ antecedencia_minima_horas: "0" })).toBe(0);
+  });
+  it("caso real 04/11 12:41: as 6 vagas devolvidas ficam todas abaixo de 48h", () => {
+    const agora = new Date("2026-11-04T12:41:00-03:00");
+    const devolvidas = ["2026-11-04T13:00:00-03:00", "2026-11-04T16:00:00-03:00", "2026-11-05T10:00:00-03:00"].map((iso) => ({ iso }));
+    const ms = antecedenciaDaBuscaMs({ antecedencia_minima_horas: "48" });
+    expect(slotsComAntecedencia(devolvidas, agora, ms)).toEqual([]);
+    expect(slotsComAntecedencia([{ iso: "2026-11-06T13:00:00-03:00" }], agora, ms)).toHaveLength(1);
   });
 });

@@ -105,6 +105,24 @@ export function antecedenciaMinimaMs(settings: Record<string, string> | null | u
 }
 
 /**
+ * Antecedência que a BUSCA e o AGENDAMENTO devem impor, em ms: só quando o
+ * agente configura `antecedencia_minima_horas`; senão 0 (comportamento de
+ * sempre: busca a partir de agora).
+ *
+ * Diferente de antecedenciaMinimaMs, aqui não há padrão de 1h: mudar a busca de
+ * todos os agentes sem configuração mudaria a oferta de clínicas que hoje
+ * encaixam no mesmo horário. Caso real (Amazing CCZ, 04/11/2026 12:41): com 48h
+ * configuradas, a busca devolveu 04/11 13h–16h e 05/11 9h–10h — as 6 vagas
+ * mais próximas, todas com menos de 48h. O modelo não tinha horário válido.
+ */
+export function antecedenciaDaBuscaMs(settings: Record<string, string> | null | undefined): number {
+  const raw = String(settings?.antecedencia_minima_horas ?? "").trim();
+  if (!raw) return 0;
+  const ms = antecedenciaMinimaMs(settings);
+  return ms === ANTECEDENCIA_PADRAO_MS && Number(raw.replace(",", ".")) !== 1 ? 0 : ms;
+}
+
+/**
  * Tira os horários que começam antes de `agora + antecedenciaMs`. Slot sem
  * `iso` (ou com iso ilegível) fica: não dá para afirmar que está em cima da hora.
  */

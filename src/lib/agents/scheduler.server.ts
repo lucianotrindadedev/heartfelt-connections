@@ -11,6 +11,7 @@
 
 import { z } from "zod";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
+import { antecedenciaDaBuscaMs, slotsComAntecedencia } from "./slot-offer-fallback";
 import {
   listClinicorpSlots,
   createClinicorpAppointment,
@@ -1211,7 +1212,11 @@ export async function execListarHorarios(
     );
   }
   const anchor = parseDataAlvoBrt(resolvedDataAlvo);
-  const today = anchor && anchor.getTime() > now.getTime() ? anchor : now;
+  // Antecedência mínima configurada (ex.: 48h na Amazing CCZ): a busca começa
+  // em agora + antecedência. Antes começava em "agora" e devolvia só as vagas
+  // em cima da hora — ver antecedenciaDaBuscaMs.
+  const inicioMinimo = new Date(now.getTime() + antecedenciaDaBuscaMs(ctx.agentSettings));
+  const today = anchor && anchor.getTime() > inicioMinimo.getTime() ? anchor : inicioMinimo;
   const end = new Date(
     today.getTime() + (diasAFrente ?? SLOT_NEAR_WINDOW_DAYS) * 24 * 60 * 60 * 1000,
   );
@@ -2364,6 +2369,39 @@ export function isSlotNotOffered(
  * erro vai para o log/telemetria para a equipe remover.
  */
 async function execCriarAgendamento(ctx: AgentContext, agendaLabel?: string): Promise<ToolOutcome> {
+  // Antecedência mínima configurada: nenhum caminho (tool do LLM ou booking
+  // determinístico) cria evento em cima da hora. O horário escolhido é limpo
+  // para a busca seguinte não devolvê-lo de novo (ver o atalho de
+  // selected_slot_iso em execListarHorarios).
+  const antecedenciaMs = antecedenciaDaBuscaMs(ctx.agentSettings);
+  const escolhido = (ctx.leadData.selected_slot_iso ?? "").trim();
+  if (
+    antecedenciaMs > 0 &&
+    escolhido &&
+    // Já agendado nesse mesmo horário: é a trava de idempotência que responde
+    // ("already_booked"), não esta — a visita foi marcada com antecedência.
+    escolhido !== (ctx.leadData.booked_slot_iso ?? "").trim() &&
+    slotsComAntecedencia([{ iso: escolhido }], new Date(), antecedenciaMs).length === 0
+  ) {
+    console.warn(
+      `[scheduler:telemetry] ${JSON.stringify({
+        event: "booking_blocked_antecedencia",
+        conv: ctx.conversationId,
+        account: ctx.accountId,
+        agent: ctx.agentId,
+        slot: escolhido,
+        antecedencia_h: antecedenciaMs / 3_600_000,
+      })}`,
+    );
+    return {
+      result: JSON.stringify({
+        ok: false,
+        error_kind: "antecedencia_minima",
+        error: `Este horário não respeita a antecedência mínima de ${antecedenciaMs / 3_600_000}h. NÃO confirme a visita e NÃO explique a regra: chame listar_horarios de novo e ofereça dois horários disponíveis.`,
+      }),
+      patch: { selected_slot_iso: "" },
+    };
+  }
   const out = await criarAgendamentoNoProvedor(ctx, agendaLabel);
   // Lido DEPOIS: a criação também pode abrir a remarcação (lead com
   // agendamento pedindo outro horário direto).
