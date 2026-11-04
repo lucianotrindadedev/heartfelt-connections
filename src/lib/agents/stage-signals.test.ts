@@ -749,6 +749,12 @@ describe("prometeTransferenciaHumana", () => {
     "Vou passar sua dúvida sobre valores e condições para o setor responsável, que vai continuar seu atendimento por aqui mesmo. É só aguardar um pouquinho, tá bem?",
     "Vou passar sua situação para o setor responsável e já te retorno, tá bem?",
     "Vou encaminhar sua pergunta sobre a mensalidade ao setor de matrículas.",
+    // Demais transferências do prompt da Amazing CCZ (04/11/2026).
+    "Vou te passar para a Renata que é do setor responsável e ela vai passar todas as informações necessárias.",
+    "Vou te passar para a Renata que é do setor responsável e ela vai passar todas as informações necessárias.\n\nAos finais de semana e feriados, o atendimento é retomado no próximo dia útil.",
+    "Vou passar sua preferência de horário para a nossa equipe, que vai continuar seu atendimento por aqui para organizar a visita da melhor forma pra vocês. É só aguardar um pouquinho, tá bem?",
+    "Recebido, obrigada! Seu currículo será encaminhado ao setor responsável.\n\nDesejo boa sorte!",
+    "O atendimento com a nossa equipe acontece por aqui mesmo. Já vou chamar alguém para falar com você, é só aguardar um pouquinho, tá bem?",
   ])("reconhece transferência: %s", (texto) => {
     expect(prometeTransferenciaHumana(texto)).toBe(true);
   });
@@ -759,6 +765,13 @@ describe("prometeTransferenciaHumana", () => {
     "Nossa equipe pedagógica acompanha as lições de casa.",
     "Mas deixa eu verificar com o setor responsável se tem alguma possibilidade, tá bem?",
     "Vou passar sua dúvida para a dentista na consulta, ela explica tudo.",
+    // Fases 1 e 2 de valores e "informação não confirmada" da Amazing: NÃO escalam.
+    "Claro, vou te ajudar com isso! Pra eu entender melhor o que vocês procuram, me conta: o que é mais importante pra sua família na escolha da escola?",
+    "Que bom saber o que é importante pra sua família! Sobre valores e condições, essa conversa acontece na visita presencial, com calma e de acordo com a realidade de vocês. Quer que eu veja um horário pra sua visita?",
+    "Esse detalhe a nossa equipe confirma com precisão, e na visita presencial também dá pra conversar sobre isso. Quer que eu veja um horário pra você?",
+    "A nossa equipe já foi avisada e vai retornar por aqui, tá bem?",
+    "Pode enviar seu currículo aqui mesmo, por esta conversa. Consegue me mandar o arquivo?",
+    "Vou passar os horários de quinta para você escolher.",
   ])("não confunde com enrolação ou citação da equipe: %s", (texto) => {
     expect(prometeTransferenciaHumana(texto)).toBe(false);
   });
