@@ -90,7 +90,7 @@ export async function scanSaldoOpenRouter(sb: SupabaseClient): Promise<SaldoResu
         continue;
       }
 
-      const { saldoUsd, erro } = await fetchOpenRouterBalance(orKey);
+      const { saldoUsd, erro, fonte } = await fetchOpenRouterBalance(orKey);
       await recordBalanceReading(conta, saldoUsd);
 
       const baixo = saldoUsd !== null && saldoUsd < limiteUsd;
@@ -101,6 +101,7 @@ export async function scanSaldoOpenRouter(sb: SupabaseClient): Promise<SaldoResu
           saldoUsd: saldoUsd!,
           limiteUsd,
           contaLabel: contaNome,
+          fonte,
         });
       }
       status.push({ conta, contaNome, saldoUsd, baixo, alertado, erro });
