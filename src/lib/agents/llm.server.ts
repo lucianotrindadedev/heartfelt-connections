@@ -401,6 +401,8 @@ function recoverTruncatedJson(raw: string): unknown {
  * canônico é 402, mas a mensagem também aparece em 400/403 dependendo do
  * provider ("This request requires more credits...").
  */
+const KEY_LIMIT_MARKER = "key limit exceeded";
+
 const NO_CREDITS_MARKERS = [
   "insufficient credits",
   "insufficient_quota",
@@ -412,7 +414,22 @@ const NO_CREDITS_MARKERS = [
   "add more credits",
   "credit balance is too low",
   "payment required",
+  // Limite de gasto configurado NA CHAVE (403): a conta pode ter saldo, mas a
+  // chave para de responder. Caso real (Clínica Bomfim, 05/11): "Key limit
+  // exceeded (total limit) $50.01 of $50.00" virou 69 "instabilidade técnica".
+  KEY_LIMIT_MARKER,
 ];
+
+/** A recusa é do LIMITE configurado na chave (não falta de saldo na conta). */
+export function isKeyLimitError(err: unknown): boolean {
+  const txt =
+    err instanceof LlmError
+      ? `${err.message} ${err.body ?? ""}`
+      : err instanceof Error
+        ? err.message
+        : String(err ?? "");
+  return txt.toLowerCase().includes(KEY_LIMIT_MARKER);
+}
 
 /**
  * A chamada falhou porque a conta ficou SEM SALDO na OpenRouter — não é

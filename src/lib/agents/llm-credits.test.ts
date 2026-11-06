@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { LlmError, callLlmWithFallback, isInsufficientCreditsError } from "./llm.server";
+import { LlmError, callLlmWithFallback, isInsufficientCreditsError, isKeyLimitError } from "./llm.server";
 
 function errResponse(status: number, body: string) {
   return { ok: false, status, text: async () => body, json: async () => ({}) };
@@ -73,5 +73,25 @@ describe("callLlmWithFallback com saldo zerado", () => {
     ).rejects.toSatisfy((e: unknown) => isInsufficientCreditsError(e));
 
     expect(calls).toBe(1);
+  });
+});
+
+// Limite de gasto configurado NA CHAVE (Clínica Bomfim, 05/11): a OpenRouter
+// devolve 403 "Key limit exceeded" — a conta pode ter saldo, mas a chave para.
+// Antes caía no "Desculpe, tive uma instabilidade técnica" a cada mensagem.
+describe("limite da chave (403 Key limit exceeded)", () => {
+  const erro = new LlmError(
+    403,
+    "OpenRouter 403: ...",
+    '{"error":{"message":"Key limit exceeded (total limit). Manage it using https://openrouter.ai/... $50.01 of $50.00 used","code":403}}',
+  );
+  it("é tratado como corte de saldo (silêncio + etiqueta + alerta)", () => {
+    expect(isInsufficientCreditsError(erro)).toBe(true);
+    expect(isKeyLimitError(erro)).toBe(true);
+  });
+  it("outros 403 e a falta de saldo comum não são 'limite da chave'", () => {
+    expect(isKeyLimitError(new LlmError(403, "OpenRouter 403: forbidden"))).toBe(false);
+    expect(isInsufficientCreditsError(new LlmError(403, "OpenRouter 403: forbidden"))).toBe(false);
+    expect(isKeyLimitError(new LlmError(402, "OpenRouter 402", '{"error":{"code":402}}'))).toBe(false);
   });
 });
