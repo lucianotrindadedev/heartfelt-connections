@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { unfoundedClosedAgendaClaim } from "./agents/closed-agenda-claim";
-import { mentionsUnavailability, requestedDateFromText } from "./booking-template";
+import {
+  filterSlotsToWeekday,
+  mentionsUnavailability,
+  requestedDateFromText,
+  requestedWeekdayFromText,
+  requestedWeekdaysFromText,
+  shouldWidenSlotWindow,
+} from "./booking-template";
 
 // Caso real: Odonto Carioca Campo Grande, Sonia (21) 97681-1078, 09/11/2026.
 //
@@ -115,5 +122,77 @@ describe("unfoundedClosedAgendaClaim — 'a agenda ainda não abriu'", () => {
         diasAtivos: SEG_A_SEX,
       }),
     ).toBeNull();
+  });
+});
+
+// "quinta ou sexta" são DOIS dias aceitos. A restrição guardava só a quinta: sem
+// vaga nela, a busca ampliava atrás da PRÓXIMA quinta e a sexta ficava de fora.
+describe("requestedWeekdaysFromText — vários dias aceitos", () => {
+  it("mensagem real: quinta e sexta", () => {
+    expect(requestedWeekdaysFromText(MSG_REAL)).toEqual(["qui", "sex"]);
+  });
+
+  it("formas comuns", () => {
+    expect(requestedWeekdaysFromText("pode ser terça ou quarta")).toEqual(["ter", "qua"]);
+    expect(requestedWeekdaysFromText("segunda, quarta ou sexta")).toEqual(["seg", "qua", "sex"]);
+    expect(requestedWeekdaysFromText("quinta")).toEqual(["qui"]);
+  });
+
+  it("faixa, ordinal e dia recusado não entram", () => {
+    expect(requestedWeekdaysFromText("atendem de segunda a sexta?")).toEqual([]);
+    expect(requestedWeekdaysFromText("quero uma segunda opinião, pode ser quinta")).toEqual([
+      "qui",
+    ]);
+    expect(requestedWeekdaysFromText("pode ser quinta, sexta não")).toEqual(["qui"]);
+    expect(requestedWeekdaysFromText("quinta, nem sexta")).toEqual(["qui"]);
+  });
+
+  it("requestedWeekdayFromText continua devolvendo o primeiro", () => {
+    expect(requestedWeekdayFromText(MSG_REAL)).toBe("qui");
+  });
+});
+
+describe("restrição com dois dias — sem vaga na quinta, oferta a sexta", () => {
+  // Janela ampla sem nenhuma vaga na quinta 12/11.
+  const SLOTS = [
+    { start: "2026-11-10T14:00:00-03:00" }, // terça
+    { start: "2026-11-13T14:00:00-03:00" }, // sexta 13 ← a que a lead aceitou
+    { start: "2026-11-13T15:45:00-03:00" },
+    { start: "2026-11-16T14:00:00-03:00" }, // segunda
+    { start: "2026-11-19T14:00:00-03:00" }, // quinta seguinte
+  ];
+
+  it("filtra pelos dois dias e a sexta vem antes da quinta seguinte", () => {
+    const r = filterSlotsToWeekday(SLOTS, ["qui", "sex"], (s) => s.start);
+    expect(r.map((s) => s.start.slice(0, 10))).toEqual(["2026-11-13", "2026-11-13", "2026-11-19"]);
+  });
+
+  it("só a quinta (comportamento antigo) pularia a sexta", () => {
+    const r = filterSlotsToWeekday(SLOTS, "qui", (s) => s.start);
+    expect(r.map((s) => s.start.slice(0, 10))).toEqual(["2026-11-19"]);
+  });
+
+  it("janela próxima com sexta já basta — não amplia", () => {
+    const near = SLOTS.slice(0, 3);
+    expect(
+      shouldWidenSlotWindow({
+        totalSlots: near.length,
+        explicitWindowDays: null,
+        requestedWeekday: ["qui", "sex"],
+        slotsOnRequestedWeekday: filterSlotsToWeekday(near, ["qui", "sex"], (s) => s.start).length,
+      }),
+    ).toBe(false);
+  });
+
+  it("lista vazia de dias não restringe nem amplia", () => {
+    expect(filterSlotsToWeekday(SLOTS, [], (s) => s.start)).toHaveLength(SLOTS.length);
+    expect(
+      shouldWidenSlotWindow({
+        totalSlots: 3,
+        explicitWindowDays: null,
+        requestedWeekday: [],
+        slotsOnRequestedWeekday: 0,
+      }),
+    ).toBe(false);
   });
 });

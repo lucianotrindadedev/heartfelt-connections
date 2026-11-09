@@ -1307,7 +1307,24 @@ const WEEKDAY_RANGE_RE =
  * no sábado" do Wellington (Implanto Master, 12–14/09) que originou a restrição.
  */
 export function matchWeekdayRequest(textoSemAcentoLower: string): WeekdayKey | null {
+  return matchWeekdayRequests(textoSemAcentoLower)[0] ?? null;
+}
+
+/**
+ * TODOS os dias da semana pedidos na mensagem, na ordem em que aparecem — mesmas
+ * regras de matchWeekdayRequest (faixa e ordinal não contam).
+ *
+ * "tem vaga pra quinta feira ou sexta-feira?" são DOIS dias aceitos, não um. A
+ * restrição de dia da semana guardava só o primeiro: sem vaga na quinta, a
+ * busca ampliava para 60 dias atrás da PRÓXIMA quinta, e a sexta — que a lead
+ * também aceitou, dia seguinte — ficava de fora. Caso real (Odonto Carioca
+ * Campo Grande, Sonia 21 97681-1078, 09/11/2026).
+ *
+ * Dia recusado na própria frase ("quinta não", "nem sexta") não entra.
+ */
+export function matchWeekdayRequests(textoSemAcentoLower: string): WeekdayKey[] {
   const t = textoSemAcentoLower;
+  const dias: WeekdayKey[] = [];
   WEEKDAY_SCAN_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = WEEKDAY_SCAN_RE.exec(t)) !== null) {
@@ -1336,9 +1353,19 @@ export function matchWeekdayRequest(textoSemAcentoLower: string): WeekdayKey | n
     if (!temFeira && stem !== "domingo" && stem !== "sabado" && ORDINAL_DEPOIS_RE.test(depois)) {
       continue;
     }
-    return WEEKDAY_STEM_TO_KEY[stem] ?? null;
+    const chave = WEEKDAY_STEM_TO_KEY[stem];
+    if (!chave || dias.includes(chave)) continue;
+    // Recusado: "nem quinta" antes, ou "quinta não" / "quinta também não" logo depois.
+    const recusado =
+      /\bnem\s+$/.test(t.slice(Math.max(0, m.index - 6), m.index)) ||
+      /^\s*(?:tambem\s+)?nao\b/.test(depois.replace(/^[\s,]+/, ""));
+    if (recusado && dias.length > 0) continue;
+    // Primeiro dia recusado: preserva o comportamento antigo (matchWeekdayRequest
+    // sempre devolveu o primeiro dia citado; quem filtra a negação é
+    // requestedDateFromText, e a restrição só vale quando a âncora casa).
+    dias.push(chave);
   }
-  return null;
+  return dias;
 }
 
 const WEEKDAY_STEM_TO_KEY: Record<string, WeekdayKey> = {
@@ -1374,6 +1401,11 @@ export function requestedWeekdayFromText(text: string | null | undefined): Weekd
   return matchWeekdayRequest(semAcentoLower(stripQuotePrefix(text)));
 }
 
+/** Todos os dias da semana pedidos ("quinta ou sexta" → ["qui","sex"]). Ver matchWeekdayRequests. */
+export function requestedWeekdaysFromText(text: string | null | undefined): WeekdayKey[] {
+  return matchWeekdayRequests(semAcentoLower(stripQuotePrefix(text)));
+}
+
 /** Dia da semana (chave curta) de um ISO, no fuso de Brasília. */
 export function weekdayKeyOfIso(iso: string | null | undefined): WeekdayKey | null {
   const t = (iso ?? "").trim();
@@ -1399,14 +1431,18 @@ export function weekdayKeyOfIso(iso: string | null | undefined): WeekdayKey | nu
   );
 }
 
-/** Mantém só os slots que caem no dia da semana pedido. */
+/** Mantém só os slots que caem no(s) dia(s) da semana pedido(s). */
 export function filterSlotsToWeekday<T>(
   slots: readonly T[],
-  weekday: WeekdayKey | null,
+  weekday: WeekdayKey | readonly WeekdayKey[] | null,
   isoOf: (slot: T) => string | undefined,
 ): T[] {
-  if (!weekday) return [...slots];
-  return slots.filter((s) => weekdayKeyOfIso(isoOf(s)) === weekday);
+  const dias = weekday == null ? [] : typeof weekday === "string" ? [weekday] : weekday;
+  if (dias.length === 0) return [...slots];
+  return slots.filter((s) => {
+    const k = weekdayKeyOfIso(isoOf(s));
+    return k != null && dias.includes(k);
+  });
 }
 
 /**
@@ -1423,14 +1459,16 @@ export function shouldWidenSlotWindow(opts: {
   /** Dia (YYYY-MM-DD) que o lead pediu, se pediu. */
   requestedDay?: string | null;
   slotsOnRequestedDay?: number;
-  /** Dia da SEMANA pedido, quando o lead falou "sábado" em vez de uma data. */
-  requestedWeekday?: WeekdayKey | null;
+  /** Dia(s) da SEMANA pedido(s), quando o lead falou "sábado" em vez de uma data. */
+  requestedWeekday?: WeekdayKey | readonly WeekdayKey[] | null;
   slotsOnRequestedWeekday?: number;
 }): boolean {
   // Janela explícita do LLM: ele está fazendo uma busca ampla de propósito.
   if (opts.explicitWindowDays != null) return false;
   if (opts.totalSlots === 0) return true;
-  if (opts.requestedWeekday && (opts.slotsOnRequestedWeekday ?? 0) === 0) return true;
+  const temDiaSemana =
+    typeof opts.requestedWeekday === "string" || (opts.requestedWeekday?.length ?? 0) > 0;
+  if (temDiaSemana && (opts.slotsOnRequestedWeekday ?? 0) === 0) return true;
   if (opts.requestedDay && (opts.slotsOnRequestedDay ?? 0) === 0) return true;
   return false;
 }
