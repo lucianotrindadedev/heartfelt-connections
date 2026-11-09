@@ -59,11 +59,24 @@ export interface OpenRouterBalance {
 }
 
 /**
- * Saldo restante da chave. Tenta /credits (saldo da conta = comprado - gasto) e,
- * se falhar, /key (limit_remaining — só existe em chaves com limite definido).
+ * Quanto a chave ainda pode gastar: o MENOR entre o saldo da conta (/credits =
+ * comprado - gasto) e o limite restante da própria chave (/key limit_remaining,
+ * só existe em chave com limite). Antes o /key só era lido se o /credits
+ * falhasse — e uma chave com limite estourava com a conta cheia de saldo, sem
+ * aviso prévio (Clínica Bomfim, 05/11: "Key limit exceeded $50.01 of $50.00").
  * Nunca lança: saldo ilegível é um resultado, não um erro do chamador.
  */
 export async function fetchOpenRouterBalance(orKey: string): Promise<OpenRouterBalance> {
+  const conta = await fetchSaldoDaConta(orKey);
+  const chave = await fetchLimiteDaChave(orKey);
+  if (conta.saldoUsd !== null && chave.saldoUsd !== null) {
+    return chave.saldoUsd < conta.saldoUsd ? chave : conta;
+  }
+  if (conta.saldoUsd !== null) return conta;
+  return chave;
+}
+
+async function fetchSaldoDaConta(orKey: string): Promise<OpenRouterBalance> {
   try {
     const res = await fetch(CREDITS_URL, {
       headers: { Authorization: `Bearer ${orKey}` },
@@ -82,7 +95,10 @@ export async function fetchOpenRouterBalance(orKey: string): Promise<OpenRouterB
   } catch (e) {
     console.warn(`[credits] /credits falhou: ${e instanceof Error ? e.message : e}`);
   }
+  return { saldoUsd: null, fonte: null };
+}
 
+async function fetchLimiteDaChave(orKey: string): Promise<OpenRouterBalance> {
   try {
     const res = await fetch(KEY_URL, {
       headers: { Authorization: `Bearer ${orKey}` },
@@ -273,15 +289,20 @@ function buildNoCreditsMessage(args: {
   leadName?: string;
   phone?: string;
   tagged: boolean;
+  /** A recusa veio do limite de gasto configurado na chave, não do saldo. */
+  limiteDaChave?: boolean;
 }): string {
   const lines: string[] = [];
-  lines.push(
-    args.agentName
-      ? `🔴 *IA PAUSADA — SALDO ESGOTADO*  •  _${args.agentName}_`
-      : "🔴 *IA PAUSADA — SALDO ESGOTADO*",
-  );
+  const titulo = args.limiteDaChave
+    ? "🔴 *IA PAUSADA — LIMITE DA CHAVE ATINGIDO*"
+    : "🔴 *IA PAUSADA — SALDO ESGOTADO*";
+  lines.push(args.agentName ? `${titulo}  •  _${args.agentName}_` : titulo);
   lines.push("");
-  lines.push("O saldo da OpenRouter acabou e a IA não consegue responder.");
+  lines.push(
+    args.limiteDaChave
+      ? "A chave da OpenRouter desta conta atingiu o limite de gasto configurado nela, e a IA não consegue responder. Aumente o limite da chave no painel da OpenRouter (Keys)."
+      : "O saldo da OpenRouter acabou e a IA não consegue responder.",
+  );
   lines.push("");
   if (args.leadName?.trim()) lines.push(`👤 *Lead:* ${args.leadName.trim()}`);
   if (args.phone) lines.push(`📱 *Telefone:* ${formatPhoneDisplay(args.phone)}`);
@@ -295,7 +316,7 @@ function buildNoCreditsMessage(args: {
   );
   lines.push("");
   lines.push(
-    `✅ Depois de recarregar o saldo, remova a etiqueta "${AI_DISABLED_TAG}" do contato para a IA voltar a atender.`,
+    `✅ Depois de ${args.limiteDaChave ? "aumentar o limite da chave" : "recarregar o saldo"}, remova a etiqueta "${AI_DISABLED_TAG}" do contato para a IA voltar a atender.`,
   );
   return lines.join("\n");
 }
@@ -304,6 +325,8 @@ function buildLowBalanceMessage(args: {
   saldoUsd: number;
   limiteUsd: number;
   contaLabel?: string;
+  /** "key": o que está acabando é o limite de gasto da CHAVE, não o saldo. */
+  fonte?: OpenRouterBalance["fonte"];
 }): string {
   const lines: string[] = [];
   lines.push(
@@ -312,7 +335,11 @@ function buildLowBalanceMessage(args: {
       : "🟡 *SALDO BAIXO NA OPENROUTER*",
   );
   lines.push("");
-  lines.push(`💳 *Saldo atual:* ${formatUsd(args.saldoUsd)}`);
+  lines.push(
+    args.fonte === "key"
+      ? `💳 *Restante no limite da chave:* ${formatUsd(args.saldoUsd)} (aumente o limite da chave no painel da OpenRouter)`
+      : `💳 *Saldo atual:* ${formatUsd(args.saldoUsd)}`,
+  );
   lines.push(`📉 *Aviso a partir de:* ${formatUsd(args.limiteUsd)}`);
   lines.push(`🕒 *Verificado em:* ${nowBrt()}`);
   lines.push("");
@@ -389,6 +416,7 @@ export async function haltConversationForNoCredits(params: {
         leadName: params.leadName,
         phone: params.phone,
         tagged,
+        limiteDaChave: params.erro.toLowerCase().includes("key limit exceeded"),
       }),
     );
   }
@@ -414,6 +442,7 @@ export async function alertLowBalance(params: {
   saldoUsd: number;
   limiteUsd: number;
   contaLabel?: string;
+  fonte?: OpenRouterBalance["fonte"];
 }): Promise<boolean> {
   if (!(await reserveAlertSlot(params.accountId, "saldo_baixo"))) return false;
   return sendToAlertChannels(
@@ -422,6 +451,7 @@ export async function alertLowBalance(params: {
       saldoUsd: params.saldoUsd,
       limiteUsd: params.limiteUsd,
       contaLabel: params.contaLabel,
+      fonte: params.fonte,
     }),
   );
 }
