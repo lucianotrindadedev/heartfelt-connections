@@ -120,7 +120,7 @@ import {
   leadPeriodContradictsSlot,
   classifyRequestedDay,
   filterSlotsToWeekday,
-  requestedWeekdayFromText,
+  requestedWeekdaysFromText,
   resolvePeriodoBusca,
   resumeToolArgs,
   shouldWidenSlotWindow,
@@ -1035,17 +1035,23 @@ function requestedPeriodoFromHistory(
  * pega sempre as 6 mais cedo e nunca alcança um horário pedido mais tarde no
  * mesmo turno (ver requestedHoraFromText).
  */
-/** Último dia da semana citado pelo lead nas mensagens recentes. Irmão de
- *  requestedPeriodoFromHistory — ver requestedWeekdayFromText. */
-function requestedWeekdayFromHistory(
+/** Dia(s) da semana da mensagem mais recente do lead que cita algum ("quinta
+ *  ou sexta" → ["qui","sex"]). Irmão de requestedPeriodoFromHistory — ver
+ *  requestedWeekdaysFromText. */
+function requestedWeekdaysFromHistory(
   history: { role: "user" | "assistant"; content: string }[],
-): WeekdayKey | null {
+): WeekdayKey[] {
   const userMsgs = history.filter((m) => m.role === "user");
   for (let i = userMsgs.length - 1; i >= 0; i--) {
-    const w = requestedWeekdayFromText(userMsgs[i]!.content);
-    if (w) return w;
+    const w = requestedWeekdaysFromText(userMsgs[i]!.content);
+    if (w.length > 0) return w;
   }
-  return null;
+  return [];
+}
+
+/** "quinta-feira" / "quinta-feira ou sexta-feira" — para as mensagens ao modelo. */
+function nomeDosDiasPedidos(dias: readonly WeekdayKey[]): string {
+  return dias.map((d) => NOME_DIA_SEMANA[d]).join(" ou ");
 }
 
 function requestedHoraFromHistory(
@@ -1262,14 +1268,15 @@ export async function execListarHorarios(
   const anchorKeyRaw = anchor
     ? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(anchor)
     : null;
-  const diaSemanaPedido = requestedWeekdayFromHistory(historicoParaPreferencias(ctx));
-  const restringeDiaSemana =
-    diaSemanaPedido && anchorKeyRaw && weekdayKeyOfIso(anchorKeyRaw) === diaSemanaPedido
-      ? diaSemanaPedido
-      : null;
+  // "quinta ou sexta": a âncora é a quinta, mas a restrição é {quinta, sexta} —
+  // sem vaga na quinta, a sexta (aceita pela lead) vem antes da quinta seguinte.
+  const diasSemanaPedidos = requestedWeekdaysFromHistory(historicoParaPreferencias(ctx));
+  const diaDaAncora = anchorKeyRaw ? weekdayKeyOfIso(anchorKeyRaw) : null;
+  const restringeDiaSemana: WeekdayKey[] | null =
+    diaDaAncora && diasSemanaPedidos.includes(diaDaAncora) ? diasSemanaPedidos : null;
   if (restringeDiaSemana) {
     console.log(
-      `[scheduler] listar_horarios conv=${ctx.conversationId}: lead restringiu o dia da semana (${restringeDiaSemana}) — a busca só oferta esse dia`,
+      `[scheduler] listar_horarios conv=${ctx.conversationId}: lead restringiu o dia da semana (${restringeDiaSemana.join(",")}) — a busca só oferta esse(s) dia(s)`,
     );
   }
 
@@ -1343,7 +1350,7 @@ export async function execListarHorarios(
     ) {
       const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       console.log(
-        `[scheduler] listar_horarios conv=${ctx.conversationId}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${formatted.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana ?? "-"})`,
+        `[scheduler] listar_horarios conv=${ctx.conversationId}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${formatted.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana?.join(",") ?? "-"})`,
       );
       formatted = await fetchFormatted(wideEnd);
     }
@@ -1358,7 +1365,7 @@ export async function execListarHorarios(
       if (noDia.length > 0) {
         formatted = noDia;
       } else if (formatted.length > 0) {
-        gcalDiaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+        gcalDiaSemanaAviso = `O lead pediu ${nomeDosDiasPedidos(restringeDiaSemana)} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${nomeDosDiasPedidos(restringeDiaSemana)}.`;
       }
     }
     // Persiste a agenda escolhida para o booking/cancelamento usarem a mesma.
@@ -1462,7 +1469,7 @@ export async function execListarHorarios(
     ) {
       const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       console.log(
-        `[scheduler] listar_horarios (clinup) conv=${ctx.conversationId}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${clSlots.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana ?? "-"})`,
+        `[scheduler] listar_horarios (clinup) conv=${ctx.conversationId}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${clSlots.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana?.join(",") ?? "-"})`,
       );
       clSlots = await listClinupSlotsDetailed(ctx.accountId, fmtCl(today), fmtCl(wideEnd));
     }
@@ -1476,7 +1483,7 @@ export async function execListarHorarios(
       if (noDia.length > 0) {
         clSlots = noDia;
       } else if (clSlots.length > 0) {
-        clDiaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+        clDiaSemanaAviso = `O lead pediu ${nomeDosDiasPedidos(restringeDiaSemana)} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${nomeDosDiasPedidos(restringeDiaSemana)}.`;
       }
     }
 
@@ -1594,7 +1601,7 @@ export async function execListarHorarios(
     ) {
       const wideEnd = new Date(today.getTime() + SLOT_WIDE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       console.log(
-        `[scheduler] listar_horarios (clinic experts) conv=${ctx.conversationId}${ceUnit.unitLabel ? ` unidade="${ceUnit.unitLabel}"` : ""}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${ceSlots.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana ?? "-"})`,
+        `[scheduler] listar_horarios (clinic experts) conv=${ctx.conversationId}${ceUnit.unitLabel ? ` unidade="${ceUnit.unitLabel}"` : ""}: ampliando ${SLOT_NEAR_WINDOW_DAYS}d → ${SLOT_WIDE_WINDOW_DAYS}d (vagas=${ceSlots.length}, dia pedido=${anchorKeyRaw ?? "-"}, dia da semana=${restringeDiaSemana?.join(",") ?? "-"})`,
       );
       ceSlots = await listClinicExpertsSlots(
         ctx.accountId,
@@ -1611,7 +1618,7 @@ export async function execListarHorarios(
       if (noDia.length > 0) {
         ceSlots = noDia;
       } else if (ceSlots.length > 0) {
-        ceDiaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+        ceDiaSemanaAviso = `O lead pediu ${nomeDosDiasPedidos(restringeDiaSemana)} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${nomeDosDiasPedidos(restringeDiaSemana)}.`;
       }
     }
 
@@ -1757,7 +1764,7 @@ export async function execListarHorarios(
     if (noDia.length > 0) {
       slots = noDia;
     } else if (slots.length > 0) {
-      diaSemanaAviso = `O lead pediu ${NOME_DIA_SEMANA[restringeDiaSemana]} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${NOME_DIA_SEMANA[restringeDiaSemana]}.`;
+      diaSemanaAviso = `O lead pediu ${nomeDosDiasPedidos(restringeDiaSemana)} e NÃO há vaga nesse dia da semana em ${SLOT_WIDE_WINDOW_DAYS} dias. Os horários abaixo são de OUTROS dias — diga isso com clareza e NUNCA chame um deles de ${nomeDosDiasPedidos(restringeDiaSemana)}.`;
     }
   }
 
@@ -4363,6 +4370,12 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       `A busca na agenda JÁ FOI FEITA — NÃO diga que vai verificar, buscar ou retornar depois. ` +
       `A última mensagem do lead foi: "${pedidoDoLead}". Ofereça, dos horários acima, os que atendem ao que ele pediu (dia, turno, "a partir de X horas"). ` +
       `Se NENHUM atende, diga isso com honestidade e ofereça os mais próximos do pedido. ` +
+      // Caso real (Odonto Carioca Campo Grande, 21 97681-1078, 09/11/2026): a
+      // lead pediu quinta/sexta, a lista só trouxe a tarde de hoje e o modelo
+      // explicou a ausência com "a agenda de quinta e sexta ainda não abriu" —
+      // a quinta tinha vaga. A lista é um recorte (as vagas mais próximas), não
+      // a agenda inteira: dia ausente nela não é dia fechado.
+      `Esta lista traz só as vagas mais próximas, não a agenda inteira: se o dia pedido não aparece, NÃO diga que a agenda desse dia está fechada, lotada, não abriu ou não foi liberada — você não sabe disso. Diga que vai buscar os horários desse dia e pergunte se pode. ` +
       `📅 COPIE date_label e time_label EXATAMENTE como estão acima. next_stage=SLOT_OFFER.`;
     const retryDynamic = extras ? retryBase + "\n\n" + extras : retryBase;
     try {

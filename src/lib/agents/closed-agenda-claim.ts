@@ -105,6 +105,17 @@ function afirmaFechamento(f: string): boolean {
     if (/\b(agenda|cl[íi]nica|unidade|consult[óo]rio)\b[^,;]{0,45}?\bfechad[oa]/.test(f)) {
       return true;
     }
+    // "a agenda de quinta e sexta ainda não abriu" — mesma afirmação de
+    // fechamento, dita como "ainda não abriu/liberou". Caso real (Odonto Carioca
+    // Campo Grande, 21 97681-1078, 09/11/2026): a busca tinha ancorado em hoje,
+    // a quinta não veio na lista e o modelo racionalizou; a quinta tinha vaga.
+    if (
+      /\b(agenda|cl[íi]nica|unidade|consult[óo]rio)\b[^,;]{0,45}?\b(?:ainda\s+)?n[ãa]o\s+(?:foi\s+|est[áa]\s+|tinha\s+)?(?:abriu|abre|aberta|liberou|liberada)\b/.test(
+        f,
+      )
+    ) {
+      return true;
+    }
     // "fechada para novos agendamentos"
     if (/\bfechad[oa]s?\b[^,;]{0,25}?\bpara\s+(?:novos\s+)?agendamentos?\b/.test(f)) return true;
     // "estamos fechados", "fica fechado"
