@@ -2469,7 +2469,7 @@ export function looksLikeSchedulingPreference(text: string): boolean {
 export function mentionsUnavailability(text: string): boolean {
   const t = text.toLowerCase();
   return (
-    /\bn[ãa]o\s+(posso|poderei|consigo|vou\s+conseguir|vou\s+poder|vou|d[áa]\s+pra|d[áa]|da|rola|tenho\s+como)/.test(
+    /\bn[ãa]o\s+(posso|poderei|consigo|vou\s+conseguir|vou\s+poder|vou|vai\s+(?:dar|rolar|poder|conseguir|ser\s+poss[íi]vel)|d[áa]\s+pra|d[áa]|da|rola|tenho\s+como)/.test(
       t,
     ) ||
     /amanh[ãa]\s+n[ãa]o\b/.test(t) ||
@@ -3124,6 +3124,36 @@ function forwardWeekOrMonthRequest(t: string): string | null {
   return weekOrWeekdayTargetBrt(semNorm, Date.now());
 }
 
+const RELATIVO_IMEDIATO = "(?:depois\\s+de\\s+amanha|amanha|hoje)";
+const DIA_CITADO = "(?:domingo|segunda|terca|quarta|quinta|sexta|sabado|dia\\s+\\d{1,2}|\\d{1,2}\\/\\d{1,2})";
+
+/**
+ * "Não vai dar pra ir hoje, tem vaga pra quinta ou sexta?": a negação é de
+ * HOJE e o pedido é a quinta. immediateRelativeBrt tem precedência sobre o dia
+ * da semana e devolvia hoje — a busca ancorava no dia recusado, o corte das 6
+ * vagas mais próximas enchia com a tarde de hoje e a quinta (com vaga) nem
+ * entrava. O agente então inventou "a agenda de quinta e sexta ainda não
+ * abriu". Caso real (Odonto Carioca Campo Grande, Sonia 21 97681-1078,
+ * 09/11/2026) — remarcação que a recepção fez na mão para quinta 15:45.
+ *
+ * Mesma ideia de forwardWeekOrMonthRequest, para hoje/amanhã: vale o OUTRO dia
+ * citado, desde que ele próprio não esteja negado ("hoje não, quinta também
+ * não", "nem quinta").
+ */
+function outroDiaAposRecusarImediato(t: string): string | null {
+  const semNorm = t.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const recusaImediato =
+    new RegExp(`\\bnao\\b[^,.;!?]{0,30}\\b${RELATIVO_IMEDIATO}\\b`).test(semNorm) ||
+    new RegExp(`\\b${RELATIVO_IMEDIATO}\\b[^,.;!?]{0,12}\\bnao\\b`).test(semNorm);
+  if (!recusaImediato) return null;
+  const semImediato = semNorm.replace(new RegExp(`\\b${RELATIVO_IMEDIATO}\\b`, "g"), " ");
+  if (!new RegExp(`\\b${DIA_CITADO}`).test(semImediato)) return null;
+  // O outro dia também recusado → não há pedido aqui.
+  if (new RegExp(`\\b(?:nem|tambem\\s+nao)\\b[^,.;!?]{0,12}\\b${DIA_CITADO}`).test(semImediato)) return null;
+  if (new RegExp(`\\b${DIA_CITADO}[^,.;!?]{0,20}\\b(?:nao|tambem\\s+nao)\\b`).test(semImediato)) return null;
+  return targetDateFromText(semImediato);
+}
+
 /**
  * Data (YYYY-MM-DD BRT) que o lead PEDIU numa mensagem, se houver: dia da
  * semana ("quinta", "quinta-feira"), relativo ("amanhã", "hoje") ou absoluto
@@ -3138,6 +3168,8 @@ export function requestedDateFromText(text: string): string | null {
   if (!t) return null;
   const semanaAdiante = forwardWeekOrMonthRequest(t);
   if (semanaAdiante) return semanaAdiante;
+  const outroDia = outroDiaAposRecusarImediato(t);
+  if (outroDia) return outroDia;
   if (mentionsUnavailability(t) || relativeDateIsExplanatory(t)) return null;
   // Data de NASCIMENTO completa ("15/03/1990", "15 de março de 1990") é resposta
   // de cadastro, não pedido de dia. requestedDateFromHistory varre o histórico

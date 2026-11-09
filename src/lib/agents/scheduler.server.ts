@@ -4363,6 +4363,12 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
       `A busca na agenda JÁ FOI FEITA — NÃO diga que vai verificar, buscar ou retornar depois. ` +
       `A última mensagem do lead foi: "${pedidoDoLead}". Ofereça, dos horários acima, os que atendem ao que ele pediu (dia, turno, "a partir de X horas"). ` +
       `Se NENHUM atende, diga isso com honestidade e ofereça os mais próximos do pedido. ` +
+      // Caso real (Odonto Carioca Campo Grande, 21 97681-1078, 09/11/2026): a
+      // lead pediu quinta/sexta, a lista só trouxe a tarde de hoje e o modelo
+      // explicou a ausência com "a agenda de quinta e sexta ainda não abriu" —
+      // a quinta tinha vaga. A lista é um recorte (as vagas mais próximas), não
+      // a agenda inteira: dia ausente nela não é dia fechado.
+      `Esta lista traz só as vagas mais próximas, não a agenda inteira: se o dia pedido não aparece, NÃO diga que a agenda desse dia está fechada, lotada, não abriu ou não foi liberada — você não sabe disso. Diga que vai buscar os horários desse dia e pergunte se pode. ` +
       `📅 COPIE date_label e time_label EXATAMENTE como estão acima. next_stage=SLOT_OFFER.`;
     const retryDynamic = extras ? retryBase + "\n\n" + extras : retryBase;
     try {
