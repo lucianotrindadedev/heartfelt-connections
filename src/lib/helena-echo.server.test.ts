@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   classifyEchoAgainstOwnSends,
+  ecoBloqueiaComando,
   earlyEchoIds,
   type EarlyEchoCandidate,
 } from "./helena-echo.server";
@@ -238,5 +239,26 @@ describe("frase pronta do anúncio citada por nós não silencia o lead", () => 
   it("do lado da atendente (TO_HUB) o containment continua valendo", () => {
     const bolha = "Vi que você gostaria de agendar uma consulta de avaliação.";
     expect(classifyEchoAgainstOwnSends(bolha, [nossa], { fromLead: false })).toBe("confirmed");
+  });
+});
+
+describe("ecoBloqueiaComando — comando de pausa da equipe", () => {
+  const nossas = [
+    "Olá! Tudo bem com você? Eu sou a Leticia, responsável pelos agendamentos.",
+    "Olá! 👋\n\nRecebi seu link, mas não consigo acessar conteúdo externo por aqui.",
+  ];
+
+  it("'Olá!' da atendente é suspect por containment, mas NÃO barra o comando", () => {
+    expect(classifyEchoAgainstOwnSends("Olá!", nossas, { fromLead: false })).toBe("suspect");
+    expect(ecoBloqueiaComando("Olá!", nossas)).toBe(false);
+  });
+
+  it("cópia exata de um envio nosso barra o comando", () => {
+    expect(ecoBloqueiaComando("Olá!", [...nossas, "Olá!"])).toBe(true);
+    expect(ecoBloqueiaComando("  olá! ", ["Olá!"])).toBe(true);
+  });
+
+  it("texto vazio nunca barra", () => {
+    expect(ecoBloqueiaComando("", nossas)).toBe(false);
   });
 });

@@ -26,6 +26,7 @@ import {
 } from "@/lib/reset-conversation.server";
 import {
   classifyEchoAgainstOwnSends,
+  ecoBloqueiaComando,
   ECHO_FRESH_WINDOW_MS,
   ECHO_STALE_WINDOW_MS,
   normalizeEcho,
@@ -304,8 +305,9 @@ async function classifyOwnOutboundEcho(
   accountId: string,
   content: string,
   opts: { fromLead: boolean },
-): Promise<EchoVerdict> {
-  if (!normalizeEcho(content)) return "none";
+): Promise<{ verdict: EchoVerdict; copiaExata: boolean }> {
+  const nada = { verdict: "none" as EchoVerdict, copiaExata: false };
+  if (!normalizeEcho(content)) return nada;
 
   const now = Date.now();
   const staleSince = new Date(now - ECHO_STALE_WINDOW_MS).toISOString();
@@ -320,7 +322,7 @@ async function classifyOwnOutboundEcho(
     .gte("criado_em", staleSince)
     .order("criado_em", { ascending: false })
     .limit(500);
-  if (error || !data) return "none";
+  if (error || !data) return nada;
 
   // Separa por idade: só a janela recente autoriza DESCARTAR a mensagem; a
   // janela longa serve apenas para MARCAR is_echo (ver ECHO_STALE_WINDOW_MS).
@@ -337,9 +339,15 @@ async function classifyOwnOutboundEcho(
     else staleSends.push(m.content);
   }
 
+  // Só cópia exata de um envio nosso barra comando de pausar/reativar
+  // (ver ecoBloqueiaComando).
+  const copiaExata = ecoBloqueiaComando(content, [...freshSends, ...staleSends]);
   const fresh = classifyEchoAgainstOwnSends(content, freshSends, opts);
-  if (fresh !== "none") return fresh;
-  return classifyEchoAgainstOwnSends(content, staleSends, { ...opts, stale: true });
+  if (fresh !== "none") return { verdict: fresh, copiaExata };
+  return {
+    verdict: classifyEchoAgainstOwnSends(content, staleSends, { ...opts, stale: true }),
+    copiaExata,
+  };
 }
 
 interface ConversationUpsertInput {
@@ -800,9 +808,12 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // Helena ecoa nossos envios ora como TO_HUB, ora como FROM_HUB. Mensagem
         // real de atendente humano é texto livre e não casa com nossos envios.
         // `suspect` (bolha curta) é gravado, porém marcado is_echo — ver meta abaixo.
-        const echoVerdict = await classifyOwnOutboundEcho(sb, accountId, messageContent, {
-          fromLead: isInbound,
-        });
+        const { verdict: echoVerdict, copiaExata: ecoCopiaExata } = await classifyOwnOutboundEcho(
+          sb,
+          accountId,
+          messageContent,
+          { fromLead: isInbound },
+        );
         if (echoVerdict === "confirmed") {
           console.log(
             `[webhook] eco da própria plataforma descartado (conv-key=${fromDetails || legacyPhone || sessionId}) — não gravado`,
@@ -886,15 +897,16 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
         // (09/07, Dental Clinic Corcovado): pause_command="Olá!" configurado
         // pra atendente assumir o atendimento, mas só isInbound era checado —
         // a mensagem da atendente (TO_HUB, origem="humano") nunca disparava a
-        // tag. Seguro: só passa aqui o que o anti-eco liberou como mensagem real
-        // (echoVerdict === "none") — eco marcado is_echo não dispara comando.
+        // tag. Eco `confirmed` já saiu acima; aqui só barra a CÓPIA EXATA de um
+        // envio nosso. O `suspect` por containment NÃO barra: o comando curto
+        // ("Olá!") aparece dentro das nossas respostas ("Olá! Tudo bem…") e a
+        // pausa da Alfa Implantes nunca disparava (nov/2026). Ver ecoBloqueiaComando.
+        const comandoLiberado = !ecoCopiaExata && (isInbound || isHuman);
         const isPauseCmd =
-          echoVerdict === "none" &&
-          (isInbound || isHuman) &&
+          comandoLiberado &&
           messageMatchesAgentCommand(messageContent, pauseCommandRaw, ["/pausar"]);
         const isResumeCmd =
-          echoVerdict === "none" &&
-          (isInbound || isHuman) &&
+          comandoLiberado &&
           messageMatchesAgentCommand(messageContent, resumeCommandRaw, ["/ativar"]);
 
         if (isPauseCmd || isResumeCmd) {
