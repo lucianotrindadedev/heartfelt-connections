@@ -111,6 +111,27 @@ export function classifyEchoAgainstOwnSends(
   return short ? "suspect" : hit("confirmed");
 }
 
+/**
+ * Comando de pausar/reativar (settings.pause_command / resume_command) só é
+ * barrado pelo anti-eco quando é CÓPIA EXATA de uma mensagem inteira nossa.
+ *
+ * O veredicto `suspect` por containment não serve aqui: o comando é um texto
+ * curto escolhido pela clínica e quase sempre aparece DENTRO das nossas
+ * respostas. Caso real (Alfa Implantes, nov/2026): pause_command="Olá!" e o
+ * agente abre a conversa com "Olá! Tudo bem com você?…" — todo "Olá!" da
+ * atendente virava `suspect`, era gravado como eco e a pausa nunca disparava.
+ * O eco verdadeiro da Helena traz a resposta (ou a bolha) inteira, nunca só a
+ * saudação; a cópia exata recente já é descartada antes como `confirmed`.
+ */
+export function ecoBloqueiaComando(
+  content: string | null | undefined,
+  ownSends: Array<string | null | undefined>,
+): boolean {
+  const target = normalizeEcho(content);
+  if (!target) return false;
+  return ownSends.some((raw) => normalizeEcho(raw) === target);
+}
+
 /** `target` (normalizado) é uma sequência de parágrafos INTEIROS de `raw` —
  *  o formato de uma bolha do nosso envio. */
 function ehBolhaInteira(raw: string, target: string): boolean {
