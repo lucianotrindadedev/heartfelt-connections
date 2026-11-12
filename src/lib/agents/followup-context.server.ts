@@ -15,6 +15,7 @@ import {
   removerAberturaDeReacao,
   NOME_POR_EXTENSO,
   recorteSemValores,
+  secoesDeCampanha,
   type FollowupVeredito,
 } from "@/lib/followup-guard";
 import { limparMarcadoresDeModelo } from "@/lib/placeholder-guard";
@@ -101,6 +102,37 @@ export async function generateContextualFollowup(
   // é R$ 275,00" literal, e o modelo mandou isso para quem pediria a Consulta
   // de Diagnóstico (cortesia). Ver followup-guard.ts.
   const contextoDoAgente = recorteSemValores(basePrompt, 3000);
+  // Campanha (Black Friday etc.) costuma ficar no FIM do prompt, fora dos 3000
+  // caracteres acima — e é justamente o roteiro de resgate de quem não
+  // respondeu. Entra como bloco próprio, com a data de hoje para o modelo saber
+  // se ainda vale. Ver secoesDeCampanha.
+  const campanha = secoesDeCampanha(basePrompt, 3000, 8000);
+  const hojeBr = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    weekday: "long",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date());
+  const blocoCampanha = campanha
+    ? `
+
+# CAMPANHA DA CLÍNICA (trecho do roteiro do agente)
+
+Hoje é ${hojeBr}. A clínica definiu a campanha abaixo no roteiro.
+
+- Se hoje está dentro do período da campanha (ou ela está marcada como ativa
+  sem data de término), esta mensagem OBRIGATORIAMENTE cita a campanha pelo
+  nome, seguindo o roteiro de resgate / lead sem resposta dela, adaptado ao que
+  já foi conversado. Ex.: "Passando para você não perder nossa condição
+  especial de Black Friday" + a pergunta que retoma a conversa.
+- Use só as palavras que o roteiro permite ("condição especial" etc.). Nunca
+  cite número, percentual, valor, entrada ou parcela da condição (regra 9
+  continua valendo) e nunca diga que ela está aprovada.
+- Se a campanha já terminou ou ainda não começou, ignore este bloco.
+
+${campanha}`
+    : "";
 
   // 3. Histórico da conversa (últimas 20 mensagens)
   const msgs = await sb
@@ -178,7 +210,7 @@ ${input.stepInstruction}
 
 # CONTEXTO DO AGENTE (resumido)
 
-${contextoDoAgente}
+${contextoDoAgente}${blocoCampanha}
 
 # FORMATO DE SAÍDA
 

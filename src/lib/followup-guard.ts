@@ -189,6 +189,40 @@ export function recorteSemValores(prompt: string, limite: number): string {
     .slice(0, limite);
 }
 
+/** Título de seção que indica campanha/ação comercial com prazo. */
+const TITULO_DE_CAMPANHA =
+  /black\s*friday|black\s*week|cyber\s*monday|campanha|promo[çc][ãa]o|dia\s+das\s+m[ãa]es|dia\s+dos\s+pais/iu;
+
+/**
+ * Seções de CAMPANHA do prompt da clínica que ficaram fora do recorte inicial.
+ *
+ * O follow-up só lê o começo do prompt (`recorteSemValores(prompt, 3000)`). Na
+ * Bomfim (prompt de 44 mil caracteres) isso é só a seção de travas, e a seção
+ * "19. REATIVAÇÃO E BLACK FRIDAY", que traz o roteiro de resgate de quem não
+ * respondeu, fica no fim: 46 follow-ups em 24h sem citar a campanha (nov/2026).
+ *
+ * Seção = bloco que começa num título markdown de nível 1 ou 2 (`#`/`##`) e vai
+ * até o próximo título do mesmo nível ou acima. Entra quando o título bate em
+ * TITULO_DE_CAMPANHA ou o corpo traz "campanha ativa". Seções que começam
+ * dentro do recorte inicial ficam de fora (já estão lá). Linhas com valor saem,
+ * como no recorte. Prompt sem títulos markdown devolve "".
+ */
+export function secoesDeCampanha(prompt: string, jaNoRecorte: number, limite: number): string {
+  const texto = prompt ?? "";
+  const titulo = /^#{1,2}\s+(.+)$/gm;
+  const inicios: Array<{ pos: number; titulo: string }> = [];
+  for (const m of texto.matchAll(titulo)) inicios.push({ pos: m.index ?? 0, titulo: m[1] ?? "" });
+  const secoes: string[] = [];
+  for (let i = 0; i < inicios.length; i++) {
+    const { pos, titulo: t } = inicios[i]!;
+    if (pos < jaNoRecorte) continue;
+    const corpo = texto.slice(pos, inicios[i + 1]?.pos ?? texto.length);
+    if (!TITULO_DE_CAMPANHA.test(t) && !/campanha\s+ativa/iu.test(corpo)) continue;
+    secoes.push(recorteSemValores(corpo.trim(), Number.MAX_SAFE_INTEGER));
+  }
+  return secoes.join("\n\n").slice(0, limite);
+}
+
 /**
  * Linha para o prompt do atendimento (qualifier/scheduler) com os dias em que a
  * clínica NÃO abre. O texto livre de business_hours da Bomfim ("Seg: 10–20 /
