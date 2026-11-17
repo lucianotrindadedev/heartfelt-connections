@@ -3657,16 +3657,38 @@ export function resolvePeriodoBusca(params: {
  * Recreio, Eliane 21 97256-0633): "só saio 4 horas da tarde" → ofertaram 09:00,
  * 09:45 e 10:30; a clínica teve de resolver por telefone.
  */
+/**
+ * "Final da tarde" sem hora dita: vale como pedido de 17h. O turno sozinho
+ * ("tarde" = 12h–18h) não basta — o corte de 6 pega os mais cedo da tarde
+ * (13:30, 13:45…) e o lead que só pode depois do trabalho nunca vê 16:00/17:00.
+ * Pedir 17h faz o ranking trazer 17:00, 16:45, 16:30… primeiro. Negado
+ * ("no final da tarde não posso") não conta.
+ */
+const FINAL_DA_TARDE_RE = /\b(?:final(?:zinho)?|fim(?:zinho)?)\s+d[aeo]\s+tarde\b/;
+const FINAL_DA_TARDE_NEGADO_RE =
+  /\bn[ãa]o\b[^,.;!?]{0,25}\b(?:final(?:zinho)?|fim(?:zinho)?)\s+d[aeo]\s+tarde\b|\b(?:final(?:zinho)?|fim(?:zinho)?)\s+d[aeo]\s+tarde\s+(?:eu\s+)?n[ãa]o\b/;
+
+function horaDoFinalDaTarde(t: string): number | null {
+  if (!FINAL_DA_TARDE_RE.test(t)) return null;
+  if (FINAL_DA_TARDE_NEGADO_RE.test(t)) return null;
+  return 17;
+}
+
 export function requestedHoraFromText(text: string): number | null {
   const t = stripQuotePrefix(text).toLowerCase();
   if (!t) return null;
   // "às 16", "as 16 horas" (o "às" já indica hora, sufixo opcional) OU
   // "16h"/"16 horas"/"16:00" (sufixo de hora obrigatório sem "às") OU
   // "5 da tarde" (o turno logo depois já indica que o número é hora).
+  // Sufixo de hora: "h", "horas", e as abreviações do WhatsApp "hs", "hr",
+  // "hrs". Sem elas, "às 16hs" não casava (o \b final cai no meio de "hs") e o
+  // corte de 6 nunca chegava às 16:00. Caso real (14/11, Odonto Carioca CG,
+  // Layla 21 98590-9224): "As 16hs" e "a partir das 16hs" → oferta 13:30–14:45,
+  // e a IA concluiu "não temos horários após as 16:00" com 16:00–17:00 livres.
   const m = t.match(
-    /\b(?:[àa]s\s*(\d{1,2})(?:\s*h(?:oras?)?)?|(\d{1,2})\s*(?:h(?:oras?)?|:00)|(\d{1,2})(?=(?:\s*e\s*(?:meia|quinze))?\s*d[aeo]\s*(?:manh[ãa]|tarde|noite)))\b/,
+    /\b(?:[àa]s\s*(\d{1,2})(?:\s*h(?:oras?|rs?|s)?)?|(\d{1,2})\s*(?:h(?:oras?|rs?|s)?|:00)|(\d{1,2})(?=(?:\s*e\s*(?:meia|quinze))?\s*d[aeo]\s*(?:manh[ãa]|tarde|noite)))\b/,
   );
-  if (!m) return null;
+  if (!m) return horaDoFinalDaTarde(t);
   const h = Number(m[1] ?? m[2] ?? m[3]);
   if (!(h >= 0 && h <= 23)) return null;
 
@@ -3721,8 +3743,12 @@ export function rankSlotsByRequestedHour<T>(
 ): T[] {
   if (hora == null) return [...slots];
   const alvo = hora * 60;
+  // Empate de distância ("16h": 15:45 e 16:15) → o MAIS TARDE primeiro. Quem
+  // diz uma hora quase sempre não chega antes dela ("só saio às 16", "a partir
+  // das 16hs"); antes o empate punha 15:45 na frente de 16:15.
   const porProximidade = (a: T, b: T) =>
-    Math.abs(minutosDoDia(a) - alvo) - Math.abs(minutosDoDia(b) - alvo);
+    Math.abs(minutosDoDia(a) - alvo) - Math.abs(minutosDoDia(b) - alvo) ||
+    minutosDoDia(b) - minutosDoDia(a);
   if (!diaDoSlot) return [...slots].sort(porProximidade);
 
   const porDia = new Map<string, T[]>();
