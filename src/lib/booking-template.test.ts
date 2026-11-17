@@ -863,8 +863,10 @@ describe("rankSlotsByRequestedHour", () => {
     // Comparando só a hora (como o Clinicorp fazia), 16:45 e 16:00 empatavam em
     // |16-17|=1 e o desempate caía no mais cedo — 16:00 na frente de 16:45.
     expect(rank(17).indexOf("16:45")).toBeLessThan(rank(17).indexOf("16:00"));
-    // 16:45 e 17:15 ficam a 15 min dos 17h: empate real, resolvido pelo mais cedo.
-    expect(rank(17).slice(0, 2)).toEqual(["16:45", "17:15"]);
+    // 16:45 e 17:15 ficam a 15 min dos 17h: empate real, resolvido pelo mais
+    // TARDE — quem pede uma hora quase sempre não chega antes dela (caso Layla,
+    // Odonto Carioca, "a partir das 16hs"; ver hora-hs-e-final-da-tarde.test.ts).
+    expect(rank(17).slice(0, 2)).toEqual(["17:15", "16:45"]);
   });
 
   it("sem hora pedida devolve a ordem cronológica intacta", () => {
