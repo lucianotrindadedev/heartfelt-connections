@@ -679,6 +679,37 @@ export async function sendHelenaText(
 }
 
 /**
+ * Mensagens de uma sessão da Helena (até `pageSize`), em ordem de criação.
+ * `null` = não foi possível ler (quem chama decide o fail-safe).
+ */
+export async function listHelenaSessionMessages(
+  account: HelenaAccount,
+  sessionId: string,
+  pageSize = 50,
+): Promise<{ direction: string | null; type: string | null; text: string | null }[] | null> {
+  const base = account.baseUrl.replace(/\/$/, "");
+  try {
+    const res = await fetch(
+      `${base}/chat/v1/session/${sessionId}/message?PageSize=${pageSize}&OrderBy=CreatedAt&OrderDirection=Ascending`,
+      { headers: { Authorization: account.token, accept: "application/json" } },
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as
+      | { items?: Array<Record<string, unknown>> }
+      | Array<Record<string, unknown>>
+      | null;
+    const items = Array.isArray(json) ? json : (json?.items ?? []);
+    return items.map((m) => ({
+      direction: (m.direction as string | null) ?? null,
+      type: (m.type as string | null) ?? null,
+      text: (m.text as string | null) ?? null,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Envia arquivo via URL pública (imagem, vídeo, áudio, PDF). Mesmo endpoint
  * do n8n workflow '03. Baixar e enviar arquivo do Google Drive'.
  */
