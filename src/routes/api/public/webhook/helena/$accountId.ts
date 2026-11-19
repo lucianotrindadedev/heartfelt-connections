@@ -14,7 +14,6 @@ import { dispatchInboundAgentTurn } from "@/lib/schedule-agent-turn.server";
 import { checkContactBlockedBySession } from "@/lib/agent-block.server";
 import { isAgentMutedNow, scheduleMuteReason } from "@/lib/agent-schedule";
 import { messageMatchesAgentCommand } from "@/lib/agent-commands.server";
-import { etiquetaEhDeAtendimentoAnterior } from "@/lib/etiqueta-de-atendimento-anterior";
 import { isOptOutMessage } from "@/lib/opt-out.server";
 import { isPlatformNotice } from "@/lib/platform-notice";
 import { stripQuotePrefix, withQuotePrefix } from "@/lib/conversation-guards";
@@ -39,7 +38,6 @@ import {
   loadHelenaAccount,
   loadHelenaContactFromSession,
   loadHelenaMessageText,
-  listHelenaSessionMessages,
   loadHelenaSession,
   resolveHelenaContactId,
   sendHelenaText,
@@ -1157,56 +1155,6 @@ export const Route = createFileRoute("/api/public/webhook/helena/$accountId")({
           recheckMotivo = recheck.motivo;
           recheckErro = recheck.erro;
           if (recheck.resolved && recheck.blocked) blockingTag = recheck.tag;
-        }
-
-        // "IA Desligada" herdada de um atendimento ANTERIOR: o lead voltou e
-        // abriu uma sessão nova em que ninguém da clínica falou ainda. Sem
-        // isto a IA ficava calada e a sessão pendente sem atendente — 13 leads
-        // da Alfa sem resposta em 7 dias (ver etiqueta-de-atendimento-anterior.ts).
-        // Só para a etiqueta fixa: etiquetas do dono (blocked_tags) continuam
-        // valendo sempre.
-        if (
-          isInbound &&
-          sessionId &&
-          blockingTag &&
-          normalizeTag(blockingTag) === normalizeTag(AI_DISABLED_TAG) &&
-          resolvedContact &&
-          !findBlockingTag(
-            resolvedContact.tagNames,
-            blockedTags.filter((t) => normalizeTag(t) !== normalizeTag(AI_DISABLED_TAG)),
-          )
-        ) {
-          try {
-            const helena = await loadHelenaAccount(accountId);
-            const sessao = await listHelenaSessionMessages(helena, sessionId);
-            if (
-              sessao &&
-              etiquetaEhDeAtendimentoAnterior(sessao, (t) =>
-                isOptOutMessage(t, agentSettings.opt_out_command),
-              )
-            ) {
-              const contactId = await resolveHelenaContactId(helena, {
-                sessionId,
-                contact: resolvedContact,
-                phone: fromDetails || legacyPhone || resolvedContact.phoneNumber,
-              });
-              const tagRes = contactId
-                ? await setHelenaContactTags(helena, contactId, [AI_DISABLED_TAG], "DeleteIfExists")
-                : null;
-              console.warn(
-                `[webhook:telemetry] ${JSON.stringify({
-                  event: "ia_desligada_de_atendimento_anterior",
-                  conv: convId,
-                  account: accountId,
-                  session: sessionId,
-                  removida: !!tagRes?.ok,
-                })}`,
-              );
-              if (tagRes?.ok) blockingTag = null;
-            }
-          } catch (e) {
-            console.error("[webhook] checagem de etiqueta antiga falhou:", e);
-          }
         }
         const agentBlockedByTag = !!blockingTag;
         const blockUnverifiable = isInbound && !contactTagsKnown && !!sessionId;
