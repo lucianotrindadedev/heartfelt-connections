@@ -81,6 +81,11 @@ import { VOCATIVO_RULE } from "./vocativo-guard";
 import { linhaSaudacaoDoHorario } from "./saudacao-guard";
 import { HORARIO_DO_SERVICO_RULE, linhaPerguntaHorarioDoServico } from "./pergunta-informativa";
 import {
+  ehSoAgradecimento,
+  falasAtuaisDoLead,
+  perguntouSobreMudarAgendamento,
+} from "./so-agradecimento";
+import {
   classifyBookingError,
   parseBookingFailure,
   isGuardHoldFailure,
@@ -2972,6 +2977,38 @@ async function cancelarNoProvedor(
  * (continua na agenda) e a oferta de horários reabre. Com uma remarcação já
  * pendente (sem appointment_id), só reabre a oferta.
  */
+/**
+ * Lead que só agradeceu ou disse "ok" não pediu para remarcar nem cancelar.
+ * Devolve o resultado da tool recusada (o agendamento fica como está) ou
+ * `null` para seguir normalmente. Ver so-agradecimento.ts (Bomfim, 19/11).
+ */
+function agradecimentoNaoMexeNoAgendamento(
+  ctx: AgentContext,
+  acao: "remarcar" | "cancelar",
+): { result: string } | null {
+  if (!ctx.leadData.appointment_id) return null;
+  // Emoji solto ("🙏") na rajada acompanha o agradecimento, não é pedido.
+  const falas = falasAtuaisDoLead(ctx.history).filter((f) => /[\p{L}\p{N}]/u.test(f));
+  if (falas.length === 0 || !falas.every(ehSoAgradecimento)) return null;
+  const ultimaNossa = [...ctx.history].reverse().find((m) => m.role === "assistant")?.content ?? "";
+  if (perguntouSobreMudarAgendamento(ultimaNossa)) return null;
+  console.warn(
+    `[scheduler:telemetry] ${JSON.stringify({
+      event: "agradecimento_nao_mexe_no_agendamento",
+      conv: ctx.conversationId,
+      acao,
+    })}`,
+  );
+  const quando = ctx.leadData.booked_slot_iso ?? ctx.leadData.selected_slot_iso ?? "";
+  return {
+    result: JSON.stringify({
+      ok: false,
+      error_kind: "sem_pedido_do_lead",
+      error: `O lead só agradeceu/confirmou ("${falas.join(" ").slice(0, 80)}") — ele NÃO pediu para ${acao}. O agendamento atual${quando ? ` (${quando})` : ""} continua valendo: NÃO chame remarcar_agendamento nem cancelar_agendamento. Responda agradecendo em uma frase curta, sem oferecer horários.`,
+    }),
+  };
+}
+
 export function patchInicioRemarcacao(ld: LeadData): Partial<LeadData> {
   return {
     // "" / [] limpam de verdade (undefined some no stripNullishFields).
@@ -3907,12 +3944,14 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
           case "cancelar_google_calendar":
           case "cancelar_clinup":
           case "cancelar_clinic_experts":
-            outcome = await execCancelarAgendamento(ctx);
+            outcome = agradecimentoNaoMexeNoAgendamento(ctx, "cancelar") ??
+              (await execCancelarAgendamento(ctx));
             break;
           case "remarcar_agendamento":
           case "reagendar":
           case "reagendar_agendamento":
-            outcome = await execCancelarAgendamento(ctx, { reoffer: true });
+            outcome = agradecimentoNaoMexeNoAgendamento(ctx, "remarcar") ??
+              (await execCancelarAgendamento(ctx, { reoffer: true }));
             break;
           case "manter_agendamento":
             outcome = execManterAgendamento(ctx);
