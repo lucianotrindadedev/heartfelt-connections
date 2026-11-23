@@ -4943,6 +4943,34 @@ function stripAffirmativePrefix(text: string): string {
   return text.replace(/^(sim|ok|isso|uhum|certo)[,.\s]+/i, "").trim();
 }
 
+/** Trecho que é escolha de dia/horário: dia da semana, hoje/amanhã, hora
+ *  ("08:30", "8h", "8:30h") ou data ("24/11"). */
+const TRECHO_DE_HORARIO_RE =
+  /\b(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo|hoje|amanh[ãa])\b|\b\d{1,2}\s*(?::\s*\d{2}|h)|\b\d{1,2}\/\d{1,2}\b/i;
+
+/**
+ * Tira da resposta os trechos (linhas ou partes separadas por vírgula/ponto e
+ * vírgula) que são escolha de dia/horário. Devolve o texto intacto quando não
+ * há trecho de horário ou quando TUDO é horário.
+ *
+ * Caso real (Sorriso Saúde, Cleusa 27 98813-0617, 22/11): pedido o nome, ela
+ * respondeu numa mensagem só "Cleusa Santos Assis\nTerça 08:30h". A captura
+ * rejeitava a mensagem inteira (não é nome), o nome nunca era gravado e o
+ * agendamento não rodava — mas a IA mandou o vídeo de como chegar e o
+ * parabéns de fechamento.
+ */
+export function semTrechoDeHorario(text: string): string {
+  const original = text.trim();
+  const partes = original
+    .split(/\n|[,;]/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (partes.length < 2) return original;
+  const resto = partes.filter((p) => !TRECHO_DE_HORARIO_RE.test(p));
+  if (resto.length === 0 || resto.length === partes.length) return original;
+  return resto.join(" ");
+}
+
 /**
  * A fala mais recente do assistente que NÃO é só um pedaço de outra fala
  * recente. Os ecos da Helena (bolhas da nossa própria resposta) entram como
@@ -4994,12 +5022,22 @@ function captureBookingAnswer(
   ) {
     return {};
   }
-  const lastUser = stripAffirmativePrefix(rawAnswer.trim());
+  let lastUser = stripAffirmativePrefix(rawAnswer.trim());
   if (!lastUser || lastUser.length > MAX_AUTO_CAPTURE_LEN) return {};
   if (looksLikeQuestion(lastUser)) return {};
 
   const missing = getMissingBookingFields(fields, leadData);
   if (missing.length === 0) return {};
+
+  // Nome + horário na mesma mensagem ("Cleusa Santos Assis\nTerça 08:30h"):
+  // pedido o NOME, fica só o trecho que não é horário. O horário já é lido
+  // por outro caminho (tryAutoSelectOfferedSlot). Só para o campo de nome —
+  // outros campos (ex.: disponibilidade) podem ter horário na resposta.
+  const semHorario = semTrechoDeHorario(lastUser);
+  if (semHorario !== lastUser) {
+    const pedido = matchFieldFromAssistantQuestion(assistantText, missing);
+    if (pedido && (pedido.maps_to === "name" || pedido.key === "name")) lastUser = semHorario;
+  }
 
   // CPF: se o assistente perguntou por um campo de CPF, só captura um CPF válido
   // (11 dígitos, não todos iguais). Fica ANTES dos guards de telefone/horário

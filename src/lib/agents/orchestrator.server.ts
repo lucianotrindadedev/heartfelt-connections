@@ -69,6 +69,7 @@ import {
   sanitizeLeadDataPatch,
   signalsCannotAttendOrChange,
   tryAutoCaptureBookingAnswer,
+  semTrechoDeHorario,
   tryAutoSelectOfferedSlot,
 } from "@/lib/booking-template";
 import { limparMarcadoresDeModelo } from "@/lib/placeholder-guard";
@@ -909,6 +910,34 @@ export async function runAgentTurn(conversationId: string): Promise<void> {
         leadData = mergeLeadDataPatch(leadData, slotPatch);
         console.log(
           `[orch] auto-selecao slot conv=${conversationId} iso=${slotPatch.selected_slot_iso}`,
+        );
+      }
+    }
+
+    // Escolha de horário + NOME na mesma mensagem ("Cleusa Santos Assis\nTerça
+    // 08:30h"), ainda em SLOT_OFFER. A captura abaixo só roda em NAME_COLLECT
+    // fora do turno de escolha (uma escolha como "terça 8:30" viraria nome) —
+    // aqui o trecho do horário é separado do nome (semTrechoDeHorario) e a
+    // captura ainda exige que a última fala nossa tenha PEDIDO o nome. Assim o
+    // nome entra JÁ neste turno e o agendamento determinístico do scheduler
+    // roda em seguida. Só grava o NOME.
+    // Caso real (Sorriso Saúde, Cleusa 27 98813-0617, 22/11).
+    if (
+      !leadData.name &&
+      (stage === "SLOT_OFFER" || stage === "NAME_COLLECT" || stage === "BOOKING") &&
+      semTrechoDeHorario(lastUserMsg) !== lastUserMsg.trim()
+    ) {
+      const nomePatch = tryAutoCaptureBookingAnswer(
+        "NAME_COLLECT",
+        leadData,
+        history,
+        agentSettings,
+        channelCtx,
+      );
+      if (nomePatch.name) {
+        leadData = mergeLeadDataPatch(leadData, { name: nomePatch.name });
+        console.log(
+          `[orch] nome capturado junto da escolha de horário conv=${conversationId} name=${nomePatch.name}`,
         );
       }
     }

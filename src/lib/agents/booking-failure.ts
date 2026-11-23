@@ -243,7 +243,21 @@ export function claimsBookingConfirmed(reply: string | undefined | null): boolea
   // trava (Rafaela 21 97996-8794 e Anete 21 97197-1008, 15-16/08).
   const despedida =
     /\b(aguardando|aguardamos|esperando|esperamos|espero)\s+(voc[êe]|vc|o\s+senhor|a\s+senhora|te\b)|\bte\s+(esperamos|aguardamos|espero|aguardo|esperando|aguardando|esperar|aguardar)\b|\bnos\s+vemos\b/;
-  return despedida.test(t) && temHorario;
+  if (despedida.test(t) && temHorario) return true;
+
+  // PARABÉNS DE FECHAMENTO — o roteiro pós-agendamento ("Parabéns por dar esse
+  // primeiro passo rumo à melhor versão do seu sorriso") sem dia, hora nem a
+  // palavra "agendado". Para o lead é o fim do agendamento. Caso real (Sorriso
+  // Saúde, Cleusa 27 98813-0617, 22/11): o nome não foi gravado, nada foi
+  // criado na agenda e ela recebeu o vídeo de como chegar + esse parabéns.
+  // Sem dia/hora de propósito: o parabéns É a confirmação. Só é consultado
+  // sem appointment_id, então o parabéns legítimo (agendou) nunca é afetado.
+  // Resposta com pergunta ("Parabéns pela decisão! Vamos marcar sua
+  // avaliação?") é condução, não fechamento — não conta.
+  if (t.includes("?")) return false;
+  return /\bparab[ée]ns\b[^.!?\n]{0,60}\b(primeiro\s+passo|agendamento|agendad[oa]|marcad[oa]|consulta|avalia[çc][ãa]o|visita)\b/.test(
+    t,
+  );
 }
 
 /** Falha TÉCNICA (slot segue livre): não mente, avisa que vai tentar de novo. */
