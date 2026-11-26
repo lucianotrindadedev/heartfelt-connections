@@ -18,6 +18,7 @@
 
 import { createFileRoute } from "@tanstack/react-router";
 import { getSelfhost } from "@/integrations/selfhost/client.server";
+import { corrigirDiaDaSemana } from "@/lib/dia-da-semana";
 import {
   loadHelenaAccount,
   sendHelenaText,
@@ -496,6 +497,15 @@ export const Route = createFileRoute("/api/public/cron/followup-sequence")({
                   });
                   continue;
                 }
+              }
+
+              // Dia da semana errado na mensagem (ver dia-da-semana.ts).
+              const diaCorrigido = corrigirDiaDaSemana(messageText);
+              if (diaCorrigido.correcoes.length > 0) {
+                console.warn(
+                  `[followup-seq] conv ${convId} dia da semana corrigido: ${diaCorrigido.correcoes.join(" | ")}`,
+                );
+                messageText = diaCorrigido.texto;
               }
 
               // Envia pelo Helena
