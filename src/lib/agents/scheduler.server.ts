@@ -356,21 +356,14 @@ const ResultSchema = z.object({
   reply: z.string().min(1, "Reply não pode ser vazio"),
   // next_stage opcional — fallback aplicado no runSchedulerAgent (mantém stage atual).
   next_stage: z.enum(VALID_STAGES).optional(),
+  // Mesmo shape do modo unificado. Antes era uma cópia à mão SEM transfer_unit:
+  // o zod descarta chave desconhecida em silêncio, então a loja indicada pela
+  // IA nesta etapa sumia e a "transferência para a loja" virava escalada para
+  // o suporte geral. Caso real (Game Point, 27/10–25/11/2026): todas as 137
+  // transferências para loja saíram do qualifier; 77 das 99 escaladas sem loja
+  // saíram daqui, quase todas com a loja escrita no próprio motivo.
   lead_data_patch: z
-    .object({
-      name: z.string().nullish(),
-      selected_slot_iso: z.string().nullish(),
-      selected_agenda: z.string().nullish(),
-      dentist_person_id: z.number().nullish(),
-      commitment_confirmed: z.boolean().nullish(),
-      patient_id: z.number().nullish(),
-      appointment_id: z.union([z.number(), z.string()]).nullish(),
-      notes: z.string().nullish(),
-      escalation_reason: z.string().nullish(),
-      retomar_em: z.string().nullish(),
-      retorno_motivo: z.string().nullish(),
-      custom_fields: coercibleStringRecord.nullish(),
-    })
+    .object(leadDataPatchShape)
     // .nullish(): alguns modelos devolvem lead_data_patch:null (em vez de omitir)
     // — sem isto o turn inteiro quebrava na validação Zod.
     .nullish(),
@@ -383,7 +376,7 @@ const ResultSchema = z.object({
 type SchedulerJsonResult = z.infer<typeof UnifiedResultSchema>;
 
 /** Valida o JSON do turn com o schema do modo em uso. */
-function parseAgentJson(ctx: AgentContext, raw: unknown): SchedulerJsonResult {
+export function parseAgentJson(ctx: AgentContext, raw: unknown): SchedulerJsonResult {
   const schema = isUnifiedMode(ctx) ? UnifiedResultSchema : ResultSchema;
   return schema.parse(sanitizeStructuredAgentJson(raw)) as SchedulerJsonResult;
 }
