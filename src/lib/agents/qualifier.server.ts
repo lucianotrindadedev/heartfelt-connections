@@ -10,6 +10,7 @@
 // - No 1º ciclo NUNCA aplica tag (só observa).
 
 import { z } from "zod";
+import { calendarioProximosDias } from "@/lib/dia-da-semana";
 import type { AgentContext, AgentResult } from "./context";
 import { buildTransferUnitsPromptBlock, parseTransferUnits, TRANSFER_UNITS_SETTING } from "@/lib/transfer-units";
 import { AGENDA_LISTING_TOOL, AGENDA_TOOL_ALIASES_NOTE, isAgendaListingTool } from "./agenda-tool-names";
@@ -626,6 +627,7 @@ horários/slots) nem quando ele só está respondendo normalmente.`;
   const stateBlock = `# ESTADO ATUAL
 
 - 📅 HOJE é ${dateStr} (horário de São Paulo). Esta é a SUA referência de tempo: antes de falar de qualquer dia/data, localize-se por ela. NUNCA mencione ou ofereça datas no PASSADO. Ao interpretar "amanhã", "semana que vem", "sexta", "dia 15", "hoje à tarde", calcule SEMPRE a partir de HOJE.
+- 🗓️ CALENDÁRIO (dia da semana de cada data — COPIE daqui, nunca calcule de cabeça): ${calendarioProximosDias()}
 ${linhaSaudacaoDoHorario()}
 ${linhaPerguntaHorarioDoServico(lastUserBurst(ctx.history))}
 ${aguardaPedidoDeAgenda(ctx) ? LINHA_OFERTA_AGUARDA_PEDIDO : ""}

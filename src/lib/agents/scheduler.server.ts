@@ -10,6 +10,7 @@
 //   só funciona se já temos selected_slot_iso + name).
 
 import { z } from "zod";
+import { calendarioProximosDias } from "@/lib/dia-da-semana";
 import { sanitizeStructuredAgentJson, stripNullishFields } from "./parse-llm-json.server";
 import { antecedenciaDaBuscaMs, slotsComAntecedencia } from "./slot-offer-fallback";
 import {
@@ -94,6 +95,7 @@ import {
   buildConflictReply,
   buildReofferReply,
   claimsBookingConfirmed,
+  agendamentoVigente,
   findChosenRealSlot,
   TECH_RETRY_REPLY,
   TECH_ESCALATE_REPLY,
@@ -3453,6 +3455,7 @@ ${ld.selected_agenda ? `- Unidade já escolhida nesta conversa: "${ld.selected_a
   return `# ESTADO ATUAL
 
 - 📅 HOJE é ${dateStr} (São Paulo) — data de referência ISO: ${todayIso}. Localize-se SEMPRE por ela. NUNCA ofereça, confirme ou mencione horários no PASSADO. Só ofereça horários vindos de listar_horarios (que já começa a partir de hoje). Ao passar data_alvo, calcule "amanhã"/"sexta"/"dia 15" a partir de HOJE (${todayIso}).
+- 🗓️ CALENDÁRIO (dia da semana de cada data — COPIE daqui, nunca calcule de cabeça): ${calendarioProximosDias(now)}
 ${linhaSaudacaoDoHorario()}
 ${linhaPerguntaHorarioDoServico(lastUserBurst(ctx.history))}
 - Stage corrente: ${ctx.stage}
@@ -4657,7 +4660,13 @@ export async function runSchedulerAgent(ctx: AgentContext): Promise<AgentResult>
   // 22/09 14:33): com 23/09 08:30 selecionado por engano, a IA ofertou "quinta,
   // 24/09 às 14:00 ou 14:30" sem nenhuma busca (a agenda de quinta não tem
   // tarde), o follow-up repetiu o horário inventado e o agendamento nunca fechou.
-  const jaTemAppt = ctx.leadData.appointment_id ?? (outPatch as Partial<LeadData>).appointment_id;
+  //
+  // Agendamento que JÁ PASSOU não conta: o lead que volta depois da consulta
+  // ainda carrega o appointment_id antigo, e com ele a trava ficava desligada.
+  // Casos reais (Sorriso Saúde, 23 e 26/11): Maria das Graças 27 98102-1249
+  // recebeu "segunda-feira, 25/11 às 08:00 ou 08:30" e Jacimara 27 99628-4537
+  // "quinta-feira, 27/11 …" — sem nenhuma busca na agenda. Ver agendamentoVigente.
+  const jaTemAppt = agendamentoVigente(ctx.leadData, outPatch as Partial<LeadData>);
   const jaEscolheu = ((outPatch as Partial<LeadData>).selected_slot_iso ??
     ctx.leadData.selected_slot_iso ??
     "") as string;

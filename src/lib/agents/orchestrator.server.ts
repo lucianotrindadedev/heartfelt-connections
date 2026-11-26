@@ -13,6 +13,7 @@ import { getSelfhost } from "@/integrations/selfhost/client.server";
 import { isPlatformNotice } from "@/lib/platform-notice";
 import { detectForeignSender, isCourtesyOnlyBurst } from "@/lib/conversation-guards";
 import { decryptValue } from "@/lib/crypto.server";
+import { corrigirDiaDaSemana } from "@/lib/dia-da-semana";
 import {
   antecedenciaMinimaMs,
   buildSlotOfferFallback,
@@ -284,6 +285,17 @@ async function deliverReply(
   phone: string | undefined,
 ): Promise<void> {
   const sb = getSelfhost();
+  // Dia da semana errado ("segunda-feira, 01/12" com 01/12 numa terça): corrige
+  // antes de dividir, enviar e gravar — o histórico também fica certo. Ver
+  // dia-da-semana.ts.
+  const diaCorrigido = corrigirDiaDaSemana(reply);
+  if (diaCorrigido.correcoes.length > 0) {
+    reply = diaCorrigido.texto;
+    meta = { ...meta, dia_da_semana_corrigido: diaCorrigido.correcoes };
+    console.warn(
+      `[orch:telemetry] ${JSON.stringify({ event: "dia_da_semana_corrigido", conv: conversationId, correcoes: diaCorrigido.correcoes })}`,
+    );
+  }
   // Custo do splitter LLM (quando as regras não dividem e cai no modelo): soma-se
   // ao cost_usd_estimate do turn. Sem isto ele rodava "de graça" na telemetria —
   // era uma das lacunas do custo real por conversa.

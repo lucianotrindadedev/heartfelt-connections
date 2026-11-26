@@ -292,3 +292,23 @@ export const TECH_ESCALATION_REASON = "falha_tecnica_agendamento";
 
 /** Após esta quantidade de falhas técnicas consecutivas, escala para humano. */
 export const MAX_BOOKING_TECH_RETRIES = 2;
+
+/**
+ * O lead tem um agendamento VIGENTE? Criado neste turno (no patch) sempre
+ * conta. O do lead_data só conta se o horário ainda não passou (3h de folga):
+ * quem volta depois da consulta continua com o appointment_id antigo, e as
+ * travas que só rodam "sem agendamento" ficavam desligadas para ele.
+ * Sem booked_slot_iso (agendamento antigo sem data gravada) segue contando —
+ * sem a data não dá para saber se passou.
+ */
+export function agendamentoVigente(
+  leadData: { appointment_id?: unknown; booked_slot_iso?: string | null },
+  patch?: { appointment_id?: unknown; booked_slot_iso?: string | null } | null,
+  agora: Date = new Date(),
+): boolean {
+  if (patch?.appointment_id) return true;
+  if (!leadData.appointment_id) return false;
+  const quando = Date.parse((patch?.booked_slot_iso ?? leadData.booked_slot_iso ?? "").trim());
+  if (Number.isNaN(quando)) return true;
+  return quando >= agora.getTime() - 3 * 3600_000;
+}
